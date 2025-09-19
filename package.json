@@ -1,0 +1,100 @@
+{
+  "name": "@scaffoldly/template-app",
+  "description": "app-template for Scaffoldly",
+  "version": "0.0.1",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "files": [
+    "dist/**/*.js",
+    "dist/**/*.d.ts",
+    "dist/**/*.js.map"
+  ],
+  "bin": {
+    "template-app": "dist/index.js"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/scaffoldly/template-app.git"
+  },
+  "bugs": {
+    "url": "https://github.com/scaffoldly/template-app/issues"
+  },
+  "author": "Scaffoldly <github.com/scaffoldly>",
+  "license": "SEE LICENSE IN LICENSE.md",
+  "private": false,
+  "engines": {
+    "node": ">=20",
+    "yarn": ">=1.22.0",
+    "npm": ">=10"
+  },
+  "engineStrict": false,
+  "scripts": {
+    "prestart": "yarn build:app",
+    "build": "yarn build:exe",
+    "build:app": "tsup src/index.ts --sourcemap --dts --format cjs --target esnext --cjsInterop",
+    "build:exe": "yarn build:app && pkg dist/index.js --compress Brotli --output dist/app",
+    "start": "yarn build:app && node dist/server.js",
+    "start:dev": "tsx src/server.ts",
+    "clean": "rm -rf dist",
+    "prepublishOnly": "yarn clean && yarn build",
+    "lint": "eslint .",
+    "lint:fix": "eslint . --fix",
+    "jest": "NODE_OPTIONS='--experimental-vm-modules --trace-warnings' jest",
+    "test": "yarn jest -- --testTimeout=30000"
+  },
+  "prettier": {
+    "semi": true,
+    "trailingComma": "es5",
+    "singleQuote": true,
+    "printWidth": 80,
+    "tabWidth": 2,
+    "useTabs": false
+  },
+  "jest": {
+    "projects": [
+      {
+        "displayName": "unit",
+        "preset": "ts-jest",
+        "transform": {
+          "^.+\\.tsx?$": [
+            "ts-jest",
+            {
+              "tsconfig": "tests/tsconfig.json"
+            }
+          ]
+        },
+        "testEnvironment": "node",
+        "roots": [
+          "<rootDir>/tests"
+        ],
+        "testMatch": [
+          "**/*.test.ts"
+        ],
+        "moduleNameMapper": {
+          "^@src$": "<rootDir>/src/index.ts"
+        },
+        "globalSetup": "<rootDir>/tests/setup.ts",
+        "globalTeardown": "<rootDir>/tests/teardown.ts"
+      }
+    ]
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.28.0",
+    "@types/jest": "^30.0.0",
+    "@types/node": ">=20.0.0 <25.0.0",
+    "@typescript-eslint/eslint-plugin": "^8.0.0",
+    "@typescript-eslint/parser": "^8.0.0",
+    "@yao-pkg/pkg": "^6.6.0",
+    "eslint": "^9.0.0",
+    "eslint-config-prettier": "^10.1.5",
+    "eslint-plugin-prettier": "^5.4.1",
+    "globals": "^16.2.0",
+    "jest": "^30.1.3",
+    "prettier": "^3.0.0",
+    "ts-jest": "^29.1.0",
+    "ts-node": "^10.9.2",
+    "tsup": "^8.5.0",
+    "typescript": "^5.0.0"
+  },
+  "dependencies": {}
+}

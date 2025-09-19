@@ -1,0 +1,18 @@
+# Lock files should not be formatted
+package-lock.json
+yarn.lock
+pnpm-lock.yaml
+
+# Build outputs
+dist/
+coverage/
+coverage-integration/
+
+# Node modules
+node_modules/
+
+# Generated files
+*.tsbuildinfo
+
+# GitHub special files with specific formatting
+**/CODEOWNERS
