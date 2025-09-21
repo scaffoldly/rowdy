@@ -1,12 +1,19 @@
 #!/usr/bin/env node
 
-export const hello = (): string => {
-  return 'Hello, World!';
-};
+import { lastValueFrom, Observable, race, switchMap } from 'rxjs';
+import { Environment } from './environment';
+import { LambdaEnvironment } from './aws/lambda';
+
+class EnvironmentFactory {
+  static create(): Observable<Environment> {
+    return race(LambdaEnvironment._create());
+  }
+}
 
 const main = async (): Promise<void> => {
-  process.stdout.write(hello());
-  process.stdout.write('\n');
+  await lastValueFrom(
+    EnvironmentFactory.create().pipe(switchMap((env) => env.poll()))
+  );
 };
 
 const error = (err: unknown): void => {
@@ -19,3 +26,5 @@ const error = (err: unknown): void => {
 if (require.main === module) {
   main().catch(error);
 }
+
+export { Routes } from './routes';
