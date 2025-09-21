@@ -1,6 +1,6 @@
 {
-  "name": "@scaffoldly/template-app",
-  "description": "app-template for Scaffoldly",
+  "name": "@scaffoldly/router",
+  "description": "Scaffoldly Serverless Router",
   "version": "0.0.1",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -10,14 +10,14 @@
     "dist/**/*.js.map"
   ],
   "bin": {
-    "template-app": "dist/index.js"
+    "router": "dist/index.js"
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/scaffoldly/template-app.git"
+    "url": "git+https://github.com/scaffoldly/router.git"
   },
   "bugs": {
-    "url": "https://github.com/scaffoldly/template-app/issues"
+    "url": "https://github.com/scaffoldly/router/issues"
   },
   "author": "Scaffoldly <github.com/scaffoldly>",
   "license": "SEE LICENSE IN LICENSE.md",

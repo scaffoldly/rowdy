@@ -29,6 +29,6 @@ RUN ARCH=$(node -e "console.log(process.arch)") && \
     ./app --version
 
 FROM scratch
-COPY --from=arch /work/app /usr/local/bin/app
-ENTRYPOINT [ "/usr/local/bin/app" ]
+COPY --from=arch /work/app /usr/local/bin/router
+ENTRYPOINT [ "/usr/local/bin/router" ]
 CMD [ "--help" ]
