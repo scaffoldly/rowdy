@@ -127,7 +127,7 @@ jobs:
             type=sha
 
       - name: Publish pre-release to NPM
-        run: yarn publish --tag beta
+        run: yarn publish --tag beta --access public
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
