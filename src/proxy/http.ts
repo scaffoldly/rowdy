@@ -15,11 +15,7 @@ export class HttpProxy extends Response {
     super(signal);
   }
 
-  static fromLambda(
-    routes: Routes,
-    payload: string,
-    signal: AbortSignal
-  ): Observable<Response> {
+  static fromLambda(routes: Routes, payload: string, signal: AbortSignal): Observable<Response> {
     try {
       // TODO: DDB and S3 events
       const data = JSON.parse(payload) as Record<string, unknown>;
@@ -41,11 +37,7 @@ export class HttpProxy extends Response {
         throw new Error('Unknown version, routeKey, or method');
       }
 
-      if (
-        typeof method !== 'string' ||
-        typeof rawPath !== 'string' ||
-        typeof rawQueryString !== 'string'
-      ) {
+      if (typeof method !== 'string' || typeof rawPath !== 'string' || typeof rawQueryString !== 'string') {
         throw new Error('Invalid method, rawPath, or rawQueryString');
       }
 
@@ -62,9 +54,7 @@ export class HttpProxy extends Response {
         method,
         url,
         JSON.parse(JSON.stringify(headers || {})),
-        isBase64Encoded
-          ? Buffer.from((data.body as string) || '', 'base64')
-          : Buffer.from((data.body as string) || ''),
+        isBase64Encoded ? Buffer.from((data.body as string) || '', 'base64') : Buffer.from((data.body as string) || ''),
         signal
       );
 

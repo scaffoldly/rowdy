@@ -1,5 +1,4 @@
-ARG BUILDPLATFORM=linux/amd64
-FROM --platform=${BUILDPLATFORM} node:22-alpine AS full
+FROM node:22-alpine AS full
 RUN apk add --no-cache git
 
 WORKDIR /work
@@ -12,7 +11,7 @@ RUN --mount=type=cache,target=/usr/local/share/.cache \
 ENTRYPOINT [ "yarn" ]
 CMD [ "start:dev" ]
 
-FROM --platform=${BUILDPLATFORM} node:22-alpine AS exe
+FROM node:22-alpine AS exe
 WORKDIR /work
 COPY --from=full /work /work
 ENV PKG_CACHE_PATH=/usr/local/share/.cache/pkg

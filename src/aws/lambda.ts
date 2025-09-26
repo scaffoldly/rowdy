@@ -1,20 +1,7 @@
-import {
-  combineLatest,
-  defer,
-  from,
-  map,
-  mergeMap,
-  NEVER,
-  Observable,
-  of,
-  race,
-} from 'rxjs';
+import { combineLatest, defer, from, map, mergeMap, NEVER, Observable, of, race } from 'rxjs';
 import { Environment, Secrets } from '../environment';
 import axios, { AxiosResponse } from 'axios';
-import {
-  GetSecretValueCommand,
-  SecretsManagerClient,
-} from '@aws-sdk/client-secrets-manager';
+import { GetSecretValueCommand, SecretsManagerClient } from '@aws-sdk/client-secrets-manager';
 import { log } from '../log';
 import { Request } from '../request';
 import { Response } from '../response';
@@ -34,23 +21,11 @@ export class LambdaRequest extends Request {
     super(signal);
   }
 
-  static from(
-    routes: Routes,
-    runtimeApi: string,
-    payload: AxiosResponse<string>,
-    signal: AbortSignal
-  ): Request {
+  static from(routes: Routes, runtimeApi: string, payload: AxiosResponse<string>, signal: AbortSignal): Request {
     const requestId = payload.headers['lambda-runtime-aws-request-id'];
     const deadline = payload.headers['lambda-runtime-deadline-ms'];
 
-    return new LambdaRequest(
-      routes,
-      runtimeApi,
-      requestId,
-      deadline,
-      payload.data,
-      signal
-    );
+    return new LambdaRequest(routes, runtimeApi, requestId, deadline, payload.data, signal);
   }
 
   override into(): Observable<Response> {
@@ -61,15 +36,7 @@ export class LambdaRequest extends Request {
       )
         .pipe(
           mergeMap((p) => p.send()),
-          map(
-            (response) =>
-              new LambdaResponse(
-                this.runtimeApi,
-                this.requestId,
-                response,
-                this.signal
-              )
-          )
+          map((response) => new LambdaResponse(this.runtimeApi, this.requestId, response, this.signal))
         )
         .subscribe(subscriber);
 
@@ -100,24 +67,16 @@ export class LambdaResponse extends Response {
 
   override send(): Observable<this> {
     return from(
-      axios.post(
-        `http://${this.runtimeApi}/2018-06-01/runtime/invocation/${this.requestId}/response`,
-        this.data,
-        {
-          headers: {
-            'Content-Type':
-              'application/vnd.awslambda.http-integration-response',
-            'Lambda-Runtime-Function-Response-Mode': 'streaming',
-            'Transfer-Encoding': 'chunked',
-            Trailer: [
-              'Lambda-Runtime-Function-Error-Type',
-              'Lambda-Runtime-Function-Error-Body',
-            ],
-          },
-          maxBodyLength: 20 * 1024 * 1024,
-          signal: this.signal,
-        }
-      )
+      axios.post(`http://${this.runtimeApi}/2018-06-01/runtime/invocation/${this.requestId}/response`, this.data, {
+        headers: {
+          'Content-Type': 'application/vnd.awslambda.http-integration-response',
+          'Lambda-Runtime-Function-Response-Mode': 'streaming',
+          'Transfer-Encoding': 'chunked',
+          Trailer: ['Lambda-Runtime-Function-Error-Type', 'Lambda-Runtime-Function-Error-Body'],
+        },
+        maxBodyLength: 20 * 1024 * 1024,
+        signal: this.signal,
+      })
     ).pipe(
       map((_response) => {
         return this;
@@ -133,19 +92,12 @@ export class LambdaEnvironment extends Environment {
 
   public override next(): Observable<Request> {
     const next$ = defer(() =>
-      axios.get<string>(
-        `http://${this.runtimeApi}/2018-06-01/runtime/invocation/next`,
-        {
-          responseType: 'text',
-          signal: this.signal,
-          timeout: 0,
-        }
-      )
-    ).pipe(
-      map((response) =>
-        LambdaRequest.from(this.routes, this.runtimeApi, response, this.signal)
-      )
-    );
+      axios.get<string>(`http://${this.runtimeApi}/2018-06-01/runtime/invocation/next`, {
+        responseType: 'text',
+        signal: this.signal,
+        timeout: 0,
+      })
+    ).pipe(map((response) => LambdaRequest.from(this.routes, this.runtimeApi, response, this.signal)));
 
     return next$;
   }
@@ -162,19 +114,13 @@ export class LambdaEnvironment extends Environment {
     let secrets: Observable<Secrets> = of({});
 
     if (secret) {
-      secrets = from(
-        new SecretsManagerClient().send(
-          new GetSecretValueCommand({ SecretId: secret })
-        )
-      ).pipe(
+      secrets = from(new SecretsManagerClient().send(new GetSecretValueCommand({ SecretId: secret }))).pipe(
         map((output) => {
           if (output.SecretString) {
             return JSON.parse(output.SecretString) as Secrets;
           }
           if (output.SecretBinary) {
-            return JSON.parse(
-              Buffer.from(output.SecretBinary).toString('utf-8')
-            ) as Secrets;
+            return JSON.parse(Buffer.from(output.SecretBinary).toString('utf-8')) as Secrets;
           }
           log.warn(`Secret ${secret} has no SecretString or SecretBinary`);
           return {};
@@ -184,9 +130,7 @@ export class LambdaEnvironment extends Environment {
 
     return combineLatest([of(routes), secrets]).pipe(
       map(([routes, secrets]) => {
-        const env = new LambdaEnvironment(runtimeApi)
-          .withRoutes(routes)
-          .withSecrets(secrets);
+        const env = new LambdaEnvironment(runtimeApi).withRoutes(routes).withSecrets(secrets);
 
         return env;
       })

@@ -6,10 +6,7 @@ export class ShellProxy extends Response {
     super(signal);
   }
 
-  static fromLambda(
-    _payload: string,
-    _signal: AbortSignal
-  ): Observable<Response> {
+  static fromLambda(_payload: string, _signal: AbortSignal): Observable<Response> {
     // TODO: implement
     return NEVER;
   }

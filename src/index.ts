@@ -11,15 +11,11 @@ class EnvironmentFactory {
 }
 
 const main = async (): Promise<void> => {
-  await lastValueFrom(
-    EnvironmentFactory.create().pipe(switchMap((env) => env.poll()))
-  );
+  await lastValueFrom(EnvironmentFactory.create().pipe(switchMap((env) => env.poll())));
 };
 
 const error = (err: unknown): void => {
-  process.stderr.write(
-    `Error: ${err instanceof Error ? err.message : String(err)}\n`
-  );
+  process.stderr.write(`Error: ${err instanceof Error ? err.message : String(err)}\n`);
   process.exit(1);
 };
 
