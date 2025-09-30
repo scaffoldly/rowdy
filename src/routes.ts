@@ -1,7 +1,7 @@
 import parseDataURL from 'data-urls';
 import { match as pathMatch, compile as pathCompile, pathToRegexp } from 'path-to-regexp';
 import { decode, labelToName } from 'whatwg-encoding';
-import { log } from './log';
+import { ILoggable, log } from './log';
 
 // Largely inspired by HTTPRoute in gateway.networking.k8s.io/v1
 export type RouteRuleMatchDetail = {
@@ -37,7 +37,7 @@ export interface IRoutes {
   readonly rules: Array<RouteRule>;
 }
 
-export class Routes implements IRoutes {
+export class Routes implements IRoutes, ILoggable {
   readonly version: RoutesVersion = 'v1alpaha1';
   readonly rules: Array<RouteRule> = [];
 
@@ -127,7 +127,7 @@ export class Routes implements IRoutes {
             return matched;
           }
 
-          const { uri } = rule.backendRefs?.[0] || {}; // TODO: support weights
+          const { uri, insecure } = rule.backendRefs?.[0] || {}; // TODO: support weights
           const { type, value: pattern } = match.path || {};
 
           if (!type || !pattern || !uri) {
@@ -169,6 +169,10 @@ export class Routes implements IRoutes {
               matched = new URL(uri);
               matched.pathname = compiled;
             }
+
+            if (matched && insecure) {
+              matched.protocol = `insecure+${matched.protocol}`;
+            }
           } catch (e) {
             log.warn(`URI Compilation Failure: ${e instanceof Error ? e.message : String(e)}`, { uri });
           }
@@ -179,5 +183,9 @@ export class Routes implements IRoutes {
     );
 
     return url;
+  }
+
+  repr(): string {
+    return `Routes(version=${this.version}, rules=${JSON.stringify(this.rules)})`;
   }
 }

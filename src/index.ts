@@ -1,21 +1,17 @@
 #!/usr/bin/env node
 
-import { lastValueFrom, Observable, race, switchMap } from 'rxjs';
+import { lastValueFrom } from 'rxjs';
 import { Environment } from './environment';
-import { LambdaEnvironment } from './aws/lambda';
-
-class EnvironmentFactory {
-  static create(): Observable<Environment> {
-    return race(LambdaEnvironment._create());
-  }
-}
+import { log } from './log';
 
 const main = async (): Promise<void> => {
-  await lastValueFrom(EnvironmentFactory.create().pipe(switchMap((env) => env.poll())));
+  log.info('Starting environment');
+  await lastValueFrom(new Environment().poll());
 };
 
-const error = (err: unknown): void => {
-  process.stderr.write(`Error: ${err instanceof Error ? err.message : String(err)}\n`);
+const error = (error: Error): void => {
+  // eslint-disable-next-line no-console
+  console.error(`Fatal Error: ${error.message}`, error.stack);
   process.exit(1);
 };
 

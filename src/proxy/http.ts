@@ -1,117 +1,207 @@
-import { from, map, NEVER, Observable, of } from 'rxjs';
-import { Response } from '../response';
-import axios from 'axios';
-import Stream from 'stream';
-import { Routes } from '../routes';
+import { from, map, Observable } from 'rxjs';
+import { Pipeline, Proxy } from '../pipeline';
+import { Readable } from 'stream';
+import { ILoggable, log, Logger, Trace } from '../log';
+import axios, { AxiosHeaders, AxiosResponseHeaders, isAxiosError } from 'axios';
+import { Agent } from 'https';
+import { APIGatewayProxyEventV2 } from 'aws-lambda';
 
-export class HttpProxy extends Response {
-  private constructor(
-    private method: string,
-    private url: URL,
-    private headers: Record<string, string | string[]>,
-    private body: Buffer,
-    signal: AbortSignal
-  ) {
-    super(signal);
+export type Prelude = { statusCode: number; headers: Headers; cookies: string[] };
+
+export class HttpProxyHeaders implements ILoggable {
+  private headers: Record<string, string | string[]> = {};
+  private constructor() {}
+
+  proxy(): HttpProxyHeaders {
+    const instance = new HttpProxyHeaders();
+    instance.headers = { ...this.headers };
+
+    delete instance.headers['set-cookie']; // cookies are handled separately
+
+    if (this.headers['host']) {
+      this.headers['x-forwarded-host'] = this.headers['host'];
+      delete instance.headers['host'];
+    }
+
+    if (this.headers['connection']) {
+      for (let key of this.headers['connection']
+        .toString()
+        .toLowerCase()
+        .split(',')
+        .map((s) => s.trim())) {
+        delete instance.headers[key];
+      }
+      delete instance.headers['connection'];
+    }
+    delete instance.headers['keep-alive'];
+    delete instance.headers['proxy-authenticate'];
+    delete instance.headers['proxy-authorization'];
+    delete instance.headers['te'];
+    delete instance.headers['trailer'];
+    delete instance.headers['transfer-encoding'];
+    delete instance.headers['upgrade'];
+
+    // TODO: add x-forwarded-for
+    // TODO: add via
+
+    return instance;
   }
 
-  static fromLambda(routes: Routes, payload: string, signal: AbortSignal): Observable<Response> {
-    try {
-      // TODO: DDB and S3 events
-      const data = JSON.parse(payload) as Record<string, unknown>;
-
-      let {
-        version = 'unknown',
-        routeKey,
-        rawPath = '',
-        rawQueryString = '',
-        headers = {},
-        requestContext = {},
-        isBase64Encoded = false,
-      } = data;
-
-      let { http = {} } = requestContext as Record<string, unknown>;
-      let { method } = http as Record<string, unknown>;
-
-      if (version !== '2.0' || routeKey !== '$default' || !method) {
-        throw new Error('Unknown version, routeKey, or method');
+  static fromAxios(axiosHeaders: Partial<AxiosHeaders | AxiosResponseHeaders>): HttpProxyHeaders {
+    const instance = new HttpProxyHeaders();
+    for (let [key, value] of Object.entries(axiosHeaders.toJSON?.() || {})) {
+      if (!value) continue;
+      if (Array.isArray(value)) {
+        instance.headers[key.toLowerCase()] = value;
       }
+      instance.headers[key.toLowerCase()] = String(value);
+    }
+    return instance;
+  }
 
-      if (typeof method !== 'string' || typeof rawPath !== 'string' || typeof rawQueryString !== 'string') {
-        throw new Error('Invalid method, rawPath, or rawQueryString');
+  static fromLambda(headers: Partial<APIGatewayProxyEventV2['headers']>): HttpProxyHeaders {
+    const instance = new HttpProxyHeaders();
+    for (let [key, value] of Object.entries(headers || {})) {
+      if (!value) continue;
+      instance.headers[key.toLowerCase()] = String(value);
+    }
+    return instance;
+  }
+
+  intoAxios(): AxiosHeaders {
+    const axiosHeaders = new AxiosHeaders();
+    for (let [key, value] of Object.entries(this.headers)) {
+      if (Array.isArray(value)) {
+        for (let v of value) {
+          axiosHeaders.append(key, v);
+        }
+      } else {
+        axiosHeaders.set(key, value);
       }
+    }
+    return axiosHeaders;
+  }
 
-      const url = routes.intoURL(rawPath);
-      if (!url) {
-        throw new Error('No matching route');
-      }
+  intoJSON(): Record<string, unknown> {
+    return this.intoAxios().toJSON();
+  }
 
-      if (rawQueryString) {
-        url.search = new URLSearchParams(rawQueryString).toString();
-      }
+  repr(): string {
+    return `Headers(keys=${Object.keys(this.headers)})`;
+  }
+}
 
-      const proxy = new HttpProxy(
-        method,
-        url,
-        JSON.parse(JSON.stringify(headers || {})),
-        isBase64Encoded ? Buffer.from((data.body as string) || '', 'base64') : Buffer.from((data.body as string) || ''),
-        signal
-      );
+export abstract class HttpProxy<P extends Pipeline> extends Proxy<P, HttpProxyResponse> {
+  public readonly url: URL;
+  private insecure: boolean = false;
 
-      return of(proxy);
-    } catch {
-      return NEVER;
+  constructor(
+    pipeline: P,
+    public readonly method: string,
+    url: URL,
+    public readonly headers: HttpProxyHeaders,
+    public readonly body: Buffer
+  ) {
+    super(pipeline);
+    this.url = url;
+    if (this.url.protocol.startsWith('insecure+')) {
+      this.insecure = true;
+      this.url.protocol = this.url.protocol.replace('insecure+', '');
     }
   }
 
-  get httpsAgent(): unknown {
-    // TODO
+  get httpsAgent(): Agent | undefined {
+    if (this.insecure) {
+      return new Agent({
+        checkServerIdentity: () => undefined,
+        rejectUnauthorized: false,
+      });
+    }
     return undefined;
   }
 
-  get timeout(): number {
-    // TODO
-    return 5000;
-  }
-
-  override send(): Observable<this> {
+  @Trace
+  override invoke(): Observable<HttpProxyResponse> {
     return from(
-      axios.request<Stream>({
-        responseType: 'stream',
-        method: this.method,
-        url: this.url.toString(),
-        headers: this.headers,
-        data: this.body,
-        httpsAgent: this.httpsAgent,
-        timeout: this.timeout,
-        maxRedirects: 0,
-        validateStatus: () => true,
-        transformRequest: (req) => req,
-        transformResponse: (res) => res,
-        signal: this.signal,
-      })
+      axios
+        .request<Readable>({
+          responseType: 'stream',
+          method: this.method,
+          url: this.url.toString(),
+          headers: this.headers.proxy().intoAxios(),
+          data: this.body,
+          httpsAgent: this.httpsAgent,
+          timeout: 0,
+          maxRedirects: 0,
+          validateStatus: () => true,
+          transformRequest: (req) => req,
+          transformResponse: (res) => res,
+          signal: this.signal,
+        })
+        .catch((error) => {
+          log.warn(`HttpProxy.into() Axios Error`, { error, isAxiosError: isAxiosError(error) });
+          if (!isAxiosError<Readable>(error)) {
+            throw new Error(`Non-HTTP error occurred: ${error instanceof Error ? error.message : String(error)}`);
+          }
+          if (!error.response) {
+            log.debug('Creating an Axios Response', { error });
+            error.response = {
+              data: Readable.from(error instanceof Error ? error.message : String(error)),
+              status: 500,
+              statusText: 'Internal Server Error',
+              headers: new AxiosHeaders({
+                'Content-Type': 'text/plain; charset=utf-8', // TODO: check accept header
+                'Access-Control-Allow-Origin': '*',
+                'Access-Control-Allow-Methods': '*',
+                'Access-Control-Allow-Headers': '*',
+              }),
+              config: { headers: new AxiosHeaders() }, // TODO: construct an Axios object?
+            };
+          }
+          return error.response;
+        })
     ).pipe(
       map((response) => {
-        this.prelude.statusCode = response.status;
-        this.prelude.headers = response.headers;
-        this.prelude.cookies = [];
-
-        if (response.headers['set-cookie']) {
-          const cookies = response.headers['set-cookie'];
-          if (Array.isArray(cookies)) {
-            this.prelude.cookies.push(...cookies);
-          } else if (typeof cookies === 'string') {
-            this.prelude.cookies.push(cookies);
-          }
-        }
-
-        response.data.pipe(this.data);
-        response.data.on('end', () => {
-          this.data.end();
+        log.debug(`HttpProxy.invoke() response`, {
+          status: response.status,
+          headers: JSON.stringify(response.headers),
         });
-
-        return this;
+        return new HttpProxyResponse(
+          response.status,
+          HttpProxyHeaders.fromAxios(response.headers).proxy(),
+          response.headers['set-cookie']
+            ? Array.isArray(response.headers['set-cookie'])
+              ? response.headers['set-cookie']
+              : [response.headers['set-cookie']]
+            : [],
+          response.data
+        );
       })
     );
+  }
+
+  override repr(): string {
+    return `HttpProxy(method=${this.method}, url=${this.url.toString()}, headers=${Logger.asPrimitive(this.headers)}, body=[${this.body.length} bytes])`;
+  }
+}
+
+export class HttpProxyResponse implements ILoggable {
+  constructor(
+    public readonly statusCode: number,
+    public readonly headers: HttpProxyHeaders,
+    public readonly cookies: string[],
+    public readonly data: Readable
+  ) {}
+
+  prelude(): { statusCode?: number; headers?: Record<string, unknown>; cookies?: string[] } {
+    return {
+      statusCode: this.statusCode,
+      headers: this.headers.intoJSON(),
+      cookies: this.cookies,
+    };
+  }
+
+  repr(): string {
+    return `HttpProxyResponse(statusCode=${Logger.asPrimitive(this.statusCode)}, headers=${Logger.asPrimitive(this.headers)}, cookies=${Logger.asPrimitive(this.cookies)} data=[stream])`;
   }
 }

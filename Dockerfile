@@ -16,7 +16,6 @@ WORKDIR /work
 COPY --from=full /work /work
 ENV PKG_CACHE_PATH=/usr/local/share/.cache/pkg
 RUN --mount=type=cache,target=/usr/local/share/.cache \
-    yarn && \
     yarn build:exe --target node22-linuxstatic-x64,node22-linuxstatic-arm64
 
 FROM node:22-alpine AS arch
@@ -27,7 +26,7 @@ RUN ARCH=$(node -e "console.log(process.arch)") && \
     chmod +x app && \
     ./app --version
 
-FROM scratch
+FROM alpine:latest
 COPY --from=arch /work/app /usr/local/bin/router
 ENTRYPOINT [ "/usr/local/bin/router" ]
 CMD [ "--help" ]

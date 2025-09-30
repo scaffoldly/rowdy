@@ -31,7 +31,7 @@
   "scripts": {
     "prestart": "yarn build:app",
     "build": "yarn build:exe",
-    "build:app": "tsup src/index.ts --sourcemap --dts --format cjs --target esnext --cjsInterop",
+    "build:app": "tsup src/index.ts --sourcemap inline --dts --format cjs --target esnext --cjsInterop",
     "build:exe": "yarn build:app && pkg dist/index.js --compress Brotli --output dist/app",
     "start": "yarn build:app && node dist/server.js",
     "start:dev": "tsx src/server.ts",
@@ -81,6 +81,7 @@
   "devDependencies": {
     "@aws-sdk/client-secrets-manager": "^3.891.0",
     "@eslint/js": "^9.28.0",
+    "@types/aws-lambda": "^8.10.152",
     "@types/data-urls": "^3.0.4",
     "@types/jest": "^30.0.0",
     "@types/node": ">=20.0.0 <25.0.0",

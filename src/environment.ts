@@ -1,39 +1,40 @@
-import { fromEvent, mergeMap, Observable, repeat, share, takeUntil } from 'rxjs';
-import { Request } from './request';
-import { Response } from './response';
+import { fromEvent, mergeMap, Observable, race, repeat, takeUntil, tap } from 'rxjs';
 import { Routes, IRoutes } from './routes';
+import { log, Trace } from './log';
+import { Pipeline, Result } from './pipeline';
+import { LambdaPipeline } from './aws/pipeline';
 
 export type Secrets = Record<string, string>;
 
-export abstract class Environment {
+export class Environment {
   public readonly abort = new AbortController();
   public readonly signal: AbortSignal = this.abort.signal;
-  public readonly aborted: Observable<Event> = fromEvent(this.abort.signal, 'abort').pipe(share());
 
-  private _routes: Routes = new Routes();
+  private _routes: Routes = Routes.fromDataURL(); // TODO: make fromEnvironment
   private _env = process.env;
-
-  constructor() {}
 
   get routes(): Routes {
     return this._routes;
   }
 
-  public poll(): Observable<Response> {
-    return new Observable<Response>((subscriber) => {
-      const subscription = this.next()
-        .pipe(repeat({ delay: 0 }), takeUntil(this.aborted))
-        .pipe(mergeMap((request) => request.into()))
-        .pipe(mergeMap((response) => response.send()))
-        .subscribe(subscriber);
-
-      return () => {
-        subscription.unsubscribe();
-      };
-    });
+  get env(): Record<string, string | undefined> {
+    return this._env;
   }
 
-  public abstract next(): Observable<Request>;
+  @Trace
+  public poll(): Observable<Result<Pipeline>> {
+    return race([new LambdaPipeline(this).into()]).pipe(
+      takeUntil(fromEvent(this.signal, 'abort')),
+      tap((request) => log.info('Requesting', { request })),
+      mergeMap((request) => request.into()),
+      tap((proxy) => log.info('Proxying', { proxy })),
+      mergeMap((proxy) => proxy.into()),
+      tap((response) => log.info('Responding', { response })),
+      mergeMap((response) => response.into()),
+      tap((result) => log.info('Result', { result })),
+      repeat()
+    );
+  }
 
   protected withRoutes(routes?: IRoutes | string): this {
     if (!routes) {
@@ -41,7 +42,8 @@ export abstract class Environment {
     }
 
     if (typeof routes === 'string') {
-      routes = Routes.fromDataURL(routes);
+      this._routes = Routes.fromDataURL(routes);
+      return this;
     }
 
     this._routes.withRules(routes.rules);
