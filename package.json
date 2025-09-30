@@ -1,5 +1,5 @@
 {
-  "name": "@scaffoldly/router",
+  "name": "@scaffoldly/rowdy",
   "description": "Scaffoldly Serverless Router",
   "version": "0.0.2-1",
   "main": "dist/index.js",
@@ -10,14 +10,14 @@
     "dist/**/*.js.map"
   ],
   "bin": {
-    "router": "dist/index.js"
+    "rowdy": "dist/index.js"
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/scaffoldly/router.git"
+    "url": "git+https://github.com/scaffoldly/rowdy.git"
   },
   "bugs": {
-    "url": "https://github.com/scaffoldly/router/issues"
+    "url": "https://github.com/scaffoldly/rowdy/issues"
   },
   "author": "Scaffoldly <github.com/scaffoldly>",
   "license": "SEE LICENSE IN LICENSE.md",

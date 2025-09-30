@@ -27,6 +27,6 @@ RUN ARCH=$(node -e "console.log(process.arch)") && \
     ./app --version
 
 FROM alpine:latest
-COPY --from=arch /work/app /usr/local/bin/router
-ENTRYPOINT [ "/usr/local/bin/router" ]
+COPY --from=arch /work/app /usr/local/bin/rowdy
+ENTRYPOINT [ "/usr/local/bin/rowdy" ]
 CMD [ "--help" ]
