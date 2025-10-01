@@ -95,6 +95,9 @@ export class Routes implements IRoutes, ILoggable {
   }
 
   withDefault(target: string): this {
+    if (!target || target.trim() === '') {
+      target = 'rowdy://routes/';
+    }
     return this.withPath('{/*path}', `${target}*path`);
   }
 

@@ -1,103 +1,20 @@
-import { from, map, Observable } from 'rxjs';
+import { from, map, Observable, of } from 'rxjs';
 import { Pipeline, Proxy } from '../pipeline';
 import { Readable } from 'stream';
-import { ILoggable, log, Logger, Trace } from '../log';
-import axios, { AxiosHeaders, AxiosResponseHeaders, isAxiosError } from 'axios';
+import { log, Logger, Trace } from '../log';
+import axios, { AxiosHeaders, isAxiosError } from 'axios';
 import { Agent } from 'https';
-import { APIGatewayProxyEventV2 } from 'aws-lambda';
 import { URI } from '../routes';
+import { HttpHeaders, HttpResponse } from '.';
 
 export type Prelude = { statusCode: number; headers: Headers; cookies: string[] };
 
-export class HttpProxyHeaders implements ILoggable {
-  private headers: Record<string, string | string[]> = {};
-  private constructor() {}
-
-  proxy(): HttpProxyHeaders {
-    const instance = new HttpProxyHeaders();
-    instance.headers = { ...this.headers };
-
-    delete instance.headers['set-cookie']; // cookies are handled separately
-
-    if (this.headers['host']) {
-      this.headers['x-forwarded-host'] = this.headers['host'];
-      delete instance.headers['host'];
-    }
-
-    if (this.headers['connection']) {
-      for (let key of this.headers['connection']
-        .toString()
-        .toLowerCase()
-        .split(',')
-        .map((s) => s.trim())) {
-        delete instance.headers[key];
-      }
-      delete instance.headers['connection'];
-    }
-    delete instance.headers['keep-alive'];
-    delete instance.headers['proxy-authenticate'];
-    delete instance.headers['proxy-authorization'];
-    delete instance.headers['te'];
-    delete instance.headers['trailer'];
-    delete instance.headers['transfer-encoding'];
-    delete instance.headers['upgrade'];
-
-    // TODO: add x-forwarded-for
-    // TODO: add via
-
-    return instance;
-  }
-
-  static fromAxios(axiosHeaders: Partial<AxiosHeaders | AxiosResponseHeaders>): HttpProxyHeaders {
-    const instance = new HttpProxyHeaders();
-    for (let [key, value] of Object.entries(axiosHeaders.toJSON?.() || {})) {
-      if (!value) continue;
-      if (Array.isArray(value)) {
-        instance.headers[key.toLowerCase()] = value;
-      }
-      instance.headers[key.toLowerCase()] = String(value);
-    }
-    return instance;
-  }
-
-  static fromLambda(headers: Partial<APIGatewayProxyEventV2['headers']>): HttpProxyHeaders {
-    const instance = new HttpProxyHeaders();
-    for (let [key, value] of Object.entries(headers || {})) {
-      if (!value) continue;
-      instance.headers[key.toLowerCase()] = String(value);
-    }
-    return instance;
-  }
-
-  intoAxios(): AxiosHeaders {
-    const axiosHeaders = new AxiosHeaders();
-    for (let [key, value] of Object.entries(this.headers)) {
-      if (Array.isArray(value)) {
-        for (let v of value) {
-          axiosHeaders.append(key, v);
-        }
-      } else {
-        axiosHeaders.set(key, value);
-      }
-    }
-    return axiosHeaders;
-  }
-
-  intoJSON(): Record<string, unknown> {
-    return this.intoAxios().toJSON();
-  }
-
-  repr(): string {
-    return `Headers(keys=${Object.keys(this.headers)})`;
-  }
-}
-
-export abstract class HttpProxy<P extends Pipeline> extends Proxy<P, HttpProxyResponse> {
+export abstract class HttpProxy<P extends Pipeline> extends Proxy<P, HttpResponse> {
   constructor(
     pipeline: P,
     public readonly method: string,
     public readonly uri: URI,
-    public readonly headers: HttpProxyHeaders,
+    public readonly headers: HttpHeaders,
     public readonly body: Buffer
   ) {
     super(pipeline);
@@ -114,7 +31,7 @@ export abstract class HttpProxy<P extends Pipeline> extends Proxy<P, HttpProxyRe
   }
 
   @Trace
-  override invoke(): Observable<HttpProxyResponse> {
+  private invokeHttp(): Observable<HttpResponse> {
     return from(
       axios
         .request<Readable>({
@@ -159,9 +76,9 @@ export abstract class HttpProxy<P extends Pipeline> extends Proxy<P, HttpProxyRe
           status: response.status,
           headers: JSON.stringify(response.headers),
         });
-        return new HttpProxyResponse(
+        return new HttpResponse(
           response.status,
-          HttpProxyHeaders.fromAxios(response.headers).proxy(),
+          HttpHeaders.fromAxios(response.headers).proxy(),
           response.headers['set-cookie']
             ? Array.isArray(response.headers['set-cookie'])
               ? response.headers['set-cookie']
@@ -173,28 +90,67 @@ export abstract class HttpProxy<P extends Pipeline> extends Proxy<P, HttpProxyRe
     );
   }
 
+  @Trace
+  private invokeRowdy(): Observable<HttpResponse> {
+    const response = new HttpResponse(
+      404,
+      HttpHeaders.from({
+        'content-type': 'text/plain; charset=utf-8',
+        'access-control-allow-origin': '*',
+        'access-control-allow-methods': '*',
+        'access-control-allow-headers': '*',
+        'cache-control': 'no-cache',
+        pragma: 'no-cache',
+        expires: '0',
+      }).proxy(),
+      [],
+      Readable.from('')
+    );
+
+    if (this.uri.host === 'routes') {
+      const { routes } = this.pipeline;
+      return of(
+        response
+          .withStatus(200)
+          .withHeader('content-type', 'application/json; charset=utf-8')
+          .withData(Readable.from(JSON.stringify(routes)))
+      );
+    }
+
+    if (this.uri.host === 'ping') {
+      return of(response.withStatus(200).withData(Readable.from('pong')));
+    }
+
+    if (this.uri.host === 'ready') {
+      return of(response.withStatus(200).withData(Readable.from('ok')));
+    }
+
+    if (this.uri.host === 'health') {
+      // TODO: check accessibility of routes
+      return of(
+        response
+          .withStatus(200)
+          .withHeader('content-type', 'application/json; charset=utf-8')
+          .withData(Readable.from(JSON.stringify({ routes: {}, healthy: true, now: new Date().toISOString() })))
+      );
+    }
+
+    if (this.uri.host === 'http' && Number.isInteger(this.uri.port)) {
+      return of(response.withStatus(Number(this.uri.port)));
+    }
+
+    return of(response);
+  }
+
+  @Trace
+  override invoke(): Observable<HttpResponse> {
+    if (this.uri.protocol === 'rowdy:') {
+      return this.invokeRowdy();
+    }
+    return this.invokeHttp();
+  }
+
   override repr(): string {
     return `HttpProxy(method=${this.method}, url=${Logger.asPrimitive(this.uri)}, headers=${Logger.asPrimitive(this.headers)}, body=[${this.body.length} bytes])`;
-  }
-}
-
-export class HttpProxyResponse implements ILoggable {
-  constructor(
-    public readonly statusCode: number,
-    public readonly headers: HttpProxyHeaders,
-    public readonly cookies: string[],
-    public readonly data: Readable
-  ) {}
-
-  prelude(): { statusCode?: number; headers?: Record<string, unknown>; cookies?: string[] } {
-    return {
-      statusCode: this.statusCode,
-      headers: this.headers.intoJSON(),
-      cookies: this.cookies,
-    };
-  }
-
-  repr(): string {
-    return `HttpProxyResponse(statusCode=${Logger.asPrimitive(this.statusCode)}, headers=${Logger.asPrimitive(this.headers)}, cookies=${Logger.asPrimitive(this.cookies)} data=[stream])`;
   }
 }

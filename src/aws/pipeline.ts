@@ -4,9 +4,10 @@ import { Environment } from '../environment';
 import axios from 'axios';
 import { log, Trace } from '../log';
 import { APIGatewayProxyEventV2 } from 'aws-lambda';
-import { HttpProxy, HttpProxyHeaders, HttpProxyResponse } from '../proxy/http';
+import { HttpProxy } from '../proxy/http';
 import { ShellResponse } from '../proxy/shell';
 import { PassThrough } from 'stream';
+import { HttpHeaders, HttpResponse } from '../proxy';
 
 type FunctionUrlEvent = APIGatewayProxyEventV2;
 
@@ -69,12 +70,12 @@ export class LambdaRequest extends Request<LambdaPipeline> {
   }
 
   @Trace
-  override into(): Observable<Proxy<LambdaPipeline, HttpProxyResponse | ShellResponse>> {
+  override into(): Observable<Proxy<LambdaPipeline, HttpResponse | ShellResponse>> {
     return race([this.intoHttp(), this.intoShell()]);
   }
 
   @Trace
-  protected intoHttp(): Observable<Proxy<LambdaPipeline, HttpProxyResponse>> {
+  protected intoHttp(): Observable<Proxy<LambdaPipeline, HttpResponse>> {
     try {
       const data = JSON.parse(this.data);
 
@@ -96,7 +97,7 @@ export class LambdaRequest extends Request<LambdaPipeline> {
             this.pipeline,
             method,
             url,
-            HttpProxyHeaders.fromLambda(headers),
+            HttpHeaders.fromLambda(headers),
             isBase64Encoded ? Buffer.from(body || '', 'base64') : Buffer.from(body || '')
           )
         );

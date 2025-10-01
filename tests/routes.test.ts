@@ -1,6 +1,14 @@
 import { Routes, URI } from '@src';
 
 describe('routes', () => {
+  describe('default', () => {
+    it('should handle default', () => {
+      const routes = new Routes().withDefault('');
+      expect(routes.rules).toHaveLength(1);
+      expect(routes.intoURI('')!.toString()).toBe('rowdy://routes/');
+    });
+  });
+
   describe('path chaining', () => {
     const data = new Routes()
       .withPath('/github', 'https://www.githubstatus.com/api/v2/status.json')
