@@ -16,6 +16,7 @@ WORKDIR /work
 COPY --from=full /work /work
 ENV PKG_CACHE_PATH=/usr/local/share/.cache/pkg
 RUN --mount=type=cache,target=/usr/local/share/.cache \
+    yarn && \
     yarn build:exe --target node22-linuxstatic-x64,node22-linuxstatic-arm64
 
 FROM node:22-alpine AS arch
