@@ -85,6 +85,11 @@ export class URI extends URL implements ILoggable {
   }
 }
 
+export type Health = Array<{
+  match?: RouteRuleMatch;
+  backends?: Array<{ origin: string; healthy: boolean }>;
+}>;
+
 export class Routes implements IRoutes, ILoggable {
   readonly version: RoutesVersion = 'v1alpaha1';
   readonly rules: Array<RouteRule> = [];
@@ -96,7 +101,7 @@ export class Routes implements IRoutes, ILoggable {
 
   withDefault(target: string): this {
     if (!target || target.trim() === '') {
-      target = 'rowdy://routes/';
+      target = 'rowdy://health/';
     }
     return this.withPath('{/*path}', `${target}*path`);
   }
@@ -234,6 +239,31 @@ export class Routes implements IRoutes, ILoggable {
         }, uri),
       undefined
     );
+  }
+
+  async health(): Promise<Health> {
+    return this.rules.reduce<Health>((health, rule) => {
+      const { matches } = rule;
+      if (!matches || matches.length === 0) {
+        return health;
+      }
+
+      const { backendRefs = [] } = rule;
+
+      for (const match of matches) {
+        health.push({
+          match,
+          backends: backendRefs.map(({ uri }) => {
+            const parsed = uri ? URI.from(uri) : undefined;
+            const origin = `${parsed?.protocol}//${parsed?.host}`;
+            const healthy = parsed?.protocol === 'rowdy:' ? true : false; // TODO: check
+            return { origin, healthy };
+          }),
+        });
+      }
+
+      return health;
+    }, []);
   }
 
   repr(): string {

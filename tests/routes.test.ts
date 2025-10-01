@@ -5,7 +5,7 @@ describe('routes', () => {
     it('should handle default', () => {
       const routes = new Routes().withDefault('');
       expect(routes.rules).toHaveLength(1);
-      expect(routes.intoURI('')!.toString()).toBe('rowdy://routes/');
+      expect(routes.intoURI('')!.toString()).toBe('rowdy://health/');
     });
   });
 

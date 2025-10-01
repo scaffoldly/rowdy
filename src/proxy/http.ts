@@ -113,7 +113,7 @@ export abstract class HttpProxy<P extends Pipeline> extends Proxy<P, HttpRespons
         response
           .withStatus(200)
           .withHeader('content-type', 'application/json; charset=utf-8')
-          .withData(Readable.from(JSON.stringify(routes)))
+          .withData(Readable.from(JSON.stringify(routes, null, 2)))
       );
     }
 
@@ -126,12 +126,19 @@ export abstract class HttpProxy<P extends Pipeline> extends Proxy<P, HttpRespons
     }
 
     if (this.uri.host === 'health') {
-      // TODO: check accessibility of routes
-      return of(
-        response
-          .withStatus(200)
-          .withHeader('content-type', 'application/json; charset=utf-8')
-          .withData(Readable.from(JSON.stringify({ routes: {}, healthy: true, now: new Date().toISOString() })))
+      return from(this.pipeline.routes.health()).pipe(
+        map((routes) => {
+          const healthy: boolean = routes.every((route) => (route.backends || []).every((b) => b.healthy === true));
+          const health = {
+            routes,
+            healthy,
+            now: new Date().toISOString(),
+          };
+          return response
+            .withStatus(200)
+            .withHeader('content-type', 'application/json; charset=utf-8')
+            .withData(Readable.from(JSON.stringify(health, null, 2)));
+        })
       );
     }
 

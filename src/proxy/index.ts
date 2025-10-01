@@ -90,26 +90,9 @@ export class HttpHeaders implements ILoggable {
     return this.intoAxios().toJSON();
   }
 
-  append(key: string, value: string | string[]): this {
-    const k = key.toLowerCase();
-    if (this.headers[k]) {
-      if (Array.isArray(this.headers[k])) {
-        if (Array.isArray(value)) {
-          this.headers[k].push(...value);
-        } else {
-          this.headers[k].push(value);
-        }
-      } else {
-        this.headers[k] = [this.headers[k] as string];
-        if (Array.isArray(value)) {
-          this.headers[k].push(...value);
-        } else {
-          this.headers[k].push(value);
-        }
-      }
-    } else {
-      this.headers[k] = value;
-    }
+  override(key: string, value: string | string[]): this {
+    key = key.toLowerCase();
+    this.headers[key] = value;
     return this;
   }
 
@@ -160,8 +143,8 @@ export class HttpResponse implements ILoggable {
     return this;
   }
 
-  withHeader(key: string, value: string | string[]): this {
-    this._headers.append(key, value);
+  withHeader(key: string, value: string): this {
+    this._headers.override(key, value);
     return this;
   }
 
