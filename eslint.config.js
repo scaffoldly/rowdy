@@ -52,6 +52,21 @@ module.exports = [
       '@typescript-eslint/no-require-imports': 'off',
       'no-console': 'warn',
       'no-case-declarations': 'off',
+      'no-restricted-globals': [
+        'error',
+        {
+          name: 'URL',
+          message: 'Use URI class in routes.ts instead of Node.js URL interface',
+        },
+      ],
+      '@typescript-eslint/no-restricted-types': [
+        'error',
+        {
+          types: {
+            URL: 'Use URI class in routes.ts instead of Node.js URL interface',
+          },
+        },
+      ],
       'prettier/prettier': 'error',
     },
   },
@@ -84,6 +99,21 @@ module.exports = [
       '@typescript-eslint/no-require-imports': 'off',
       'no-console': 'off',
       'no-case-declarations': 'off',
+      'no-restricted-globals': [
+        'error',
+        {
+          name: 'URL',
+          message: 'Use URI class in routes.ts instead of Node.js URL interface',
+        },
+      ],
+      '@typescript-eslint/no-restricted-types': [
+        'error',
+        {
+          types: {
+            URL: 'Use URI class in routes.ts instead of Node.js URL interface',
+          },
+        },
+      ],
       'prettier/prettier': 'error',
     },
   },

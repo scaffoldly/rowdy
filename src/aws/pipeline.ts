@@ -82,7 +82,7 @@ export class LambdaRequest extends Request<LambdaPipeline> {
         const { body, headers, requestContext, isBase64Encoded, rawPath, rawQueryString } = data;
         const { method } = requestContext.http;
 
-        const url = this.pipeline.routes.intoURL(rawPath);
+        const url = this.pipeline.routes.intoURI(rawPath);
         if (!url) {
           throw new Error('No matching route');
         }

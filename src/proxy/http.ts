@@ -5,6 +5,7 @@ import { ILoggable, log, Logger, Trace } from '../log';
 import axios, { AxiosHeaders, AxiosResponseHeaders, isAxiosError } from 'axios';
 import { Agent } from 'https';
 import { APIGatewayProxyEventV2 } from 'aws-lambda';
+import { URI } from '../routes';
 
 export type Prelude = { statusCode: number; headers: Headers; cookies: string[] };
 
@@ -92,26 +93,18 @@ export class HttpProxyHeaders implements ILoggable {
 }
 
 export abstract class HttpProxy<P extends Pipeline> extends Proxy<P, HttpProxyResponse> {
-  public readonly url: URL;
-  private insecure: boolean = false;
-
   constructor(
     pipeline: P,
     public readonly method: string,
-    url: URL,
+    public readonly uri: URI,
     public readonly headers: HttpProxyHeaders,
     public readonly body: Buffer
   ) {
     super(pipeline);
-    this.url = url;
-    if (this.url.protocol.startsWith('insecure+')) {
-      this.insecure = true;
-      this.url.protocol = this.url.protocol.replace('insecure+', '');
-    }
   }
 
   get httpsAgent(): Agent | undefined {
-    if (this.insecure) {
+    if (this.uri.insecure) {
       return new Agent({
         checkServerIdentity: () => undefined,
         rejectUnauthorized: false,
@@ -127,7 +120,7 @@ export abstract class HttpProxy<P extends Pipeline> extends Proxy<P, HttpProxyRe
         .request<Readable>({
           responseType: 'stream',
           method: this.method,
-          url: this.url.toString(),
+          url: this.uri.toString(),
           headers: this.headers.proxy().intoAxios(),
           data: this.body,
           httpsAgent: this.httpsAgent,
@@ -181,7 +174,7 @@ export abstract class HttpProxy<P extends Pipeline> extends Proxy<P, HttpProxyRe
   }
 
   override repr(): string {
-    return `HttpProxy(method=${this.method}, url=${this.url.toString()}, headers=${Logger.asPrimitive(this.headers)}, body=[${this.body.length} bytes])`;
+    return `HttpProxy(method=${this.method}, url=${Logger.asPrimitive(this.uri)}, headers=${Logger.asPrimitive(this.headers)}, body=[${this.body.length} bytes])`;
   }
 }
 

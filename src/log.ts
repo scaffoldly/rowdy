@@ -1,4 +1,3 @@
-import { Routes } from './routes';
 import { isObservable, Observable, tap } from 'rxjs';
 
 export interface ILoggable {
@@ -7,7 +6,7 @@ export interface ILoggable {
 
 type Primitive = string | number | boolean | undefined | null | Error;
 
-export type Loggable = Error | AbortSignal | URL | Buffer | Primitive | Array<Primitive> | ILoggable | Array<ILoggable>;
+export type Loggable = Error | AbortSignal | Buffer | Primitive | Array<Primitive> | ILoggable | Array<ILoggable>;
 
 const isPrimitive = (v: unknown): v is Primitive =>
   v === null ||
@@ -33,9 +32,7 @@ const isLoggable = (v: unknown): v is Loggable =>
   isILoggable(v) ||
   isArrayOfILoggable(v) ||
   v instanceof AbortSignal ||
-  v instanceof URL ||
-  v instanceof Buffer ||
-  v instanceof Routes;
+  v instanceof Buffer;
 
 export class Logger {
   static asPrimitive(value: Loggable): Primitive {
@@ -66,17 +63,8 @@ export class Logger {
         return `${name}(${value.message})`;
       }
 
-      if (value instanceof URL) {
-        const name = value.constructor?.name || 'URL';
-        return `${name}(${value.toString()})`;
-      }
-
       if (value instanceof Buffer) {
         return `Buffer(len=${value.length})`;
-      }
-
-      if (value instanceof Routes) {
-        return `Routes(version=${value.version}, rules=${value.rules.length})`;
       }
 
       if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') {

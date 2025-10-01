@@ -7,7 +7,6 @@ import { ILoggable, log } from './log';
 export type RouteRuleMatchDetail = {
   type?:
     | 'PathToRegexp' // DEVNOETE: added
-    | 'RegularExpression'
     | 'Exact'
     | 'PathPrefix';
 
@@ -37,6 +36,55 @@ export interface IRoutes {
   readonly rules: Array<RouteRule>;
 }
 
+// eslint-disable-next-line no-restricted-globals
+export class URI extends URL implements ILoggable {
+  private constructor(
+    // eslint-disable-next-line @typescript-eslint/no-restricted-types
+    url: URL,
+    public readonly insecure: boolean = false
+  ) {
+    super(url.toString());
+  }
+
+  static from(uri: string): URI {
+    uri = uri.trim().toLowerCase();
+
+    const insecure = uri.startsWith('insecure+');
+    if (insecure) {
+      uri = uri.replace('insecure+', '');
+    }
+
+    // Normalization
+    if (uri === 'localhost') {
+      uri = 'http://localhost';
+    }
+
+    // eslint-disable-next-line no-restricted-globals
+    let url = new URL(uri);
+
+    if (url.protocol === 'localhost:') {
+      // eslint-disable-next-line no-restricted-globals
+      url = new URL(`http://${uri}`);
+    }
+
+    if (url.protocol === 'http:' && url.port === '443') {
+      url.protocol = 'https:';
+      url.port = '';
+    }
+
+    if (url.protocol === 'aws:') {
+      // eslint-disable-next-line no-restricted-globals
+      url = new URL(`cloud://aws/${uri}`);
+    }
+
+    return new URI(url, insecure);
+  }
+
+  repr(): string {
+    return `URI(${this.toString()})`;
+  }
+}
+
 export class Routes implements IRoutes, ILoggable {
   readonly version: RoutesVersion = 'v1alpaha1';
   readonly rules: Array<RouteRule> = [];
@@ -48,6 +96,15 @@ export class Routes implements IRoutes, ILoggable {
 
   withDefault(target: string): this {
     return this.withPath('{/*path}', `${target}*path`);
+  }
+
+  withPaths(paths: { [key: string]: string | undefined }): this {
+    Object.entries(paths).forEach(([path, target]) => {
+      if (target) {
+        this.withPath(path, target);
+      }
+    });
+    return this;
   }
 
   withPath(path: string, target: string): this {
@@ -119,10 +176,10 @@ export class Routes implements IRoutes, ILoggable {
     return `data:${mimeType};base64,${base64}`;
   }
 
-  intoURL(path: string): URL | undefined {
-    const url = this.rules.reduce<URL | undefined>(
-      (url, rule) =>
-        rule.matches?.reduce<URL | undefined>((matched, match) => {
+  intoURI(path: string): URI | undefined {
+    return this.rules.reduce<URI | undefined>(
+      (uri, rule) =>
+        rule.matches?.reduce<URI | undefined>((matched, match) => {
           if (matched) {
             return matched;
           }
@@ -136,20 +193,13 @@ export class Routes implements IRoutes, ILoggable {
 
           try {
             if (!matched && type === 'Exact' && pattern === path) {
-              matched = new URL(uri);
+              matched = URI.from(uri);
               matched.pathname = path;
             }
 
             if (!matched && type === 'PathPrefix' && path.startsWith(pattern)) {
-              matched = new URL(uri);
+              matched = URI.from(uri);
               matched.pathname = path;
-            }
-
-            if (!matched && type === 'RegularExpression') {
-              const regex = new RegExp(pattern);
-              if (regex.test(path)) {
-                matched = new URL(uri.replace(regex, pattern));
-              }
             }
 
             if (!matched && type === 'PathToRegexp') {
@@ -165,8 +215,8 @@ export class Routes implements IRoutes, ILoggable {
                 match.params[wildcard] = [''];
               }
 
-              const compiled = pathCompile(new URL(uri).pathname)(match.params);
-              matched = new URL(uri);
+              const compiled = pathCompile(URI.from(uri).pathname)(match.params);
+              matched = URI.from(uri);
               matched.pathname = compiled;
             }
 
@@ -178,11 +228,9 @@ export class Routes implements IRoutes, ILoggable {
           }
 
           return matched;
-        }, url),
+        }, uri),
       undefined
     );
-
-    return url;
   }
 
   repr(): string {

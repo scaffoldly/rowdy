@@ -19,4 +19,4 @@ if (require.main === module) {
   main().catch(error);
 }
 
-export { Routes } from './routes';
+export { Routes, URI } from './routes';
