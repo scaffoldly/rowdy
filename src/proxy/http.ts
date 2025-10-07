@@ -127,11 +127,10 @@ export abstract class HttpProxy<P extends Pipeline> extends Proxy<P, HttpRespons
 
     if (this.uri.host === 'health') {
       return from(this.pipeline.routes.health()).pipe(
-        map((routes) => {
-          const healthy: boolean = routes.every((route) => (route.backends || []).every((b) => b.healthy === true));
+        map((backends) => {
           const health = {
-            routes,
-            healthy,
+            backends,
+            healthy: Object.values(backends).every((b) => b.healthy),
             now: new Date().toISOString(),
           };
           return response

@@ -10,6 +10,8 @@ export class Environment {
   public readonly abort = new AbortController();
   public readonly signal: AbortSignal = this.abort.signal;
 
+  constructor() {}
+
   private _routes: Routes = Routes.fromDataURL(); // TODO: make fromEnvironment
   private _env = process.env;
 

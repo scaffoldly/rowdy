@@ -2,6 +2,7 @@ import parseDataURL from 'data-urls';
 import { match as pathMatch, compile as pathCompile, pathToRegexp } from 'path-to-regexp';
 import { decode, labelToName } from 'whatwg-encoding';
 import { ILoggable, log } from './log';
+import { CheckResult, httpCheck, httpsCheck } from './util/http';
 
 // Largely inspired by HTTPRoute in gateway.networking.k8s.io/v1
 export type RouteRuleMatchDetail = {
@@ -35,6 +36,8 @@ export interface IRoutes {
   readonly version: RoutesVersion;
   readonly rules: Array<RouteRule>;
 }
+
+export type URIHealth = { healthy: boolean; latency: CheckResult };
 
 // eslint-disable-next-line no-restricted-globals
 export class URI extends URL implements ILoggable {
@@ -80,19 +83,76 @@ export class URI extends URL implements ILoggable {
     return new URI(url, insecure);
   }
 
+  async health(): Promise<URIHealth> {
+    const health: URIHealth = { healthy: false, latency: 'unknown' };
+
+    if (this.protocol === 'rowdy:') {
+      health.latency = '0.00ms';
+    }
+
+    if (this.protocol === 'cloud:') {
+      health.healthy = true;
+    }
+
+    if (this.protocol === 'http:') {
+      health.latency = await httpCheck(this.origin);
+    }
+
+    if (this.protocol === 'https:') {
+      health.latency = await httpsCheck(this.origin);
+    }
+
+    health.healthy = health.healthy || (health.latency !== 'error' && health.latency !== 'timeout');
+    return health;
+  }
+
   repr(): string {
     return `URI(${this.toString()})`;
   }
 }
 
-export type Health = Array<{
-  match?: RouteRuleMatch;
-  backends?: Array<{ origin: string; healthy: boolean }>;
-}>;
+export type Health = { [origin: string]: URIHealth };
 
 export class Routes implements IRoutes, ILoggable {
   readonly version: RoutesVersion = 'v1alpaha1';
   readonly rules: Array<RouteRule> = [];
+
+  static fromDataURL(dataUrl?: string): Routes {
+    try {
+      if (!dataUrl && !process.env.SLY_ROUTES) {
+        return new Routes();
+      }
+
+      if (!dataUrl) {
+        return Routes.fromDataURL(process.env.SLY_ROUTES);
+      }
+
+      const data = parseDataURL(dataUrl);
+      if (!data) {
+        throw new Error('Invalid data URL');
+      }
+
+      const encoding = labelToName(data.mimeType.parameters.get('charset') || 'utf-8');
+      if (!encoding) {
+        throw new Error(`Invalid encoding: ${data.mimeType.parameters.get('charset')}`);
+      }
+
+      const decoded = decode(data.body, encoding);
+      if (data.mimeType.essence === 'application/json') {
+        const routes: IRoutes = JSON.parse(decoded);
+        if (routes.version !== 'v1alpaha1') {
+          throw new Error(`Unsupported routes version: ${routes.version}`);
+        }
+
+        return new Routes().withRules(routes.rules);
+      }
+
+      throw new Error(`Invalid MIME type ${data.mimeType.essence}`);
+    } catch (e) {
+      log.warn(`Failed to load routes: ${e instanceof Error ? e.message : String(e)}`);
+      return new Routes();
+    }
+  }
 
   withRules(rules: Array<RouteRule>): this {
     this.rules.push(...rules);
@@ -137,43 +197,6 @@ export class Routes implements IRoutes, ILoggable {
 
     this.rules[ix]?.backendRefs?.push(target);
     return this;
-  }
-
-  static fromDataURL(dataUrl?: string): Routes {
-    try {
-      if (!dataUrl && !process.env.SLY_ROUTES) {
-        return new Routes();
-      }
-
-      if (!dataUrl) {
-        return Routes.fromDataURL(process.env.SLY_ROUTES);
-      }
-
-      const data = parseDataURL(dataUrl);
-      if (!data) {
-        throw new Error('Invalid data URL');
-      }
-
-      const encoding = labelToName(data.mimeType.parameters.get('charset') || 'utf-8');
-      if (!encoding) {
-        throw new Error(`Invalid encoding: ${data.mimeType.parameters.get('charset')}`);
-      }
-
-      const decoded = decode(data.body, encoding);
-      if (data.mimeType.essence === 'application/json') {
-        const routes: IRoutes = JSON.parse(decoded);
-        if (routes.version !== 'v1alpaha1') {
-          throw new Error(`Unsupported routes version: ${routes.version}`);
-        }
-
-        return new Routes().withRules(routes.rules);
-      }
-
-      throw new Error(`Invalid MIME type ${data.mimeType.essence}`);
-    } catch (e) {
-      log.warn(`Failed to load routes: ${e instanceof Error ? e.message : String(e)}`);
-      return new Routes();
-    }
   }
 
   intoDataURL(): string {
@@ -242,28 +265,20 @@ export class Routes implements IRoutes, ILoggable {
   }
 
   async health(): Promise<Health> {
-    return this.rules.reduce<Health>((health, rule) => {
-      const { matches } = rule;
-      if (!matches || matches.length === 0) {
-        return health;
-      }
-
-      const { backendRefs = [] } = rule;
-
-      for (const match of matches) {
-        health.push({
-          match,
-          backends: backendRefs.map(({ uri }) => {
-            const parsed = uri ? URI.from(uri) : undefined;
-            const origin = `${parsed?.protocol}//${parsed?.host}`;
-            const healthy = parsed?.protocol === 'rowdy:' ? true : false; // TODO: check
-            return { origin, healthy };
-          }),
-        });
-      }
-
-      return health;
-    }, []);
+    return await this.rules
+      .flatMap((rule) => rule.backendRefs ?? [])
+      .map((ref) => ref.uri)
+      .filter((uri): uri is string => !!uri)
+      .map((uri) => URI.from(uri))
+      .reduce(
+        async (healthP, uri) => {
+          const health = await healthP;
+          const origin = uri.origin !== 'null' ? uri.origin : `${uri.protocol}//${uri.host}`;
+          health[origin] = await uri.health();
+          return health;
+        },
+        Promise.resolve({} as Health)
+      );
   }
 
   repr(): string {
