@@ -8,6 +8,7 @@ import { LambdaPipeline } from './aws/pipeline';
 import packageJson from '../package.json';
 import path from 'path';
 import { HeartbeatPipeline } from './heartbeat';
+import { isatty } from 'tty';
 
 export type Secrets = Record<string, string>;
 
@@ -47,7 +48,10 @@ export class Environment implements ILoggable {
     this._routes = Routes.fromURL(args.routes);
 
     log.debug('Environment', { environment: this });
-    log.info('\nStarted. Press Ctrl+C to exit.\n');
+    log.info(`\n${packageJson.name}@${packageJson.version} has started.`);
+    if (isatty(process.stdout.fd)) {
+      log.info('\nPress Ctrl+C to exit.');
+    }
   }
 
   get routes(): Routes {
