@@ -68,9 +68,9 @@ export class Environment implements ILoggable {
       takeUntil(fromEvent(this.signal, 'abort')),
       tap((request) => log.info('Requesting', { request })),
       mergeMap((request) => request.into()),
-      tap((proxy) => log.info('Proxying', { proxy })),
+      tap((proxy) => log.debug('Proxying', { proxy })),
       mergeMap((proxy) => proxy.into()),
-      tap((response) => log.info('Responding', { response })),
+      tap((response) => log.debug('Responding', { response })),
       mergeMap((response) => response.into()),
       tap((result) => log.info('Result', { result })),
       repeat()

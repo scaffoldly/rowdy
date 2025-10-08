@@ -31,4 +31,4 @@ FROM alpine:latest
 COPY --from=arch /work/app /usr/local/bin/rowdy
 COPY ./routes.yaml ./routes.yaml
 ENTRYPOINT [ "/usr/local/bin/rowdy" ]
-CMD [ "--debug", "--trace" ]
+CMD []

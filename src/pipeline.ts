@@ -4,12 +4,9 @@ import { Environment } from './environment';
 import { Routes } from './routes';
 
 export abstract class Pipeline implements ILoggable {
-  private _last?: Request<Pipeline>;
+  private _createdAt = performance.now();
 
-  constructor(protected readonly environment: Environment) {
-    const subscription = this.into().subscribe((last) => (this._last = last));
-    this.signal.addEventListener('abort', () => subscription.unsubscribe());
-  }
+  constructor(protected readonly environment: Environment) {}
 
   get signal(): AbortSignal {
     return this.environment.signal;
@@ -20,7 +17,7 @@ export abstract class Pipeline implements ILoggable {
   }
 
   get createdAt(): number {
-    return this._last?.createdAt || performance.now();
+    return this._createdAt;
   }
 
   abstract into(): Observable<Request<Pipeline>>;
@@ -81,11 +78,11 @@ export class Result<P extends Pipeline> implements ILoggable {
     public readonly bytes: number
   ) {}
 
-  get duration(): number {
-    return this.createdAt - this.pipeline.createdAt;
+  get uptime(): number {
+    return performance.now() - this.pipeline.createdAt;
   }
 
   repr(): string {
-    return `Result(success=${this.success}, bytes=${this.bytes}, duration=${this.duration.toFixed(2)}ms)`;
+    return `Result(success=${this.success}, bytes=${this.bytes}, uptime=${this.uptime.toFixed(2)}ms, duration=TODOms)`;
   }
 }

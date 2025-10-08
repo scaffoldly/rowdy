@@ -156,7 +156,7 @@ export class LambdaResponse extends Response<LambdaPipeline> {
 
     const subscription = this.subscribe({
       next: (chunk) => {
-        log.debug(`LambdaResponse Chunk`, { bytes: chunk.bytes, data: Buffer.from(chunk.data).toString('hex') });
+        log.debug(`LambdaResponse Chunk`, { responseBytes: chunk.bytes, length: chunk.data.length });
         this.bytes += chunk.bytes;
         if (!chunk.data.length) {
           return;
@@ -165,7 +165,7 @@ export class LambdaResponse extends Response<LambdaPipeline> {
         data.write(chunk.data);
       },
       complete: () => {
-        log.debug(`LambdaResponse Complete`, { chunks: this.chunks, bytes: this.bytes });
+        log.debug(`LambdaResponse Complete`, { chunks: this.chunks, responseBytes: this.bytes });
         if (!this.bytes) data.write('\r\n\r\n'); // empty body
         data.end();
       },
