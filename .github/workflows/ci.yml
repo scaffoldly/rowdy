@@ -85,12 +85,19 @@ jobs:
           cache: 'yarn'
           registry-url: 'https://registry.npmjs.org'
 
+      - name: Login to DockerHub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ github.repository_owner }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
       - name: Login to GitHub Container Registry
         uses: docker/login-action@v3
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
+
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
 
@@ -121,6 +128,7 @@ jobs:
         with:
           images: |
             ghcr.io/${{ github.repository }}
+            ${{ github.repository}}
           tags: |
             type=raw,value=${{ steps.version.outputs.version }}
             type=raw,value=beta
