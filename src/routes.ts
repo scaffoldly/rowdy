@@ -153,7 +153,7 @@ export class Routes implements IRoutes, ILoggable {
 
     log.warn(`Unsupported Routes URL, defaulting to empty routes`, { url });
 
-    return new Routes();
+    return Routes.default();
   }
 
   static fromPath(path: string): Routes {
@@ -174,7 +174,9 @@ export class Routes implements IRoutes, ILoggable {
           throw new Error(`Unsupported routes kind: ${routes.kind}`);
         }
 
-        return new Routes().withPaths(routes.spec?.paths || {}).withDefault(routes.spec?.default || '');
+        return Routes.empty()
+          .withPaths(routes.spec?.paths || {})
+          .withDefault(routes.spec?.default || '');
       }
 
       if (path.endsWith('.yaml') || path.endsWith('.yml')) {
@@ -189,15 +191,21 @@ export class Routes implements IRoutes, ILoggable {
           throw new Error(`Unsupported routes kind: ${routes.kind}`);
         }
 
-        return new Routes().withPaths(routes.spec?.paths || {}).withDefault(routes.spec?.default || '');
+        return Routes.empty()
+          .withPaths(routes.spec?.paths || {})
+          .withDefault(routes.spec?.default || '');
       }
 
       throw new Error(`Unsupported routes file type: ${path}`);
     } catch (e) {
-      log.warn(`Failed to load routes from path: ${e instanceof Error ? e.message : String(e)}`, { path });
+      log.warn(
+        `Failed to load routes from path: ${e instanceof Error ? e.message : String(e)}. Using default routes.`,
+        {
+          path,
+        }
+      );
+      return Routes.default();
     }
-
-    return new Routes();
   }
 
   static fromDataURL(dataUrl: string): Routes {
@@ -228,8 +236,10 @@ export class Routes implements IRoutes, ILoggable {
 
       throw new Error(`Invalid MIME type ${data.mimeType.essence}`);
     } catch (e) {
-      log.warn(`Failed to load routes: ${e instanceof Error ? e.message : String(e)}`);
-      return new Routes();
+      log.warn(`Failed to load routes: ${e instanceof Error ? e.message : String(e)}. Using default routes.`, {
+        dataUrl,
+      });
+      return Routes.default();
     }
   }
 

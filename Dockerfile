@@ -29,6 +29,5 @@ RUN ARCH=$(node -e "console.log(process.arch)") && \
 
 FROM alpine:latest
 COPY --from=arch /work/app /usr/local/bin/rowdy
-COPY ./routes.yaml ./routes.yaml
 ENTRYPOINT [ "/usr/local/bin/rowdy" ]
-CMD []
+
