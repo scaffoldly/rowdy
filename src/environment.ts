@@ -1,7 +1,7 @@
 import yargs from 'yargs';
 import { hideBin } from 'yargs/helpers';
 import { fromEvent, mergeMap, Observable, race, repeat, takeUntil, tap } from 'rxjs';
-import { Routes, IRoutes } from './routes';
+import { Routes } from './routes';
 import { ILoggable, log, Logger, Trace } from './log';
 import { Pipeline, Result } from './pipeline';
 import { LambdaPipeline } from './aws/pipeline';
@@ -21,10 +21,6 @@ export class Environment implements ILoggable {
     private abort: AbortController,
     private log: Logger
   ) {
-    this.abort.signal.addEventListener('abort', () => {
-      this.log.info('Aborted', { reason: this.signal.reason });
-    });
-
     const args = yargs(hideBin(process.argv))
       .option('debug', { type: 'boolean', default: false, description: 'Enable debug logging' })
       .option('trace', { type: 'boolean', default: false, description: 'Enable tracing' })
@@ -79,20 +75,6 @@ export class Environment implements ILoggable {
       tap((result) => log.info('Result', { result })),
       repeat()
     );
-  }
-
-  protected withRoutes(routes?: IRoutes | string): this {
-    if (!routes) {
-      return this;
-    }
-
-    if (typeof routes === 'string') {
-      this._routes = Routes.fromDataURL(routes);
-      return this;
-    }
-
-    this._routes.withRules(routes.rules);
-    return this;
   }
 
   protected withSecrets(secrets: Secrets): this {

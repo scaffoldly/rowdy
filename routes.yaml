@@ -1,15 +1,7 @@
 ---
-version: 'v1alpha1'
-rules:
-  - matches:
-      path:
-        value: '/'
-        type: 'Exact'
-    backendRefs:
-      - uri: 'rowdy://health'
-  - matches:
-      path:
-        value: '/github'
-        type: 'Exact'
-    backendRefs:
-      - uri: 'https://www.githubstatus.com/api/v2/status.json'
+apiVersion: rowdy.run/v1alpha1
+kind: Routes
+spec:
+  default: 'rowdy://health/'
+  paths:
+    '/github': 'https://www.githubstatus.com/api/v2/status.json'

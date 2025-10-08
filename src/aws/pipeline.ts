@@ -112,6 +112,7 @@ export class LambdaRequest extends Request<LambdaPipeline> {
     } catch (error) {
       log.debug(`Not an HTTP Event: ${error instanceof Error ? error.message : String(error)}`, {
         data: this.data,
+        stack: error instanceof Error ? error.stack : undefined,
       });
     }
 

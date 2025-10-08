@@ -6,6 +6,20 @@ import { CheckResult, httpCheck, httpsCheck } from './util/http';
 import { readFileSync } from 'fs';
 import * as YAML from 'yaml';
 
+export type RoutesApiVersion = 'rowdy.run/v1alpha1';
+export type RoutesKind = 'Routes';
+export type RoutePaths = { [key: string]: string | undefined };
+
+export type RoutesSchema = {
+  apiVersion: RoutesApiVersion;
+  kind: RoutesKind;
+  spec?: {
+    paths?: RoutePaths;
+    default?: string;
+  };
+  // TODO: support rules directly and merge with paths/default
+};
+
 // Largely inspired by HTTPRoute in gateway.networking.k8s.io/v1
 export type RouteRuleMatchDetail = {
   type?:
@@ -32,10 +46,8 @@ export type RouteRule = {
   backendRefs?: Array<RouteRuleBackendRef>;
 };
 
-export type RoutesVersion = 'v1alpha1';
-
 export interface IRoutes {
-  readonly version: RoutesVersion;
+  readonly version: RoutesApiVersion;
   readonly rules: Array<RouteRule>;
 }
 
@@ -116,7 +128,7 @@ export class URI extends URL implements ILoggable {
 export type Health = { [origin: string]: URIHealth };
 
 export class Routes implements IRoutes, ILoggable {
-  readonly version: RoutesVersion = 'v1alpha1';
+  readonly version: RoutesApiVersion = 'rowdy.run/v1alpha1';
   readonly rules: Array<RouteRule> = [];
 
   static fromURL(url: string): Routes {
@@ -135,22 +147,39 @@ export class Routes implements IRoutes, ILoggable {
   }
 
   static fromPath(path: string): Routes {
+    log.debug(`Loading routes from path`, { path });
     try {
       const content = readFileSync(path, 'utf-8');
+      log.debug(`Loaded routes from path`, { path, content });
+
       if (path.endsWith('.json')) {
-        const routes: Partial<IRoutes> = JSON.parse(content);
-        if (routes.version !== 'v1alpha1') {
-          throw new Error(`Unsupported routes version: ${routes.version}`);
+        const routes: Partial<RoutesSchema> = JSON.parse(content);
+        log.debug(`Parsed routes from JSON`, { path, routes: JSON.stringify(routes) });
+
+        if (routes.apiVersion !== 'rowdy.run/v1alpha1') {
+          throw new Error(`Unsupported routes version: ${routes.apiVersion}`);
         }
-        return new Routes().withRules(routes.rules || []);
+
+        if (routes.kind !== 'Routes') {
+          throw new Error(`Unsupported routes kind: ${routes.kind}`);
+        }
+
+        return new Routes().withPaths(routes.spec?.paths || {}).withDefault(routes.spec?.default || '');
       }
 
       if (path.endsWith('.yaml') || path.endsWith('.yml')) {
-        const routes: Partial<IRoutes> = YAML.parse(content);
-        if (routes.version !== 'v1alpha1') {
-          throw new Error(`Unsupported routes version: ${routes.version}`);
+        const routes: Partial<RoutesSchema> = YAML.parse(content);
+        log.debug(`Parsed routes from YAML`, { path, routes: JSON.stringify(routes) });
+
+        if (routes.apiVersion !== 'rowdy.run/v1alpha1') {
+          throw new Error(`Unsupported routes version: ${routes.apiVersion}`);
         }
-        return new Routes().withRules(routes.rules || []);
+
+        if (routes.kind !== 'Routes') {
+          throw new Error(`Unsupported routes kind: ${routes.kind}`);
+        }
+
+        return new Routes().withPaths(routes.spec?.paths || {}).withDefault(routes.spec?.default || '');
       }
 
       throw new Error(`Unsupported routes file type: ${path}`);
@@ -175,12 +204,16 @@ export class Routes implements IRoutes, ILoggable {
 
       const decoded = decode(data.body, encoding);
       if (data.mimeType.essence === 'application/json') {
-        const routes: IRoutes = JSON.parse(decoded);
-        if (routes.version !== 'v1alpha1') {
-          throw new Error(`Unsupported routes version: ${routes.version}`);
+        const routes: RoutesSchema = JSON.parse(decoded);
+        if (routes.apiVersion !== 'rowdy.run/v1alpha1') {
+          throw new Error(`Unsupported routes version: ${routes.apiVersion}`);
         }
 
-        return new Routes().withRules(routes.rules);
+        if (routes.kind !== 'Routes') {
+          throw new Error(`Unsupported routes kind: ${routes.kind}`);
+        }
+
+        return new Routes().withPaths(routes.spec?.paths || {}).withDefault(routes.spec?.default || '');
       }
 
       throw new Error(`Invalid MIME type ${data.mimeType.essence}`);
@@ -190,11 +223,6 @@ export class Routes implements IRoutes, ILoggable {
     }
   }
 
-  withRules(rules: Array<RouteRule>): this {
-    this.rules.push(...rules);
-    return this;
-  }
-
   withDefault(target: string): this {
     if (!target || target.trim() === '') {
       target = 'rowdy://health/';
@@ -202,7 +230,7 @@ export class Routes implements IRoutes, ILoggable {
     return this.withPath('{/*path}', `${target}*path`);
   }
 
-  withPaths(paths: { [key: string]: string | undefined }): this {
+  withPaths(paths: RoutePaths): this {
     Object.entries(paths).forEach(([path, target]) => {
       if (target) {
         this.withPath(path, target);
@@ -236,11 +264,44 @@ export class Routes implements IRoutes, ILoggable {
   }
 
   intoDataURL(): string {
-    const routes: IRoutes = { version: this.version, rules: this.rules };
+    const routes: RoutesSchema = {
+      apiVersion: this.version,
+      kind: 'Routes',
+      spec: {
+        paths: this.intoPaths(),
+        default: this.intoDefault(),
+      },
+    };
     const mimeType = 'application/json';
     const json = JSON.stringify(routes);
     const base64 = Buffer.from(json, 'utf-8').toString('base64');
     return `data:${mimeType};base64,${base64}`;
+  }
+
+  intoDefault(): string {
+    const def = this.rules.find((rule) => rule.matches?.[0]?.path?.value === '{/*path}');
+    return (def?.backendRefs?.[0]?.uri || '').replace('*path', '');
+  }
+
+  intoPaths(): RoutePaths {
+    return this.rules.reduce<RoutePaths>((paths, rule) => {
+      // filter out the default
+      if (rule.matches?.[0]?.path?.value === '{/*path}') {
+        return paths;
+      }
+
+      const match = rule.matches?.[0];
+      // TODO: support weights
+      // TODO: support mutltiple
+      const target = rule.backendRefs?.[0]?.uri;
+
+      // TODO: support other match types
+      if (match?.path?.type === 'PathToRegexp' && match.path.value && target) {
+        paths[match.path.value] = target;
+      }
+
+      return paths;
+    }, {});
   }
 
   intoURI(path: string): URI | undefined {
