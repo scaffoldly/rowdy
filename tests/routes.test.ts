@@ -3,14 +3,20 @@ import { Routes, URI } from '@src';
 describe('routes', () => {
   describe('default', () => {
     it('should handle default', () => {
-      const routes = new Routes().withDefault('');
-      expect(routes.rules).toHaveLength(1);
-      expect(routes.intoURI('')!.toString()).toBe('rowdy://health/');
+      const routes = Routes.default();
+      expect(routes.rules).toHaveLength(3);
+      expect(routes.intoURI('')!.toString()).toBe('rowdy://http:404/');
+      expect(routes.intoURI('/foo/bar')!.toString()).toBe('rowdy://http:404/foo/bar');
+      expect(routes.intoURI('/foo/bar?q=1')!.toString()).toBe('rowdy://http:404/foo/bar?q=1');
+      expect(routes.intoURI('/_health')!.toString()).toBe('rowdy://health/');
+      expect(routes.intoURI('/_health/baz')!.toString()).toBe('rowdy://http:404/_health/baz');
+      expect(routes.intoURI('/_ping')!.toString()).toBe('rowdy://ping/');
+      expect(routes.intoURI('/_ping/baz')!.toString()).toBe('rowdy://http:404/_ping/baz');
     });
   });
 
   describe('path chaining', () => {
-    const data = new Routes()
+    const data = Routes.empty()
       .withPath('/github', 'https://www.githubstatus.com/api/v2/status.json')
       .withPath('/circleci', 'https://status.circleci.com/api/v2/status.json')
       .withPath('/travisci', 'https://www.traviscistatus.com/api/v2/status.json')
@@ -28,6 +34,14 @@ describe('routes', () => {
       expect(routes.intoURI('/also/unknown')!.toString()).toBe('http://localhost:8080/api/also/unknown');
       expect(routes.intoURI('/')!.toString()).toBe('http://localhost:8080/api/');
       expect(routes.intoURI('')!.toString()).toBe('http://localhost:8080/api/');
+    });
+
+    it('should preserve query and fragment', () => {
+      const routes = Routes.fromDataURL(data);
+      expect(routes.intoURI('/github?foo=bar#baz')!.toString()).toBe(
+        'https://www.githubstatus.com/api/v2/status.json?foo=bar#baz'
+      );
+      expect(routes.intoURI('/unknown?foo=bar#baz')!.toString()).toBe('http://localhost:8080/api/unknown?foo=bar#baz');
     });
   });
 });

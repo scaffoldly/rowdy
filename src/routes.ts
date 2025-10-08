@@ -131,6 +131,16 @@ export class Routes implements IRoutes, ILoggable {
   readonly version: RoutesApiVersion = 'rowdy.run/v1alpha1';
   readonly rules: Array<RouteRule> = [];
 
+  private constructor() {}
+
+  static empty(): Routes {
+    return new Routes();
+  }
+
+  static default(): Routes {
+    return new Routes().withPath('/_health', 'rowdy://health/').withPath('/_ping', 'rowdy://ping/').withDefault('');
+  }
+
   static fromURL(url: string): Routes {
     if (url.startsWith('data:')) {
       return Routes.fromDataURL(url);
@@ -225,7 +235,7 @@ export class Routes implements IRoutes, ILoggable {
 
   withDefault(target: string): this {
     if (!target || target.trim() === '') {
-      target = 'rowdy://health/';
+      target = 'rowdy://http:404/';
     }
     return this.withPath('{/*path}', `${target}*path`);
   }
@@ -305,7 +315,15 @@ export class Routes implements IRoutes, ILoggable {
   }
 
   intoURI(path: string): URI | undefined {
-    return this.rules.reduce<URI | undefined>(
+    const input = URI.from(`no://thing${path}`);
+
+    // normalize path
+    path = input.pathname;
+
+    // preserve search and hash
+    const { search, hash } = input;
+
+    const uri = this.rules.reduce<URI | undefined>(
       (uri, rule) =>
         rule.matches?.reduce<URI | undefined>((matched, match) => {
           if (matched) {
@@ -359,6 +377,14 @@ export class Routes implements IRoutes, ILoggable {
         }, uri),
       undefined
     );
+
+    if (uri) {
+      // restore search and hash
+      uri.search = search;
+      uri.hash = hash;
+    }
+
+    return uri;
   }
 
   async health(): Promise<Health> {

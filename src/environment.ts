@@ -66,11 +66,11 @@ export class Environment implements ILoggable {
       new LambdaPipeline(this).into(),
     ]).pipe(
       takeUntil(fromEvent(this.signal, 'abort')),
-      tap((request) => log.info('Requesting', { request })),
+      tap((request) => log.info('Request', { request })),
       mergeMap((request) => request.into()),
-      tap((proxy) => log.debug('Proxying', { proxy })),
+      tap((proxy) => log.debug('Proxy', { proxy })),
       mergeMap((proxy) => proxy.into()),
-      tap((response) => log.debug('Responding', { response })),
+      tap((response) => log.debug('Respond', { response })),
       mergeMap((response) => response.into()),
       tap((result) => log.info('Result', { result })),
       repeat()

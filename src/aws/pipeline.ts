@@ -100,6 +100,7 @@ export class LambdaRequest extends Request<LambdaPipeline> {
         return of(
           new LambdaHttpProxy(
             this.pipeline,
+            this,
             method,
             url,
             HttpHeaders.fromLambda(headers),
@@ -134,7 +135,7 @@ export class LambdaHttpProxy extends HttpProxy<LambdaPipeline> {
   override into(): Observable<Response<LambdaPipeline>> {
     return this.invoke().pipe(
       map((http) => {
-        const response = new LambdaResponse(this.pipeline);
+        const response = new LambdaResponse(this.pipeline, this.request);
         // Set to 0 bytes as the prelude is not counted
         response.next(new Chunk(JSON.stringify(http.prelude()), 0));
         response.next(new Chunk(Buffer.alloc(8), 0));
@@ -191,7 +192,7 @@ export class LambdaResponse extends Response<LambdaPipeline> {
             },
           }
         )
-        .then(() => new Result(this.pipeline, true, this.bytes))
+        .then(() => new Result(this.pipeline, this.request, true, this.bytes))
         .catch((error) => {
           log.warn(`LambdaResponse.into() Axios Error`, { error, isAxiosError: axios.isAxiosError(error) });
           throw error; // TODO: return result

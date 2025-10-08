@@ -38,7 +38,10 @@ export abstract class Request<P extends Pipeline> implements ILoggable {
 }
 
 export abstract class Proxy<P extends Pipeline, T> implements ILoggable {
-  constructor(protected readonly pipeline: P) {}
+  constructor(
+    protected readonly pipeline: P,
+    public readonly request: Request<P>
+  ) {}
 
   get signal(): AbortSignal {
     return this.pipeline.signal;
@@ -57,7 +60,10 @@ export class Chunk {
 }
 
 export abstract class Response<P extends Pipeline> extends ReplaySubject<Chunk> implements ILoggable {
-  constructor(protected readonly pipeline: P) {
+  constructor(
+    protected readonly pipeline: P,
+    public readonly request: Request<P>
+  ) {
     super();
   }
 
@@ -74,6 +80,7 @@ export class Result<P extends Pipeline> implements ILoggable {
 
   constructor(
     protected readonly pipeline: P,
+    public readonly request: Request<P>,
     public readonly success: boolean,
     public readonly bytes: number
   ) {}
@@ -82,7 +89,11 @@ export class Result<P extends Pipeline> implements ILoggable {
     return performance.now() - this.pipeline.createdAt;
   }
 
+  get duration(): number {
+    return performance.now() - this.request.createdAt;
+  }
+
   repr(): string {
-    return `Result(success=${this.success}, bytes=${this.bytes}, uptime=${this.uptime.toFixed(2)}ms, duration=TODOms)`;
+    return `Result(success=${this.success}, bytes=${this.bytes}, duration=${this.duration.toFixed(2)}ms, uptime=${this.uptime.toFixed(2)}ms)`;
   }
 }

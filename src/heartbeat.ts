@@ -12,31 +12,31 @@ export class HeartbeatPipeline extends Pipeline implements ILoggable {
 
   @Trace
   override into(): Observable<Request<Pipeline>> {
-    const result = new Result(this, true, 0);
-
-    const response = new (class extends Response<Pipeline> implements ILoggable {
-      override into(): Observable<Result<Pipeline>> {
-        return of(result);
-      }
-      override repr(): string {
-        return `HeartbeatResponse()`;
-      }
-    })(this);
-
-    const proxy = new (class extends Proxy<Pipeline, unknown> implements ILoggable {
-      override invoke(): Observable<unknown> {
-        return EMPTY;
-      }
-      override into(): Observable<Response<Pipeline>> {
-        return of(response);
-      }
-      override repr(): string {
-        return `HeartbeatProxy()`;
-      }
-    })(this);
+    // eslint-disable-next-line @typescript-eslint/no-this-alias
+    const pipeline = this;
 
     const request = new (class extends Request<Pipeline> implements ILoggable {
       override into(): Observable<Proxy<Pipeline, unknown>> {
+        const proxy = new (class extends Proxy<Pipeline, unknown> implements ILoggable {
+          override invoke(): Observable<unknown> {
+            return EMPTY;
+          }
+          override into(): Observable<Response<Pipeline>> {
+            return of(
+              new (class extends Response<Pipeline> implements ILoggable {
+                override into(): Observable<Result<Pipeline>> {
+                  return of(new Result(pipeline, request, true, 0));
+                }
+                override repr(): string {
+                  return `HeartbeatResponse()`;
+                }
+              })(pipeline, this.request)
+            );
+          }
+          override repr(): string {
+            return `HeartbeatProxy()`;
+          }
+        })(pipeline, request);
         return of(proxy);
       }
       override repr(): string {

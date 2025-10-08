@@ -1,5 +1,5 @@
 import { from, map, Observable, of } from 'rxjs';
-import { Pipeline, Proxy } from '../pipeline';
+import { Pipeline, Proxy, Request } from '../pipeline';
 import { Readable } from 'stream';
 import { log, Logger, Trace } from '../log';
 import axios, { AxiosHeaders, isAxiosError } from 'axios';
@@ -12,12 +12,13 @@ export type Prelude = { statusCode: number; headers: Headers; cookies: string[] 
 export abstract class HttpProxy<P extends Pipeline> extends Proxy<P, HttpResponse> {
   constructor(
     pipeline: P,
+    request: Request<P>,
     public readonly method: string,
     public readonly uri: URI,
     public readonly headers: HttpHeaders,
     public readonly body: Buffer
   ) {
-    super(pipeline);
+    super(pipeline, request);
   }
 
   get httpsAgent(): Agent | undefined {
