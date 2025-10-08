@@ -1,4 +1,4 @@
-import { defer, from, map, NEVER, Observable, of, race, tap } from 'rxjs';
+import { defer, from, map, NEVER, Observable, of, race, switchMap, tap } from 'rxjs';
 import { Proxy, Pipeline, Request, Response, Result } from '../pipeline';
 import { Environment } from '../environment';
 import axios from 'axios';
@@ -39,19 +39,24 @@ export class LambdaPipeline extends Pipeline {
 
   @Trace
   override into(): Observable<Request<LambdaPipeline>> {
-    if (!this.runtimeApi) {
-      return NEVER;
-    }
+    return of(this.runtimeApi).pipe(
+      switchMap((api) => {
+        if (!api) {
+          log.debug('Lambda Pipeline: DISABLED');
+          return NEVER;
+        }
 
-    const url = `http://${this.runtimeApi}/2018-06-01/runtime/invocation/next`;
+        const url = `http://${this.runtimeApi}/2018-06-01/runtime/invocation/next`;
 
-    return defer(() => {
-      log.debug(`Fetching next invocation`, { url });
-      return axios.get<string>(url, { responseType: 'text', signal: this.signal, timeout: 0 });
-    }).pipe(
-      map(({ data, headers }) => {
-        this._requestId = headers['lambda-runtime-aws-request-id'];
-        return new LambdaRequest(this, data);
+        return defer(() => {
+          log.debug(`Fetching next invocation`, { url });
+          return axios.get<string>(url, { responseType: 'text', signal: this.signal, timeout: 0 });
+        }).pipe(
+          map(({ data, headers }) => {
+            this._requestId = headers['lambda-runtime-aws-request-id'];
+            return new LambdaRequest(this, data);
+          })
+        );
       })
     );
   }

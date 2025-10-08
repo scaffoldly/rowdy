@@ -1,13 +1,19 @@
 #!/usr/bin/env node
 
-import { lastValueFrom } from 'rxjs';
+import { firstValueFrom, fromEvent, merge, takeUntil } from 'rxjs';
 import { Environment } from './environment';
 import { log } from './log';
 
-const main = async (): Promise<void> => {
-  log.info('Starting environment');
-  await lastValueFrom(new Environment().poll());
-};
+async function main(): Promise<void> {
+  log.info('Starting... Press Ctrl+C to exit.');
+  const abort = new AbortController();
+  const stop$ = merge(fromEvent(process, 'SIGINT'), fromEvent(process, 'SIGTERM'), fromEvent(abort.signal, 'abort'));
+
+  new Environment(abort, log).poll().pipe(takeUntil(stop$)).subscribe();
+
+  await firstValueFrom(stop$);
+  log.info('Shutting down.');
+}
 
 const error = (error: Error): void => {
   // eslint-disable-next-line no-console

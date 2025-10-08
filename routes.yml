@@ -1,0 +1,15 @@
+---
+version: 'v1aplha1'
+rules:
+  - matches:
+      path:
+        value: '/'
+        type: 'Exact'
+    backendRefs:
+      - uri: 'rowdy://health'
+  - matches:
+      path:
+        value: '/github'
+        type: 'Exact'
+    backendRefs:
+      - uri: 'https://www.githubstatus.com/api/v2/status.json'

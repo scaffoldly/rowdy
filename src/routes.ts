@@ -3,6 +3,8 @@ import { match as pathMatch, compile as pathCompile, pathToRegexp } from 'path-t
 import { decode, labelToName } from 'whatwg-encoding';
 import { ILoggable, log } from './log';
 import { CheckResult, httpCheck, httpsCheck } from './util/http';
+import { readFileSync } from 'fs';
+import * as YAML from 'yaml';
 
 // Largely inspired by HTTPRoute in gateway.networking.k8s.io/v1
 export type RouteRuleMatchDetail = {
@@ -117,16 +119,50 @@ export class Routes implements IRoutes, ILoggable {
   readonly version: RoutesVersion = 'v1alpaha1';
   readonly rules: Array<RouteRule> = [];
 
-  static fromDataURL(dataUrl?: string): Routes {
+  static fromURL(url: string): Routes {
+    if (url.startsWith('data:')) {
+      return Routes.fromDataURL(url);
+    }
+
+    if (url.startsWith('file:')) {
+      const path = url.replace(/^file:\/\//, '');
+      return Routes.fromPath(path);
+    }
+
+    log.warn(`Unsupported Routes URL, defaulting to empty routes`, { url });
+
+    return new Routes();
+  }
+
+  static fromPath(path: string): Routes {
     try {
-      if (!dataUrl && !process.env.SLY_ROUTES) {
-        return new Routes();
+      const content = readFileSync(path, 'utf-8');
+      if (path.endsWith('.json')) {
+        const routes: Partial<IRoutes> = JSON.parse(content);
+        if (routes.version !== 'v1alpaha1') {
+          throw new Error(`Unsupported routes version: ${routes.version}`);
+        }
+        return new Routes().withRules(routes.rules || []);
       }
 
-      if (!dataUrl) {
-        return Routes.fromDataURL(process.env.SLY_ROUTES);
+      if (path.endsWith('.yaml') || path.endsWith('.yml')) {
+        const routes: Partial<IRoutes> = YAML.parse(content);
+        if (routes.version !== 'v1alpaha1') {
+          throw new Error(`Unsupported routes version: ${routes.version}`);
+        }
+        return new Routes().withRules(routes.rules || []);
       }
 
+      throw new Error(`Unsupported routes file type: ${path}`);
+    } catch (e) {
+      log.warn(`Failed to load routes from path: ${e instanceof Error ? e.message : String(e)}`, { path });
+    }
+
+    return new Routes();
+  }
+
+  static fromDataURL(dataUrl: string): Routes {
+    try {
       const data = parseDataURL(dataUrl);
       if (!data) {
         throw new Error('Invalid data URL');

@@ -35,6 +35,29 @@ const isLoggable = (v: unknown): v is Loggable =>
   v instanceof Buffer;
 
 export class Logger {
+  private _debug = false;
+  private _trace = false;
+
+  constructor() {}
+
+  get isDebugging(): boolean {
+    return this._debug;
+  }
+
+  get isTracing(): boolean {
+    return this._trace;
+  }
+
+  withDebugging(): this {
+    this._debug = true;
+    return this;
+  }
+
+  withTracing(): this {
+    this._trace = true;
+    return this;
+  }
+
   static asPrimitive(value: Loggable): Primitive {
     try {
       if (value === undefined) {
@@ -82,8 +105,13 @@ export class Logger {
   private log = (
     level: 'info' | 'error' | 'warn' | 'debug',
     message: string,
-    params: Record<string, Loggable>
+    params: Loggable | Record<string, Loggable>
   ): void => {
+    if (isLoggable(params)) {
+      // eslint-disable-next-line no-console
+      return console[level](`${message} ${Logger.asPrimitive(params)}`);
+    }
+
     try {
       params = Object.entries(params).reduce(
         (acc, [key, value]) => {
@@ -92,6 +120,10 @@ export class Logger {
         },
         {} as Record<string, Primitive>
       );
+
+      if (level !== 'info') {
+        message = `[${level.toUpperCase()}] ${message}`;
+      }
 
       if (Object.keys(params).length === 0) {
         // eslint-disable-next-line no-console
@@ -118,7 +150,10 @@ export class Logger {
     return this.log('warn', message, params);
   };
 
-  debug = (message: string, params: Record<string, Loggable> = {}): void => {
+  debug = (message: string, params: Loggable | Record<string, Loggable> = {}): void => {
+    if (!this.isDebugging) {
+      return;
+    }
     return this.log('debug', message, params);
   };
 }
@@ -132,13 +167,22 @@ export function Trace<This, Args extends ILoggable[], T extends Loggable>(
   const name: string = String(context.name);
 
   const wrapped: (this: This, ...args: Args) => Observable<T> = function (this: This, ...args: Args): Observable<T> {
+    if (!log.isTracing) {
+      return value.apply(this, args);
+    }
+
     for (const a of args) {
       if (!isLoggable(a)) {
         throw new TypeError(`@Trace ${name}: argument is not Loggable`);
       }
     }
 
-    log.debug('Trace.call', { method: name, args });
+    let thisName = name;
+    if (this && typeof this === 'object' && 'constructor' in this && this.constructor) {
+      thisName = `${this.constructor.name}.${name}`;
+    }
+
+    log.info('Trace.call', { method: thisName, args });
 
     const now = performance.now();
     const result: unknown = value.apply(this, args);
@@ -152,7 +196,7 @@ export function Trace<This, Args extends ILoggable[], T extends Loggable>(
           throw new TypeError(`@Trace ${name}: emission is not Loggable`);
         }
         const duration = performance.now() - now;
-        log.debug(`Trace.emit (${duration.toFixed(2)}ms)`, { method: name, value: emission });
+        log.info(`Trace.emit (${duration.toFixed(2)}ms)`, { method: thisName, value: emission });
       })
     );
   };
