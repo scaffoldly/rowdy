@@ -107,6 +107,8 @@ export abstract class HttpProxy<P extends Pipeline> extends Proxy<P, HttpRespons
       Readable.from('')
     );
 
+    log.debug('Rowdy Proxy', { method: this.method, uri: Logger.asPrimitive(this.uri) });
+
     if (this.uri.host === 'routes') {
       const { routes } = this.pipeline;
       return of(

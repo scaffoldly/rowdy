@@ -2,6 +2,7 @@
 apiVersion: rowdy.run/v1alpha1
 kind: Routes
 spec:
-  default: 'rowdy://health/'
+  default: 'rowdy://http:404/'
   paths:
+    '/healthz': 'rowdy://health/'
     '/github': 'https://www.githubstatus.com/api/v2/status.json'

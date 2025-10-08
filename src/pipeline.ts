@@ -52,7 +52,14 @@ export abstract class Proxy<P extends Pipeline, T> implements ILoggable {
   abstract repr(): string;
 }
 
-export abstract class Response<P extends Pipeline> extends ReplaySubject<Buffer | string> implements ILoggable {
+export class Chunk {
+  constructor(
+    public readonly data: Buffer | string,
+    public readonly bytes: number
+  ) {}
+}
+
+export abstract class Response<P extends Pipeline> extends ReplaySubject<Chunk> implements ILoggable {
   constructor(protected readonly pipeline: P) {
     super();
   }

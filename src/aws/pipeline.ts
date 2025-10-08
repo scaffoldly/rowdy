@@ -1,5 +1,5 @@
 import { defer, from, map, NEVER, Observable, of, race, switchMap, tap } from 'rxjs';
-import { Proxy, Pipeline, Request, Response, Result } from '../pipeline';
+import { Proxy, Pipeline, Request, Response, Result, Chunk } from '../pipeline';
 import { Environment } from '../environment';
 import axios from 'axios';
 import { log, Trace } from '../log';
@@ -135,9 +135,10 @@ export class LambdaHttpProxy extends HttpProxy<LambdaPipeline> {
     return this.invoke().pipe(
       map((http) => {
         const response = new LambdaResponse(this.pipeline);
-        response.next(JSON.stringify(http.prelude()));
-        response.next(Buffer.alloc(8));
-        http.data.on('data', (chunk: Buffer) => response.next(chunk));
+        // Set to 0 bytes as the prelude is not counted
+        response.next(new Chunk(JSON.stringify(http.prelude()), 0));
+        response.next(new Chunk(Buffer.alloc(8), 0));
+        http.data.on('data', (chunk: Buffer) => response.next(new Chunk(chunk, chunk.length)));
         http.data.on('end', () => response.complete());
         return response;
       })
@@ -155,12 +156,17 @@ export class LambdaResponse extends Response<LambdaPipeline> {
 
     const subscription = this.subscribe({
       next: (chunk) => {
-        if (!chunk.length) return;
+        log.debug(`LambdaResponse Chunk`, { bytes: chunk.bytes, data: Buffer.from(chunk.data).toString('hex') });
+        this.bytes += chunk.bytes;
+        if (!chunk.data.length) {
+          return;
+        }
         this.chunks += 1;
-        data.write(chunk);
+        data.write(chunk.data);
       },
       complete: () => {
-        if (!this.chunks) data.write('\0');
+        log.debug(`LambdaResponse Complete`, { chunks: this.chunks, bytes: this.bytes });
+        if (!this.bytes) data.write('\r\n\r\n'); // empty body
         data.end();
       },
     });
@@ -182,7 +188,6 @@ export class LambdaResponse extends Response<LambdaPipeline> {
             signal: this.signal,
             onUploadProgress: (event) => {
               log.debug(`Upload Progess`, { bytes: event.bytes, loaded: event.loaded, total: event.total });
-              this.bytes += event.bytes;
             },
           }
         )
