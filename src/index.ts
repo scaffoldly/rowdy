@@ -5,11 +5,11 @@ import { Environment } from './environment';
 import { log } from './log';
 
 async function main(): Promise<void> {
-  log.info('Starting... Press Ctrl+C to exit.');
   const abort = new AbortController();
   const stop$ = merge(fromEvent(process, 'SIGINT'), fromEvent(process, 'SIGTERM'), fromEvent(abort.signal, 'abort'));
 
-  new Environment(abort, log).poll().pipe(takeUntil(stop$)).subscribe();
+  const subscription = new Environment(abort, log).poll().pipe(takeUntil(stop$)).subscribe();
+  abort.signal.addEventListener('abort', () => subscription.unsubscribe());
 
   await firstValueFrom(stop$);
   log.info('Shutting down.');

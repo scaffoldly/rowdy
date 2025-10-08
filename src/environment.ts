@@ -49,7 +49,9 @@ export class Environment implements ILoggable {
     }
 
     this._routes = Routes.fromURL(args.routes);
-    this.log.debug('Starting', this);
+
+    log.debug('Environment', { environment: this });
+    log.info('\nStarted. Press Ctrl+C to exit.\n');
   }
 
   get routes(): Routes {
@@ -64,7 +66,7 @@ export class Environment implements ILoggable {
   public poll(): Observable<Result<Pipeline>> {
     return race([
       // Heartbeat wil keep the Observable alive
-      new HeartbeatPipeline(this).into(30000),
+      new HeartbeatPipeline(this).every(30_000),
       new LambdaPipeline(this).into(),
     ]).pipe(
       takeUntil(fromEvent(this.signal, 'abort')),

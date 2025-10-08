@@ -31,7 +31,7 @@
   "scripts": {
     "prestart": "yarn build:app",
     "build": "yarn build:exe",
-    "build:app": "tsup src/index.ts --sourcemap inline --dts --format cjs --target esnext --cjsInterop",
+    "build:app": "tsup src/index.ts --sourcemap inline --dts --format cjs --target esnext --cjsInterop --shims",
     "build:exe": "yarn build:app && pkg dist/index.js --compress Brotli --output dist/app",
     "start": "yarn build:app && node dist/index.js",
     "start:dev": "tsx src/index.ts",
@@ -105,7 +105,7 @@
     "typescript": "^5.0.0",
     "whatwg-encoding": "^3.1.1",
     "yaml": "^2.8.1",
-    "yargs": "^18.0.0"
+    "yargs": "17"
   },
   "dependencies": {}
 }

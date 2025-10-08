@@ -32,7 +32,7 @@ export type RouteRule = {
   backendRefs?: Array<RouteRuleBackendRef>;
 };
 
-export type RoutesVersion = 'v1alpaha1';
+export type RoutesVersion = 'v1alpha1';
 
 export interface IRoutes {
   readonly version: RoutesVersion;
@@ -116,7 +116,7 @@ export class URI extends URL implements ILoggable {
 export type Health = { [origin: string]: URIHealth };
 
 export class Routes implements IRoutes, ILoggable {
-  readonly version: RoutesVersion = 'v1alpaha1';
+  readonly version: RoutesVersion = 'v1alpha1';
   readonly rules: Array<RouteRule> = [];
 
   static fromURL(url: string): Routes {
@@ -139,7 +139,7 @@ export class Routes implements IRoutes, ILoggable {
       const content = readFileSync(path, 'utf-8');
       if (path.endsWith('.json')) {
         const routes: Partial<IRoutes> = JSON.parse(content);
-        if (routes.version !== 'v1alpaha1') {
+        if (routes.version !== 'v1alpha1') {
           throw new Error(`Unsupported routes version: ${routes.version}`);
         }
         return new Routes().withRules(routes.rules || []);
@@ -147,7 +147,7 @@ export class Routes implements IRoutes, ILoggable {
 
       if (path.endsWith('.yaml') || path.endsWith('.yml')) {
         const routes: Partial<IRoutes> = YAML.parse(content);
-        if (routes.version !== 'v1alpaha1') {
+        if (routes.version !== 'v1alpha1') {
           throw new Error(`Unsupported routes version: ${routes.version}`);
         }
         return new Routes().withRules(routes.rules || []);
@@ -176,7 +176,7 @@ export class Routes implements IRoutes, ILoggable {
       const decoded = decode(data.body, encoding);
       if (data.mimeType.essence === 'application/json') {
         const routes: IRoutes = JSON.parse(decoded);
-        if (routes.version !== 'v1alpaha1') {
+        if (routes.version !== 'v1alpha1') {
           throw new Error(`Unsupported routes version: ${routes.version}`);
         }
 

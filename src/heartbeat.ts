@@ -1,9 +1,17 @@
 import { delay, EMPTY, Observable, of } from 'rxjs';
-import { ILoggable } from './log';
+import { ILoggable, Trace } from './log';
 import { Pipeline, Result, Request, Response, Proxy } from './pipeline';
 
 export class HeartbeatPipeline extends Pipeline implements ILoggable {
-  override into(interval?: number): Observable<Request<Pipeline>> {
+  private delay = 5000;
+
+  every(delayMs: number): Observable<Request<Pipeline>> {
+    this.delay = delayMs;
+    return this.into();
+  }
+
+  @Trace
+  override into(): Observable<Request<Pipeline>> {
     const result = new Result(this, true, 0);
 
     const response = new (class extends Response<Pipeline> implements ILoggable {
@@ -29,14 +37,14 @@ export class HeartbeatPipeline extends Pipeline implements ILoggable {
 
     const request = new (class extends Request<Pipeline> implements ILoggable {
       override into(): Observable<Proxy<Pipeline, unknown>> {
-        return of(proxy).pipe(delay(interval ?? 1000));
+        return of(proxy);
       }
       override repr(): string {
         return `HeartbeatRequest()`;
       }
     })(this);
 
-    return of(request);
+    return of(request).pipe(delay(this.delay));
   }
 
   override repr(): string {
