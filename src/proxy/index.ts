@@ -90,7 +90,11 @@ export class HttpHeaders implements ILoggable {
     return this.intoAxios().toJSON();
   }
 
-  override(key: string, value: string | string[]): this {
+  override(key: string, value?: string | string[]): this {
+    if (!value) {
+      delete this.headers[key.toLowerCase()];
+      return this;
+    }
     key = key.toLowerCase();
     this.headers[key] = value;
     return this;
@@ -143,7 +147,7 @@ export class HttpResponse implements ILoggable {
     return this;
   }
 
-  withHeader(key: string, value: string): this {
+  withHeader(key: string, value?: string): this {
     this._headers.override(key, value);
     return this;
   }

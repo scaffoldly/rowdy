@@ -53,8 +53,12 @@ export interface IRoutes {
 
 export type URIHealth = { healthy: boolean; latency: CheckResult };
 
+type Search = { key: string; value: string } | URLSearchParams | string;
+
 // eslint-disable-next-line no-restricted-globals
 export class URI extends URL implements ILoggable {
+  static REASON = '__reason__';
+
   private constructor(
     // eslint-disable-next-line @typescript-eslint/no-restricted-types
     url: URL,
@@ -63,8 +67,35 @@ export class URI extends URL implements ILoggable {
     super(url.toString());
   }
 
+  get reason(): string | undefined {
+    return this.searchParams.get(URI.REASON) || undefined;
+  }
+
+  withSearch(search: Search, value?: string): this {
+    const params = new URLSearchParams(this.search);
+
+    if (typeof search === 'string') {
+      const existing = search;
+      const incoming = new URLSearchParams(search);
+      search = new URLSearchParams(incoming.toString());
+      if (value) {
+        search.append(existing, value);
+      }
+    }
+
+    if ('key' in search && 'value' in search) {
+      const key = search.key;
+      const value = search.value;
+      search = new URLSearchParams();
+      search.append(key, value);
+    }
+
+    this.search = params.toString();
+    return this;
+  }
+
   static from(uri: string): URI {
-    uri = uri.trim().toLowerCase();
+    uri = uri.trim();
 
     const insecure = uri.startsWith('insecure+');
     if (insecure) {
@@ -95,6 +126,13 @@ export class URI extends URL implements ILoggable {
     }
 
     return new URI(url, insecure);
+  }
+
+  static fromError(error: Error, code?: number): URI {
+    if (!code) {
+      code = 500;
+    }
+    return URI.from(`rowdy://http:${code}/`).withSearch(URI.REASON, error.message);
   }
 
   async health(): Promise<URIHealth> {

@@ -93,6 +93,7 @@ export abstract class HttpProxy<P extends Pipeline> extends Proxy<P, HttpRespons
 
   @Trace
   private invokeRowdy(): Observable<HttpResponse> {
+    // TODO: coerce content type based on accept header
     const response = new HttpResponse(
       404,
       HttpHeaders.from({
@@ -145,7 +146,7 @@ export abstract class HttpProxy<P extends Pipeline> extends Proxy<P, HttpRespons
     }
 
     if (this.uri.host === 'http' && Number.isInteger(this.uri.port)) {
-      return of(response.withStatus(Number(this.uri.port)));
+      return of(response.withHeader('x-reason', this.uri.reason).withStatus(Number(this.uri.port)));
     }
 
     return of(response);

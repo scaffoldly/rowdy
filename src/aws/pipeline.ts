@@ -8,6 +8,7 @@ import { HttpProxy } from '../proxy/http';
 import { ShellResponse } from '../proxy/shell';
 import { PassThrough } from 'stream';
 import { HttpHeaders, HttpResponse } from '../proxy';
+import { URI } from '../routes';
 
 type FunctionUrlEvent = APIGatewayProxyEventV2;
 
@@ -81,42 +82,44 @@ export class LambdaRequest extends Request<LambdaPipeline> {
 
   @Trace
   protected intoHttp(): Observable<Proxy<LambdaPipeline, HttpResponse>> {
+    let data: unknown;
+
     try {
-      const data = JSON.parse(this.data);
-
-      if (isFunctionUrlEvent(data)) {
-        const { body, headers, requestContext, isBase64Encoded, rawPath, rawQueryString } = data;
-        const { method } = requestContext.http;
-
-        const url = this.pipeline.routes.intoURI(rawPath);
-        if (!url) {
-          throw new Error('No matching route');
-        }
-
-        if (rawQueryString) {
-          url.search = new URLSearchParams(rawQueryString).toString();
-        }
-
-        return of(
-          new LambdaHttpProxy(
-            this.pipeline,
-            this,
-            method,
-            url,
-            HttpHeaders.fromLambda(headers),
-            isBase64Encoded ? Buffer.from(body || '', 'base64') : Buffer.from(body || '')
-          )
-        );
-      }
-
-      log.warn('Unsupported HTTP Event', { data: this.data });
+      data = JSON.parse(this.data);
     } catch (error) {
-      log.debug(`Not an HTTP Event: ${error instanceof Error ? error.message : String(error)}`, {
+      log.debug(`Not JSON: ${error instanceof Error ? error.message : String(error)}`, {
         data: this.data,
         stack: error instanceof Error ? error.stack : undefined,
       });
+      return NEVER;
     }
 
+    if (isFunctionUrlEvent(data)) {
+      const { body, headers, requestContext, isBase64Encoded, rawPath, rawQueryString } = data;
+      const { method } = requestContext.http;
+
+      let url = this.pipeline.routes.intoURI(rawPath);
+      if (!url) {
+        url = URI.fromError(new Error(`Invalid path: ${rawPath}`), 404);
+      }
+
+      if (rawQueryString) {
+        url.withSearch(new URLSearchParams(rawQueryString));
+      }
+
+      return of(
+        new LambdaHttpProxy(
+          this.pipeline,
+          this,
+          method,
+          url,
+          HttpHeaders.fromLambda(headers),
+          isBase64Encoded ? Buffer.from(body || '', 'base64') : Buffer.from(body || '')
+        )
+      );
+    }
+
+    log.warn('Unsupported HTTP Event', { data: this.data });
     return NEVER;
   }
 
