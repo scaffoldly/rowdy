@@ -98,13 +98,15 @@ export class LambdaRequest extends Request<LambdaPipeline> {
       const { body, headers, requestContext, isBase64Encoded, rawPath, rawQueryString } = data;
       const { method } = requestContext.http;
 
-      let url = this.pipeline.routes.intoURI(rawPath);
-      if (!url) {
-        url = URI.fromError(new Error(`Invalid path: ${rawPath}`), 404);
+      let uri: URI;
+      try {
+        uri = this.pipeline.routes.intoURI(rawPath);
+      } catch (error) {
+        uri = URI.fromError(error instanceof Error ? error : new Error(String(error)), 500);
       }
 
       if (rawQueryString) {
-        url.withSearch(new URLSearchParams(rawQueryString));
+        uri.withSearch(new URLSearchParams(rawQueryString));
       }
 
       return of(
@@ -112,7 +114,7 @@ export class LambdaRequest extends Request<LambdaPipeline> {
           this.pipeline,
           this,
           method,
-          url,
+          uri,
           HttpHeaders.fromLambda(headers),
           isBase64Encoded ? Buffer.from(body || '', 'base64') : Buffer.from(body || '')
         )

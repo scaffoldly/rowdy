@@ -362,7 +362,7 @@ export class Routes implements IRoutes, ILoggable {
     }, {});
   }
 
-  intoURI(path: string): URI | undefined {
+  intoURI(path: string): URI {
     const input = URI.from(`no://thing${path}`);
 
     // normalize path
@@ -371,7 +371,7 @@ export class Routes implements IRoutes, ILoggable {
     // preserve search and hash
     const { search, hash } = input;
 
-    const uri = this.rules.reduce<URI | undefined>(
+    let uri = this.rules.reduce<URI | undefined>(
       (uri, rule) =>
         rule.matches?.reduce<URI | undefined>((matched, match) => {
           if (matched) {
@@ -426,11 +426,11 @@ export class Routes implements IRoutes, ILoggable {
       undefined
     );
 
-    if (uri) {
-      // restore search and hash
-      uri.search = search;
-      uri.hash = hash;
+    if (!uri) {
+      uri = URI.fromError(new Error(`Not Found: ${path}`), 404);
     }
+    uri.search = search;
+    uri.hash = hash;
 
     return uri;
   }
