@@ -42,7 +42,7 @@ export class LambdaPipeline extends Pipeline {
     return of(this.runtimeApi).pipe(
       switchMap((api) => {
         if (!api) {
-          log.debug('Lambda Pipeline: DISABLED');
+          log.debug('Lambda Pipeline: DISABLED: No AWS_LAMBDA_RUNTIME_API environment variable');
           return NEVER;
         }
 

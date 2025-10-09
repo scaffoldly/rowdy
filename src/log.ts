@@ -107,6 +107,12 @@ export class Logger {
     message: string,
     params: Loggable | Record<string, Loggable>
   ): void => {
+    if (level !== 'info') {
+      message = `[${level.toUpperCase()}] ${message}`;
+    }
+
+    message = `[rowdy] ${message}`;
+
     if (isLoggable(params)) {
       // eslint-disable-next-line no-console
       return console[level](`${message} ${Logger.asPrimitive(params)}`);
@@ -120,10 +126,6 @@ export class Logger {
         },
         {} as Record<string, Primitive>
       );
-
-      if (level !== 'info') {
-        message = `[${level.toUpperCase()}] ${message}`;
-      }
 
       if (Object.keys(params).length === 0) {
         // eslint-disable-next-line no-console

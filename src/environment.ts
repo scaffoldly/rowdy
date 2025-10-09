@@ -7,22 +7,38 @@ import { Pipeline, Result } from './pipeline';
 import { LambdaPipeline } from './aws/pipeline';
 import packageJson from '../package.json';
 import path from 'path';
-import { HeartbeatPipeline } from './heartbeat';
 import { isatty } from 'tty';
+import { CommandPipeline } from './cmd/pipeline';
 
 export type Secrets = Record<string, string>;
 
+type Args = {
+  debug: boolean;
+  trace: boolean;
+  routes: string;
+  '--'?: string[];
+};
+
 export class Environment implements ILoggable {
   public readonly signal: AbortSignal = this.abort.signal;
+  public readonly bin = Object.keys(packageJson.bin)[0];
 
   private _routes: Routes;
+  private _command?: string[] | undefined;
   private _env = process.env;
 
   constructor(
     private abort: AbortController,
     private log: Logger
   ) {
-    const args = yargs(hideBin(process.argv))
+    const args: Args = yargs(hideBin(process.argv))
+      .parserConfiguration({ 'halt-at-non-option': true, 'populate--': true })
+      .scriptName(this.bin!)
+      .env(this.bin!.toUpperCase())
+      .usage('$0 -- <command> [args...]')
+      .strict()
+      .version(packageJson.version)
+      .help()
       .option('debug', { type: 'boolean', default: false, description: 'Enable debug logging' })
       .option('trace', { type: 'boolean', default: false, description: 'Enable tracing' })
       .option('routes', {
@@ -30,11 +46,6 @@ export class Environment implements ILoggable {
         default: `file://${process.cwd()}${path.sep}routes.yaml`,
         description: 'Path or URL to routing rules (file:// or data:).',
       })
-      .scriptName('rowdy')
-      .env('ROWDY')
-      .version(`${packageJson.name} v${packageJson.version} [${packageJson.repository.url}]`)
-      .help('h')
-      .alias('h', 'help')
       .parseSync();
 
     if (args.debug) {
@@ -45,17 +56,23 @@ export class Environment implements ILoggable {
       this.log = this.log.withTracing();
     }
 
+    this._command = args['--'];
     this._routes = Routes.fromURL(args.routes);
 
     log.debug('Environment', { environment: this });
-    log.info(`\n${packageJson.name}@${packageJson.version} has started.`);
+
+    log.info(`${packageJson.name}@${packageJson.version} has started.`);
     if (isatty(process.stdout.fd)) {
-      log.info('\nPress Ctrl+C to exit.');
+      log.info('Press Ctrl+C to exit.');
     }
   }
 
   get routes(): Routes {
     return this._routes;
+  }
+
+  get command(): string[] | undefined {
+    return this._command;
   }
 
   get env(): Record<string, string | undefined> {
@@ -64,11 +81,7 @@ export class Environment implements ILoggable {
 
   @Trace
   public poll(): Observable<Result<Pipeline>> {
-    return race([
-      // Heartbeat wil keep the Observable alive
-      new HeartbeatPipeline(this).every(30_000),
-      new LambdaPipeline(this).into(),
-    ]).pipe(
+    return race([new CommandPipeline(this).into(), new LambdaPipeline(this).into()]).pipe(
       takeUntil(fromEvent(this.signal, 'abort')),
       tap((request) => log.info('Request', { request })),
       mergeMap((request) => request.into()),
