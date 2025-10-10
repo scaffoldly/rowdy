@@ -20,7 +20,7 @@ describe('routes', () => {
       .withPath('/github', 'https://www.githubstatus.com/api/v2/status.json')
       .withPath('/circleci', 'https://status.circleci.com/api/v2/status.json')
       .withPath('/travisci', 'https://www.traviscistatus.com/api/v2/status.json')
-      .withDefault('http://localhost:8080/api/')
+      .withDefault('http://localhost:8080/api')
       .intoDataURL();
 
     it('should route', () => {

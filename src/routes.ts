@@ -285,6 +285,9 @@ export class Routes implements IRoutes, ILoggable {
     if (!target || target.trim() === '') {
       target = 'rowdy://http:404/';
     }
+    if (!target.endsWith('/')) {
+      target = `${target}/`;
+    }
     return this.withPath('{/*path}', `${target}*path`);
   }
 
