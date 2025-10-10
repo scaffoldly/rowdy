@@ -1,4 +1,4 @@
-import { EMPTY, NEVER, Observable, of, switchMap, timer } from 'rxjs';
+import { NEVER, Observable } from 'rxjs';
 import { Pipeline, Request } from '../pipeline';
 import { log, Logger, Trace } from '../log';
 import { ChildProcess, spawn } from 'child_process';
@@ -27,49 +27,37 @@ export class CommandPipeline extends Pipeline {
 
   @Trace
   override into(): Observable<Request<Pipeline>> {
-    return (
-      of(this.command)
-        .pipe(
-          switchMap((command) => {
-            const [cmd, ...args] = command || [];
-            if (!cmd) {
-              log.debug('Command Pipeline: DISABLED: No command specified');
-              return NEVER;
-            }
+    const [cmd, ...args] = this.command || [];
+    if (!cmd) {
+      log.debug('Command Pipeline: DISABLED: No command specified');
+      return NEVER;
+    }
 
-            if (this.proc) {
-              return of(this.proc);
-            }
+    if (!this.proc && this.restart) {
+      this.proc = spawn(cmd, args, { stdio: 'inherit', env: this.env });
 
-            log.debug(`Spawning process`, { cmd, args });
-            const proc = spawn(cmd, args, { stdio: 'inherit', env: this.env });
+      this.proc.on('exit', (code) => {
+        log.warn(`Process exited`, { cmd, args, pid: this.proc?.pid, code });
+        delete this.proc;
 
-            proc.on('exit', (code) => {
-              log.warn(`Process exited`, { cmd, args, pid: proc.pid, code });
-              delete this.proc;
-            });
+        if (this.restart) {
+          setTimeout(() => this.into().subscribe(), 1000);
+        }
+      });
 
-            proc.on('error', (err) => {
-              log.warn(`Process error`, { cmd, args, pid: proc.pid, err });
-              delete this.proc;
-            });
+      this.proc.on('error', (err) => {
+        log.warn(`Process error`, { cmd, args, pid: this.proc?.pid, err });
+        delete this.proc;
 
-            return of((this.proc = proc));
-          })
-        )
-        // This pipeline runs in the background, so we should never complete this observable.
-        .pipe(
-          switchMap((proc) => {
-            log.debug('Monitoring process', { pid: proc.pid, killed: proc.killed });
+        if (this.restart) {
+          setTimeout(() => this.into().subscribe(), 1000);
+        }
+      });
 
-            if (!this.restart) {
-              return EMPTY;
-            }
+      log.debug('Started process', { pid: this.proc.pid });
+    }
 
-            return timer(5_000).pipe(switchMap(() => this.into()));
-          })
-        )
-    );
+    return NEVER;
   }
 
   override repr(): string {
