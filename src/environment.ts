@@ -1,6 +1,6 @@
 import yargs from 'yargs';
 import { hideBin } from 'yargs/helpers';
-import { fromEvent, mergeMap, Observable, race, repeat, takeUntil, tap } from 'rxjs';
+import { fromEvent, mergeMap, Observable, race, repeat, Subscription, takeUntil, tap } from 'rxjs';
 import { Routes } from './routes';
 import { ILoggable, log, Logger, Trace } from './log';
 import { Pipeline, Result } from './pipeline';
@@ -8,7 +8,8 @@ import { LambdaPipeline } from './aws/pipeline';
 import packageJson from '../package.json';
 import path from 'path';
 import { isatty } from 'tty';
-import { CommandPipeline } from './cmd/pipeline';
+import { ShellProxy, ShellRequest } from './proxy/shell';
+import { ShellPipeline } from './shell/pipeline';
 
 export type Secrets = Record<string, string>;
 
@@ -23,6 +24,8 @@ export class Environment implements ILoggable {
   public readonly signal: AbortSignal = this.abort.signal;
   public readonly bin = Object.keys(packageJson.bin)[0];
 
+  private _pipelines: Pipeline[] = [new LambdaPipeline(this)];
+  private subscriptions: Subscription[] = [];
   private _routes: Routes;
   private _command?: string[] | undefined;
   private _env = process.env;
@@ -31,6 +34,12 @@ export class Environment implements ILoggable {
     private abort: AbortController,
     private log: Logger
   ) {
+    this.signal.addEventListener('abort', () => {
+      this.log.debug(`Aborting environment: ${this.signal.reason}`);
+      this.subscriptions.forEach((s) => s.unsubscribe());
+      this._pipelines = [];
+    });
+
     const args: Args = yargs(hideBin(process.argv))
       .parserConfiguration({ 'halt-at-non-option': true, 'populate--': true })
       .scriptName(this.bin!)
@@ -79,9 +88,37 @@ export class Environment implements ILoggable {
     return this._env;
   }
 
+  public init(): this {
+    const pipeline = new ShellPipeline(this);
+    this._pipelines.push(pipeline);
+
+    if (this.command && this.command.length) {
+      log.info(`Starting command`, { command: this.command });
+
+      this.subscriptions.push(
+        new ShellProxy(pipeline, new ShellRequest(pipeline, this.command).withInput(process.stdin))
+          .background()
+          .invoke()
+          .subscribe((response) => {
+            this.subscriptions.push(
+              response.subscribe({
+                complete: () => {
+                  log.info(`'${response.bin}' completed`, { response });
+                  this.abort.abort('Command complete');
+                  response.fds.end();
+                },
+              })
+            );
+          })
+      );
+    }
+
+    return this;
+  }
+
   @Trace
   public poll(): Observable<Result<Pipeline>> {
-    return race([new CommandPipeline(this).into(), new LambdaPipeline(this).into()]).pipe(
+    return race(this._pipelines.map((p) => p.into())).pipe(
       takeUntil(fromEvent(this.signal, 'abort')),
       tap((request) => log.info('Request', { request })),
       mergeMap((request) => request.into()),

@@ -4,10 +4,9 @@ import { Environment } from '../environment';
 import axios from 'axios';
 import { log, Trace } from '../log';
 import { APIGatewayProxyEventV2 } from 'aws-lambda';
-import { HttpProxy } from '../proxy/http';
+import { HttpProxy, HttpHeaders, HttpResponse } from '../proxy/http';
 import { ShellResponse } from '../proxy/shell';
 import { PassThrough } from 'stream';
-import { HttpHeaders, HttpResponse } from '../proxy';
 import { URI } from '../routes';
 
 type FunctionUrlEvent = APIGatewayProxyEventV2;

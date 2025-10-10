@@ -8,7 +8,7 @@ async function main(): Promise<void> {
   const abort = new AbortController();
   const stop$ = merge(fromEvent(process, 'SIGINT'), fromEvent(process, 'SIGTERM'), fromEvent(abort.signal, 'abort'));
 
-  const subscription = new Environment(abort, log).poll().pipe(takeUntil(stop$)).subscribe();
+  const subscription = new Environment(abort, log).init().poll().pipe(takeUntil(stop$)).subscribe();
   abort.signal.addEventListener('abort', () => subscription.unsubscribe());
 
   await firstValueFrom(stop$);

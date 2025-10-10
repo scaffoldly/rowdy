@@ -2,11 +2,16 @@ import { Observable, ReplaySubject } from 'rxjs';
 import { ILoggable } from './log';
 import { Environment } from './environment';
 import { Routes } from './routes';
+import { PassThrough, Readable, Writable } from 'stream';
 
 export abstract class Pipeline implements ILoggable {
   private _createdAt = performance.now();
 
   constructor(protected readonly environment: Environment) {}
+
+  get env(): Record<string, string | undefined> {
+    return this.environment.env;
+  }
 
   get signal(): AbortSignal {
     return this.environment.signal;
@@ -24,13 +29,43 @@ export abstract class Pipeline implements ILoggable {
   abstract repr(): string;
 }
 
+export class FileDescriptors {
+  public readonly stdin = new PassThrough();
+  public readonly stdout = new PassThrough();
+  public readonly stderr = new PassThrough();
+
+  end(): void {
+    this.stdin.end();
+    this.stdout.end();
+    this.stderr.end();
+  }
+}
+
 export abstract class Request<P extends Pipeline> implements ILoggable {
   public readonly createdAt = performance.now();
+  public readonly fds = new FileDescriptors();
 
   constructor(protected readonly pipeline: P) {}
 
   get signal(): AbortSignal {
     return this.pipeline.signal;
+  }
+
+  get stdin(): Readable {
+    return this.fds.stdin;
+  }
+
+  get stdout(): Writable {
+    return this.fds.stdout;
+  }
+
+  get stderr(): Writable {
+    return this.fds.stderr;
+  }
+
+  withInput(input: Readable): this {
+    input.pipe(this.fds.stdin);
+    return this;
   }
 
   abstract into(): Observable<Proxy<P, unknown>>;
