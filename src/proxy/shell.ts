@@ -2,7 +2,8 @@ import { EMPTY, from, map, Observable, of, Subject, switchMap } from 'rxjs';
 import { FileDescriptors, Pipeline, Proxy, Request, Response } from '../pipeline';
 import { PassThrough, Writable } from 'stream';
 import { ILoggable, log, Logger, Trace } from '../log';
-import { execa, Options } from 'execa';
+import { execa } from 'execa';
+import type { Options } from 'execa';
 
 export class ShellRequest<P extends Pipeline> extends Request<P> {
   constructor(

@@ -1,4 +1,4 @@
-import { Routes, URI } from '@src';
+import { Routes, URI } from '@scaffoldly/rowdy';
 
 describe('routes', () => {
   describe('default', () => {

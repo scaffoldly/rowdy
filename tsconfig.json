@@ -23,6 +23,6 @@
     "useUnknownInCatchVariables": true,
     "resolveJsonModule": true
   },
-  "include": ["src/**/*"],
+  "include": ["src/**/*", "tests/routes.test.ts"],
   "exclude": ["node_modules", "dist"]
 }

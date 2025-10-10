@@ -55,26 +55,21 @@
       {
         "displayName": "unit",
         "preset": "ts-jest",
+        "testEnvironment": "node",
+        "testMatch": [
+          "**/tests/**/*.test.ts"
+        ],
         "transform": {
-          "^.+\\.tsx?$": [
+          "^.+\\.ts$": [
             "ts-jest",
             {
               "tsconfig": "tests/tsconfig.json"
             }
           ]
         },
-        "testEnvironment": "node",
-        "roots": [
-          "<rootDir>/tests"
-        ],
-        "testMatch": [
-          "**/*.test.ts"
-        ],
         "moduleNameMapper": {
-          "^@src$": "<rootDir>/src/index.ts"
-        },
-        "globalSetup": "<rootDir>/tests/setup.ts",
-        "globalTeardown": "<rootDir>/tests/teardown.ts"
+          "^@scaffoldly/rowdy$": "<rootDir>/src/index.ts"
+        }
       }
     ]
   },
