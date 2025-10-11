@@ -22,7 +22,7 @@ export const httpCheck = (origin: string, timeout = DEFAULT_TIMEOUT): Promise<Ch
     });
     socket.on('timeout', () => {
       socket.destroy();
-      resolve('error');
+      resolve('timeout');
     });
   });
 };
@@ -54,7 +54,7 @@ export const httpsCheck = (origin: string, timeout = DEFAULT_TIMEOUT): Promise<C
     });
     socket.on('timeout', () => {
       socket.destroy();
-      resolve('error');
+      resolve('timeout');
     });
   });
 };

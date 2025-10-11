@@ -5,7 +5,22 @@ import { ILoggable, log } from './log';
 import { CheckResult, httpCheck, httpsCheck } from './util/http';
 import { readFileSync } from 'fs';
 import * as YAML from 'yaml';
-import { catchError, defer, exhaustMap, filter, map, Observable, of, shareReplay, take, tap, timer } from 'rxjs';
+import {
+  catchError,
+  defer,
+  exhaustMap,
+  filter,
+  fromEvent,
+  map,
+  Observable,
+  of,
+  shareReplay,
+  take,
+  takeUntil,
+  tap,
+  timer,
+} from 'rxjs';
+import { ABORT } from '.';
 
 export type RoutesApiVersion = 'rowdy.run/v1alpha1';
 export type RoutesKind = 'Routes';
@@ -172,6 +187,7 @@ export class URI extends URL implements ILoggable {
     );
 
     const await$ = timer(0, intervalMs).pipe(
+      takeUntil(fromEvent(ABORT.signal, 'abort')),
       tap(() => log.debug(`Checking URI health`, { uri: this })),
       exhaustMap(() => check$),
       filter(Boolean),

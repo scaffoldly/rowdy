@@ -4,12 +4,13 @@ import { firstValueFrom, fromEvent, merge, takeUntil } from 'rxjs';
 import { Environment } from './environment';
 import { log } from './log';
 
-async function main(): Promise<void> {
-  const abort = new AbortController();
-  const stop$ = merge(fromEvent(process, 'SIGINT'), fromEvent(process, 'SIGTERM'), fromEvent(abort.signal, 'abort'));
+export const ABORT = new AbortController();
 
-  const subscription = new Environment(abort, log).init().poll().pipe(takeUntil(stop$)).subscribe();
-  abort.signal.addEventListener('abort', () => subscription.unsubscribe());
+async function main(): Promise<void> {
+  const stop$ = merge(fromEvent(process, 'SIGINT'), fromEvent(process, 'SIGTERM'), fromEvent(ABORT.signal, 'abort'));
+
+  const subscription = new Environment(log).init().poll().pipe(takeUntil(stop$)).subscribe();
+  ABORT.signal.addEventListener('abort', () => subscription.unsubscribe());
 
   await firstValueFrom(stop$);
   log.info('Shutting down.');

@@ -10,6 +10,7 @@ import { LambdaPipeline } from './aws/pipeline';
 import packageJson from '../package.json';
 import path from 'path';
 import { isatty } from 'tty';
+import { ABORT } from '.';
 
 export type Secrets = Record<string, string>;
 
@@ -21,6 +22,7 @@ type Args = {
 };
 
 export class Environment implements ILoggable {
+  public abort: AbortController = ABORT;
   public readonly signal: AbortSignal = this.abort.signal;
   public readonly bin = Object.keys(packageJson.bin)[0];
 
@@ -30,10 +32,7 @@ export class Environment implements ILoggable {
   private _command?: string[] | undefined;
   private _env = process.env;
 
-  constructor(
-    private abort: AbortController,
-    private log: Logger
-  ) {
+  constructor(private log: Logger) {
     this.signal.addEventListener('abort', () => {
       this.log.debug(`Aborting environment: ${this.signal.reason}`);
       this.subscriptions.forEach((s) => s.unsubscribe());
