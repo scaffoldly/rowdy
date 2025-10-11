@@ -58,10 +58,11 @@ type Search = { key: string; value: string } | URLSearchParams | string;
 
 // eslint-disable-next-line no-restricted-globals
 export class URI extends URL implements ILoggable {
-  static _cache: Map<string, URI> = new Map<string, URI>();
+  protected static awaits: Map<string, Observable<URI>> = new Map<string, Observable<URI>>();
+
   static REASON = '__reason__';
 
-  private constructor(
+  protected constructor(
     // eslint-disable-next-line @typescript-eslint/no-restricted-types
     url: URL,
     public readonly insecure: boolean = false
@@ -97,10 +98,6 @@ export class URI extends URL implements ILoggable {
   }
 
   static from(uri: string): URI {
-    if (URI._cache.has(uri)) {
-      return URI._cache.get(uri)!;
-    }
-
     uri = uri.trim();
 
     const insecure = uri.startsWith('insecure+');
@@ -131,7 +128,7 @@ export class URI extends URL implements ILoggable {
       url = new URL(`cloud://aws/${uri}`);
     }
 
-    return URI._cache.set(uri.toString(), new URI(url, insecure)).get(uri)!;
+    return new URI(url, insecure);
   }
 
   static fromError(error: Error, code?: number): URI {
@@ -164,13 +161,17 @@ export class URI extends URL implements ILoggable {
     return health;
   }
 
-  await(intervalMs = 1000): Observable<this> {
+  await(intervalMs = 1000): Observable<URI> {
+    if (URI.awaits.has(this.toString())) {
+      return URI.awaits.get(this.toString())!;
+    }
+
     const check$ = defer(() => this.health(intervalMs)).pipe(
       map((h) => !!h.healthy),
       catchError(() => of(false))
     );
 
-    return timer(0, intervalMs).pipe(
+    const await$ = timer(0, intervalMs).pipe(
       tap(() => log.debug(`Checking URI health`, { uri: this })),
       exhaustMap(() => check$),
       filter(Boolean),
@@ -179,6 +180,9 @@ export class URI extends URL implements ILoggable {
       map(() => this),
       shareReplay(1)
     );
+
+    URI.awaits.set(this.toString(), await$);
+    return await$;
   }
 
   repr(): string {
