@@ -11,7 +11,7 @@ export const httpCheck = (origin: string, timeout = DEFAULT_TIMEOUT): Promise<Ch
   const now = performance.now();
   return new Promise((resolve) => {
     log.debug(`httpCheck`, { origin, url: url.toString() });
-    const socket = net.connect({ host: url.host, port: Number(url.port || 80), timeout }, () => {
+    const socket = net.connect({ host: url.hostname, port: Number(url.port || 80), timeout }, () => {
       socket.end();
       const duration = performance.now() - now;
       resolve(`${duration.toFixed(2)}ms` as CheckResult);
@@ -35,7 +35,7 @@ export const httpsCheck = (origin: string, timeout = DEFAULT_TIMEOUT): Promise<C
     log.debug(`httpsCheck`, { origin, url: url.toString() });
     const socket = tls.connect(
       {
-        host: url.host,
+        host: url.hostname,
         servername: url.host,
         port: Number(url.port || 443),
         rejectUnauthorized: false,
