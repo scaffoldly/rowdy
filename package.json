@@ -32,7 +32,7 @@
     "prestart": "yarn build:app",
     "build": "yarn build:exe",
     "build:app": "tsup src/index.ts --sourcemap inline --dts --format cjs --target esnext --cjsInterop --shims",
-    "build:exe": "yarn build:app && pkg dist/index.js --compress Brotli --output dist/app",
+    "build:exe": "yarn build:app && pkg .",
     "start": "yarn build:app && node dist/index.js",
     "start:dev": "tsx src/index.ts",
     "clean": "rm -rf dist",
@@ -102,6 +102,20 @@
     "whatwg-encoding": "^3.1.1",
     "yaml": "^2.8.1",
     "yargs": "17"
+  },
+  "pkg": {
+    "bin": "dist/index.js",
+    "scripts": "dist/**/*.js",
+    "assets": "dist/**/*",
+    "targets": [
+      "node22-macos-x64",
+      "node22-macos-arm64",
+      "node22-linuxstatic-x64",
+      "node22-linuxstatic-arm64"
+    ],
+    "outputPath": "bin",
+    "compress": "Brotli",
+    "public": true
   },
   "dependencies": {}
 }

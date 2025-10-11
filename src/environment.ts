@@ -3,13 +3,13 @@ import { hideBin } from 'yargs/helpers';
 import { fromEvent, mergeMap, Observable, race, repeat, Subscription, takeUntil, tap } from 'rxjs';
 import { Routes } from './routes';
 import { ILoggable, log, Logger, Trace } from './log';
+import { ShellProxy, ShellRequest } from './proxy/shell';
+import { ShellPipeline } from './shell/pipeline';
 import { Pipeline, Result } from './pipeline';
 import { LambdaPipeline } from './aws/pipeline';
 import packageJson from '../package.json';
 import path from 'path';
 import { isatty } from 'tty';
-import { ShellProxy, ShellRequest } from './proxy/shell';
-import { ShellPipeline } from './shell/pipeline';
 
 export type Secrets = Record<string, string>;
 
@@ -71,6 +71,7 @@ export class Environment implements ILoggable {
     log.debug('Environment', { environment: this });
 
     log.info(`${packageJson.name}@${packageJson.version} has started.`);
+
     if (isatty(process.stdout.fd)) {
       log.info('Press Ctrl+C to exit.');
     }
