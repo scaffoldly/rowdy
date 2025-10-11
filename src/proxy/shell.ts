@@ -58,8 +58,11 @@ export class ShellProxy<P extends Pipeline> extends Proxy<P, ShellResponse> {
 
     let response = new ShellResponse(bin, this._request.fds);
 
+    log.debug(`Executing command`, { bin, args, background: this._background });
+
     return of(execa(bin, args, options)).pipe(
       switchMap((proc) => {
+        log.debug(`${bin} started`, { bin, pid: proc.pid });
         proc.stdout?.pipe(this.request.stdout);
         proc.stderr?.pipe(this.request.stderr);
         this.request.stdin.pipe(proc.stdin!);
@@ -112,6 +115,7 @@ export class ShellResponse extends Subject<{ code: number }> implements ILoggabl
   static onData =
     (response: ShellResponse, stream: Writable) =>
     (chunk: Buffer): void => {
+      log.debug('Received command output', { bin: response.bin, length: chunk.length });
       response._bytes += chunk.length;
       stream.write(`[${response.bin}] ${chunk.toString()}`);
     };

@@ -1,4 +1,4 @@
-import { from, map, Observable, of } from 'rxjs';
+import { from, map, Observable, of, switchMap } from 'rxjs';
 import { Pipeline, Proxy, Request } from '../pipeline';
 import { Readable } from 'stream';
 import { ILoggable, log, Logger, Trace } from '../log';
@@ -33,59 +33,63 @@ export abstract class HttpProxy<P extends Pipeline> extends Proxy<P, HttpRespons
 
   @Trace
   private invokeHttp(): Observable<HttpResponse> {
-    return from(
-      axios
-        .request<Readable>({
-          responseType: 'stream',
-          method: this.method,
-          url: this.uri.toString(),
-          headers: this.headers.proxy().intoAxios(),
-          data: this.body,
-          httpsAgent: this.httpsAgent,
-          timeout: 0,
-          maxRedirects: 0,
-          validateStatus: () => true,
-          transformRequest: (req) => req,
-          transformResponse: (res) => res,
-          signal: this.signal,
-        })
-        .catch((error) => {
-          log.warn(`HttpProxy.into() Axios Error`, { error, isAxiosError: isAxiosError(error) });
-          if (!isAxiosError<Readable>(error)) {
-            throw new Error(`Non-HTTP error occurred: ${error instanceof Error ? error.message : String(error)}`);
-          }
-          if (!error.response) {
-            log.debug('Creating an Axios Response', { error });
-            error.response = {
-              data: Readable.from(error instanceof Error ? error.message : String(error)),
-              status: 500,
-              statusText: 'Internal Server Error',
-              headers: new AxiosHeaders({
-                'Content-Type': 'text/plain; charset=utf-8', // TODO: check accept header
-                'Access-Control-Allow-Origin': '*',
-                'Access-Control-Allow-Methods': '*',
-                'Access-Control-Allow-Headers': '*',
-              }),
-              config: { headers: new AxiosHeaders() }, // TODO: construct an Axios object?
-            };
-          }
-          return error.response;
-        })
-    ).pipe(
-      map((response) => {
-        log.debug(`HttpProxy.invoke() response`, {
-          status: response.status,
-          headers: JSON.stringify(response.headers),
-        });
-        return new HttpResponse(
-          response.status,
-          HttpHeaders.fromAxios(response.headers).proxy(),
-          response.headers['set-cookie']
-            ? Array.isArray(response.headers['set-cookie'])
-              ? response.headers['set-cookie']
-              : [response.headers['set-cookie']]
-            : [],
-          response.data
+    return this.uri.await().pipe(
+      switchMap((uri) => {
+        return from(
+          axios
+            .request<Readable>({
+              responseType: 'stream',
+              method: this.method,
+              url: uri.toString(),
+              headers: this.headers.proxy().intoAxios(),
+              data: this.body,
+              httpsAgent: this.httpsAgent,
+              timeout: 0,
+              maxRedirects: 0,
+              validateStatus: () => true,
+              transformRequest: (req) => req,
+              transformResponse: (res) => res,
+              signal: this.signal,
+            })
+            .catch((error) => {
+              log.warn(`HttpProxy.into() Axios Error`, { error, isAxiosError: isAxiosError(error) });
+              if (!isAxiosError<Readable>(error)) {
+                throw new Error(`Non-HTTP error occurred: ${error instanceof Error ? error.message : String(error)}`);
+              }
+              if (!error.response) {
+                log.debug('Creating an Axios Response', { error });
+                error.response = {
+                  data: Readable.from(error instanceof Error ? error.message : String(error)),
+                  status: 500,
+                  statusText: 'Internal Server Error',
+                  headers: new AxiosHeaders({
+                    'Content-Type': 'text/plain; charset=utf-8', // TODO: check accept header
+                    'Access-Control-Allow-Origin': '*',
+                    'Access-Control-Allow-Methods': '*',
+                    'Access-Control-Allow-Headers': '*',
+                  }),
+                  config: { headers: new AxiosHeaders() }, // TODO: construct an Axios object?
+                };
+              }
+              return error.response;
+            })
+        ).pipe(
+          map((response) => {
+            log.debug(`HttpProxy.invoke() response`, {
+              status: response.status,
+              headers: JSON.stringify(response.headers),
+            });
+            return new HttpResponse(
+              response.status,
+              HttpHeaders.fromAxios(response.headers).proxy(),
+              response.headers['set-cookie']
+                ? Array.isArray(response.headers['set-cookie'])
+                  ? response.headers['set-cookie']
+                  : [response.headers['set-cookie']]
+                : [],
+              response.data
+            );
+          })
         );
       })
     );

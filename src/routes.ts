@@ -5,6 +5,7 @@ import { ILoggable, log } from './log';
 import { CheckResult, httpCheck, httpsCheck } from './util/http';
 import { readFileSync } from 'fs';
 import * as YAML from 'yaml';
+import { catchError, defer, exhaustMap, filter, map, Observable, of, shareReplay, take, tap, timer } from 'rxjs';
 
 export type RoutesApiVersion = 'rowdy.run/v1alpha1';
 export type RoutesKind = 'Routes';
@@ -57,6 +58,7 @@ type Search = { key: string; value: string } | URLSearchParams | string;
 
 // eslint-disable-next-line no-restricted-globals
 export class URI extends URL implements ILoggable {
+  static _cache: Map<string, URI> = new Map<string, URI>();
   static REASON = '__reason__';
 
   private constructor(
@@ -95,6 +97,10 @@ export class URI extends URL implements ILoggable {
   }
 
   static from(uri: string): URI {
+    if (URI._cache.has(uri)) {
+      return URI._cache.get(uri)!;
+    }
+
     uri = uri.trim();
 
     const insecure = uri.startsWith('insecure+');
@@ -125,7 +131,7 @@ export class URI extends URL implements ILoggable {
       url = new URL(`cloud://aws/${uri}`);
     }
 
-    return new URI(url, insecure);
+    return URI._cache.set(uri.toString(), new URI(url, insecure)).get(uri)!;
   }
 
   static fromError(error: Error, code?: number): URI {
@@ -135,7 +141,7 @@ export class URI extends URL implements ILoggable {
     return URI.from(`rowdy://http:${code}/`).withSearch(URI.REASON, error.message);
   }
 
-  async health(): Promise<URIHealth> {
+  async health(timeoutMs?: number): Promise<URIHealth> {
     const health: URIHealth = { healthy: false, latency: 'unknown' };
 
     if (this.protocol === 'rowdy:') {
@@ -147,15 +153,32 @@ export class URI extends URL implements ILoggable {
     }
 
     if (this.protocol === 'http:') {
-      health.latency = await httpCheck(this.origin);
+      health.latency = await httpCheck(this.origin, timeoutMs);
     }
 
     if (this.protocol === 'https:') {
-      health.latency = await httpsCheck(this.origin);
+      health.latency = await httpsCheck(this.origin, timeoutMs);
     }
 
     health.healthy = health.healthy || (health.latency !== 'error' && health.latency !== 'timeout');
     return health;
+  }
+
+  await(intervalMs = 1000): Observable<this> {
+    const check$ = defer(() => this.health(intervalMs)).pipe(
+      map((h) => !!h.healthy),
+      catchError(() => of(false))
+    );
+
+    return timer(0, intervalMs).pipe(
+      tap(() => log.debug(`Checking URI health`, { uri: this })),
+      exhaustMap(() => check$),
+      filter(Boolean),
+      take(1),
+      tap(() => log.info(`URI is healthy`, { uri: this })),
+      map(() => this),
+      shareReplay(1)
+    );
   }
 
   repr(): string {
