@@ -129,10 +129,6 @@ export abstract class HttpProxy<P extends Pipeline> extends Proxy<P, HttpRespons
       return of(response.withStatus(200).withData(Readable.from('pong')));
     }
 
-    if (this.uri.host === 'ready') {
-      return of(response.withStatus(200).withData(Readable.from('ok')));
-    }
-
     if (this.uri.host === 'health') {
       return from(this.pipeline.routes.health()).pipe(
         map((backends) => {
@@ -151,6 +147,15 @@ export abstract class HttpProxy<P extends Pipeline> extends Proxy<P, HttpRespons
 
     if (this.uri.host === 'http' && Number.isInteger(this.uri.port)) {
       return of(response.withHeader('x-reason', this.uri.reason).withStatus(Number(this.uri.port)));
+    }
+
+    if (this.uri.host === 'api') {
+      return of(
+        response
+          .withStatus(200)
+          .withHeader('content-type', 'application/json; charset=utf-8')
+          .withData(Readable.from(JSON.stringify({})))
+      );
     }
 
     return of(response);

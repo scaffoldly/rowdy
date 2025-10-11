@@ -4,14 +4,25 @@ describe('routes', () => {
   describe('default', () => {
     it('should handle default', () => {
       const routes = Routes.default();
-      expect(routes.rules).toHaveLength(3);
+      expect(routes.rules).toHaveLength(11);
       expect(routes.intoURI('')!.toString()).toBe('rowdy://http:404/');
       expect(routes.intoURI('/foo/bar')!.toString()).toBe('rowdy://http:404/foo/bar');
       expect(routes.intoURI('/foo/bar?q=1')!.toString()).toBe('rowdy://http:404/foo/bar?q=1');
-      expect(routes.intoURI('/_health')!.toString()).toBe('rowdy://health/');
-      expect(routes.intoURI('/_health/baz')!.toString()).toBe('rowdy://http:404/_health/baz');
-      expect(routes.intoURI('/_ping')!.toString()).toBe('rowdy://ping/');
-      expect(routes.intoURI('/_ping/baz')!.toString()).toBe('rowdy://http:404/_ping/baz');
+      expect(routes.intoURI('/@rowdy/health')!.toString()).toBe('rowdy://health/');
+      expect(routes.intoURI('/@rowdy/health/baz')!.toString()).toBe('rowdy://http:404/%40rowdy/health/baz');
+      expect(routes.intoURI('/@rowdy/ping')!.toString()).toBe('rowdy://ping/');
+      expect(routes.intoURI('/@rowdy/ping/baz')!.toString()).toBe('rowdy://http:404/%40rowdy/ping/baz');
+      expect(routes.intoURI('/@rowdy/ready')!.toString()).toBe('rowdy://ready/');
+      expect(routes.intoURI('/@rowdy/ready/baz')!.toString()).toBe('rowdy://http:404/%40rowdy/ready/baz');
+      expect(routes.intoURI('/@rowdy/routes')!.toString()).toBe('rowdy://routes/');
+      expect(routes.intoURI('/@rowdy/routes/baz')!.toString()).toBe('rowdy://http:404/%40rowdy/routes/baz');
+      expect(routes.intoURI('/@rowdy/200')!.toString()).toBe('rowdy://http:200/');
+      expect(routes.intoURI('/@rowdy/200/baz')!.toString()).toBe('rowdy://http:404/%40rowdy/200/baz');
+      expect(routes.intoURI('/@rowdy/500')!.toString()).toBe('rowdy://http:500/');
+      expect(routes.intoURI('/@rowdy/500/baz')!.toString()).toBe('rowdy://http:404/%40rowdy/500/baz');
+      expect(routes.intoURI('/@rowdy/api')!.toString()).toBe('rowdy://api/');
+      expect(routes.intoURI('/@rowdy/api/foo/bar/baz')!.toString()).toBe('rowdy://api/foo/bar/baz');
+      expect(routes.intoURI('/@rowdy/api/foo/bar/baz?bing=bong')!.toString()).toBe('rowdy://api/foo/bar/baz?bing=bong');
     });
   });
 
@@ -25,7 +36,7 @@ describe('routes', () => {
 
     it('should route', () => {
       const routes = Routes.fromDataURL(data);
-      expect(routes.rules).toHaveLength(4);
+      expect(routes.rules).toHaveLength(14);
       expect(routes.intoURI('/github')!.toString()).toBe('https://www.githubstatus.com/api/v2/status.json');
       expect(routes.intoURI('/circleci')!.toString()).toBe('https://status.circleci.com/api/v2/status.json');
       expect(routes.intoURI('/travisci')!.toString()).toBe('https://www.traviscistatus.com/api/v2/status.json');

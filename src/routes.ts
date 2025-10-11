@@ -215,11 +215,21 @@ export class Routes implements IRoutes, ILoggable {
   private constructor() {}
 
   static empty(): Routes {
-    return new Routes();
+    return new Routes()
+      .withPath('/@rowdy/200', 'rowdy://http:200/')
+      .withPath('/@rowdy/204', 'rowdy://http:204/')
+      .withPath('/@rowdy/400', 'rowdy://http:400/')
+      .withPath('/@rowdy/404', 'rowdy://http:401/')
+      .withPath('/@rowdy/500', 'rowdy://http:500/')
+      .withPath('/@rowdy/api{/*path}', 'rowdy://api/*path')
+      .withPath('/@rowdy/health', 'rowdy://health/')
+      .withPath('/@rowdy/ping', 'rowdy://ping/')
+      .withPath('/@rowdy/ready', 'rowdy://ready/')
+      .withPath('/@rowdy/routes', 'rowdy://routes/');
   }
 
   static default(): Routes {
-    return new Routes().withPath('/_health', 'rowdy://health/').withPath('/_ping', 'rowdy://ping/').withDefault('');
+    return Routes.empty().withDefault('');
   }
 
   static fromURL(url: string): Routes {
