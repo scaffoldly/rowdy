@@ -1,8 +1,8 @@
 import { Observable, of } from 'rxjs';
-import { Pipeline } from '../pipeline';
-import { HttpProxy } from '../proxy/http';
+import { Pipeline } from './pipeline';
+import { HttpProxy } from './proxy/http';
 import { match } from 'path-to-regexp';
-import { log } from '../log';
+import { log } from './log';
 
 export type ApiVersion = 'rowdy.run/v1alpha1';
 export type ApiKind = 'Routes' | 'Health' | 'Hello' | 'NotFound';

@@ -503,6 +503,7 @@ export class Routes implements IRoutes, ILoggable {
       .reduce(
         async (healthP, uri) => {
           const health = await healthP;
+          if (uri.protocol === 'rowdy:') return health;
           health[uri.server] = health[uri.server] || (await uri.health());
           return health;
         },
