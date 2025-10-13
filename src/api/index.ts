@@ -110,7 +110,9 @@ export class Api {
     }
 
     const { pathname: path, searchParams } = proxy.uri;
-    const opts = { ...Object.fromEntries(searchParams), ...JSON.parse(Buffer.from(body).toString()) };
+    // TODO: handle encoding? or does body.toString() already do that
+    // TODO: type checking and opts validation
+    let opts = { ...Object.fromEntries(searchParams), ...(body.length ? JSON.parse(body.toString()) : {}) };
 
     return handlers.reduce(
       (acc, { match: matcher, handler }) => {

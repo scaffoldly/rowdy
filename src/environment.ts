@@ -6,7 +6,7 @@ import { ILoggable, log, Logger, Trace } from './log';
 import { ShellProxy, ShellRequest } from './proxy/shell';
 import { ShellPipeline } from './shell/pipeline';
 import { Pipeline, Result } from './pipeline';
-import { LambdaPipeline } from './aws/pipeline';
+import { LambdaPipeline } from './aws/lambda';
 import packageJson from '../package.json';
 import path from 'path';
 import { isatty } from 'tty';
