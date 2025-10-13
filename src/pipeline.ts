@@ -74,7 +74,7 @@ export abstract class Request<P extends Pipeline> implements ILoggable {
 
 export abstract class Proxy<P extends Pipeline, T> implements ILoggable {
   constructor(
-    protected readonly pipeline: P,
+    public readonly pipeline: P,
     public readonly request: Request<P>
   ) {}
 

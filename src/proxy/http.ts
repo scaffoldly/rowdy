@@ -1,4 +1,4 @@
-import { from, map, Observable, of, switchMap } from 'rxjs';
+import { from, map, NEVER, Observable, of, race, switchMap } from 'rxjs';
 import { Pipeline, Proxy, Request } from '../pipeline';
 import { Readable } from 'stream';
 import { ILoggable, log, Logger, Trace } from '../log';
@@ -6,6 +6,7 @@ import axios, { AxiosHeaders, AxiosResponseHeaders, isAxiosError } from 'axios';
 import { Agent } from 'https';
 import { URI } from '../routes';
 import { APIGatewayProxyEventV2 } from 'aws-lambda';
+import { Api } from '../api';
 
 export type Prelude = { statusCode: number; headers: Headers; cookies: string[] };
 
@@ -32,147 +33,8 @@ export abstract class HttpProxy<P extends Pipeline> extends Proxy<P, HttpRespons
   }
 
   @Trace
-  private invokeHttp(): Observable<HttpResponse> {
-    return this.uri.await().pipe(
-      switchMap((uri) => {
-        return from(
-          axios
-            .request<Readable>({
-              responseType: 'stream',
-              method: this.method,
-              url: uri.toString(),
-              headers: this.headers.proxy().intoAxios(),
-              data: this.body,
-              httpsAgent: this.httpsAgent,
-              timeout: 0,
-              maxRedirects: 0,
-              validateStatus: () => true,
-              transformRequest: (req) => req,
-              transformResponse: (res) => res,
-              signal: this.signal,
-            })
-            .catch((error) => {
-              log.warn(`HttpProxy.into() Axios Error`, { error, isAxiosError: isAxiosError(error) });
-              if (!isAxiosError<Readable>(error)) {
-                throw new Error(`Non-HTTP error occurred: ${error instanceof Error ? error.message : String(error)}`);
-              }
-              if (!error.response) {
-                log.debug('Creating an Axios Response', { error });
-                error.response = {
-                  data: Readable.from(error instanceof Error ? error.message : String(error)),
-                  status: 500,
-                  statusText: 'Internal Server Error',
-                  headers: new AxiosHeaders({
-                    'Content-Type': 'text/plain; charset=utf-8', // TODO: check accept header
-                    'Access-Control-Allow-Origin': '*',
-                    'Access-Control-Allow-Methods': '*',
-                    'Access-Control-Allow-Headers': '*',
-                  }),
-                  config: { headers: new AxiosHeaders() }, // TODO: construct an Axios object?
-                };
-              }
-              return error.response;
-            })
-        ).pipe(
-          map((response) => {
-            log.debug(`HttpProxy.invoke() response`, {
-              status: response.status,
-              headers: JSON.stringify(response.headers),
-            });
-            return new HttpResponse(
-              response.status,
-              HttpHeaders.fromAxios(response.headers).proxy(),
-              response.headers['set-cookie']
-                ? Array.isArray(response.headers['set-cookie'])
-                  ? response.headers['set-cookie']
-                  : [response.headers['set-cookie']]
-                : [],
-              response.data
-            );
-          })
-        );
-      })
-    );
-  }
-
-  @Trace
-  private invokeRowdy(): Observable<HttpResponse> {
-    const response = new HttpResponse(
-      404,
-      HttpHeaders.from({
-        // TODO: coerce content type based on accept header
-        'content-type': 'text/plain; charset=utf-8',
-        'access-control-allow-origin': '*',
-        'access-control-allow-methods': '*',
-        'access-control-allow-headers': '*',
-        'cache-control': 'no-cache',
-        pragma: 'no-cache',
-        expires: '0',
-      }).proxy(),
-      [],
-      Readable.from('')
-    );
-
-    log.debug('Rowdy Proxy', { method: this.method, uri: Logger.asPrimitive(this.uri) });
-
-    if (this.uri.host === 'error') {
-      const reason = this.uri.error || 'Unknown error';
-      const status = Number(this.uri.port) || 500;
-      return of(response.withStatus(status).withHeader('x-reason', reason));
-    }
-
-    if (this.uri.host === 'routes') {
-      const { routes } = this.pipeline;
-      return of(
-        response
-          .withStatus(200)
-          .withHeader('content-type', 'application/json; charset=utf-8')
-          .withData(Readable.from(JSON.stringify(routes, null, 2)))
-      );
-    }
-
-    if (this.uri.host === 'ping') {
-      return of(response.withStatus(200).withData(Readable.from('pong')));
-    }
-
-    if (this.uri.host === 'health') {
-      return from(this.pipeline.routes.health()).pipe(
-        map((backends) => {
-          const health = {
-            backends,
-            healthy: Object.values(backends).every((b) => b.status === 'ok' || b.status === 'unknown'),
-            now: new Date().toISOString(),
-          };
-          return response
-            .withStatus(200)
-            .withHeader('content-type', 'application/json; charset=utf-8')
-            .withData(Readable.from(JSON.stringify(health, null, 2)));
-        })
-      );
-    }
-
-    if (this.uri.host === 'http' && Number.isInteger(this.uri.port)) {
-      return of(response.withHeader('x-error', this.uri.error).withStatus(Number(this.uri.port)));
-    }
-
-    if (this.uri.host === 'api') {
-      return of(
-        response
-          .withStatus(200)
-          .withHeader('content-type', 'application/json; charset=utf-8')
-          .withData(Readable.from(JSON.stringify({})))
-      );
-    }
-
-    return of(response);
-  }
-
-  @Trace
   override invoke(): Observable<HttpResponse> {
-    if (this.uri.protocol === 'rowdy:') {
-      return this.invokeRowdy();
-    }
-    return this.invokeHttp();
+    return race([new LocalHttpResponse().handle(this), new RowdyHttpResponse().handle(this)]);
   }
 
   override repr(): string {
@@ -283,7 +145,7 @@ export class HttpHeaders implements ILoggable {
   }
 }
 
-export class HttpResponse implements ILoggable {
+abstract class HttpResponse implements ILoggable {
   private _status: number;
   private _headers: HttpHeaders;
   private _cookies: string[];
@@ -301,7 +163,7 @@ export class HttpResponse implements ILoggable {
   }
 
   get headers(): HttpHeaders {
-    return this._headers;
+    return this._headers.proxy();
   }
 
   get cookies(): string[] {
@@ -330,6 +192,16 @@ export class HttpResponse implements ILoggable {
     return this;
   }
 
+  withHeaders(headers: HttpHeaders): this {
+    this._headers = headers;
+    return this;
+  }
+
+  withCookies(cookies: string[]): this {
+    this._cookies = cookies;
+    return this;
+  }
+
   withData(data: Readable): this {
     // check if data is already being consumed, if it is, throw an error
     if (this.data.readableFlowing) {
@@ -344,7 +216,173 @@ export class HttpResponse implements ILoggable {
     return this;
   }
 
-  repr(): string {
-    return `HttpProxyResponse(status=${Logger.asPrimitive(this.status)}, headers=${Logger.asPrimitive(this.headers)}, cookies=${Logger.asPrimitive(this.cookies)} data=[stream])`;
+  abstract handle<P extends Pipeline>(proxy: HttpProxy<P>): Observable<HttpResponse>;
+  abstract repr(): string;
+}
+
+class RowdyHttpResponse extends HttpResponse {
+  private api: Api;
+
+  constructor() {
+    super(
+      404,
+      HttpHeaders.from({
+        // TODO: coerce content type based on accept header
+        'content-type': 'text/plain; charset=utf-8',
+        'access-control-allow-origin': '*',
+        'access-control-allow-methods': '*',
+        'access-control-allow-headers': '*',
+        'cache-control': 'no-cache',
+        pragma: 'no-cache',
+        expires: '0',
+      }),
+      [],
+      Readable.from('')
+    );
+
+    this.api = new Api();
+  }
+
+  @Trace
+  override handle<P extends Pipeline>(proxy: HttpProxy<P>): Observable<HttpResponse> {
+    if (proxy.uri.protocol !== 'rowdy:') {
+      return NEVER;
+    }
+
+    log.debug('Rowdy Proxy', { method: proxy.method, uri: Logger.asPrimitive(proxy.uri) });
+
+    if (proxy.uri.host === 'error') {
+      const reason = proxy.uri.error || 'Unknown error';
+      const status = Number(proxy.uri.port) || 500;
+      return of(this.withStatus(status).withHeader('x-reason', reason));
+    }
+
+    if (proxy.uri.host === 'routes') {
+      const { routes } = proxy.pipeline;
+      return of(
+        this.withStatus(200)
+          .withHeader('content-type', 'application/json; charset=utf-8')
+          .withData(Readable.from(JSON.stringify(routes, null, 2)))
+      );
+    }
+
+    if (proxy.uri.host === 'ping') {
+      return of(this.withStatus(200).withData(Readable.from('pong')));
+    }
+
+    if (proxy.uri.host === 'health') {
+      return from(proxy.pipeline.routes.health()).pipe(
+        map((backends) => {
+          const health = {
+            backends,
+            healthy: Object.values(backends).every((b) => b.status === 'ok' || b.status === 'unknown'),
+            now: new Date().toISOString(),
+          };
+          return this.withStatus(200)
+            .withHeader('content-type', 'application/json; charset=utf-8')
+            .withData(Readable.from(JSON.stringify(health, null, 2)));
+        })
+      );
+    }
+
+    if (proxy.uri.host === 'http' && Number.isInteger(proxy.uri.port)) {
+      return of(this.withHeader('x-error', proxy.uri.error).withStatus(Number(proxy.uri.port)));
+    }
+
+    if (proxy.uri.host === 'api') {
+      return this.api.handle(proxy).pipe(
+        map((response) => {
+          return this.withStatus(response.status.code)
+            .withHeaders(HttpHeaders.from(response.status.headers))
+            .withData(Readable.from(JSON.stringify(response)));
+        })
+      );
+    }
+
+    return of(this);
+  }
+
+  override repr(): string {
+    return `RowdyHttpResponse(status=${this.status}, headers=${Logger.asPrimitive(this.headers)}, cookies=[${this.cookies.length} cookies], data=[${this.data.readableEnded ? 'ended' : this.data.readableFlowing ? 'flowing' : 'readable'}])`;
+  }
+}
+
+class LocalHttpResponse extends HttpResponse {
+  constructor() {
+    super(404, HttpHeaders.from({}), [], Readable.from(''));
+  }
+
+  @Trace
+  override handle<P extends Pipeline>(proxy: HttpProxy<P>): Observable<HttpResponse> {
+    if (proxy.uri.protocol !== 'http:' && proxy.uri.protocol !== 'https:') {
+      return NEVER;
+    }
+
+    log.debug('Local Http Proxy', { method: proxy.method, uri: Logger.asPrimitive(proxy.uri) });
+
+    return proxy.uri.await().pipe(
+      switchMap((uri) => {
+        return from(
+          axios
+            .request<Readable>({
+              responseType: 'stream',
+              method: proxy.method,
+              url: uri.toString(),
+              headers: this.headers.proxy().intoAxios(),
+              data: proxy.body,
+              httpsAgent: proxy.httpsAgent,
+              timeout: 0,
+              maxRedirects: 0,
+              validateStatus: () => true,
+              transformRequest: (req) => req,
+              transformResponse: (res) => res,
+              signal: proxy.signal,
+            })
+            .catch((error) => {
+              log.warn(`HttpProxy.into() Axios Error`, { error, isAxiosError: isAxiosError(error) });
+              if (!isAxiosError<Readable>(error)) {
+                throw new Error(`Non-HTTP error occurred: ${error instanceof Error ? error.message : String(error)}`);
+              }
+              if (!error.response) {
+                log.debug('Creating an Axios Response', { error });
+                error.response = {
+                  data: Readable.from(error instanceof Error ? error.message : String(error)),
+                  status: 500,
+                  statusText: 'Internal Server Error',
+                  headers: new AxiosHeaders({
+                    'Content-Type': 'text/plain; charset=utf-8', // TODO: check accept header
+                    'Access-Control-Allow-Origin': '*',
+                    'Access-Control-Allow-Methods': '*',
+                    'Access-Control-Allow-Headers': '*',
+                  }),
+                  config: { headers: new AxiosHeaders() }, // TODO: construct an Axios object?
+                };
+              }
+              return error.response;
+            })
+        ).pipe(
+          map((response) => {
+            log.debug(`HttpProxy.invoke() response`, {
+              status: response.status,
+              headers: JSON.stringify(response.headers),
+            });
+            return this.withStatus(response.status)
+              .withHeaders(HttpHeaders.fromAxios(response.headers))
+              .withCookies(
+                response.headers['set-cookie']
+                  ? Array.isArray(response.headers['set-cookie'])
+                    ? response.headers['set-cookie']
+                    : [response.headers['set-cookie']]
+                  : []
+              )
+              .withData(response.data);
+          })
+        );
+      })
+    );
+  }
+
+  override repr(): string {
+    return `LocalHttpResponse(status=${this.status}, headers=${Logger.asPrimitive(this.headers)}, cookies=[${this.cookies.length} cookies], data=[${this.data.readableEnded ? 'ended' : this.data.readableFlowing ? 'flowing' : 'readable'}])`;
   }
 }

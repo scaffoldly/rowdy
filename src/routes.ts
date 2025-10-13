@@ -21,20 +21,12 @@ import {
   timer,
 } from 'rxjs';
 import { ABORT } from '.';
+import { ApiSchema, ApiVersion } from './api';
 
-export type RoutesApiVersion = 'rowdy.run/v1alpha1';
-export type RoutesKind = 'Routes';
 export type RoutePaths = { [key: string]: string | undefined };
+export type RoutesSpec = { paths?: RoutePaths; default?: string };
 
-export type RoutesSchema = {
-  apiVersion: RoutesApiVersion;
-  kind: RoutesKind;
-  spec?: {
-    paths?: RoutePaths;
-    default?: string;
-  };
-  // TODO: support rules directly and merge with paths/default
-};
+export type RoutesSchema = ApiSchema<RoutesSpec, undefined>;
 
 // Largely inspired by HTTPRoute in gateway.networking.k8s.io/v1
 export type RouteRuleMatchDetail = {
@@ -63,7 +55,7 @@ export type RouteRule = {
 };
 
 export interface IRoutes {
-  readonly version: RoutesApiVersion;
+  readonly version: ApiVersion;
   readonly rules: Array<RouteRule>;
 }
 
@@ -220,7 +212,7 @@ export class URI extends URL implements ILoggable {
 export type Health = { [origin: string]: URIHealth };
 
 export class Routes implements IRoutes, ILoggable {
-  readonly version: RoutesApiVersion = 'rowdy.run/v1alpha1';
+  readonly version: ApiVersion = 'rowdy.run/v1alpha1';
   readonly rules: Array<RouteRule> = [];
 
   private constructor() {}
@@ -395,6 +387,7 @@ export class Routes implements IRoutes, ILoggable {
         paths: this.intoPaths(),
         default: this.intoDefault(),
       },
+      status: undefined,
     };
     const mimeType = 'application/json';
     const json = JSON.stringify(routes);

@@ -27,3 +27,4 @@ if (require.main === module) {
 }
 
 export { Routes, URI } from './routes';
+export { Api } from './api';
