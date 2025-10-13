@@ -120,7 +120,7 @@ export class Environment implements ILoggable {
   public poll(): Observable<Result<Pipeline>> {
     return race(this._pipelines.map((p) => p.into())).pipe(
       takeUntil(fromEvent(this.signal, 'abort')),
-      tap((request) => log.info('Request', { request })),
+      tap((request) => log.info('Request', { request, routes: this.routes })),
       mergeMap((request) => request.into()),
       tap((proxy) => log.debug('Proxy', { proxy })),
       mergeMap((proxy) => proxy.into()),

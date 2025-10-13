@@ -2,7 +2,7 @@ import parseDataURL from 'data-urls';
 import { match as pathMatch, compile as pathCompile, pathToRegexp } from 'path-to-regexp';
 import { decode, labelToName } from 'whatwg-encoding';
 import { ILoggable, log } from './log';
-import { CheckResult, httpCheck, httpsCheck } from './util/http';
+import { CheckResult, cloudCheck, httpCheck, httpsCheck, rowdyCheck } from './util/checks';
 import { readFileSync } from 'fs';
 import * as YAML from 'yaml';
 import {
@@ -67,7 +67,7 @@ export interface IRoutes {
   readonly rules: Array<RouteRule>;
 }
 
-export type URIHealth = { healthy: boolean; latency: CheckResult };
+export type URIHealth = CheckResult;
 
 type Search = { key: string; value: string } | URLSearchParams | string;
 
@@ -75,7 +75,7 @@ type Search = { key: string; value: string } | URLSearchParams | string;
 export class URI extends URL implements ILoggable {
   protected static awaits: Map<string, Observable<URI>> = new Map<string, Observable<URI>>();
 
-  static REASON = '__reason__';
+  static ERROR = '__error__';
 
   protected constructor(
     // eslint-disable-next-line @typescript-eslint/no-restricted-types
@@ -85,8 +85,12 @@ export class URI extends URL implements ILoggable {
     super(url.toString());
   }
 
-  get reason(): string | undefined {
-    return this.searchParams.get(URI.REASON) || undefined;
+  get server(): string {
+    return this.origin !== 'null' ? this.origin : this.href;
+  }
+
+  get error(): string | undefined {
+    return this.searchParams.get(URI.ERROR) || undefined;
   }
 
   withSearch(search: Search, value?: string): this {
@@ -97,7 +101,7 @@ export class URI extends URL implements ILoggable {
       const incoming = new URLSearchParams(search);
       search = new URLSearchParams(incoming.toString());
       if (value) {
-        search.append(existing, value);
+        search.set(existing, value);
       }
     }
 
@@ -106,6 +110,10 @@ export class URI extends URL implements ILoggable {
       const value = search.value;
       search = new URLSearchParams();
       search.append(key, value);
+    }
+
+    for (const [key, value] of search) {
+      params.append(key, value);
     }
 
     this.search = params.toString();
@@ -125,8 +133,15 @@ export class URI extends URL implements ILoggable {
       uri = 'http://localhost';
     }
 
-    // eslint-disable-next-line no-restricted-globals
-    let url = new URL(uri);
+    // eslint-disable-next-line @typescript-eslint/no-restricted-types
+    let url: URL;
+
+    try {
+      // eslint-disable-next-line no-restricted-globals
+      url = new URL(uri);
+    } catch {
+      url = URI.fromError(new Error(`Invalid URI: ${uri}`));
+    }
 
     if (url.protocol === 'localhost:') {
       // eslint-disable-next-line no-restricted-globals
@@ -143,37 +158,33 @@ export class URI extends URL implements ILoggable {
       url = new URL(`cloud://aws/${uri}`);
     }
 
-    return new URI(url, insecure);
+    const built = new URI(url, insecure);
+
+    return built;
   }
 
   static fromError(error: Error, code?: number): URI {
-    if (!code) {
-      code = 500;
-    }
-    return URI.from(`rowdy://http:${code}/`).withSearch(URI.REASON, error.message);
+    return URI.from(`rowdy://error${code ? `:${code}` : ''}/`).withSearch(URI.ERROR, error.message);
   }
 
   async health(timeoutMs?: number): Promise<URIHealth> {
-    const health: URIHealth = { healthy: false, latency: 'unknown' };
-
     if (this.protocol === 'rowdy:') {
-      health.latency = '0.00ms';
+      return rowdyCheck(this.href, this.error);
     }
 
     if (this.protocol === 'cloud:') {
-      health.healthy = true;
+      return cloudCheck(this.href, timeoutMs);
     }
 
     if (this.protocol === 'http:') {
-      health.latency = await httpCheck(this.origin, timeoutMs);
+      return httpCheck(this.origin, timeoutMs);
     }
 
     if (this.protocol === 'https:') {
-      health.latency = await httpsCheck(this.origin, timeoutMs);
+      return httpsCheck(this.origin, timeoutMs);
     }
 
-    health.healthy = health.healthy || (health.latency !== 'error' && health.latency !== 'timeout');
-    return health;
+    return { status: 'unknown', reason: `Unsupported protocol: '${this.protocol}'` };
   }
 
   await(intervalMs = 1000): Observable<URI> {
@@ -182,7 +193,7 @@ export class URI extends URL implements ILoggable {
     }
 
     const check$ = defer(() => this.health(intervalMs)).pipe(
-      map((h) => !!h.healthy),
+      map((h) => h.status === 'ok' || h.status === 'unknown'),
       catchError(() => of(false))
     );
 
@@ -224,7 +235,6 @@ export class Routes implements IRoutes, ILoggable {
       .withPath('/@rowdy/api{/*path}', 'rowdy://api/*path')
       .withPath('/@rowdy/health', 'rowdy://health/')
       .withPath('/@rowdy/ping', 'rowdy://ping/')
-      .withPath('/@rowdy/ready', 'rowdy://ready/')
       .withPath('/@rowdy/routes', 'rowdy://routes/');
   }
 
@@ -500,8 +510,7 @@ export class Routes implements IRoutes, ILoggable {
       .reduce(
         async (healthP, uri) => {
           const health = await healthP;
-          const origin = uri.origin !== 'null' ? uri.origin : `${uri.protocol}//${uri.host}`;
-          health[origin] = await uri.health();
+          health[uri.server] = health[uri.server] || (await uri.health());
           return health;
         },
         Promise.resolve({} as Health)

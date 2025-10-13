@@ -4,7 +4,7 @@ describe('routes', () => {
   describe('default', () => {
     it('should handle default', () => {
       const routes = Routes.default();
-      expect(routes.rules).toHaveLength(11);
+      expect(routes.rules).toHaveLength(10);
       expect(routes.intoURI('')!.toString()).toBe('rowdy://http:404/');
       expect(routes.intoURI('/foo/bar')!.toString()).toBe('rowdy://http:404/foo/bar');
       expect(routes.intoURI('/foo/bar?q=1')!.toString()).toBe('rowdy://http:404/foo/bar?q=1');
@@ -12,8 +12,6 @@ describe('routes', () => {
       expect(routes.intoURI('/@rowdy/health/baz')!.toString()).toBe('rowdy://http:404/%40rowdy/health/baz');
       expect(routes.intoURI('/@rowdy/ping')!.toString()).toBe('rowdy://ping/');
       expect(routes.intoURI('/@rowdy/ping/baz')!.toString()).toBe('rowdy://http:404/%40rowdy/ping/baz');
-      expect(routes.intoURI('/@rowdy/ready')!.toString()).toBe('rowdy://ready/');
-      expect(routes.intoURI('/@rowdy/ready/baz')!.toString()).toBe('rowdy://http:404/%40rowdy/ready/baz');
       expect(routes.intoURI('/@rowdy/routes')!.toString()).toBe('rowdy://routes/');
       expect(routes.intoURI('/@rowdy/routes/baz')!.toString()).toBe('rowdy://http:404/%40rowdy/routes/baz');
       expect(routes.intoURI('/@rowdy/200')!.toString()).toBe('rowdy://http:200/');
@@ -36,7 +34,7 @@ describe('routes', () => {
 
     it('should route', () => {
       const routes = Routes.fromDataURL(data);
-      expect(routes.rules).toHaveLength(14);
+      expect(routes.rules).toHaveLength(13);
       expect(routes.intoURI('/github')!.toString()).toBe('https://www.githubstatus.com/api/v2/status.json');
       expect(routes.intoURI('/circleci')!.toString()).toBe('https://status.circleci.com/api/v2/status.json');
       expect(routes.intoURI('/travisci')!.toString()).toBe('https://www.traviscistatus.com/api/v2/status.json');
@@ -63,16 +61,49 @@ describe('uri', () => {
       expect(URI.from('localhost').toString()).toBe('http://localhost/');
       expect(URI.from('localhost:80').toString()).toBe('http://localhost/');
       expect(URI.from('localhost:443').toString()).toBe('https://localhost/');
+      expect(URI.from('localhost:3000').toString()).toBe('http://localhost:3000/');
       expect(URI.from('http://localhost').toString()).toBe('http://localhost/');
       expect(URI.from('http://localhost:80').toString()).toBe('http://localhost/');
+      expect(URI.from('http://localhost:3000').toString()).toBe('http://localhost:3000/');
       expect(URI.from('https://localhost').toString()).toBe('https://localhost/');
       expect(URI.from('https://localhost:443').toString()).toBe('https://localhost/');
+      expect(URI.from('https://localhost:8443').toString()).toBe('https://localhost:8443/');
     });
 
     it('should normalize aws', () => {
       expect(URI.from('aws:us-east-1:lambda:function:my-function').toString()).toBe(
         'cloud://aws/aws:us-east-1:lambda:function:my-function'
       );
+    });
+
+    it('should not normalize unknown schemes', () => {
+      expect(URI.from('something:unknown').toString()).toBe('something:unknown');
+      expect(URI.from('something:unknown/bing/boop/bop').toString()).toBe('something:unknown/bing/boop/bop');
+    });
+
+    it('should provide server', () => {
+      expect(URI.from('foo/bar').server).toBe('rowdy://error/?__error__=Invalid+URI%3A+foo%2Fbar');
+      expect(URI.from('http://example.com').server).toBe('http://example.com');
+      expect(URI.from('https://example.com').server).toBe('https://example.com');
+      expect(URI.from('http://example.com:8080').server).toBe('http://example.com:8080');
+      expect(URI.from('https://example.com:8443').server).toBe('https://example.com:8443');
+      expect(URI.from('https://example.com:8443/foo/bar/baz').server).toBe('https://example.com:8443');
+      expect(URI.from('localhost').server).toBe('http://localhost');
+      expect(URI.from('localhost:80').server).toBe('http://localhost');
+      expect(URI.from('localhost:443').server).toBe('https://localhost');
+      expect(URI.from('localhost:3000').server).toBe('http://localhost:3000');
+      expect(URI.from('http://localhost').server).toBe('http://localhost');
+      expect(URI.from('http://localhost:80').server).toBe('http://localhost');
+      expect(URI.from('aws:us-east-1:lambda:function:my-function').server).toBe(
+        'cloud://aws/aws:us-east-1:lambda:function:my-function'
+      );
+      expect(URI.from('something:unknown').server).toBe('something:unknown');
+      expect(URI.from('something:unknown/bing/boop/bop').server).toBe('something:unknown/bing/boop/bop');
+    });
+
+    it('should provide error', () => {
+      expect(URI.from('http://example.com').error).toBeUndefined();
+      expect(URI.from('foo/bar').error).toBe('Invalid URI: foo/bar');
     });
 
     it('should support insecure prefix', () => {

@@ -97,10 +97,10 @@ export abstract class HttpProxy<P extends Pipeline> extends Proxy<P, HttpRespons
 
   @Trace
   private invokeRowdy(): Observable<HttpResponse> {
-    // TODO: coerce content type based on accept header
     const response = new HttpResponse(
       404,
       HttpHeaders.from({
+        // TODO: coerce content type based on accept header
         'content-type': 'text/plain; charset=utf-8',
         'access-control-allow-origin': '*',
         'access-control-allow-methods': '*',
@@ -114,6 +114,12 @@ export abstract class HttpProxy<P extends Pipeline> extends Proxy<P, HttpRespons
     );
 
     log.debug('Rowdy Proxy', { method: this.method, uri: Logger.asPrimitive(this.uri) });
+
+    if (this.uri.host === 'error') {
+      const reason = this.uri.error || 'Unknown error';
+      const status = Number(this.uri.port) || 500;
+      return of(response.withStatus(status).withHeader('x-reason', reason));
+    }
 
     if (this.uri.host === 'routes') {
       const { routes } = this.pipeline;
@@ -134,7 +140,7 @@ export abstract class HttpProxy<P extends Pipeline> extends Proxy<P, HttpRespons
         map((backends) => {
           const health = {
             backends,
-            healthy: Object.values(backends).every((b) => b.healthy),
+            healthy: Object.values(backends).every((b) => b.status === 'ok' || b.status === 'unknown'),
             now: new Date().toISOString(),
           };
           return response
@@ -146,7 +152,7 @@ export abstract class HttpProxy<P extends Pipeline> extends Proxy<P, HttpRespons
     }
 
     if (this.uri.host === 'http' && Number.isInteger(this.uri.port)) {
-      return of(response.withHeader('x-reason', this.uri.reason).withStatus(Number(this.uri.port)));
+      return of(response.withHeader('x-error', this.uri.error).withStatus(Number(this.uri.port)));
     }
 
     if (this.uri.host === 'api') {
@@ -199,6 +205,7 @@ export class HttpHeaders implements ILoggable {
       }
       delete instance.headers['connection'];
     }
+
     delete instance.headers['keep-alive'];
     delete instance.headers['proxy-authenticate'];
     delete instance.headers['proxy-authorization'];
