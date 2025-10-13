@@ -145,7 +145,7 @@ export class HttpHeaders implements ILoggable {
   }
 }
 
-abstract class HttpResponse implements ILoggable {
+export abstract class HttpResponse implements ILoggable {
   private _status: number;
   private _headers: HttpHeaders;
   private _cookies: string[];
