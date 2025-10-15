@@ -7,6 +7,7 @@ import { Agent } from 'https';
 import { URI } from '../routes';
 import { APIGatewayProxyEventV2 } from 'aws-lambda';
 import { Api } from '../api';
+import packageJson from '../../package.json';
 
 export type Prelude = { statusCode: number; headers: Headers; cookies: string[] };
 
@@ -45,6 +46,10 @@ export abstract class HttpProxy<P extends Pipeline> extends Proxy<P, HttpRespons
 export class HttpHeaders implements ILoggable {
   private headers: Record<string, string | string[]> = {};
   private constructor() {}
+
+  get userAgent(): string {
+    return (this.headers['user-agent'] as string) || `${packageJson.name}/${packageJson.version}`;
+  }
 
   proxy(): HttpHeaders {
     const instance = new HttpHeaders();
@@ -223,7 +228,7 @@ export abstract class HttpResponse implements ILoggable {
 class RowdyHttpResponse extends HttpResponse {
   private api: Api;
 
-  constructor() {
+  constructor(private log: Logger = log) {
     super(
       404,
       HttpHeaders.from({
@@ -240,7 +245,7 @@ class RowdyHttpResponse extends HttpResponse {
       Readable.from('')
     );
 
-    this.api = new Api();
+    this.api = new Api(this.log);
   }
 
   @Trace
@@ -290,13 +295,17 @@ class RowdyHttpResponse extends HttpResponse {
     }
 
     if (proxy.uri.host === 'api') {
-      return this.api.handle(proxy).pipe(
-        map((response) => {
-          return this.withStatus(response.status.code)
-            .withHeaders(HttpHeaders.from(response.status.headers))
-            .withData(Readable.from(JSON.stringify(response)));
-        })
-      );
+      return this.api
+        .withProxy(proxy)
+        .handle()
+        .pipe(
+          map((response) => {
+            return this.withStatus(response.status.code)
+              .withHeaders(HttpHeaders.from(response.status.headers || {}))
+              .withHeader('content-type', 'application/json; charset=utf-8')
+              .withData(Readable.from(JSON.stringify(response, null, 2)));
+          })
+        );
     }
 
     return of(this);
