@@ -201,11 +201,13 @@ export class Api {
           from(this.axios.get<IndexManifest>(u, { headers })).pipe(
             tap(() => this.log.debug(`Fetched index manifest from ${u}`)),
             map(({ data, headers, config }) => {
-              if (data.schemaVersion !== 2 || data.mediaType !== 'application/vnd.oci.image.index.v1+json') {
+              if (data.schemaVersion !== 2) {
                 res.index = data;
-                throw new Error(
-                  `Unsupported schemaVersion or mediaType on index: ${data.schemaVersion} ${data.mediaType}`
-                );
+                throw new Error(`Unsupported schemaVersion on index: ${data.schemaVersion}`);
+              }
+              if (data.mediaType !== 'application/vnd.oci.image.index.v1+json') {
+                res.index = data;
+                throw new Error(`Unsupported mediaType on index: ${data.mediaType} `);
               }
 
               if (config.headers.Authorization) {
@@ -242,11 +244,13 @@ export class Api {
           from(this.axios.get<ImageManifest>(u, { headers })).pipe(
             tap(() => this.log.debug(`Fetched ${platform} image manifest from ${u}`)),
             map(({ data }) => {
-              if (data.schemaVersion !== 2 || data.mediaType !== 'application/vnd.oci.image.manifest.v1+json') {
+              if (data.schemaVersion !== 2) {
                 res.images[digest] = data;
-                throw new Error(
-                  `Unsupported schemaVersion or mediaType on ${digest}: ${data.schemaVersion} ${data.mediaType}`
-                );
+                throw new Error(`Unsupported schemaVersion on ${digest}: ${data.schemaVersion}`);
+              }
+              if (data.mediaType !== 'application/vnd.oci.image.manifest.v1+json') {
+                res.images[digest] = data;
+                throw new Error(`Unsupported mediaType on ${digest}: ${data.mediaType}`);
               }
 
               res.images[digest] = data;
