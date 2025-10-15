@@ -202,12 +202,10 @@ export class Api {
             tap(() => this.log.debug(`Fetched index manifest from ${u}`)),
             map(({ data, headers, config }) => {
               if (data.schemaVersion !== 2 || data.mediaType !== 'application/vnd.oci.image.index.v1+json') {
-                this.log.warn('Unsupported schemaVersion or mediaType', {
-                  schemaVersion: data.schemaVersion,
-                  mediaType: data.mediaType,
-                  url: u,
-                });
-                return [];
+                res.index = data;
+                throw new Error(
+                  `Unsupported schemaVersion or mediaType on index: ${data.schemaVersion} ${data.mediaType}`
+                );
               }
 
               if (config.headers.Authorization) {
@@ -245,12 +243,10 @@ export class Api {
             tap(() => this.log.debug(`Fetched ${platform} image manifest from ${u}`)),
             map(({ data }) => {
               if (data.schemaVersion !== 2 || data.mediaType !== 'application/vnd.oci.image.manifest.v1+json') {
-                this.log.warn('Unsupported schemaVersion or mediaType', {
-                  schemaVersion: data.schemaVersion,
-                  mediaType: data.mediaType,
-                  url: u,
-                });
-                return;
+                res.images[digest] = data;
+                throw new Error(
+                  `Unsupported schemaVersion or mediaType on ${digest}: ${data.schemaVersion} ${data.mediaType}`
+                );
               }
 
               res.images[digest] = data;
