@@ -72,6 +72,7 @@ export type Image = {
 };
 
 export class Api {
+  public static readonly SLUG = '@rowdy';
   private proxy?: HttpProxy<Pipeline>;
   private axios: AxiosInstance = axios.create();
 
@@ -149,7 +150,7 @@ export class Api {
       reference = `sha256:${reference}`;
     }
 
-    if (!reference && name?.includes(':')) {
+    if (!reference.startsWith('sha256:') && name?.includes(':')) {
       [name, reference = 'latest'] = name.split(':');
     }
 
