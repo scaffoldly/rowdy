@@ -205,9 +205,12 @@ export class Api {
                 res.index = data;
                 throw new Error(`Unsupported schemaVersion on index: ${data.schemaVersion}`);
               }
-              if (data.mediaType !== 'application/vnd.oci.image.index.v1+json') {
+              if (
+                data.mediaType !== 'application/vnd.oci.image.index.v1+json' &&
+                data.mediaType !== 'application/vnd.docker.distribution.manifest.list.v2+json'
+              ) {
                 res.index = data;
-                throw new Error(`Unsupported mediaType on index: ${data.mediaType} `);
+                throw new Error(`Unsupported mediaType on index: ${data.mediaType}`);
               }
 
               if (config.headers.Authorization) {
