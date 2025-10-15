@@ -32,7 +32,7 @@ export class Environment implements ILoggable {
   private _command?: string[] | undefined;
   private _env = process.env;
 
-  constructor(private log: Logger) {
+  constructor(public readonly log: Logger) {
     this.signal.addEventListener('abort', () => {
       this.log.debug(`Aborting environment: ${this.signal.reason}`);
       this.subscriptions.forEach((s) => s.unsubscribe());

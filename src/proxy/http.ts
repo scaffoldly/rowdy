@@ -35,7 +35,7 @@ export abstract class HttpProxy<P extends Pipeline> extends Proxy<P, HttpRespons
 
   @Trace
   override invoke(): Observable<HttpResponse> {
-    return race([new LocalHttpResponse().handle(this), new RowdyHttpResponse().handle(this)]);
+    return race([new LocalHttpResponse().handle(this), new RowdyHttpResponse(this.pipeline.log).handle(this)]);
   }
 
   override repr(): string {
@@ -228,7 +228,7 @@ export abstract class HttpResponse implements ILoggable {
 class RowdyHttpResponse extends HttpResponse {
   private api: Api;
 
-  constructor(private log: Logger = log) {
+  constructor(private log: Logger) {
     super(
       404,
       HttpHeaders.from({

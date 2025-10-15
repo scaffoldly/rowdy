@@ -1,5 +1,5 @@
 import { Observable, ReplaySubject } from 'rxjs';
-import { ILoggable } from './log';
+import { ILoggable, Logger } from './log';
 import { Environment } from './environment';
 import { Routes } from './routes';
 import { PassThrough, Readable, Writable } from 'stream';
@@ -8,6 +8,10 @@ export abstract class Pipeline implements ILoggable {
   private _createdAt = performance.now();
 
   constructor(protected readonly environment: Environment) {}
+
+  get log(): Logger {
+    return this.environment.log;
+  }
 
   get env(): Record<string, string | undefined> {
     return this.environment.env;

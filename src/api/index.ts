@@ -75,7 +75,7 @@ export class Api {
   private proxy?: HttpProxy<Pipeline>;
   private axios: AxiosInstance = axios.create();
 
-  constructor(private log: Logger = log) {
+  constructor(private log: Logger) {
     this.axios.interceptors.response.use(...authenticate(this.axios, this.log));
   }
 
