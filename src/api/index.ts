@@ -28,28 +28,27 @@ export type Health = {
   res: { healthy: boolean };
 };
 
-type Ref<T extends string> = Partial<{
-  mediaType: T;
+type Ref = Partial<{
+  mediaType: string;
   size: number;
   digest: string;
   annotations: Record<string, string>;
 }>;
 
-type Config = Ref<'application/vnd.oci.image.config.v1+json'>;
-type Layer = Ref<'application/vnd.oci.image.layer.v1.tar+gzip' | 'application/vnd.oci.image.layer.v1.tar'>;
-type Manifest = Ref<'application/vnd.oci.image.manifest.v1+json'> &
-  Partial<{ platform: Partial<{ architecture: string; os: string }> }>;
+type Config = Ref;
+type Layer = Ref;
+type Manifest = Ref & Partial<{ platform: Partial<{ architecture: string; os: string }> }>;
 
 type ImageManifest = Partial<{
   schemaVersion: number;
-  mediaType: 'application/vnd.oci.image.manifest.v1+json';
+  mediaType: 'application/vnd.oci.image.manifest.v1+json' | 'application/vnd.docker.distribution.manifest.v2+json';
   config: Config;
   layers: Layer[];
 }>;
 
 type IndexManifest = Partial<{
   schemaVersion: number;
-  mediaType: 'application/vnd.oci.image.index.v1+json';
+  mediaType: 'application/vnd.oci.image.index.v1+json' | 'application/vnd.docker.distribution.manifest.list.v2+json';
   manifests: Manifest[];
 }>;
 
@@ -67,7 +66,7 @@ export type Image = {
     tags: string[];
     index: IndexManifest;
     images: Record<string, ImageManifest>;
-    blobs: (Ref<string> & { platform: string; url: string })[];
+    blobs: (Ref & { platform: string; url: string })[];
   };
 };
 
@@ -191,7 +190,12 @@ export class Api {
     };
 
     const headers: Record<string, string | string[] | undefined> = {
-      Accept: ['application/vnd.oci.image.index.v1+json', 'application/vnd.oci.image.manifest.v1+json'],
+      Accept: [
+        'application/vnd.oci.image.index.v1+json',
+        'application/vnd.docker.distribution.manifest.list.v2+json',
+        'application/vnd.oci.image.manifest.v1+json',
+        'application/vnd.docker.distribution.manifest.v2+json',
+      ],
       Authorization: opts?.authorization,
     };
 
@@ -251,7 +255,10 @@ export class Api {
                 res.images[digest] = data;
                 throw new Error(`Unsupported schemaVersion on ${digest}: ${data.schemaVersion}`);
               }
-              if (data.mediaType !== 'application/vnd.oci.image.manifest.v1+json') {
+              if (
+                data.mediaType !== 'application/vnd.oci.image.manifest.v1+json' &&
+                data.mediaType !== 'application/vnd.docker.distribution.manifest.v2+json'
+              ) {
                 res.images[digest] = data;
                 throw new Error(`Unsupported mediaType on ${digest}: ${data.mediaType}`);
               }
