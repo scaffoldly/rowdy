@@ -25,6 +25,7 @@ describe('api', () => {
         expect(response.status!.namespace).toBe('library');
         expect(response.status!.name).toBe('ubuntu');
         expect(response.status!.reference).toMatch(/^sha256:[a-f0-9]{64}$/);
+        expect(response.status!.tags).toContain('latest');
         expect(response.status.code).toBe(200);
         done();
       });

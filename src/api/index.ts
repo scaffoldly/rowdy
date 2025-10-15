@@ -32,6 +32,7 @@ type Ref<T extends string> = Partial<{
   mediaType: T;
   size: number;
   digest: string;
+  annotations: Record<string, string>;
 }>;
 
 type Config = Ref<'application/vnd.oci.image.config.v1+json'>;
@@ -214,8 +215,11 @@ export class Api {
 
               res.reference = headers['docker-content-digest'] || reference;
               res.index = data;
+              res.index.manifests = (res.index.manifests || []).filter(
+                (m) => m.annotations?.['vnd.docker.reference.type'] !== 'attestation-manifest' // TODO: attestations
+              );
 
-              return (data.manifests || [])
+              return res.index.manifests
                 .filter(
                   (m) =>
                     !!m.digest &&
