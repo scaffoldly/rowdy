@@ -6,29 +6,27 @@ import { Logger } from '../log';
 import axios, { AxiosInstance } from 'axios';
 import { authenticate } from '../util/axios';
 import { ImageApi } from './image';
-import { ApiResponseStatus, ApiSchema, Health, Image, Registry } from './types';
+import { ApiResponseStatus, ApiSchema, Health, IImageApi, Image, IRegistryApi, Registry } from './types';
 import { Environment } from '../environment';
 import { RegistryApi } from './registry';
 
-export class Api {
+export class Rowdy {
   public static readonly SLUG = '@rowdy';
   public readonly http: AxiosInstance = axios.create();
 
-  private _images: ImageApi;
-  private _registry: RegistryApi;
+  private _images: IImageApi = new ImageApi(this);
+  private _registry: IRegistryApi = new RegistryApi(this);
   private _proxy?: HttpProxy<Pipeline>;
 
   constructor(public readonly log: Logger) {
     this.http.interceptors.response.use(...authenticate(this.http, this.log));
-    this._images = new ImageApi(this);
-    this._registry = new RegistryApi(this);
   }
 
-  get Images(): ImageApi {
+  get Images(): IImageApi {
     return this._images;
   }
 
-  get Registry(): RegistryApi {
+  get Registry(): IRegistryApi {
     return this._registry;
   }
 
@@ -51,17 +49,17 @@ export class Api {
       },
       {
         match: match<Image['Req']>('/images/*image'),
-        handler: this.Images.getImage.bind(this.Images),
+        handler: this._images.getImage.bind(this.Images),
       },
       {
         match: match<Registry['Req']>('/registry'),
-        handler: this.Registry.getRegistry.bind(this.Registry),
+        handler: this._registry.getRegistry.bind(this.Registry),
       },
     ],
     PUT: [
       {
         match: match<Image['Req']>('/images/*image'),
-        handler: this.Images.putImage.bind(this.Images),
+        handler: this._images.putImage.bind(this.Images),
       },
     ],
   };

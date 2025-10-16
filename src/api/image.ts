@@ -15,13 +15,12 @@ import {
   toArray,
 } from 'rxjs';
 import { AxiosInstance } from 'axios';
-import { ApiSchema, Image } from './types';
+import { ApiSchema, IApi, Image } from './types';
 import { Readable } from 'stream';
-import { Api } from '.';
 import { Logger } from '../log';
 
 export class ImageApi {
-  constructor(private api: Api) {}
+  constructor(private api: IApi) {}
 
   get http(): AxiosInstance {
     return this.api.http;

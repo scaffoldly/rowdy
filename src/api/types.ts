@@ -1,3 +1,24 @@
+import { AxiosInstance } from 'axios';
+import { Logger } from '../log';
+import { Observable } from 'rxjs';
+import { Environment } from '../environment';
+
+export interface IApi {
+  http: AxiosInstance;
+  log: Logger;
+  environment: Environment;
+  Registry: IRegistryApi;
+}
+
+export type IImageApi = {
+  getImage(req: Image['Req'], opts?: Image['Opts']['GET']): Observable<ApiSchema<Image['Req'], Image['Res']>>;
+  putImage(req: Image['Req'], opts?: Image['Opts']['PUT']): Observable<ApiSchema<Image['Req'], Image['Res']>>;
+};
+
+export interface IRegistryApi {
+  getRegistry(req: Registry['Req']): Observable<ApiSchema<Registry['Req'], Registry['Res']>>;
+}
+
 export type ApiVersion = 'rowdy.run/v1alpha1';
 export type ApiKind = 'Routes' | 'NotFound' | Health['kind'] | Image['kind'] | Registry['kind'];
 export type ApiSchema<Spec, Status> = {

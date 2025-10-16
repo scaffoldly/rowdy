@@ -1,11 +1,11 @@
-import { Api, Logger } from '@scaffoldly/rowdy';
+import { Rowdy, Logger } from '@scaffoldly/rowdy';
 
 describe('api', () => {
-  const api = new Api(new Logger().withDebugging().withTracing());
+  const rowdy = new Rowdy(new Logger().withDebugging().withTracing());
 
   describe('health', () => {
     it('should respond to health', (done) => {
-      api.health().subscribe((response) => {
+      rowdy.health().subscribe((response) => {
         expect(response.apiVersion).toBe('rowdy.run/v1alpha1');
         expect(response.kind).toBe('Health');
         expect(response.spec!.healthy).toBe(true);
@@ -17,7 +17,7 @@ describe('api', () => {
 
   describe('image', () => {
     it('should resolve ubuntu', (done) => {
-      api.Images.getImage({ image: 'ubuntu' }).subscribe((response) => {
+      rowdy.Images.getImage({ image: 'ubuntu' }).subscribe((response) => {
         expect(response.apiVersion).toBe('rowdy.run/v1alpha1');
         expect(response.kind).toBe('Image');
         expect(response.spec!.image).toBe('registry-1.docker.io/library/ubuntu:latest');

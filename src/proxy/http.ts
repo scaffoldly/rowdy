@@ -6,7 +6,7 @@ import axios, { AxiosHeaders, AxiosResponseHeaders, isAxiosError } from 'axios';
 import { Agent } from 'https';
 import { URI } from '../routes';
 import { APIGatewayProxyEventV2 } from 'aws-lambda';
-import { Api } from '../api';
+import { Rowdy } from '../api';
 import packageJson from '../../package.json';
 
 export type Prelude = { statusCode: number; headers: Headers; cookies: string[] };
@@ -226,7 +226,7 @@ export abstract class HttpResponse implements ILoggable {
 }
 
 class RowdyHttpResponse extends HttpResponse {
-  private api: Api;
+  private rowdy: Rowdy;
 
   constructor(private log: Logger) {
     super(
@@ -245,7 +245,7 @@ class RowdyHttpResponse extends HttpResponse {
       Readable.from('')
     );
 
-    this.api = new Api(this.log);
+    this.rowdy = new Rowdy(this.log);
   }
 
   @Trace
@@ -295,7 +295,7 @@ class RowdyHttpResponse extends HttpResponse {
     }
 
     if (proxy.uri.host === 'api') {
-      return this.api
+      return this.rowdy
         .withProxy(proxy)
         .handle()
         .pipe(

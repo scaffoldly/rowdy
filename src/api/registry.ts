@@ -1,11 +1,10 @@
 import { AxiosInstance } from 'axios';
-import { Api } from '.';
 import { Logger } from '../log';
 import { catchError, from, map, Observable, of, switchMap, throwError } from 'rxjs';
-import { ApiSchema, Registry } from './types';
+import { ApiSchema, IApi, Registry } from './types';
 
 export class RegistryApi {
-  constructor(private api: Api) {}
+  constructor(private api: IApi) {}
 
   get http(): AxiosInstance {
     return this.api.http;

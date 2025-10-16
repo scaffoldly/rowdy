@@ -21,7 +21,7 @@ import {
   timer,
 } from 'rxjs';
 import { ABORT } from '.';
-import { Api } from './api';
+import { Rowdy } from './api';
 import { ApiSchema, ApiVersion } from './api/types';
 
 export type RoutePaths = { [key: string]: string | undefined };
@@ -220,15 +220,15 @@ export class Routes implements IRoutes, ILoggable {
 
   static empty(): Routes {
     return new Routes()
-      .withPath(`/${Api.SLUG}/200`, 'rowdy://http:200/')
-      .withPath(`/${Api.SLUG}/204`, 'rowdy://http:204/')
-      .withPath(`/${Api.SLUG}/400`, 'rowdy://http:400/')
-      .withPath(`/${Api.SLUG}/404`, 'rowdy://http:401/')
-      .withPath(`/${Api.SLUG}/500`, 'rowdy://http:500/')
-      .withPath(`/${Api.SLUG}/api{/*path}`, 'rowdy://api/*path')
-      .withPath(`/${Api.SLUG}/health`, 'rowdy://health/')
-      .withPath(`/${Api.SLUG}/ping`, 'rowdy://ping/')
-      .withPath(`/${Api.SLUG}/routes`, 'rowdy://routes/');
+      .withPath(`/${Rowdy.SLUG}/200`, 'rowdy://http:200/')
+      .withPath(`/${Rowdy.SLUG}/204`, 'rowdy://http:204/')
+      .withPath(`/${Rowdy.SLUG}/400`, 'rowdy://http:400/')
+      .withPath(`/${Rowdy.SLUG}/404`, 'rowdy://http:401/')
+      .withPath(`/${Rowdy.SLUG}/500`, 'rowdy://http:500/')
+      .withPath(`/${Rowdy.SLUG}/api{/*path}`, 'rowdy://api/*path')
+      .withPath(`/${Rowdy.SLUG}/health`, 'rowdy://health/')
+      .withPath(`/${Rowdy.SLUG}/ping`, 'rowdy://ping/')
+      .withPath(`/${Rowdy.SLUG}/routes`, 'rowdy://routes/');
   }
 
   static default(): Routes {
