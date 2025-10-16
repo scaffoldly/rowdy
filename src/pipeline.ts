@@ -7,7 +7,7 @@ import { PassThrough, Readable, Writable } from 'stream';
 export abstract class Pipeline implements ILoggable {
   private _createdAt = performance.now();
 
-  constructor(protected readonly environment: Environment) {}
+  constructor(public readonly environment: Environment) {}
 
   get log(): Logger {
     return this.environment.log;

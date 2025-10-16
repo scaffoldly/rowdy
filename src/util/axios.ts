@@ -1,9 +1,18 @@
 import { AxiosInstance, AxiosError, AxiosResponse, InternalAxiosRequestConfig } from 'axios';
 import { parse } from 'auth-header';
 import { Logger } from '../log';
+import { HttpHeaders } from '../proxy/http';
+import { headers as awsHeaders } from '../aws/headers';
+
+const headers = async (scheme: string, service: string, scope?: string): Promise<HttpHeaders> => {
+  if (service.endsWith('.amazonaws.com')) {
+    return awsHeaders(scheme, service, scope);
+  }
+  return HttpHeaders.from({});
+};
 
 export function authenticate(
-  axiosInstance: AxiosInstance,
+  axios: AxiosInstance,
   log: Logger
 ): [(response: AxiosResponse) => Promise<AxiosResponse>, (error: AxiosError) => Promise<AxiosResponse | never>] {
   let _cache: Record<string, { authorization: string; expires: Date }> = {};
@@ -31,16 +40,26 @@ export function authenticate(
         const { realm, service, scope } = params;
         log.debug(`Handling ${scheme} authentication challenge...`, { realm, service, scope });
 
-        if (!realm || Array.isArray(realm) || !service || Array.isArray(service) || !scope || Array.isArray(scope)) {
+        if (!realm || Array.isArray(realm) || !service || Array.isArray(service) || (!!scope && Array.isArray(scope))) {
           throw new AxiosError('Invalid WWW-Authenticate header');
         }
 
         // eslint-disable-next-line no-restricted-globals
         const url = new URL(realm);
-        url.searchParams.append('service', service);
-        url.searchParams.append('scope', scope);
+        // TODO: Make sure this is necessary for AWS, as it doen's return realm with /token
+        if (!url.pathname.endsWith('/token')) {
+          url.pathname = `${url.pathname}/token`;
+        }
 
-        const auth = await axiosInstance.get(url.toString());
+        url.searchParams.append('service', service);
+        if (scope) {
+          url.searchParams.append('scope', scope);
+        }
+
+        const auth = await axios.get(url.toString(), {
+          headers: (await headers(scheme, service, scope)).intoAxios(),
+        });
+
         if (auth.status !== 200 || !auth.data?.token) {
           throw new AxiosError(`Failed to obtain token: ${auth.status} ${auth.statusText}`);
         }
@@ -58,7 +77,7 @@ export function authenticate(
 
       originalRequest.headers = originalRequest.headers ?? {};
       originalRequest.headers['Authorization'] = existing.authorization;
-      return axiosInstance(originalRequest);
+      return axios(originalRequest);
     }
 
     throw error;

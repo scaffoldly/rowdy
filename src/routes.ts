@@ -21,7 +21,8 @@ import {
   timer,
 } from 'rxjs';
 import { ABORT } from '.';
-import { Api, ApiSchema, ApiVersion } from './api';
+import { Api } from './api';
+import { ApiSchema, ApiVersion } from './api/types';
 
 export type RoutePaths = { [key: string]: string | undefined };
 export type RoutesSpec = { paths?: RoutePaths; default?: string };

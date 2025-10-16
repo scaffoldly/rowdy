@@ -1,100 +1,74 @@
-import { catchError, from, map, mergeAll, mergeMap, Observable, of, tap, throwError, toArray } from 'rxjs';
+import { Observable, of } from 'rxjs';
 import { Pipeline } from '../pipeline';
 import { HttpProxy } from '../proxy/http';
 import { match } from 'path-to-regexp';
 import { Logger } from '../log';
 import axios, { AxiosInstance } from 'axios';
 import { authenticate } from '../util/axios';
-
-export type ApiVersion = 'rowdy.run/v1alpha1';
-export type ApiKind = 'Routes' | 'NotFound' | Health['kind'] | Image['kind'];
-export type ApiSchema<Spec, Status> = {
-  apiVersion: ApiVersion;
-  kind: ApiKind;
-  spec?: Spec;
-  status: Status;
-};
-
-export type ApiResponseStatus = {
-  code: number;
-  headers?: { [key: string]: string | string[] };
-  reason?: string;
-};
-
-export type Health = {
-  kind: 'Health';
-  req: never;
-  opts: never;
-  res: { healthy: boolean };
-};
-
-type Ref = Partial<{
-  mediaType: string;
-  size: number;
-  digest: string;
-  annotations: Record<string, string>;
-}>;
-
-type Config = Ref;
-type Layer = Ref;
-type Manifest = Ref & Partial<{ platform: Partial<{ architecture: string; os: string }> }>;
-
-type ImageManifest = Partial<{
-  schemaVersion: number;
-  mediaType: 'application/vnd.oci.image.manifest.v1+json' | 'application/vnd.docker.distribution.manifest.v2+json';
-  config: Config;
-  layers: Layer[];
-}>;
-
-type IndexManifest = Partial<{
-  schemaVersion: number;
-  mediaType: 'application/vnd.oci.image.index.v1+json' | 'application/vnd.docker.distribution.manifest.list.v2+json';
-  manifests: Manifest[];
-}>;
-
-export type Image = {
-  kind: 'Image';
-  req: {
-    image: string | string[];
-  };
-  opts: { authorization?: string | undefined };
-  res: ApiResponseStatus & {
-    registry: string;
-    namespace: string;
-    name: string;
-    reference: string;
-    tags: string[];
-    index: IndexManifest;
-    images: Record<string, ImageManifest>;
-    blobs: (Ref & { platform: string; url: string })[];
-  };
-};
+import { ImageApi } from './image';
+import { ApiResponseStatus, ApiSchema, Health, Image, Registry } from './types';
+import { Environment } from '../environment';
+import { RegistryApi } from './registry';
 
 export class Api {
   public static readonly SLUG = '@rowdy';
-  private proxy?: HttpProxy<Pipeline>;
-  private axios: AxiosInstance = axios.create();
+  public readonly http: AxiosInstance = axios.create();
 
-  constructor(private log: Logger) {
-    this.axios.interceptors.response.use(...authenticate(this.axios, this.log));
+  private _images: ImageApi;
+  private _registry: RegistryApi;
+  private _proxy?: HttpProxy<Pipeline>;
+
+  constructor(public readonly log: Logger) {
+    this.http.interceptors.response.use(...authenticate(this.http, this.log));
+    this._images = new ImageApi(this);
+    this._registry = new RegistryApi(this);
   }
 
-  private routes = {
+  get Images(): ImageApi {
+    return this._images;
+  }
+
+  get Registry(): RegistryApi {
+    return this._registry;
+  }
+
+  get proxy(): HttpProxy<Pipeline> {
+    if (!this._proxy) {
+      throw new Error('No http proxy set on API. Set it with api.withProxy() before invoking the API.');
+    }
+    return this._proxy;
+  }
+
+  get environment(): Environment {
+    return this.proxy.pipeline.environment;
+  }
+
+  public readonly routes = {
     GET: [
       {
         match: match<Health['req']>('/health'),
         handler: this.health.bind(this),
       },
       {
-        match: [match<Image['req']>('/images/*image')],
-        handler: this.image.bind(this),
+        match: match<Image['Req']>('/images/*image'),
+        handler: this.Images.getImage.bind(this.Images),
+      },
+      {
+        match: match<Registry['Req']>('/registry'),
+        handler: this.Registry.getRegistry.bind(this.Registry),
+      },
+    ],
+    PUT: [
+      {
+        match: match<Image['Req']>('/images/*image'),
+        handler: this.Images.putImage.bind(this.Images),
       },
     ],
   };
 
   withProxy(proxy: HttpProxy<Pipeline>): this {
-    this.proxy = proxy;
-    this.axios.defaults.headers.common['User-Agent'] = proxy.headers.userAgent;
+    this._proxy = proxy;
+    this.http.defaults.headers.common['User-Agent'] = proxy.headers.userAgent;
     return this;
   }
 
@@ -109,185 +83,6 @@ export class Api {
     });
   }
 
-  image(req: Image['req'], opts?: Image['opts']): Observable<ApiSchema<Image['req'], Image['res']>> {
-    let { image } = req;
-    if (typeof image === 'string') {
-      image = image.split('/');
-    }
-    let registry: string | undefined = 'registry-1.docker.io';
-    let namespace: string | undefined = 'library';
-    let name: string | undefined = undefined;
-    let reference = 'latest';
-
-    if (image.length > 3) {
-      return throwError(() => new Error(`Image name has too many segments`));
-    }
-
-    if (image.length === 3) {
-      registry = image[0] || registry;
-      namespace = image[1] || namespace;
-      name = image[2];
-    }
-
-    if (image.length === 2) {
-      registry = 'registry-1.docker.io';
-      namespace = image[0] || namespace;
-      name = image[1];
-    }
-
-    if (image.length === 1) {
-      registry = 'registry-1.docker.io';
-      namespace = 'library';
-      name = image[0];
-    }
-
-    if (name?.includes('@sha256:')) {
-      [name, reference = ''] = name.split('@sha256:');
-      if (!reference) {
-        return throwError(() => new Error('Invalid image name'));
-      }
-      reference = `sha256:${reference}`;
-    }
-
-    if (!reference.startsWith('sha256:') && name?.includes(':')) {
-      [name, reference = 'latest'] = name.split(':');
-    }
-
-    if (!name) {
-      return throwError(() => new Error('Invalid image name'));
-    }
-
-    const url = (reference: string, slug: 'manifests' | 'blobs' = 'manifests'): string =>
-      `https://${registry}/v2/${namespace}/${name}/${slug}/${reference}`;
-
-    req.image = `${registry}/${namespace}/${name}:${reference}`;
-
-    const res: Image['res'] = {
-      code: 200,
-      registry,
-      namespace,
-      name,
-      reference,
-      index: {},
-      images: {},
-      blobs: [],
-      tags: [],
-    };
-
-    if (!reference.startsWith('sha256:')) {
-      res.tags.push(reference);
-    }
-
-    const respond = (spec: Image['req'], status: Image['res']): Observable<ApiSchema<Image['req'], Image['res']>> => {
-      this.log.debug(`Image Spec`, JSON.stringify(spec, null, 2));
-      this.log.debug(`Image Status`, JSON.stringify(status, null, 2));
-      return of({
-        apiVersion: 'rowdy.run/v1alpha1',
-        kind: 'Image',
-        spec,
-        status,
-      });
-    };
-
-    const headers: Record<string, string | string[] | undefined> = {
-      Accept: [
-        'application/vnd.oci.image.index.v1+json',
-        'application/vnd.docker.distribution.manifest.list.v2+json',
-        'application/vnd.oci.image.manifest.v1+json',
-        'application/vnd.docker.distribution.manifest.v2+json',
-      ],
-      Authorization: opts?.authorization,
-    };
-
-    return of(url(reference))
-      .pipe(
-        mergeMap((u) =>
-          from(this.axios.get<IndexManifest>(u, { headers })).pipe(
-            tap(() => this.log.debug(`Fetched index manifest from ${u}`)),
-            map(({ data, headers, config }) => {
-              if (data.schemaVersion !== 2) {
-                res.index = data;
-                throw new Error(`Unsupported schemaVersion on index: ${data.schemaVersion}`);
-              }
-              if (
-                data.mediaType !== 'application/vnd.oci.image.index.v1+json' &&
-                data.mediaType !== 'application/vnd.docker.distribution.manifest.list.v2+json'
-              ) {
-                res.index = data;
-                throw new Error(`Unsupported mediaType on index: ${data.mediaType}`);
-              }
-
-              if (config.headers.Authorization) {
-                opts = { ...opts, authorization: config.headers.Authorization as string };
-              }
-
-              res.reference = headers['docker-content-digest'] || reference;
-              res.index = data;
-              res.index.manifests = (res.index.manifests || []).filter(
-                (m) => m.annotations?.['vnd.docker.reference.type'] !== 'attestation-manifest' // TODO: attestations
-              );
-
-              return res.index.manifests
-                .filter(
-                  (m) =>
-                    !!m.digest &&
-                    !!m.platform?.os &&
-                    m.platform.os !== 'unknown' &&
-                    !!m.platform.architecture &&
-                    m.platform.architecture !== 'unknown'
-                )
-                .map((m) => ({
-                  platform: `${m.platform!.os}/${m.platform!.architecture}`,
-                  digest: m.digest!,
-                  url: url(m.digest!),
-                }));
-            }),
-            mergeAll()
-          )
-        )
-      )
-      .pipe(
-        mergeMap(({ platform, digest, url: u }) =>
-          from(this.axios.get<ImageManifest>(u, { headers })).pipe(
-            tap(() => this.log.debug(`Fetched ${platform} image manifest from ${u}`)),
-            map(({ data }) => {
-              if (data.schemaVersion !== 2) {
-                res.images[digest] = data;
-                throw new Error(`Unsupported schemaVersion on ${digest}: ${data.schemaVersion}`);
-              }
-              if (
-                data.mediaType !== 'application/vnd.oci.image.manifest.v1+json' &&
-                data.mediaType !== 'application/vnd.docker.distribution.manifest.v2+json'
-              ) {
-                res.images[digest] = data;
-                throw new Error(`Unsupported mediaType on ${digest}: ${data.mediaType}`);
-              }
-
-              res.images[digest] = data;
-              if (data.config && data.config.digest) {
-                res.blobs.push({ ...data.config, platform, url: url(data.config.digest, 'blobs') });
-              }
-              res.blobs.push(
-                ...(data.layers || [])
-                  .filter((layer) => !!layer.digest)
-                  .map((layer) => ({ ...layer, platform, url: url(layer.digest!, 'blobs') }))
-              );
-            })
-          )
-        )
-      )
-      .pipe(toArray())
-      .pipe(mergeMap(() => respond(req, res)))
-      .pipe(
-        catchError((err) => {
-          this.log.warn(`Error fetching image ${req.image}: ${err.message}`);
-          res.code = 206;
-          res.reason = err.message;
-          return respond(req, res);
-        })
-      );
-  }
-
   handle(): Observable<ApiSchema<unknown, ApiResponseStatus>> {
     const handler = this.handler();
 
@@ -299,11 +94,6 @@ export class Api {
   }
 
   private handler(): Observable<ApiSchema<unknown, ApiResponseStatus>> | undefined {
-    if (!this.proxy) {
-      this.log.warn('No proxy set on API');
-      return undefined;
-    }
-
     const { method, body } = this.proxy;
     const handlers = this.routes[method.toUpperCase() as keyof typeof this.routes];
     if (!handlers) {

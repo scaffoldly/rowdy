@@ -18,6 +18,7 @@ type Args = {
   debug: boolean;
   trace: boolean;
   routes: string;
+  registry: string | undefined;
   '--'?: string[];
 };
 
@@ -31,6 +32,7 @@ export class Environment implements ILoggable {
   private _routes: Routes;
   private _command?: string[] | undefined;
   private _env = process.env;
+  private _args: Args;
 
   constructor(public readonly log: Logger) {
     this.signal.addEventListener('abort', () => {
@@ -39,7 +41,7 @@ export class Environment implements ILoggable {
       this._pipelines = [];
     });
 
-    const args: Args = yargs(hideBin(process.argv))
+    this._args = yargs(hideBin(process.argv))
       .parserConfiguration({ 'halt-at-non-option': true, 'populate--': true })
       .scriptName(this.bin!)
       .env(this.bin!.toUpperCase())
@@ -54,18 +56,22 @@ export class Environment implements ILoggable {
         default: `file://${process.cwd()}${path.sep}routes.yaml`,
         description: 'Path or URL to routing rules (file:// or data:).',
       })
+      .option('registry', {
+        type: 'string',
+        description: 'Image registry to use for pushing and serving images.',
+      })
       .parseSync();
 
-    if (args.debug) {
+    if (this._args.debug) {
       this.log = this.log.withDebugging();
     }
 
-    if (args.trace) {
+    if (this._args.trace) {
       this.log = this.log.withTracing();
     }
 
-    this._command = args['--'];
-    this._routes = Routes.fromURL(args.routes);
+    this._command = this._args['--'];
+    this._routes = Routes.fromURL(this._args.routes);
 
     log.debug('Environment', { environment: this });
 
@@ -74,6 +80,13 @@ export class Environment implements ILoggable {
     if (isatty(process.stdout.fd)) {
       log.info('Press Ctrl+C to exit.');
     }
+  }
+
+  get opts(): Args {
+    // Return a copy to prevent mutation
+    const args = { ...this._args };
+    delete args['--'];
+    return args;
   }
 
   get routes(): Routes {
