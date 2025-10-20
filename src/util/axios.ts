@@ -4,7 +4,8 @@ import { Logger } from '../log';
 import { HttpHeaders } from '../proxy/http';
 import { headers as awsHeaders } from '../aws/headers';
 
-const headers = async (realm: string, service: string, scope?: string): Promise<HttpHeaders> => {
+// eslint-disable-next-line @typescript-eslint/no-restricted-types
+const headers = async (realm: URL, service: string, scope?: string): Promise<HttpHeaders> => {
   if (service.endsWith('.amazonaws.com')) {
     return awsHeaders(realm, service, scope);
   }
@@ -46,6 +47,7 @@ export function authenticate(
 
         // eslint-disable-next-line no-restricted-globals
         const url = new URL(realm);
+
         // TODO: Make sure this is necessary for AWS, as it doen's return realm with /token
         if (!url.pathname.endsWith('/token')) {
           url.pathname = `${url.pathname}/token`;
@@ -57,7 +59,7 @@ export function authenticate(
         }
 
         const auth = await axios.get(url.toString(), {
-          headers: (await headers(realm, service, scope)).intoAxios(),
+          headers: (await headers(url, service, scope)).intoAxios(),
         });
 
         if (auth.status !== 200 || !auth.data?.token) {

@@ -4,20 +4,19 @@ import { Sha256 } from '@aws-crypto/sha256-js';
 import { HttpRequest } from '@aws-sdk/protocol-http';
 import { log } from '../log';
 
-export const headers = async (realm: string, service: string, scope?: string): Promise<HttpHeaders> => {
-  // eslint-disable-next-line no-restricted-globals
-  const url = new URL(realm);
+// eslint-disable-next-line @typescript-eslint/no-restricted-types
+export const headers = async (realm: URL, service: string, scope?: string): Promise<HttpHeaders> => {
   const request = new HttpRequest({
     method: 'GET',
-    protocol: url.protocol,
-    hostname: url.hostname,
-    path: url.pathname,
+    protocol: realm.protocol,
+    hostname: realm.hostname,
+    path: realm.pathname,
     query: {
       service,
       scope: scope || null,
     },
     headers: {
-      host: url.host,
+      host: realm.host,
     },
   });
 
