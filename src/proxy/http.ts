@@ -251,10 +251,9 @@ class RowdyHttpResponse extends HttpResponse {
   }
 
   withError(error: unknown): this {
-    const reason = error instanceof Error ? error.message : String(error);
     return this.withStatus(500)
-      .withHeader('x-reason', reason)
-      .withData(Readable.from(`Internal Server Error: ${reason}`));
+      .withHeader('content-type', 'text/plain; charset=utf-8')
+      .withData(Readable.from(String(error)));
   }
 
   @Trace
