@@ -1,4 +1,4 @@
-import { from, map, NEVER, Observable, of, race, switchMap } from 'rxjs';
+import { catchError, from, map, NEVER, Observable, of, race, switchMap } from 'rxjs';
 import { Pipeline, Proxy, Request } from '../pipeline';
 import { Readable } from 'stream';
 import { ILoggable, log, Logger, Trace } from '../log';
@@ -35,7 +35,9 @@ export abstract class HttpProxy<P extends Pipeline> extends Proxy<P, HttpRespons
 
   @Trace
   override invoke(): Observable<HttpResponse> {
-    return race([new LocalHttpResponse().handle(this), new RowdyHttpResponse(this.pipeline.log).handle(this)]);
+    return race([new LocalHttpResponse().handle(this), new RowdyHttpResponse(this.pipeline.log).handle(this)]).pipe(
+      catchError((error) => new RowdyHttpResponse(this.pipeline.log).withError(error).handle(this))
+    );
   }
 
   override repr(): string {
@@ -246,6 +248,13 @@ class RowdyHttpResponse extends HttpResponse {
     );
 
     this.rowdy = new Rowdy(this.log);
+  }
+
+  withError(error: unknown): this {
+    const reason = error instanceof Error ? error.message : String(error);
+    return this.withStatus(500)
+      .withHeader('x-reason', reason)
+      .withData(Readable.from(`Internal Server Error: ${reason}`));
   }
 
   @Trace
