@@ -36,7 +36,7 @@ export abstract class HttpProxy<P extends Pipeline> extends Proxy<P, HttpRespons
   @Trace
   override invoke(): Observable<HttpResponse> {
     return race([new LocalHttpResponse().handle(this), new RowdyHttpResponse(this.pipeline.log).handle(this)]).pipe(
-      catchError((error) => new RowdyHttpResponse(this.pipeline.log).withError(error).handle(this))
+      catchError((error) => new RowdyHttpResponse(this.pipeline.log).catch(error))
     );
   }
 
@@ -250,10 +250,12 @@ class RowdyHttpResponse extends HttpResponse {
     this.rowdy = new Rowdy(this.log);
   }
 
-  withError(error: unknown): this {
-    return this.withStatus(500)
-      .withHeader('content-type', 'text/plain; charset=utf-8')
-      .withData(Readable.from(String(error)));
+  catch(error: unknown): Observable<HttpResponse> {
+    return of(
+      this.withStatus(500)
+        .withHeader('content-type', 'text/plain; charset=utf-8')
+        .withData(Readable.from(String(error)))
+    );
   }
 
   @Trace
