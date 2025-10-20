@@ -4,9 +4,9 @@ import { Logger } from '../log';
 import { HttpHeaders } from '../proxy/http';
 import { headers as awsHeaders } from '../aws/headers';
 
-const headers = async (scheme: string, service: string, scope?: string): Promise<HttpHeaders> => {
+const headers = async (realm: string, service: string, scope?: string): Promise<HttpHeaders> => {
   if (service.endsWith('.amazonaws.com')) {
-    return awsHeaders(scheme, service, scope);
+    return awsHeaders(realm, service, scope);
   }
   return HttpHeaders.from({});
 };
@@ -57,7 +57,7 @@ export function authenticate(
         }
 
         const auth = await axios.get(url.toString(), {
-          headers: (await headers(scheme, service, scope)).intoAxios(),
+          headers: (await headers(realm, service, scope)).intoAxios(),
         });
 
         if (auth.status !== 200 || !auth.data?.token) {
