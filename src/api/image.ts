@@ -323,18 +323,17 @@ export class ImageApi {
 }
 
 class Transfer implements ILoggable {
-  public readonly toUrl: Observable<string>;
+  // public readonly toUrl: Observable<string>;
 
   constructor(
     public api: IApi,
     public fromUrl: string,
-    toUrl: string,
+    public toUrl: string,
     public mediaType: string,
     public digest: string,
     public finalizer: () => void
   ) {
-    // eslint-disable-next-line no-restricted-globals
-    this.toUrl = of(new URL(toUrl)).pipe((url) => {});
+    // this.toUrl = of(new URL(toUrl)).pipe((url) => {});
   }
 
   get log(): Logger {
