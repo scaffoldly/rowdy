@@ -38,6 +38,7 @@ export class Rowdy {
     return this.proxy?.pipeline.environment;
   }
 
+  // TODO: Implement https://github.com/kubernetes/cri-api/blob/v0.33.1/pkg/apis/runtime/v1/api.proto
   public readonly routes = {
     GET: [
       {

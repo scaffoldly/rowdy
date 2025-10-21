@@ -51,7 +51,9 @@ export class ImageApi {
             // Blobs
             ...fromImage.blobs.map((blob) => {
               const fromUrl = blob.url;
-              const toUrl = fromUrl.replace(fromImage.registry, toImage.registry).replace(blob.digest!, 'uploads/');
+              const toUrl = fromUrl
+                .replace(fromImage.registry, toImage.registry)
+                .replace(blob.digest!, `uploads/?digest=${blob.digest}`);
               const mediaType = blob.mediaType!;
               const digest = blob.digest!;
               return new Transfer(this.api, fromUrl, toUrl, mediaType, digest, () => {
@@ -84,6 +86,18 @@ export class ImageApi {
                 toImage.index = fromImage.index;
               }
             )
+          );
+
+          transfers.push(
+            // Tags
+            ...fromImage.tags.map((tag) => {
+              const fromUrl = `${fromImage.registry}/${fromImage.namespace}/${fromImage.name}/manifests/${tag}`;
+              const toUrl = fromUrl.replace(fromImage.registry, toImage.registry);
+              const mediaType = fromImage.index.mediaType!;
+              return new Transfer(this.api, fromUrl, toUrl, mediaType, tag, () => {
+                toImage.tags.push(tag);
+              });
+            })
           );
 
           this.log.debug(`Prepared transfers for image ${req.image}`, transfers);
