@@ -2,7 +2,7 @@ import { catchError, from, map, mergeAll, mergeMap, Observable, of, switchMap, t
 import { AxiosInstance } from 'axios';
 import { ApiSchema, IApi, Image } from './types';
 import { Readable } from 'stream';
-import { Logger } from '../log';
+import { ILoggable, Logger } from '../log';
 
 export class ImageApi {
   constructor(private api: IApi) {}
@@ -86,7 +86,7 @@ export class ImageApi {
             )
           );
 
-          this.log.debug(`Prepared transfers for image ${req.image}`, { transfers: JSON.stringify(transfers) });
+          this.log.debug(`Prepared transfers for image ${req.image}`, transfers);
           this.log.info(`Prepared ${transfers.length} transfers for image ${req.image}`);
           return { fromImage, toImage, transfers };
         })
@@ -308,7 +308,7 @@ export class ImageApi {
   }
 }
 
-class Transfer {
+class Transfer implements ILoggable {
   constructor(
     public api: IApi,
     public fromUrl: string,
@@ -353,5 +353,9 @@ class Transfer {
           return this.finalizer();
         })
       );
+  }
+
+  repr(): string {
+    return `Transfer(from=${this.fromUrl}, to=${this.toUrl}, digest=${this.digest}, mediaType=${this.mediaType})`;
   }
 }
