@@ -340,33 +340,61 @@ class Transfer implements ILoggable {
     return this.api.http;
   }
 
-  public pipe(): Observable<void> {
+  get location(): Observable<string> {
+    // eslint-disable-next-line no-restricted-globals
+    const url = new URL(this.toUrl);
+
+    if (!url.pathname.endsWith('/uploads/')) {
+      return of(url.toString());
+    }
+
+    url.search = '';
+    url.hash = '';
+
     return from(
-      this.http.get<Readable>(this.fromUrl, {
-        responseType: 'stream',
-        maxBodyLength: Infinity,
-        headers: { 'Content-Type': this.mediaType },
-        onDownloadProgress: (e) => this.log.debug(`Downloaded ${e.loaded} bytes from ${this.fromUrl}`),
-      })
-    )
-      .pipe(catchError((err) => throwError(() => new Error(`Error downloading from ${this.fromUrl}: ${err.message}`))))
-      .pipe(
-        switchMap(({ data }) =>
-          from(
-            this.http.put(this.toUrl, data, {
+      this.http.post<void, { headers: { location?: string; Location?: string } }, null>(url.toString(), null)
+    ).pipe(
+      map((response) => {
+        const location = response.headers['location'] || response.headers['Location'];
+        if (!location) {
+          throw new Error(`No Location header received from ${url.toString()}`);
+        }
+        this.log.debug(`Initiated upload to ${this.toUrl}, received location ${location}`);
+        return location;
+      }),
+      catchError((err) => throwError(() => new Error(`Error initiating upload to ${this.toUrl}: ${err.message}`)))
+    );
+  }
+
+  public pipe(): Observable<void> {
+    return this.location.pipe(
+      switchMap((location) =>
+        this.http
+          .get<Readable>(this.fromUrl, {
+            responseType: 'stream',
+            maxBodyLength: Infinity,
+            headers: { 'Content-Type': this.mediaType },
+            onDownloadProgress: (e) => this.log.debug(`Downloaded ${e.loaded} bytes from ${this.fromUrl}`),
+          })
+          .catch((err) => {
+            throw new Error(`Error downloading from ${this.fromUrl}: ${err.message}`);
+          })
+          .then(({ data }) =>
+            this.http.put(location, data, {
               maxBodyLength: Infinity,
               headers: { 'Content-Type': this.mediaType },
               onUploadProgress: (e) => this.log.debug(`Uploaded ${e.loaded} bytes to ${this.toUrl}`),
             })
-          ).pipe(catchError((err) => throwError(() => new Error(`Error uploading to ${this.toUrl}: ${err.message}`))))
-        )
+          )
+          .then((response) => {
+            this.log.debug(`Transferred ${this.fromUrl} to ${this.toUrl}: ${response.status} ${response.statusText}`);
+            return this.finalizer();
+          })
+          .catch((err) => {
+            throw new Error(`Error uploading to ${this.toUrl}: ${err.message}`);
+          })
       )
-      .pipe(
-        map((response) => {
-          this.log.debug(`Transferred ${this.fromUrl} to ${this.toUrl}: ${response.status} ${response.statusText}`);
-          return this.finalizer();
-        })
-      );
+    );
   }
 
   repr(): string {
