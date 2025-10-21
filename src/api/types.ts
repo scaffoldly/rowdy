@@ -10,12 +10,16 @@ export interface IApi {
   Registry: IRegistryApi;
 }
 
-export type IImageApi = {
+export interface IImageApi {
+  log: Logger;
+  http: AxiosInstance;
   getImage(req: Image['Req'], opts?: Image['Opts']['GET']): Observable<ApiSchema<Image['Req'], Image['Res']>>;
   putImage(req: Image['Req'], opts?: Image['Opts']['PUT']): Observable<ApiSchema<Image['Req'], Image['Res']>>;
-};
+}
 
 export interface IRegistryApi {
+  log: Logger;
+  http: AxiosInstance;
   infer(): Observable<IRegistryApi>;
   getRegistry(req?: Registry['Req']): Observable<ApiSchema<Registry['Req'], Registry['Res']>>;
 }
@@ -63,6 +67,7 @@ export type Image = {
       authorization?: string;
     };
     PUT: Image['Opts']['GET'] & {
+      namepace?: string;
       registry?: string;
     };
   };
