@@ -44,7 +44,7 @@ describe('api', () => {
             expect(response.apiVersion).toBe('rowdy.run/v1alpha1');
             expect(response.kind).toBe('Registry');
             expect(response.spec!.registry).toMatch(/\.dkr\.ecr\.[a-z0-9-]+\.amazonaws\.com$/);
-            expect(response.spec!.authorization).toMatch(/^Basic /);
+            expect(response.spec!.authorization).toBeUndefined();
             expect(response.status.registry).toMatch(/\.dkr\.ecr\.[a-z0-9-]+\.amazonaws\.com$/);
             expect(response.status.code).toBe(200);
             done();
