@@ -323,14 +323,19 @@ export class ImageApi {
 }
 
 class Transfer implements ILoggable {
+  public readonly toUrl: Observable<string>;
+
   constructor(
     public api: IApi,
     public fromUrl: string,
-    public toUrl: string,
+    toUrl: string,
     public mediaType: string,
     public digest: string,
     public finalizer: () => void
-  ) {}
+  ) {
+    // eslint-disable-next-line no-restricted-globals
+    this.toUrl = of(new URL(toUrl)).pipe((url) => {});
+  }
 
   get log(): Logger {
     return this.api.log;
@@ -392,7 +397,7 @@ class Transfer implements ILoggable {
           .then(({ data }) =>
             this.http.put(location, data, {
               maxBodyLength: Infinity,
-              headers: { 'Content-Type': this.mediaType },
+              headers: { 'Content-Type': 'application/octet-stream' },
               onUploadProgress: (e) => this.log.debug(`Uploaded ${e.loaded} bytes to ${this.toUrl}`),
             })
           )
