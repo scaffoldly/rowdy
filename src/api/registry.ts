@@ -88,7 +88,7 @@ export class RegistryApi {
       return api.login().pipe(switchMap((api) => api.getRegistry(api._default!)));
     }
 
-    const spec: Registry['Req'] = { registry, authorization };
+    const spec: Registry['Req'] = { registry };
     const status: Registry['Res'] = { registry, code: 200 };
 
     this.log.debug(`Registry Spec`, JSON.stringify(spec, null, 2));
