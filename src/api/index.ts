@@ -30,15 +30,12 @@ export class Rowdy {
     return this._registry;
   }
 
-  get proxy(): HttpProxy<Pipeline> {
-    if (!this._proxy) {
-      throw new Error('No http proxy set on API. Set it with api.withProxy() before invoking the API.');
-    }
+  get proxy(): HttpProxy<Pipeline> | undefined {
     return this._proxy;
   }
 
-  get environment(): Environment {
-    return this.proxy.pipeline.environment;
+  get environment(): Environment | undefined {
+    return this.proxy?.pipeline.environment;
   }
 
   public readonly routes = {
@@ -92,14 +89,19 @@ export class Rowdy {
   }
 
   private handler(): Observable<ApiSchema<unknown, ApiResponseStatus>> | undefined {
-    const { method, body } = this.proxy;
+    const { method, body, uri } = this.proxy || {};
+    if (!method || !body || !uri) {
+      this.log.warn('Missing method, body, or uri in proxy', { method, body, uri });
+      return undefined;
+    }
+
     const handlers = this.routes[method.toUpperCase() as keyof typeof this.routes];
     if (!handlers) {
       this.log.warn(`No handlers for method: ${method}`);
       return undefined;
     }
 
-    const { pathname: path, searchParams } = this.proxy.uri;
+    const { pathname: path, searchParams } = uri;
     // TODO: handle encoding? or does body.toString() already do that
     // TODO: type checking and opts validation
     let opts = { ...Object.fromEntries(searchParams), ...(body.length ? JSON.parse(body.toString()) : {}) };

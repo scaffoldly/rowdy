@@ -6,7 +6,7 @@ import { Environment } from '../environment';
 export interface IApi {
   http: AxiosInstance;
   log: Logger;
-  environment: Environment;
+  environment: Environment | undefined;
   Registry: IRegistryApi;
 }
 
@@ -16,7 +16,8 @@ export type IImageApi = {
 };
 
 export interface IRegistryApi {
-  getRegistry(req: Registry['Req']): Observable<ApiSchema<Registry['Req'], Registry['Res']>>;
+  infer(): Observable<IRegistryApi>;
+  getRegistry(req?: Registry['Req']): Observable<ApiSchema<Registry['Req'], Registry['Res']>>;
 }
 
 export type ApiVersion = 'rowdy.run/v1alpha1';
@@ -49,7 +50,6 @@ export type Registry = {
   };
   Res: ApiResponseStatus & {
     registry: string;
-    authorization: string;
   };
 };
 

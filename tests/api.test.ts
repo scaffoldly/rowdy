@@ -1,7 +1,9 @@
 import { Rowdy, Logger } from '@scaffoldly/rowdy';
 
 describe('api', () => {
-  const rowdy = new Rowdy(new Logger().withDebugging().withTracing());
+  // const logger = new Logger().withDebugging().withTracing();
+  const logger = new Logger();
+  const rowdy = new Rowdy(logger);
 
   describe('health', () => {
     it('should respond to health', (done) => {
@@ -30,5 +32,26 @@ describe('api', () => {
         done();
       });
     }, 5000);
+  });
+
+  describe('registry', () => {
+    describe('ecr', () => {
+      const _it = process.env.AWS_ACCESS_KEY_ID && process.env.AWS_SECRET_ACCESS_KEY ? it : it.skip;
+      _it(
+        'should infer an ecr registry',
+        (done) => {
+          rowdy.Registry.getRegistry().subscribe((response) => {
+            expect(response.apiVersion).toBe('rowdy.run/v1alpha1');
+            expect(response.kind).toBe('Registry');
+            expect(response.spec!.registry).toMatch(/\.dkr\.ecr\.[a-z0-9-]+\.amazonaws\.com$/);
+            expect(response.spec!.authorization).toMatch(/^Basic /);
+            expect(response.status.registry).toMatch(/\.dkr\.ecr\.[a-z0-9-]+\.amazonaws\.com$/);
+            expect(response.status.code).toBe(200);
+            done();
+          });
+        },
+        5000
+      );
+    });
   });
 });
