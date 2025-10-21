@@ -78,7 +78,8 @@ export class RegistryApi {
   getRegistry(req?: Registry['Req']): Observable<ApiSchema<Registry['Req'], Registry['Res']>> {
     const { registry, authorization } = req || {};
     if (!registry) {
-      return this.infer().pipe(switchMap((api) => api.getRegistry(api._default!)));
+      const api = new RegistryApi(this.api);
+      return api.infer().pipe(switchMap((api) => api.getRegistry(api._default!)));
     }
 
     if (!authorization) {
