@@ -1,5 +1,5 @@
 import { catchError, from, map, mergeAll, mergeMap, Observable, of, switchMap, tap, throwError, toArray } from 'rxjs';
-import { AxiosDefaults, AxiosInstance, AxiosRequestConfig } from 'axios';
+import { AxiosDefaults, AxiosInstance } from 'axios';
 import { ApiSchema, IApi, Image } from './types';
 import { Readable } from 'stream';
 import { ILoggable, Logger } from '../log';
