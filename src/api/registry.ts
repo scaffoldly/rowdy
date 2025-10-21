@@ -20,6 +20,10 @@ export class RegistryApi {
   infer(): Observable<RegistryApi> {
     if (this.api.environment?.opts.registry) {
       const api = this._default ? this : new RegistryApi(this.api);
+      api._default = {
+        registry: this.api.environment.opts.registry,
+        authorization: '',
+      };
       return api.login();
     }
     return race([
@@ -29,7 +33,7 @@ export class RegistryApi {
     ]).pipe(switchMap((api) => api.login()));
   }
 
-  private login(): Observable<RegistryApi> {
+  private login(): Observable<this> {
     const { _default } = this;
     if (!_default) {
       return throwError(() => new Error('Use infer() before login()'));
@@ -50,20 +54,19 @@ export class RegistryApi {
     );
   }
 
-  private localhost(): Observable<RegistryApi> {
+  private localhost(): Observable<this> {
     // TODO: Implement localhost registry inference
     return NEVER;
   }
 
-  private aws(): Observable<RegistryApi> {
+  private aws(): Observable<this> {
     const sts = new STSClient({});
     return combineLatest([from(sts.send(new GetCallerIdentityCommand({}))), from(sts.config.region())]).pipe(
       map(([{ Account }, region]) => `${Account}.dkr.ecr.${region}.amazonaws.com`),
       map((registry) => {
         this.log.debug(`Inferred AWS ECR Registry: ${registry}`);
-        const api = new RegistryApi(this.api);
-        api._default = { registry, authorization: '' };
-        return api;
+        this._default = { registry, authorization: '' };
+        return this;
       }),
       catchError((error) => {
         this.log.debug(`Unable to infer AWS ECR Registry: ${error instanceof Error ? error.message : String(error)}`);
