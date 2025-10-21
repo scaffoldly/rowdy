@@ -1,5 +1,5 @@
 import { catchError, from, map, mergeAll, mergeMap, Observable, of, switchMap, tap, throwError, toArray } from 'rxjs';
-import { AxiosInstance } from 'axios';
+import { AxiosDefaults, AxiosInstance, AxiosRequestConfig } from 'axios';
 import { ApiSchema, IApi, Image } from './types';
 import { Readable } from 'stream';
 import { ILoggable, Logger } from '../log';
@@ -348,19 +348,29 @@ class Transfer implements ILoggable {
       return of(url.toString());
     }
 
+    const { search, hash } = url;
     url.search = '';
     url.hash = '';
 
-    return from(
-      this.http.post<void, { headers: { location?: string; Location?: string } }, null>(url.toString(), null)
-    ).pipe(
+    return from(this.http.post<AxiosDefaults>(url.toString(), null)).pipe(
+      tap((response) =>
+        this.log.debug(`Upload initiated to ${this.toUrl}`, {
+          status: response.status,
+          headers: JSON.stringify(response.headers),
+        })
+      ),
       map((response) => {
         const location = response.headers['location'] || response.headers['Location'];
         if (!location) {
-          throw new Error(`No Location header received from ${url.toString()}`);
+          throw new Error(`No Location header received from ${response.config.url}`);
         }
-        this.log.debug(`Initiated upload to ${this.toUrl}, received location ${location}`);
-        return location;
+        // eslint-disable-next-line no-restricted-globals
+        const url = new URL(location);
+        url.search = search;
+        url.hash = hash;
+
+        this.log.debug(`Upload to ${this.toUrl} will use location ${url.toString()}`);
+        return url.toString();
       }),
       catchError((err) => throwError(() => new Error(`Error initiating upload to ${this.toUrl}: ${err.message}`)))
     );
@@ -387,11 +397,11 @@ class Transfer implements ILoggable {
             })
           )
           .then((response) => {
-            this.log.debug(`Transferred ${this.fromUrl} to ${this.toUrl}: ${response.status} ${response.statusText}`);
+            this.log.debug(`Transferred ${this.fromUrl} to ${location}: ${response.status} ${response.statusText}`);
             return this.finalizer();
           })
           .catch((err) => {
-            throw new Error(`Error uploading to ${this.toUrl}: ${err.message}`);
+            throw new Error(`Error uploading to ${location}: ${err.message}`);
           })
       )
     );
