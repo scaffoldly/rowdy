@@ -6,7 +6,6 @@ import {
   map,
   mergeAll,
   mergeMap,
-  NEVER,
   Observable,
   of,
   switchMap,
@@ -57,7 +56,7 @@ export class ImageApi {
       });
     };
 
-    combineLatest([this.getImage(req, opts), this.api.Registry.getRegistry(opts || {})])
+    return combineLatest([this.getImage(req, opts), this.api.Registry.getRegistry(opts || {})])
       .pipe(
         switchMap(([{ status: fromImage }, { status: registry }]) =>
           this.getImage(
@@ -153,7 +152,7 @@ export class ImageApi {
       )
       .pipe(
         toArray(),
-        map((manifests) => {
+        switchMap((manifests) => {
           this.log.info(`Transferred ${res.blobs.length} blobs and pushed ${manifests.length} manifests`);
           res.code = 200;
           return respond(req, res);
@@ -165,8 +164,6 @@ export class ImageApi {
           return respond(req, res);
         })
       );
-
-    return NEVER;
   }
 
   getImage(req: Image['Req'], opts?: Image['Opts']['GET']): Observable<ApiSchema<Image['Req'], Image['Res']>> {
