@@ -1,5 +1,5 @@
 import { catchError, from, map, mergeAll, mergeMap, Observable, of, switchMap, tap, throwError, toArray } from 'rxjs';
-import { AxiosDefaults, AxiosInstance } from 'axios';
+import { AxiosInstance } from 'axios';
 import { ApiSchema, IApi, Image } from './types';
 import { Readable } from 'stream';
 import { ILoggable, Logger } from '../log';
@@ -346,37 +346,32 @@ class Transfer implements ILoggable {
 
   get location(): Observable<string> {
     // eslint-disable-next-line no-restricted-globals
-    const url = new URL(this.toUrl);
+    const base = new URL(this.toUrl);
 
-    if (!url.pathname.endsWith('/uploads/')) {
-      return of(url.toString());
+    // If this isn't an /uploads/ endpoint, it's already a finalized upload URL
+    if (!base.pathname.endsWith('/uploads/')) {
+      return of(base.toString());
     }
 
-    const { search, hash } = url;
-    url.search = '';
-    url.hash = '';
-
-    return from(this.http.post<AxiosDefaults>(url.toString(), null)).pipe(
-      tap((response) =>
-        this.log.debug(`Upload initiated to ${this.toUrl}`, {
+    return from(this.http.post(`${base.origin}${base.pathname}`, null)).pipe(
+      tap((response) => {
+        this.log.debug(`Upload initiated to ${base.toString()}`, {
           status: response.status,
           headers: JSON.stringify(response.headers),
-        })
-      ),
+        });
+      }),
       map((response) => {
         const location = response.headers['location'] || response.headers['Location'];
         if (!location) {
           throw new Error(`No Location header received from ${response.config.url}`);
         }
-        // eslint-disable-next-line no-restricted-globals
-        const url = new URL(location);
-        url.search = search;
-        url.hash = hash;
 
-        this.log.debug(`Upload to ${this.toUrl} will use location ${url.toString()}`);
-        return url.toString();
+        // eslint-disable-next-line no-restricted-globals
+        const resolved = new URL(location, `${base.origin}/`).toString();
+        this.log.debug(`Upload to ${this.toUrl} will use location ${resolved}`);
+        return resolved;
       }),
-      catchError((err) => throwError(() => new Error(`Error initiating upload to ${this.toUrl}: ${err.message}`)))
+      catchError((err) => throwError(() => new Error(`Error initiating upload to ${base}: ${err.message}`)))
     );
   }
 
@@ -387,19 +382,18 @@ class Transfer implements ILoggable {
           .get<Readable>(this.fromUrl, {
             responseType: 'stream',
             maxBodyLength: Infinity,
-            headers: { 'Content-Type': this.mediaType },
+            headers: { Accept: this.mediaType },
             onDownloadProgress: (e) => this.log.debug(`Downloaded ${e.loaded} bytes from ${this.fromUrl}`),
           })
-          .catch((err) => {
-            throw new Error(`Error downloading from ${this.fromUrl}: ${err.message}`);
-          })
-          .then(({ data }) =>
-            this.http.put(location, data, {
+          .then(({ data }) => {
+            const url = `${location}?digest=${this.digest}`;
+            this.log.debug(`Finalizing upload to ${url}`);
+            return this.http.put(url, data, {
               maxBodyLength: Infinity,
               headers: { 'Content-Type': 'application/octet-stream' },
-              onUploadProgress: (e) => this.log.debug(`Uploaded ${e.loaded} bytes to ${this.toUrl}`),
-            })
-          )
+              onUploadProgress: (e) => this.log.debug(`Uploaded ${e.loaded} bytes to ${url}`),
+            });
+          })
           .then((response) => {
             this.log.debug(`Transferred ${this.fromUrl} to ${location}: ${response.status} ${response.statusText}`);
             return this.finalizer();
