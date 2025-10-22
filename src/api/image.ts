@@ -1,6 +1,6 @@
 import {
   catchError,
-  concatMap,
+  concat,
   defer,
   from,
   map,
@@ -30,148 +30,6 @@ export class ImageApi {
 
   get log(): Logger {
     return this.api.log;
-  }
-
-  putImage(req: Image['Req'], opts?: Image['Opts']['PUT']): Observable<ApiSchema<Image['Req'], Image['Res']>> {
-    this.log.info(`Transferring image ${req.image} (concurrency: ${ImageApi.CONCURRENCY})`);
-
-    const toImage: Image['Res'] = {
-      code: 206,
-      registry: '',
-      namespace: '',
-      name: '',
-      reference: '',
-      index: {},
-      images: {},
-      blobs: [],
-      tags: [],
-    };
-
-    return this.getImage(req, opts)
-      .pipe(
-        switchMap(({ status: fromImage }) =>
-          this.api.Registry.getRegistry(opts).pipe(
-            map(({ status }) => ({
-              fromImage,
-              toRegistry: status.registry,
-              toNamespace: opts?.namepace || fromImage.namespace,
-            }))
-          )
-        ),
-        map(({ fromImage, toRegistry, toNamespace }) => {
-          toImage.registry = toRegistry;
-          toImage.namespace = toNamespace;
-          toImage.name = fromImage.name;
-          toImage.reference = fromImage.reference;
-          return { fromImage };
-        }),
-        map(({ fromImage }) => {
-          const transfers: Transfer[] = [];
-
-          transfers.push(
-            // Blobs
-            ...fromImage.blobs.map((blob) => {
-              const fromUrl = blob.url;
-              const toUrl = fromUrl.replace(fromImage.registry, toImage.registry).replace(blob.digest!, `uploads/`);
-              return new Transfer(this.api, fromUrl, toUrl, blob, () => {
-                toImage.blobs.push({ ...blob, url: toUrl });
-              });
-            })
-          );
-
-          transfers.push(
-            // Image Manifests
-            ...Object.entries(fromImage.images).map(([digest, manifest]) => {
-              const fromUrl = `${fromImage.registry}/${fromImage.namespace}/${fromImage.name}/manifests/${digest}`;
-              const toUrl = fromUrl.replace(fromImage.registry, toImage.registry);
-              return new Transfer(this.api, fromUrl, toUrl, manifest, () => {
-                toImage.images[digest] = manifest;
-              });
-            })
-          );
-
-          transfers.push(
-            // Index Manifest
-            new Transfer(
-              this.api,
-              `${fromImage.registry}/${fromImage.namespace}/${fromImage.name}/manifests/${fromImage.reference}`,
-              `${toImage.registry}/${toImage.namespace}/${toImage.name}/manifests/${toImage.reference}`,
-              {
-                digest: fromImage.reference,
-                mediaType: fromImage.index.mediaType!,
-                // size: fromImage.index.size!,
-              },
-              () => {
-                toImage.index = fromImage.index;
-              }
-            )
-          );
-
-          transfers.push(
-            // Tags
-            ...fromImage.tags.map((tag) => {
-              const fromUrl = `${fromImage.registry}/${fromImage.namespace}/${fromImage.name}/manifests/${tag}`;
-              const toUrl = fromUrl.replace(fromImage.registry, toImage.registry);
-              return new Transfer(
-                this.api,
-                fromUrl,
-                toUrl,
-                {
-                  digest: tag,
-                  mediaType: fromImage.index.mediaType!,
-                  // size: fromImage.index.size!,
-                },
-                () => {
-                  toImage.tags.push(tag);
-                }
-              );
-            })
-          );
-
-          this.log.info(`Prepared ${transfers.length} transfers for image ${req.image}`);
-          return { fromImage, transfers: transfers.slice(0, 1) };
-        })
-      )
-      .pipe(
-        switchMap(({ fromImage, transfers }) =>
-          merge(...transfers.map((transfer) => transfer.pipe()), ImageApi.CONCURRENCY).pipe(
-            toArray(),
-            map(() => ({ fromImage }))
-          )
-        )
-      )
-      .pipe(
-        map(({ fromImage }) => {
-          const response: ApiSchema<Image['Req'], Image['Res']> = {
-            apiVersion: 'rowdy.run/v1alpha1',
-            kind: 'Image',
-            spec: {
-              image: `${fromImage.registry}/${fromImage.namespace}/${fromImage.name}:${fromImage.reference}`,
-            },
-            status: {
-              ...toImage,
-              code: 200,
-            },
-          };
-          return response;
-        }),
-        catchError((err) => {
-          const response: ApiSchema<Image['Req'], Image['Res']> = {
-            apiVersion: 'rowdy.run/v1alpha1',
-            kind: 'Image',
-            spec: {
-              image: req.image,
-            },
-            status: { ...toImage, reason: err.message, code: isAxiosError(err) ? err.response?.status || 500 : 500 },
-          };
-          return of(response);
-        }),
-        tap((response) => {
-          this.log.debug(`Image Spec`, JSON.stringify(response.spec));
-          this.log.debug(`Image Status`, JSON.stringify(response.status));
-          this.log.info(`Finished transferring image ${req.image} with status code ${response.status.code}`);
-        })
-      );
   }
 
   getImage(req: Image['Req'], opts?: Image['Opts']['GET']): Observable<ApiSchema<Image['Req'], Image['Res']>> {
@@ -352,6 +210,148 @@ export class ImageApi {
         })
       );
   }
+
+  putImage(req: Image['Req'], opts?: Image['Opts']['PUT']): Observable<ApiSchema<Image['Req'], Image['Res']>> {
+    this.log.info(`Transferring image ${req.image} (concurrency: ${ImageApi.CONCURRENCY})`);
+
+    const toImage: Image['Res'] = {
+      code: 206,
+      registry: '',
+      namespace: '',
+      name: '',
+      reference: '',
+      index: {},
+      images: {},
+      blobs: [],
+      tags: [],
+    };
+
+    return this.getImage(req, opts)
+      .pipe(
+        switchMap(({ status: fromImage }) =>
+          this.api.Registry.getRegistry(opts).pipe(
+            map(({ status }) => ({
+              fromImage,
+              toRegistry: status.registry,
+              toNamespace: opts?.namepace || fromImage.namespace,
+            }))
+          )
+        ),
+        map(({ fromImage, toRegistry, toNamespace }) => {
+          toImage.registry = toRegistry;
+          toImage.namespace = toNamespace;
+          toImage.name = fromImage.name;
+          toImage.reference = fromImage.reference;
+          return { fromImage };
+        }),
+        map(({ fromImage }) => {
+          const transfers: Transfer[] = [];
+
+          transfers.push(
+            // Blobs
+            ...fromImage.blobs.map((blob) => {
+              const fromUrl = blob.url;
+              const toUrl = fromUrl.replace(fromImage.registry, toImage.registry).replace(blob.digest!, `uploads/`);
+              return new Transfer(this.api, fromUrl, toUrl, blob, () => {
+                toImage.blobs.push({ ...blob, url: toUrl });
+              });
+            })
+          );
+
+          transfers.push(
+            // Image Manifests
+            ...Object.entries(fromImage.images).map(([digest, manifest]) => {
+              const fromUrl = `${fromImage.registry}/${fromImage.namespace}/${fromImage.name}/manifests/${digest}`;
+              const toUrl = fromUrl.replace(fromImage.registry, toImage.registry);
+              return new Transfer(this.api, fromUrl, toUrl, manifest, () => {
+                toImage.images[digest] = manifest;
+              });
+            })
+          );
+
+          transfers.push(
+            // Index Manifest
+            new Transfer(
+              this.api,
+              `${fromImage.registry}/${fromImage.namespace}/${fromImage.name}/manifests/${fromImage.reference}`,
+              `${toImage.registry}/${toImage.namespace}/${toImage.name}/manifests/${toImage.reference}`,
+              {
+                digest: fromImage.reference,
+                mediaType: fromImage.index.mediaType!,
+                // size: fromImage.index.size!,
+              },
+              () => {
+                toImage.index = fromImage.index;
+              }
+            )
+          );
+
+          transfers.push(
+            // Tags
+            ...fromImage.tags.map((tag) => {
+              const fromUrl = `${fromImage.registry}/${fromImage.namespace}/${fromImage.name}/manifests/${tag}`;
+              const toUrl = fromUrl.replace(fromImage.registry, toImage.registry);
+              return new Transfer(
+                this.api,
+                fromUrl,
+                toUrl,
+                {
+                  digest: tag,
+                  mediaType: fromImage.index.mediaType!,
+                  // size: fromImage.index.size!,
+                },
+                () => {
+                  toImage.tags.push(tag);
+                }
+              );
+            })
+          );
+
+          this.log.info(`Prepared ${transfers.length} transfers for image ${req.image}`);
+          return { fromImage, transfers: transfers.slice(0, 1) };
+        })
+      )
+      .pipe(
+        switchMap(({ fromImage, transfers }) =>
+          merge(...transfers.map((transfer) => transfer.pipe()), ImageApi.CONCURRENCY).pipe(
+            toArray(),
+            map(() => ({ fromImage }))
+          )
+        )
+      )
+      .pipe(
+        map(({ fromImage }) => {
+          const response: ApiSchema<Image['Req'], Image['Res']> = {
+            apiVersion: 'rowdy.run/v1alpha1',
+            kind: 'Image',
+            spec: {
+              image: `${fromImage.registry}/${fromImage.namespace}/${fromImage.name}:${fromImage.reference}`,
+            },
+            status: {
+              ...toImage,
+              code: 200,
+            },
+          };
+          return response;
+        }),
+        catchError((err) => {
+          const response: ApiSchema<Image['Req'], Image['Res']> = {
+            apiVersion: 'rowdy.run/v1alpha1',
+            kind: 'Image',
+            spec: {
+              image: req.image,
+            },
+            status: { ...toImage, reason: err.message, code: isAxiosError(err) ? err.response?.status || 500 : 500 },
+          };
+          return of(response);
+        }),
+        tap((response) => {
+          this.log.debug(`Image Spec`, JSON.stringify(response.spec));
+          this.log.debug(`Image Status`, JSON.stringify(response.status));
+          this.log.info(`Finished transferring image ${req.image} with status code ${response.status.code}`);
+        })
+      );
+  }
 }
 
 class Transfer implements ILoggable {
@@ -387,55 +387,77 @@ class Transfer implements ILoggable {
 
   public pipe(): Observable<void> {
     return defer(async () => {
+      this.log.info('Starting transfer', { transfer: this });
       if (!this.toUrl.endsWith('uploads/')) {
         throw new Error('TODO: Not implemented');
       }
 
-      this.log.info(`Transferring blob ${this.digest} from ${this.fromUrl} to ${this.toUrl}`);
       const start = await this.http.post(this.toUrl, null);
+      this.log.debug('!!! START HEADERS', { headers: JSON.stringify(start.headers) });
       let location = start.headers['location'] || start.headers['Location'];
+      const chunkSize = start.headers['oci-chunk-min-length']
+        ? parseInt(start.headers['oci-chunk-min-length'], 10)
+        : 10 * 1024 * 1024; // 10 MB
 
+      this.log.debug('Downloading', { transfer: this });
       const download = await this.http.get<Readable>(this.fromUrl, {
         responseType: 'stream',
         maxBodyLength: Infinity,
         maxContentLength: Infinity,
       });
 
-      const responses = new Observable<Promise<void>>((subscriber) => {
-        download.data.on('data', async (chunk: Buffer) => {
-          subscriber.next(
-            this.http
-              .patch(location, chunk, {
-                headers: {
-                  'Content-Type': 'application/octet-stream',
-                  'Content-Length': chunk.length,
-                },
-              })
-              .then((res) => {
-                location = res.headers['location'] || res.headers['Location'];
-              })
-              .catch((err) => subscriber.error(err))
-          );
+      const chunks = new Observable<{ chunk: Buffer }>((subscriber) => {
+        let buffer = Buffer.alloc(0);
+
+        download.data.on('data', (chunk: Buffer) => {
+          buffer = Buffer.concat([buffer, chunk]);
+          if (buffer.length < chunkSize) {
+            return;
+          }
+
+          let upload = buffer;
+          buffer = Buffer.alloc(0);
+
+          subscriber.next({ chunk: upload });
         });
+
         download.data.on('end', () => {
-          subscriber.next(
-            this.http
-              .put(`${location}?digest=${this.digest}`, null, {})
-              .then(() => {})
-              .catch((err) => subscriber.error(err))
-          );
+          if (buffer.length) {
+            subscriber.next({ chunk: buffer });
+          }
           subscriber.complete();
         });
+
         download.data.on('error', (err) => subscriber.error(err));
       });
 
-      return responses;
+      return { location, chunks };
     }).pipe(
-      concatMap((responses) => responses),
-      toArray(),
-      map((responses) => {
-        this.log.info(`Completed transfer of blob ${this.digest} with ${responses.length} chunks`);
-        this.finalizer();
+      switchMap(({ location, chunks }) =>
+        concat(chunks)
+          .pipe(
+            switchMap(({ chunk }) => {
+              this.log.debug(`Uploading`, { transfer: this, chunkLength: chunk.length });
+              return this.http.patch(location, chunk, {
+                headers: { 'Content-Type': 'application/octet-stream', 'Content-Length': chunk.length },
+              });
+            }),
+            map((response) => {
+              location = response.headers['location'] || response.headers['Location'];
+            })
+          )
+          .pipe(
+            toArray(),
+            switchMap((responses) => {
+              location = `${location}?digest=${this.digest}`;
+              this.log.debug(`Finalizing ${responses.length} chunks`, { transfer: this, location });
+              return this.http.put(location, null);
+            })
+          )
+      ),
+      map((response) => {
+        this.log.info('Completed transfer', { transfer: this, status: response.status });
+        return this.finalizer();
       })
     );
   }
