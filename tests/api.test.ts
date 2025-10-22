@@ -1,9 +1,10 @@
 import { Rowdy, Logger } from '@scaffoldly/rowdy';
 
 describe('api', () => {
-  // const logger = new Logger().withDebugging().withTracing();
-  const logger = new Logger();
+  const logger = new Logger().withDebugging().withTracing();
+  // const logger = new Logger();
   const rowdy = new Rowdy(logger);
+  const aws = process.env.AWS_ACCESS_KEY_ID && process.env.AWS_SECRET_ACCESS_KEY ? it : it.skip;
 
   describe('health', () => {
     it('should respond to health', (done) => {
@@ -32,12 +33,26 @@ describe('api', () => {
         done();
       });
     }, 5000);
+
+    aws(
+      'should copy from gcr mirror to private ecr',
+      (done) => {
+        // TODO: support for
+        // - "mirror.gcr.io/ubuntu:latest"
+        // - "public.ecr.aws/docker/library/ubuntu:latest"
+        rowdy.Images.putImage({ image: 'mirror.gcr.io/library/ubuntu:latest' }).subscribe((response) => {
+          expect(response.apiVersion).toBe('rowdy.run/v1alpha1');
+          expect(response.status.code).toBe(200);
+          done();
+        });
+      },
+      5000
+    );
   });
 
   describe('registry', () => {
     describe('ecr', () => {
-      const _it = process.env.AWS_ACCESS_KEY_ID && process.env.AWS_SECRET_ACCESS_KEY ? it : it.skip;
-      _it(
+      aws(
         'should infer an ecr registry',
         (done) => {
           rowdy.Registry.getRegistry().subscribe((response) => {
