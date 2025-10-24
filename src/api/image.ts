@@ -8,7 +8,6 @@ import {
   map,
   mergeAll,
   mergeMap,
-  MonoTypeOperatorFunction,
   Observable,
   of,
   OperatorFunction,
