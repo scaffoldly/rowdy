@@ -157,24 +157,11 @@ export class ImageApi {
 
               res.reference = headers['docker-content-digest'] || reference;
               res.index = data;
-              // res.index.manifests = (res.index.manifests || []).filter(
-              //   (m) => m.annotations?.['vnd.docker.reference.type'] !== 'attestation-manifest' // TODO: attestations
-              // );
-
-              return (res.index.manifests || [])
-                .filter(
-                  (m) =>
-                    !!m.digest &&
-                    !!m.platform?.os &&
-                    m.platform.os !== 'unknown' &&
-                    !!m.platform.architecture &&
-                    m.platform.architecture !== 'unknown'
-                )
-                .map((m) => ({
-                  platform: `${m.platform!.os}/${m.platform!.architecture}`,
-                  digest: m.digest!,
-                  url: registryUrl(registry, namespace, name, m.digest!, 'manifests'),
-                }));
+              return (res.index.manifests || []).map((m) => ({
+                platform: `${m.platform?.os}/${m.platform?.architecture}`,
+                digest: m.digest!,
+                url: registryUrl(registry, namespace, name, m.digest!, 'manifests'),
+              }));
             }),
             mergeAll()
           )
