@@ -50,7 +50,7 @@ export class ImageApi {
     if (typeof image === 'string') {
       image = image.split('/');
     }
-    let registry: string | undefined = 'registry-1.docker.io';
+    let registry: string | undefined = 'mirror.gcr.io';
     let namespace: string | undefined = 'library';
     let name: string | undefined = undefined;
     let reference = 'latest';
@@ -66,13 +66,13 @@ export class ImageApi {
     }
 
     if (image.length === 2) {
-      registry = 'registry-1.docker.io';
+      registry = 'mirror.gcr.io';
       namespace = image[0] || namespace;
       name = image[1];
     }
 
     if (image.length === 1) {
-      registry = 'registry-1.docker.io';
+      registry = 'mirror.gcr.io';
       namespace = 'library';
       name = image[0];
     }
@@ -283,13 +283,7 @@ export class ImageApi {
                   digest,
                   'manifests'
                 );
-                const toUrl = registryUrl(
-                  toImage.registry,
-                  toImage.namespace,
-                  toImage.name,
-                  `${tag}-${digest.replace('sha256:', '').slice(0, 8)}`,
-                  'manifests'
-                );
+                const toUrl = registryUrl(toImage.registry, toImage.namespace, toImage.name, tag, 'manifests');
                 return new Transfer(
                   this.api,
                   fromUrl,
