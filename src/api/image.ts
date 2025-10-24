@@ -23,6 +23,8 @@ import { AxiosInstance, AxiosResponse, isAxiosError } from 'axios';
 import { ApiSchema, IApi, Image } from './types';
 import { Readable } from 'stream';
 import { ILoggable, Logger } from '../log';
+import { HttpHeaders } from '../proxy/http';
+import os from 'os';
 
 const registryUrl = (
   registry: string,
@@ -33,9 +35,6 @@ const registryUrl = (
 ): string => `https://${registry}/v2/${namespace}/${name}/${slug}/${reference}`;
 
 export class ImageApi {
-  static readonly CONCURRENCY = 10;
-  static readonly LIMIT = Infinity;
-
   constructor(private api: IApi) {}
 
   get http(): AxiosInstance {
@@ -218,7 +217,9 @@ export class ImageApi {
   }
 
   putImage(req: Image['Req'], opts?: Image['Opts']['PUT']): Observable<ApiSchema<Image['Req'], Image['Res']>> {
-    this.log.info(`Transferring image ${req.image} (concurrency: ${ImageApi.CONCURRENCY})`);
+    this.log.info(`Transferring image ${req.image}`, {
+      concurrency: Transfer.CONCURRENCY,
+    });
 
     const toImage: Image['Res'] = {
       code: 206,
@@ -336,7 +337,7 @@ export class ImageApi {
           // TODO: handle 404 if namespace doesn't exist
         })
       )
-      .pipe(Transfer.observeAll(this.log, 1000, ImageApi.CONCURRENCY, true)) // TODO: make verify optional
+      .pipe(Transfer.observeAll(this.log, 1000, Transfer.CONCURRENCY, true)) // TODO: make verify optional
       .pipe(
         map((statuses) => {
           const response: ApiSchema<Image['Req'], Image['Res']> = {
@@ -368,6 +369,21 @@ type TransferRef = Omit<Required<Image['External']['Ref']>, 'annotations'>;
 type Transfers = { blobs: Transfer[]; images: Transfer[]; indexes: Transfer[] };
 
 class Transfer implements ILoggable {
+  private static _CONCURRENCY = {
+    MIN: 1,
+    MAX: 10,
+    CURRENT: 0,
+  };
+
+  static get CONCURRENCY(): number {
+    if (Transfer._CONCURRENCY.CURRENT === 0) {
+      const cpus = os.cpus()?.length || Transfer._CONCURRENCY.MIN;
+      // Use all of the possible CPUs, up to MAX
+      Transfer._CONCURRENCY.CURRENT = Math.min(Math.max(Transfer._CONCURRENCY.MIN, cpus), Transfer._CONCURRENCY.MAX);
+    }
+    return Transfer._CONCURRENCY.CURRENT;
+  }
+
   private complete: boolean = false;
   private bytes: { received: number; sent: number; total: number };
 
@@ -468,9 +484,9 @@ class Transfer implements ILoggable {
       if (this.toUrl.endsWith('uploads/')) {
         // Uploads require a POST to get the Location header
         const start = await lastValueFrom(status.intercept(this.http.post(this.toUrl, null)));
+        const _location = start.headers.get('location');
         chunked = true;
-        chunkSize = parseInt(start.headers['oci-chunk-min-length'] || chunkSize);
-        const _location = start.headers['location'] || start.headers['Location'];
+        chunkSize = parseInt((start.headers.get('oci-chunk-min-length') as string | undefined) || `${chunkSize}`, 10);
         if (_location) location = _location as string;
         this.log.debug('Initialized upload', { transfer: this, location, chunkSize });
       }
@@ -491,7 +507,7 @@ class Transfer implements ILoggable {
       const chunks = new Observable<{ chunk: Buffer; final: boolean }>((subscriber) => {
         let buffer = Buffer.alloc(0);
 
-        if (!download.data.on) {
+        if (!download.data) {
           this.log.warn(`No data stream available for download`, { transfer: this });
           subscriber.complete();
           return;
@@ -557,9 +573,9 @@ class Transfer implements ILoggable {
                       this.log.debug(`Finalizing`, { digest: this.digest, location });
                       return from(this.http.put(`${location}?digest=${this.digest}`, null));
                     }
-                    const _location = response.headers['location'] || response.headers['Location'];
+                    const _location = response.headers.get('location');
                     if (_location) location = _location as string;
-                    return of(response);
+                    return of(response.data);
                   })
                 );
               })
@@ -582,6 +598,8 @@ class Transfer implements ILoggable {
     return `Transfer(from=${this.fromUrl}, to=${this.toUrl}, digest=${this.digest}, mediaType=${this.mediaType})`;
   }
 }
+
+type Response<T> = { data: T | undefined; headers: HttpHeaders; status: number; method: string; url: string };
 
 class TransferStatus implements ILoggable {
   private verified: boolean = false;
@@ -633,12 +651,18 @@ class TransferStatus implements ILoggable {
     return this._codes.some((c) => c >= 400);
   }
 
-  intercept<T, D, H>(response: Promise<AxiosResponse<T, D, H>>): Observable<AxiosResponse<Partial<T>, D, H>> {
+  intercept<T>(response: Promise<AxiosResponse<T>>): Observable<Response<T>> {
     return defer(() => from(response)).pipe(
       map((res) => {
         this._codes.push(res.status);
         this._reasons.push(this.reason(res));
-        return res as AxiosResponse<Partial<T>, D, H>;
+        return {
+          data: res.data,
+          headers: HttpHeaders.fromAxios(res.headers),
+          status: res.status,
+          method: res.config.method!,
+          url: res.config.url!,
+        };
       }),
       catchError((err) => {
         this.log.warn(`Transfer error`, { error: err, transfer: this.transfer });
@@ -647,12 +671,18 @@ class TransferStatus implements ILoggable {
         }
         this._codes.push(err.response?.status || 500);
         this._reasons.push(this.reason(err.response!));
-        return of(err.response! as AxiosResponse<Partial<T>, D, H>);
+        return of({
+          data: undefined,
+          headers: HttpHeaders.fromAxios(err.response?.headers || {}),
+          status: err.response?.status || 500,
+          method: err.config!.method!,
+          url: err.config!.url!,
+        });
       })
     );
   }
 
-  withResponse<T, D, H>(response: Promise<AxiosResponse<T, D, H>>): Observable<this> {
+  withResponse<T>(response: Promise<AxiosResponse<T>>): Observable<this> {
     return this.intercept(response).pipe(map(() => this));
   }
 
@@ -694,8 +724,8 @@ class TransferStatus implements ILoggable {
     return this.transfer.finalizer();
   }
 
-  private reason<T, D, H>(response: AxiosResponse<T, D, H>): string {
-    return `[${this.transfer.mediaType}] ${response.status} ${response.statusText}: ${response.config.method?.toUpperCase()} ${response.config.url}`;
+  private reason<T>(response: AxiosResponse<T>): string {
+    return `[${this.transfer.mediaType}] HTTP ${response.status}: ${response.config.method?.toUpperCase()} ${response.config.url}`;
   }
 
   repr(): string {

@@ -53,6 +53,10 @@ export class HttpHeaders implements ILoggable {
     return (this.headers['user-agent'] as string) || `${packageJson.name}/${packageJson.version}`;
   }
 
+  get(header: string): string | string[] | undefined {
+    return this.headers[header.toLowerCase()];
+  }
+
   proxy(): HttpHeaders {
     const instance = new HttpHeaders();
     instance.headers = { ...this.headers };
