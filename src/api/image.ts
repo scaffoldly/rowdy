@@ -8,6 +8,7 @@ import {
   map,
   mergeAll,
   mergeMap,
+  MonoTypeOperatorFunction,
   Observable,
   of,
   OperatorFunction,
@@ -33,7 +34,7 @@ const registryUrl = (
 ): string => `https://${registry}/v2/${namespace}/${name}/${slug}/${reference}`;
 
 export class ImageApi {
-  static readonly CONCURRENCY = 5;
+  static readonly CONCURRENCY = 10;
   static readonly LIMIT = Infinity;
 
   constructor(private api: IApi) {}
@@ -331,12 +332,12 @@ export class ImageApi {
             indexes: indexes.length,
           });
 
-          return { blobs, images, indexes };
+          const transfers: Transfers = { blobs, images, indexes };
+          return transfers;
           // TODO: handle 404 if namespace doesn't exist
-          // TODO: clean up logging
         })
       )
-      .pipe(Transfer.observeAll(ImageApi.CONCURRENCY, true)) // TODO: make verify optional
+      .pipe(Transfer.observeAll(this.log, 1000, ImageApi.CONCURRENCY, true)) // TODO: make verify optional
       .pipe(
         map((statuses) => {
           const response: ApiSchema<Image['Req'], Image['Res']> = {
@@ -365,38 +366,75 @@ export class ImageApi {
 
 type Digest = string;
 type TransferRef = Omit<Required<Image['External']['Ref']>, 'annotations'>;
+type Transfers = { blobs: Transfer[]; images: Transfer[]; indexes: Transfer[] };
 
 class Transfer implements ILoggable {
+  private complete: boolean = false;
+  private bytes: { received: number; sent: number; total: number };
+
   constructor(
     public api: IApi,
     public fromUrl: string,
     public toUrl: string,
     public ref: TransferRef,
     public finalizer: () => void
-  ) {}
+  ) {
+    this.bytes = { received: 0, sent: 0, total: ref.size || 0 };
+  }
 
   static observeAll(
+    log: Logger,
+    interval: number,
     concurrency: number,
     verify?: boolean
-  ): OperatorFunction<{ blobs: Transfer[]; images: Transfer[]; indexes: Transfer[] }, Record<Digest, TransferStatus>> {
+  ): OperatorFunction<Transfers, Record<Digest, TransferStatus>> {
+    const summary = (transfers: Transfers): string => {
+      const all = [...transfers.blobs, ...transfers.images, ...transfers.indexes];
+      const totalTransfers = all.length;
+      const completedTransfers = all.filter((t) => t.complete).length;
+
+      const totalBytes = all.reduce((acc, t) => acc + t.bytes.total, 0);
+      const completedBytes = all.reduce((acc, t) => acc + t.bytes.sent, 0);
+
+      const transferRatio = `${completedTransfers}/${totalTransfers}`;
+      const pct = totalBytes === 0 ? '100%' : `${((completedBytes / totalBytes) * 100).toFixed(0)}%`;
+      return `${transferRatio} transfers: ${pct} complete`;
+    };
+
     return (source) =>
-      source.pipe(
-        switchMap(({ blobs, images, indexes }) =>
-          concat(
-            Transfer.observe(blobs, concurrency, verify),
-            Transfer.observe(images, concurrency, verify),
-            Transfer.observe(indexes, concurrency, verify)
+      new Observable((subscriber) => {
+        let latest: Transfers | undefined = undefined;
+        const proc = setInterval(() => {
+          if (latest) log.info(`Transfer progess: ${summary(latest)}`);
+        }, interval);
+
+        const subscription = source
+          .pipe(
+            tap((transfers) => (latest = transfers)),
+            switchMap(({ blobs, images, indexes }) =>
+              concat(
+                Transfer.observe(blobs, concurrency, verify),
+                Transfer.observe(images, concurrency, verify),
+                Transfer.observe(indexes, concurrency, verify)
+              )
+            ),
+            reduce(
+              (acc, cur) => {
+                cur.finalize();
+                acc[cur.digest] = cur;
+                return acc;
+              },
+              {} as Record<Digest, TransferStatus>
+            )
           )
-        ),
-        reduce(
-          (acc, cur) => {
-            cur.finalize();
-            acc[cur.digest] = cur;
-            return acc;
-          },
-          {} as Record<Digest, TransferStatus>
-        )
-      );
+          .subscribe(subscriber);
+
+        return () => {
+          if (latest) log.info(`Transfer complete: ${summary(latest)}`);
+          subscription.unsubscribe();
+          clearInterval(proc);
+        };
+      });
   }
 
   private static observe(transfers: Transfer[], concurrency: number, verify?: boolean): Observable<TransferStatus> {
@@ -435,7 +473,7 @@ class Transfer implements ILoggable {
         chunkSize = parseInt(start.headers['oci-chunk-min-length'] || chunkSize);
         const _location = start.headers['location'] || start.headers['Location'];
         if (_location) location = _location as string;
-        this.log.info('Initialized upload', { transfer: this, location, chunkSize });
+        this.log.debug('Initialized upload', { transfer: this, location, chunkSize });
       }
 
       this.log.debug('Downloading', { transfer: this });
@@ -446,6 +484,7 @@ class Transfer implements ILoggable {
             maxBodyLength: Infinity,
             maxContentLength: Infinity,
             headers: { Accept: this.mediaType },
+            onDownloadProgress: (e) => (this.bytes.received = e.bytes),
           })
         )
       );
@@ -489,8 +528,13 @@ class Transfer implements ILoggable {
         this.log.debug(`Uploading single chunk`, { digest: this.digest, url: location, mediaType: this.mediaType });
         const data = await lastValueFrom(chunks);
         const final = await lastValueFrom(
-          status.withResponse(this.http.put(location, data.chunk, { headers: { 'Content-Type': this.mediaType } }))
+          status.withResponse(
+            this.http.put(location, data.chunk, {
+              headers: { 'Content-Type': this.mediaType },
+            })
+          )
         );
+        this.bytes.sent += data.chunk.length;
         return final;
       }
 
@@ -509,6 +553,7 @@ class Transfer implements ILoggable {
                   )
                 ).pipe(
                   concatMap((response) => {
+                    this.bytes.sent += chunk.length;
                     if (final) {
                       this.log.debug(`Finalizing`, { digest: this.digest, location });
                       return from(this.http.put(`${location}?digest=${this.digest}`, null));
@@ -527,7 +572,10 @@ class Transfer implements ILoggable {
       return final;
     }).pipe(
       switchMap((status) => (verify ? status.verify() : of(status))),
-      tap((status) => this.log.debug(`Transfer complete`, { status }))
+      tap((status) => {
+        this.complete = true;
+        this.log.debug(`Transfer complete`, { status });
+      })
     );
   }
 
@@ -537,6 +585,10 @@ class Transfer implements ILoggable {
 }
 
 class TransferStatus implements ILoggable {
+  private verified: boolean = false;
+  private _codes: number[] = [];
+  private _reasons: string[] = [];
+
   static code(statuses: Record<Digest, TransferStatus>): number {
     const failed = Object.values(statuses).find((s) => s.failed);
     return failed ? 206 : 200;
@@ -552,9 +604,6 @@ class TransferStatus implements ILoggable {
       .flat()
       .join(', ');
   }
-
-  private _codes: number[] = [];
-  private _reasons: string[] = [];
 
   constructor(private transfer: Transfer) {}
 
@@ -609,6 +658,10 @@ class TransferStatus implements ILoggable {
   }
 
   verify(): Observable<this> {
+    if (this.verified) {
+      return of(this);
+    }
+
     return defer(() => this.http.head(this.url)).pipe(
       retry({
         count: 3,
@@ -617,6 +670,7 @@ class TransferStatus implements ILoggable {
       }),
       map(() => {
         this.log.debug(`Transfer verified`, { digest: this.digest, url: this.url });
+        this.verified = true;
         return this;
       }),
       catchError((err) => {
@@ -635,6 +689,9 @@ class TransferStatus implements ILoggable {
   }
 
   finalize(): void {
+    if (this.failed) {
+      return;
+    }
     return this.transfer.finalizer();
   }
 
@@ -643,6 +700,6 @@ class TransferStatus implements ILoggable {
   }
 
   repr(): string {
-    return `TransferStatus(digest=${this.digest}, mediaType=${this.mediaType}, success=${!this.failed}, url=${this.url})`;
+    return `TransferStatus(digest=${this.digest}, mediaType=${this.mediaType}, url=${this.url}, verified=${this.verified})`;
   }
 }

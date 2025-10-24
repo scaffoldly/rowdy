@@ -2,8 +2,8 @@ import { Rowdy, Logger } from '@scaffoldly/rowdy';
 import { lastValueFrom } from 'rxjs';
 
 describe('api', () => {
-  const logger = new Logger().withDebugging().withTracing();
-  // const logger = new Logger();
+  // const logger = new Logger().withDebugging().withTracing();
+  const logger = new Logger();
   const rowdy = new Rowdy(logger);
   const aws = process.env.AWS_ACCESS_KEY_ID && process.env.AWS_SECRET_ACCESS_KEY ? it : it.skip;
 
