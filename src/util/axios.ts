@@ -4,6 +4,8 @@ import { Logger } from '../log';
 import { HttpHeaders } from '../proxy/http';
 import { headers as awsHeaders } from '../aws/headers';
 
+const AUTH_CACHE: Record<string, { headers: HttpHeaders; expires: Date }> = {};
+
 const headers = async (
   axios: AxiosInstance,
   log: Logger,
@@ -35,18 +37,52 @@ const headers = async (
 };
 
 type AxiosConfig = InternalAxiosRequestConfig & { _retrying?: boolean };
+type Authenticator = {
+  request: [
+    (config: InternalAxiosRequestConfig) => Promise<InternalAxiosRequestConfig>,
+    (error: AxiosError) => Promise<InternalAxiosRequestConfig | never>,
+  ];
+  response: [
+    (response: AxiosResponse) => Promise<AxiosResponse>,
+    (error: AxiosError) => Promise<AxiosResponse | never>,
+  ];
+};
 
-export function authenticate(
-  axios: AxiosInstance,
-  log: Logger
-): [(response: AxiosResponse) => Promise<AxiosResponse>, (error: AxiosError) => Promise<AxiosResponse | never>] {
-  let _cache: Record<string, { headers: HttpHeaders; expires: Date }> = {};
+export function authenticator(axios: AxiosInstance, log: Logger): Authenticator {
+  const key = (url?: string | undefined): string => {
+    if (!url) return '';
+    // eslint-disable-next-line no-restricted-globals
+    return new URL(url).origin;
+  };
 
-  const onFulfilled = async (response: AxiosResponse): Promise<AxiosResponse> => {
+  const preRequest = async (config: AxiosConfig): Promise<AxiosConfig> => {
+    if (config.headers.Authorization) return config;
+    if (config._retrying) return config;
+
+    const existing = AUTH_CACHE[key(config.url)];
+    if (!existing) return config;
+
+    const expires = existing.expires;
+    if (new Date() >= expires) {
+      delete AUTH_CACHE[key(config.url)];
+      return config;
+    }
+
+    config.headers = config.headers || {};
+    Object.assign(config.headers, existing.headers.intoAxios());
+
+    return config;
+  };
+
+  const preRequestError = async (error: AxiosError): Promise<InternalAxiosRequestConfig | never> => {
+    throw error;
+  };
+
+  const responseSuccess = async (response: AxiosResponse): Promise<AxiosResponse> => {
     return response;
   };
 
-  const onRejected = async (error: AxiosError): Promise<AxiosResponse | never> => {
+  const responseError = async (error: AxiosError): Promise<AxiosResponse | never> => {
     const response = error.response;
     if (!response) throw error;
 
@@ -65,11 +101,10 @@ export function authenticate(
 
     request._retrying = true;
     const { scheme, params } = parse(wwwAuth);
-    const key = Buffer.from(JSON.stringify(params)).toString('base64');
-    let existing = _cache[key];
+    let existing = AUTH_CACHE[key(request.url)];
 
     if (!existing || new Date() >= existing.expires) {
-      delete _cache[key];
+      delete AUTH_CACHE[key(request.url)];
       const { realm, service, scope } = params;
       log.debug(`Handling ${scheme} authentication challenge...`, { realm, service, scope });
 
@@ -85,7 +120,7 @@ export function authenticate(
         url.searchParams.append('scope', scope);
       }
 
-      existing = _cache[key] = {
+      existing = AUTH_CACHE[key(request.url)] = {
         headers: await headers(axios, log, scheme, url, service),
         expires: new Date(Date.now() + 5 * 60 * 1000), // Cache for 5 minutes
       };
@@ -96,5 +131,10 @@ export function authenticate(
     return axios(request);
   };
 
-  return [onFulfilled, onRejected];
+  const auth: Authenticator = {
+    request: [preRequest, preRequestError],
+    response: [responseSuccess, responseError],
+  };
+
+  return auth;
 }

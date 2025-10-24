@@ -36,7 +36,7 @@ export type ApiSchema<Spec, Status> = {
 export type ApiResponseStatus = {
   code: number;
   headers?: { [key: string]: string | string[] };
-  reason?: string;
+  reason?: string | undefined;
 };
 
 export type Health = {
@@ -91,18 +91,22 @@ export type Image = {
     Config: Image['External']['Ref'];
     Layer: Image['External']['Ref'];
     Manifest: Image['External']['Ref'] & Partial<{ platform: Partial<{ architecture: string; os: string }> }>;
-    ImageIndex: Partial<{
-      schemaVersion: number;
-      mediaType:
-        | 'application/vnd.oci.image.index.v1+json'
-        | 'application/vnd.docker.distribution.manifest.list.v2+json';
-      manifests: Image['External']['Manifest'][];
-    }>;
-    ImageManifest: Partial<{
-      schemaVersion: number;
-      mediaType: 'application/vnd.oci.image.manifest.v1+json' | 'application/vnd.docker.distribution.manifest.v2+json';
-      config: Image['External']['Config'];
-      layers: Image['External']['Layer'][];
-    }>;
+    ImageIndex: Image['External']['Ref'] &
+      Partial<{
+        schemaVersion: number;
+        mediaType:
+          | 'application/vnd.oci.image.index.v1+json'
+          | 'application/vnd.docker.distribution.manifest.list.v2+json';
+        manifests: Image['External']['Manifest'][];
+      }>;
+    ImageManifest: Image['External']['Manifest'] &
+      Partial<{
+        schemaVersion: number;
+        mediaType:
+          | 'application/vnd.oci.image.manifest.v1+json'
+          | 'application/vnd.docker.distribution.manifest.v2+json';
+        config: Image['External']['Config'];
+        layers: Image['External']['Layer'][];
+      }>;
   };
 };

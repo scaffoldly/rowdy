@@ -4,7 +4,7 @@ import { HttpProxy } from '../proxy/http';
 import { match } from 'path-to-regexp';
 import { Logger } from '../log';
 import axios, { AxiosInstance } from 'axios';
-import { authenticate } from '../util/axios';
+import { authenticator } from '../util/axios';
 import { ImageApi } from './image';
 import { ApiResponseStatus, ApiSchema, Health, IImageApi, Image, IRegistryApi, Registry } from './types';
 import { Environment } from '../environment';
@@ -19,7 +19,9 @@ export class Rowdy {
   private _proxy?: HttpProxy<Pipeline>;
 
   constructor(public readonly log: Logger) {
-    this.http.interceptors.response.use(...authenticate(this.http, this.log));
+    const auth = authenticator(this.http, this.log);
+    this.http.interceptors.request.use(...auth.request);
+    this.http.interceptors.response.use(...auth.response);
   }
 
   get Images(): IImageApi {

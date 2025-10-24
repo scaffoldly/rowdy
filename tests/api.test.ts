@@ -1,4 +1,5 @@
 import { Rowdy, Logger } from '@scaffoldly/rowdy';
+import { lastValueFrom } from 'rxjs';
 
 describe('api', () => {
   const logger = new Logger().withDebugging().withTracing();
@@ -34,20 +35,14 @@ describe('api', () => {
       });
     }, 5000);
 
-    aws(
-      'should copy from gcr mirror to private ecr',
-      (done) => {
-        // TODO: support for
-        // - "mirror.gcr.io/ubuntu:latest"
-        // - "public.ecr.aws/docker/library/ubuntu:latest"
-        rowdy.Images.putImage({ image: 'mirror.gcr.io/library/ubuntu:latest' }).subscribe((response) => {
-          expect(response.apiVersion).toBe('rowdy.run/v1alpha1');
-          expect(response.status.code).toBe(200);
-          done();
-        });
-      },
-      5000
-    );
+    aws('should copy from gcr mirror to private ecr', async () => {
+      // TODO: support for
+      // - "mirror.gcr.io/ubuntu:latest"
+      // - "public.ecr.aws/docker/library/ubuntu:latest"
+      const response = await lastValueFrom(rowdy.Images.putImage({ image: 'mirror.gcr.io/library/alpine:latest' }));
+      expect(response.apiVersion).toBe('rowdy.run/v1alpha1');
+      expect(response.status.code).toBe(200);
+    });
   });
 
   describe('registry', () => {
