@@ -1,0 +1,75 @@
+name: CI/CD (@scaffoldly/rowdy-grpc)
+
+on:
+  push:
+    branches-ignore: 
+      - claude/**,
+      - dependabot/**,
+    branches:
+      - grpc
+  pull_request_target:
+    branches:
+      - grpc
+  workflow_dispatch: {}
+
+permissions: write-all
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref_name }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    name: Lint
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+
+      - name: Use Node.js 22.x
+        uses: actions/setup-node@v6
+        with:
+          node-version: 22.x
+          cache: 'yarn'
+
+      - name: Lint
+        run: yarn && yarn lint
+
+  test:
+    strategy:
+      matrix:
+        node-version: [22.x, 24.x]
+    runs-on: ubuntu-latest
+    name: Test
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+
+      - name: Use Node.js ${{ matrix.node-version }}
+        uses: actions/setup-node@v6
+        with:
+          node-version: ${{ matrix.node-version }}
+          cache: 'yarn'
+
+      - name: Test
+        run: yarn && yarn test
+
+  build:
+    needs: [lint, test]
+    runs-on: ubuntu-latest
+    name: Test and Build
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+
+      - name: Use Node.js 22.x
+        uses: actions/setup-node@v6
+        with:
+          node-version: 22.x
+          cache: 'yarn'
+
+      - name: Build
+        run: yarn && yarn build
