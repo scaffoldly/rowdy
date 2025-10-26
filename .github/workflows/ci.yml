@@ -2,9 +2,9 @@ name: CI
 
 on:
   push:
-    branches-ignore: ['claude/**', 'dependabot/**']
+    branches-ignore: ['claude/**', 'dependabot/**', 'grpc', 'grpc/**']
   pull_request_target:
-    branches: ['**']
+    branches-ignore: ['grpc', 'grpc/**']
   workflow_dispatch: {}
 
 permissions: write-all
