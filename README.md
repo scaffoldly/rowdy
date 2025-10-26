@@ -1,3 +1,1 @@
-# app-template
-
-app-template for Scaffoldly
+# Rowdy gRPC Bindings

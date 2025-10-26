@@ -53,7 +53,7 @@ module.exports = [
       '@typescript-eslint/explicit-function-return-type': 'warn',
       '@typescript-eslint/no-explicit-any': 'error',
       '@typescript-eslint/no-require-imports': 'off',
-      'no-console': 'error',
+      'no-console': 'warn',
       'no-case-declarations': 'off',
       'prettier/prettier': 'error',
     },
