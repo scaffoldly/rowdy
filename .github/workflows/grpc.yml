@@ -54,28 +54,10 @@ jobs:
       - name: Test
         run: yarn && yarn test
 
-  build:
+  build-publish:
+    runs-on: ubuntu-latest
     needs: [lint, test]
-    runs-on: ubuntu-latest
-    name: Build
-
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v5
-
-      - name: Use Node.js 22.x
-        uses: actions/setup-node@v6
-        with:
-          node-version: 22.x
-          cache: 'yarn'
-
-      - name: Build
-        run: yarn && yarn build
-
-  publish:
-    runs-on: ubuntu-latest
-    needs: [build]
-    name: Publish to NPM
+    name: Build and Publish to NPM
     if: |
       success() &&
       github.ref == 'refs/heads/grpc' &&
@@ -94,7 +76,7 @@ jobs:
           registry-url: 'https://registry.npmjs.org'
 
       - name: Install dependencies
-        run: yarn
+        run: yarn && yarn build
 
       - name: Generate pre-release version
         id: version
