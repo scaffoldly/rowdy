@@ -57,7 +57,7 @@ jobs:
   build:
     needs: [lint, test]
     runs-on: ubuntu-latest
-    name: Test and Build
+    name: Build
 
     steps:
       - name: Checkout code
