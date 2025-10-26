@@ -2,11 +2,9 @@ name: CI/CD (@scaffoldly/rowdy-grpc)
 
 on:
   push:
-    branches-ignore: 
-      - claude/**,
-      - dependabot/**,
     branches:
       - grpc
+      - grpc/**
   pull_request_target:
     branches:
       - grpc

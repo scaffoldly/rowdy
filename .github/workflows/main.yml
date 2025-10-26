@@ -5,8 +5,8 @@ on:
     branches-ignore: 
       - claude/**,
       - dependabot/**,
-    branches:
-      - main
+      - grpc
+      - grpc/**
   pull_request_target:
     branches:
       - main
