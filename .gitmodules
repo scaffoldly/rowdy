@@ -1,0 +1,4 @@
+[submodule "cri-api"]
+	path = cri-api
+	url = https://github.com/kubernetes/cri-api.git
+	branch = release-1.34

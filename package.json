@@ -26,7 +26,10 @@
   },
   "engineStrict": false,
   "scripts": {
-    "build": "tsup src/index.ts --sourcemap inline --dts --format cjs --target esnext --cjsInterop --shims",
+    "build": "yarn build:git && yarn build:buf && yarn build:index",
+    "build:git": "git submodule update --init cri-api",
+    "build:buf": "buf generate",
+    "build:index": "tsup src/index.ts --sourcemap inline --dts --format cjs --target esnext --cjsInterop --shims",
     "test": "yarn jest -- --testTimeout=30000",
     "lint": "eslint .",
     "lint:fix": "eslint . --fix"
@@ -35,7 +38,7 @@
     "semi": true,
     "trailingComma": "es5",
     "singleQuote": true,
-    "printWidth": 80,
+    "printWidth": 120,
     "tabWidth": 2,
     "useTabs": false
   },
@@ -62,7 +65,14 @@
       }
     ]
   },
+  "peerDependencies": {
+    "@connectrpc/connect": "^2.1.0"
+  },
   "devDependencies": {
+    "@bufbuild/buf": "^1.59.0",
+    "@bufbuild/protobuf": "^2.10.0",
+    "@bufbuild/protoc-gen-es": "^2.10.0",
+    "@connectrpc/connect": "^2.1.0",
     "@eslint/js": "^9.28.0",
     "@types/jest": "^30.0.0",
     "@types/node": ">=22.0.0 <25.0.0",

@@ -1,0 +1,15 @@
+# Ref: https://buf.build/docs/configuration/v2/buf-yaml
+version: v2
+modules:
+  - includes:
+      - 'cri-api/pkg/apis/runtime/v1/'
+lint:
+  use:
+    - STANDARD
+breaking:
+  use:
+    - FILE
+deps:
+  - buf.build/grpc-ecosystem/grpc-gateway
+  - buf.build/googleapis/googleapis:0adf469dcd7822bf5bc058a7b0217f5558a75643
+  - buf.build/gogo/protobuf:v1.3.2
