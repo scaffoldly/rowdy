@@ -1,7 +1,7 @@
 import { id, NAME, VERSION } from '@scaffoldly/rowdy-grpc';
 import packageJson from '../package.json';
 
-describe('Library Tests', () => {
+describe('index', () => {
   it('should output the correct name', () => {
     expect(NAME).toBe(packageJson.name);
   });
