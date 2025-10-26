@@ -1,10 +1,12 @@
 import packageJson from '../package.json';
-export const VERSION = packageJson.version;
-export const NAME = packageJson.name;
+const VERSION = packageJson.version;
+const NAME = packageJson.name;
 
-export const id = (): string => {
+const id = (): string => {
   return `${NAME}@${VERSION}`;
 };
 
-export * as CRI from './cri-api/pkg/apis/runtime/v1/api_pb';
 export { fromBinary, toBinary } from '@bufbuild/protobuf';
+export { VERSION, NAME, id };
+export { Router } from './router';
+export * from './cri';

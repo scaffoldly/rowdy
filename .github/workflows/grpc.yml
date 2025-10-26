@@ -75,7 +75,7 @@ jobs:
           cache: 'yarn'
           registry-url: 'https://registry.npmjs.org'
 
-      - name: Install dependencies
+      - name: Build package
         run: yarn && yarn build
 
       - name: Generate pre-release version
