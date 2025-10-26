@@ -1,4 +1,4 @@
-name: CI
+name: Main Branch CI (@scaffoldly/rowdy)
 
 on:
   push:
