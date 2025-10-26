@@ -71,3 +71,67 @@ jobs:
 
       - name: Build
         run: yarn && yarn build
+
+  publish:
+    runs-on: ubuntu-latest
+    needs: [build]
+    name: Publish to NPM
+    if: |
+      success() &&
+      github.ref == 'refs/heads/grpc' &&
+      github.event_name != 'pull_request_target' &&
+      !contains(github.event.head_commit.message, '[skip-prerelease]')
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Use Node.js 22.x
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22.x
+          cache: 'yarn'
+          registry-url: 'https://registry.npmjs.org'
+
+      - name: Install dependencies
+        run: yarn
+
+      - name: Generate pre-release version
+        id: version
+        run: |
+          CURRENT_NAME=$(node -p "require('./package.json').name")
+          CURRENT_VERSION=$(node -p "require('./package.json').version")
+          TIMESTAMP=$(date +%Y%m%d%H%M%S)
+          SHORT_SHA=${GITHUB_SHA:0:7}
+          PRERELEASE_VERSION="${CURRENT_VERSION}-beta.${TIMESTAMP}.${SHORT_SHA}"
+          echo "name=${CURRENT_NAME}" >> $GITHUB_OUTPUT
+          echo "version=${PRERELEASE_VERSION}" >> $GITHUB_OUTPUT
+          echo "current=${CURRENT_VERSION}" >> $GITHUB_OUTPUT
+
+      - name: Update package.json version
+        run: |
+          yarn version --new-version ${{ steps.version.outputs.version }} --no-git-tag-version
+
+      - name: Publish pre-release to NPM
+        run: yarn publish --tag beta --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Create pre-release summary
+        run: |
+          echo "## 🚀 Pre-release Published" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Package:** ${{ steps.version.outputs.name }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Version:** ${{ steps.version.outputs.version }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Tag:** beta" >> $GITHUB_STEP_SUMMARY
+          echo "**Commit:** ${GITHUB_SHA:0:7}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### 📦 NPM Package" >> $GITHUB_STEP_SUMMARY
+          echo "Install the pre-release version:" >> $GITHUB_STEP_SUMMARY
+          echo '```bash' >> $GITHUB_STEP_SUMMARY
+          echo "npm install ${{ steps.version.outputs.name }}@beta" >> $GITHUB_STEP_SUMMARY
+          echo "# or specific version:" >> $GITHUB_STEP_SUMMARY
+          echo "npm install ${{ steps.version.outputs.name }}@${{ steps.version.outputs.version }}" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Note:** Add \`[skip-prerelease]\` to commit message to skip pre-release publishing." >> $GITHUB_STEP_SUMMARY
