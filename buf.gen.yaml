@@ -4,3 +4,6 @@ plugins:
     out: src
     include_imports: true
     opt: target=ts
+  - remote: buf.build/community/sudorandom-connect-openapi:v0.21.2
+    out: src
+    opt: format=json
