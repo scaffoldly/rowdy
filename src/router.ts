@@ -244,11 +244,13 @@ export class GrpcRouter {
           case 'text/html':
             acc.status = 200;
             acc.header?.set('content-type', 'text/html; charset=utf-8');
-            const docs = new DOMParser().parseFromString(docsHtml, 'text/html');
-            docs.querySelector('title')!.textContent = this._docs.info?.title || NAME;
-            docs.querySelector('#redoc-init')!.textContent =
+            const docs = this._docs;
+            docs.servers = [{ url: this._prefix }];
+            const dom = new DOMParser().parseFromString(docsHtml, 'text/html');
+            dom.querySelector('title')!.textContent = this._docs.info?.title || NAME;
+            dom.querySelector('#redoc-init')!.textContent =
               `Redoc.init(${JSON.stringify(this._docs)}, {}, document.querySelector('redoc'));`;
-            acc.body = Readable.from(docs.toString());
+            acc.body = Readable.from(dom.toString());
             return acc;
           default:
             return acc;
