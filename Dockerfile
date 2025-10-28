@@ -5,8 +5,7 @@ WORKDIR /work
 COPY . .
 
 # The Server
-RUN --mount=type=cache,target=/usr/local/share/.cache \
-    yarn install --frozen-lockfile
+RUN yarn install --frozen-lockfile
 
 ENTRYPOINT [ "yarn" ]
 CMD [ "start:dev" ]
@@ -15,8 +14,7 @@ FROM node:22-alpine AS exe
 WORKDIR /work
 COPY --from=full /work /work
 ENV PKG_CACHE_PATH=/usr/local/share/.cache/pkg
-RUN --mount=type=cache,target=/usr/local/share/.cache \
-    yarn install --frozen-lockfile && \
+RUN --mount=type=cache,target=/usr/local/share/.cache/pkg \
     yarn build:exe --debug && \
     ls -alR /work/bin && \
     /work/bin/rowdy --version
