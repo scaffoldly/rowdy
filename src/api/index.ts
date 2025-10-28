@@ -96,6 +96,9 @@ export class Rowdy {
   }
 
   public cri(proxy: HttpProxy<Pipeline>): Observable<GrpcResponse> {
+    if (proxy.uri.pathname === '/') {
+      proxy.headers.override('x-index', 'true');
+    }
     return from(
       proxy.pipeline.cri.route({
         url: proxy.uri.pure,
