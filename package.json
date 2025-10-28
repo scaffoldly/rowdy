@@ -83,7 +83,7 @@
     "@bufbuild/protobuf": "^2.10.0",
     "@connectrpc/connect": "^2.1.0",
     "@eslint/js": "^9.28.0",
-    "@scaffoldly/rowdy-grpc": "^0.0.2-1-beta.20251028125520.99beb9f",
+    "@scaffoldly/rowdy-grpc": "^0.0.2-1-beta.20251028133043.1aa621a",
     "@types/auth-header": "^1.0.6",
     "@types/aws-lambda": "^8.10.152",
     "@types/data-urls": "^3.0.4",
