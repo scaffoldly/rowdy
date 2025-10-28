@@ -1,4 +1,6 @@
-import { CRIServices, Docs, ImageService, Router, RuntimeService } from '@scaffoldly/rowdy-grpc';
+import { createMethodUrl } from '@connectrpc/connect/protocol';
+import { CRIServices, Docs, ImageService, Router, RuntimeService, Request, CRI } from '@scaffoldly/rowdy-grpc';
+import { Readable } from 'stream';
 
 const NUM_PATHS = 35;
 
@@ -84,6 +86,75 @@ describe('router', () => {
 
         const body = await new Response(res.body).text();
         expect(body).toContain('Not Acceptable');
+      });
+    });
+
+    describe('route', () => {
+      it('should return 404 for unknown path', async () => {
+        const req: Request = {
+          url: 'http://localhost/unknown/path',
+          method: 'GET',
+          header: new Headers(),
+          body: Readable.from([]),
+          signal: new AbortController().signal,
+          httpVersion: '1.1',
+        };
+        const res = await router.route(req);
+        expect(res.status).toBe(404);
+      });
+
+      it('should route to images', async () => {
+        const req: Request = {
+          url: createMethodUrl('http://test', CRI.ImageService.method.listImages),
+          method: 'POST',
+          header: new Headers({ 'Content-Type': 'application/grpc' }),
+          body: Readable.from([]),
+          signal: new AbortController().signal,
+          httpVersion: '1.1',
+        };
+        const res = await router.route(req);
+        expect(res.status).toBe(200);
+      });
+
+      it('should route to runtime', async () => {
+        const req: Request = {
+          url: createMethodUrl('http://test', CRI.RuntimeService.method.version),
+          method: 'POST',
+          header: new Headers({ 'Content-Type': 'application/grpc' }),
+          body: Readable.from([]),
+          signal: new AbortController().signal,
+          httpVersion: '1.1',
+        };
+        const res = await router.route(req);
+        expect(res.status).toBe(200);
+      });
+
+      it('should route with a prefix', async () => {
+        const router = new Router(new AbortController().signal).withServices(new CRIServices()).withPrefix('/prefix');
+        const req: Request = {
+          url: createMethodUrl('http://test/prefix', CRI.RuntimeService.method.version),
+          method: 'POST',
+          header: new Headers({ 'Content-Type': 'application/grpc' }),
+          body: Readable.from([]),
+          signal: new AbortController().signal,
+          httpVersion: '1.1',
+        };
+        const res = await router.route(req);
+        expect(res.status).toBe(200);
+      });
+
+      it('should return 404 with a prefix mismatch', async () => {
+        const router = new Router(new AbortController().signal).withServices(new CRIServices()).withPrefix('/prefix');
+        const req: Request = {
+          url: createMethodUrl('http://test', CRI.RuntimeService.method.version),
+          method: 'POST',
+          header: new Headers({ 'Content-Type': 'application/grpc' }),
+          body: Readable.from([]),
+          signal: new AbortController().signal,
+          httpVersion: '1.1',
+        };
+        const res = await router.route(req);
+        expect(res.status).toBe(404);
       });
     });
 

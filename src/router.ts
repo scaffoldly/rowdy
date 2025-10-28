@@ -72,6 +72,7 @@ export class Router {
   private _router: ConnectRouter;
   private _docs: Docs;
   private _routerOptions: ConnectRouterOptions;
+  private _prefix: string = '';
 
   constructor(
     public readonly signal: AbortSignal,
@@ -114,6 +115,11 @@ export class Router {
       }
       return router;
     });
+  }
+
+  withPrefix(prefix: string): this {
+    this._prefix = prefix;
+    return this;
   }
 
   withServices(services: Services<unknown>): this {
@@ -204,7 +210,7 @@ export class Router {
       return this.docs(request.header?.get('accept') || undefined);
     }
 
-    const handler = this._router.handlers.find((h) => h.requestPath === url.pathname);
+    const handler = this._router.handlers.find((h) => `${this._prefix}${h.requestPath}` === url.pathname);
     if (!handler) {
       return uResponseNotFound;
     }
