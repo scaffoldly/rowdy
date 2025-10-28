@@ -79,7 +79,7 @@ describe('router', () => {
         expect(res.header!.get('x-accept')).toBe('text/html');
 
         const body = await new Response(res.body).text();
-        expect(body).toContain('<redoc spec-url="openapi.json"></redoc>');
+        expect(body).toContain('<redoc spec-url="./openapi.json"></redoc>');
         expect(body).toContain('<title>@scaffoldly/rowdy-grpc</title>');
       });
 
