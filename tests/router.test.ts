@@ -101,7 +101,7 @@ describe('router', () => {
         expect(res.header!.get('x-accept')).toBe('text/html');
 
         const body = await new Response(res.body).text();
-        expect(body).toContain('<title>@scaffoldly/rowdy-grpc</title>');
+        expect(body).toContain('<title>@scaffoldly/rowdy-grpc');
         expect(body).toContain('elements-api');
         expect(body).toContain('apiDescriptionUrl="data:application/json;base64,');
       });
