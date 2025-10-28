@@ -249,7 +249,7 @@ export class GrpcRouter {
             acc.status = 200;
             acc.header?.set('content-type', 'text/html; charset=utf-8');
             const dom = new DOMParser().parseFromString(docsHtml, 'text/html');
-            dom.querySelector('title')!.textContent = docs.info?.title || NAME;
+            dom.querySelector('title')!.textContent = `${docs.info?.title || NAME} | Rowdy gRPC`;
             dom
               .getElementById('elements')!
               .setAttribute(
