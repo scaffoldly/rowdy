@@ -225,6 +225,7 @@ export class GrpcRouter {
 
   async index(request: GrpcRequest | string): Promise<GrpcResponse> {
     const accept = typeof request === 'string' ? request : request.header.get('accept') || '';
+    const url = typeof request === 'string' ? '' : new URL(request.url);
 
     const negotiator = new Negotiator({ headers: { accept } });
 
@@ -232,7 +233,7 @@ export class GrpcRouter {
     const mediaTypes = negotiator.mediaTypes(acceptable);
 
     const docs = this._docs;
-    docs.servers = [{ url: this._prefix }];
+    docs.servers = [{ url: url.toString() }];
 
     const response = mediaTypes.reduce<GrpcResponse>(
       (acc, mediaType) => {

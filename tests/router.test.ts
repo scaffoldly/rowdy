@@ -89,7 +89,26 @@ describe('router', () => {
         expect(res.header!.get('x-accept')).toBe('application/json');
 
         const body = (await new Response(res.body).json()) as Docs;
-        expect(body.servers).toEqual([{ url: '/prefix' }]);
+        expect(body.servers).toEqual([{ url: '' }]);
+      });
+
+      it('should provide docs with a url', async () => {
+        const res = await router.index({
+          url: 'https://rowdy.run/@rowdy/cri',
+          method: 'GET',
+          header: new Headers({ Accept: 'application/json' }),
+          body: Readable.from([]),
+          signal: new AbortController().signal,
+          httpVersion: '1.1',
+        });
+        expect(res.status).toBe(200);
+        expect(res.body).toBeDefined();
+        expect(res.header!.get('content-type')).toMatch(/application\/json/);
+        expect(res.header!.get('x-acceptable')).toBe('application/json, text/html');
+        expect(res.header!.get('x-accept')).toBe('application/json');
+
+        const body = (await new Response(res.body).json()) as Docs;
+        expect(body.servers).toEqual([{ url: 'https://rowdy.run/@rowdy/cri' }]);
       });
 
       it('should provide docs with html header', async () => {
