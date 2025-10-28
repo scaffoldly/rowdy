@@ -1,4 +1,4 @@
-import { Observable, of } from 'rxjs';
+import { from, Observable, of } from 'rxjs';
 import { Pipeline } from '../pipeline';
 import { HttpProxy } from '../proxy/http';
 import { match } from 'path-to-regexp';
@@ -9,19 +9,89 @@ import { ImageApi } from './image';
 import { ApiResponseStatus, ApiSchema, Health, IImageApi, Image, IRegistryApi, Registry } from './types';
 import { Environment } from '../environment';
 import { RegistryApi } from './registry';
+import { RoutePaths } from '../routes';
+import { CRIServices, Router, Response as RouterResponse } from '@scaffoldly/rowdy-grpc';
+import { Readable } from 'stream';
 
 export class Rowdy {
-  public static readonly SLUG = '@rowdy';
+  static readonly SLUG = '@rowdy';
+  static readonly SCHEME = 'rowdy:';
+  static readonly SERVICES = {
+    ERROR: 'error',
+    HTTP: 'http',
+    API: 'api',
+    CRI: 'cri',
+    HEALTH: 'health',
+    PING: 'ping',
+    ROUTES: 'routes',
+  };
+
+  public static readonly Paths: RoutePaths = {
+    [`/${Rowdy.SLUG}/200`]: `${Rowdy.SCHEME}://${Rowdy.SERVICES.HTTP}:200/`,
+    [`/${Rowdy.SLUG}/204`]: `${Rowdy.SCHEME}://${Rowdy.SERVICES.HTTP}:204/`,
+    [`/${Rowdy.SLUG}/400`]: `${Rowdy.SCHEME}://${Rowdy.SERVICES.HTTP}:400/`,
+    [`/${Rowdy.SLUG}/404`]: `${Rowdy.SCHEME}://${Rowdy.SERVICES.HTTP}:404/`,
+    [`/${Rowdy.SLUG}/500`]: `${Rowdy.SCHEME}://${Rowdy.SERVICES.HTTP}:500/`,
+    [`/${Rowdy.SLUG}/${Rowdy.SERVICES.API}{/*path}`]: `${Rowdy.SCHEME}://${Rowdy.SERVICES.API}/*path`,
+    [`/${Rowdy.SLUG}/${Rowdy.SERVICES.CRI}{/*path}`]: `${Rowdy.SCHEME}://${Rowdy.SERVICES.CRI}/*path`,
+    [`/${Rowdy.SLUG}/${Rowdy.SERVICES.HEALTH}`]: `${Rowdy.SCHEME}://${Rowdy.SERVICES.HEALTH}/`,
+    [`/${Rowdy.SLUG}/${Rowdy.SERVICES.PING}`]: `${Rowdy.SCHEME}://${Rowdy.SERVICES.PING}/`,
+    [`/${Rowdy.SLUG}/${Rowdy.SERVICES.ROUTES}`]: `${Rowdy.SCHEME}://${Rowdy.SERVICES.ROUTES}/`,
+  };
+
   public readonly http: AxiosInstance = axios.create();
 
   private _images: IImageApi = new ImageApi(this);
   private _registry: IRegistryApi = new RegistryApi(this);
   private _proxy?: HttpProxy<Pipeline>;
 
-  constructor(public readonly log: Logger) {
+  private _cri: Router;
+
+  constructor(
+    public readonly log: Logger,
+    public readonly signal: AbortSignal
+  ) {
     const auth = authenticator(this.http, this.log);
     this.http.interceptors.request.use(...auth.request);
     this.http.interceptors.response.use(...auth.response);
+
+    this._cri = new Router(signal)
+      .withServices(
+        new CRIServices()
+          .and()
+          .Runtime.with({
+            version: async () => {
+              return {
+                runtimeApiVersion: '1.2.3',
+                version: '4.5.6',
+                runtimeName: 'test',
+                runtimeVersion: '7.8.9',
+              };
+            },
+          })
+          .and()
+          .Image.with({
+            listImages: () => {
+              return {
+                images: [
+                  {
+                    id: 'image1',
+                    repoTags: ['tag1'],
+                    repoDigests: ['digest1'],
+                    pinned: false,
+                    size: 123456n,
+                    username: 'user1',
+                  },
+                ],
+              };
+            },
+          })
+      )
+      .withPrefix(`/${Rowdy.SERVICES.CRI}`);
+  }
+
+  get Cri(): Router {
+    return this._cri;
   }
 
   get Images(): IImageApi {
@@ -81,27 +151,30 @@ export class Rowdy {
     });
   }
 
-  handle(): Observable<ApiSchema<unknown, ApiResponseStatus>> {
-    const handler = this.handler();
-
-    if (!handler) {
-      return this.notFound('No matching route');
-    }
-
-    return handler;
+  public cri(proxy: HttpProxy<Pipeline>): Observable<RouterResponse> {
+    return from(
+      this._cri.route({
+        httpVersion: '1.1',
+        method: proxy.method,
+        body: Readable.from(proxy.body),
+        header: proxy.headers.intoHeaders(),
+        signal: proxy.signal,
+        url: proxy.uri.toString(),
+      })
+    );
   }
 
-  private handler(): Observable<ApiSchema<unknown, ApiResponseStatus>> | undefined {
+  public api(): Observable<ApiSchema<unknown, ApiResponseStatus>> {
     const { method, body, uri } = this.proxy || {};
     if (!method || !body || !uri) {
       this.log.warn('Missing method, body, or uri in proxy', { method, body, uri });
-      return undefined;
+      return this.badRequest('Missing method, body, or uri in proxy');
     }
 
     const handlers = this.routes[method.toUpperCase() as keyof typeof this.routes];
     if (!handlers) {
       this.log.warn(`No handlers for method: ${method}`);
-      return undefined;
+      return this.notFound(`No handlers for method: ${method}`);
     }
 
     const { pathname: path, searchParams } = uri;
@@ -109,7 +182,7 @@ export class Rowdy {
     // TODO: type checking and opts validation
     let opts = { ...Object.fromEntries(searchParams), ...(body.length ? JSON.parse(body.toString()) : {}) };
 
-    return handlers.reduce(
+    const handler = handlers.reduce(
       (acc, { match: matcher, handler }) => {
         if (acc) return acc;
         const matchers = Array.isArray(matcher) ? matcher : [matcher];
@@ -119,6 +192,13 @@ export class Rowdy {
       },
       undefined as Observable<ApiSchema<unknown, ApiResponseStatus>> | undefined
     );
+
+    if (!handler) {
+      this.log.warn(`No handler found for ${method} ${path}`);
+      return this.notFound(`No handler found for ${method} ${path}`);
+    }
+
+    return handler;
   }
 
   private notFound(reason: string): Observable<ApiSchema<undefined, ApiResponseStatus>> {
@@ -128,6 +208,18 @@ export class Rowdy {
       spec: undefined,
       status: {
         code: 404,
+        reason,
+      },
+    });
+  }
+
+  private badRequest(reason: string): Observable<ApiSchema<undefined, ApiResponseStatus>> {
+    return of({
+      apiVersion: 'rowdy.run/v1alpha1',
+      kind: 'BadRequest',
+      spec: undefined,
+      status: {
+        code: 400,
         reason,
       },
     });

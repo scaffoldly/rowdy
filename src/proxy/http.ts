@@ -35,9 +35,10 @@ export abstract class HttpProxy<P extends Pipeline> extends Proxy<P, HttpRespons
 
   @Trace
   override invoke(): Observable<HttpResponse> {
-    return race([new LocalHttpResponse().handle(this), new RowdyHttpResponse(this.pipeline.log).handle(this)]).pipe(
-      catchError((error) => new RowdyHttpResponse(this.pipeline.log).catch(error))
-    );
+    return race([
+      new LocalHttpResponse().handle(this),
+      new RowdyHttpResponse(this.pipeline.log, this.pipeline.signal).handle(this),
+    ]).pipe(catchError((error) => new RowdyHttpResponse(this.pipeline.log, this.pipeline.signal).catch(error)));
   }
 
   override repr(): string {
@@ -102,6 +103,15 @@ export class HttpHeaders implements ILoggable {
     return instance;
   }
 
+  static fromHeaders(headers: Headers): HttpHeaders {
+    const instance = new HttpHeaders();
+    for (let [key, value] of headers.entries()) {
+      if (!value) continue;
+      instance.headers[key.toLowerCase()] = value;
+    }
+    return instance;
+  }
+
   static fromAxios(axiosHeaders: Partial<AxiosHeaders | AxiosResponseHeaders>): HttpHeaders {
     const instance = new HttpHeaders();
     for (let [key, value] of Object.entries(axiosHeaders.toJSON?.() || {})) {
@@ -139,6 +149,20 @@ export class HttpHeaders implements ILoggable {
 
   intoJSON(): Record<string, unknown> {
     return this.intoAxios().toJSON();
+  }
+
+  intoHeaders(): Headers {
+    const headers = new Headers();
+    for (let [key, value] of Object.entries(this.headers)) {
+      if (Array.isArray(value)) {
+        for (let v of value) {
+          headers.append(key, v);
+        }
+      } else {
+        headers.set(key, value);
+      }
+    }
+    return headers;
   }
 
   override(key: string, value?: string | string[]): this {
@@ -234,7 +258,10 @@ export abstract class HttpResponse implements ILoggable {
 class RowdyHttpResponse extends HttpResponse {
   private rowdy: Rowdy;
 
-  constructor(private log: Logger) {
+  constructor(
+    private log: Logger,
+    private signal: AbortSignal
+  ) {
     super(
       404,
       HttpHeaders.from({
@@ -251,7 +278,7 @@ class RowdyHttpResponse extends HttpResponse {
       Readable.from('')
     );
 
-    this.rowdy = new Rowdy(this.log);
+    this.rowdy = new Rowdy(this.log, this.signal);
   }
 
   catch(error: unknown): Observable<HttpResponse> {
@@ -270,13 +297,13 @@ class RowdyHttpResponse extends HttpResponse {
 
     log.debug('Rowdy Proxy', { method: proxy.method, uri: Logger.asPrimitive(proxy.uri) });
 
-    if (proxy.uri.host === 'error') {
+    if (proxy.uri.host === Rowdy.SERVICES.ERROR) {
       const reason = proxy.uri.error || 'Unknown error';
       const status = Number(proxy.uri.port) || 500;
       return of(this.withStatus(status).withHeader('x-reason', reason));
     }
 
-    if (proxy.uri.host === 'routes') {
+    if (proxy.uri.host === Rowdy.SERVICES.ROUTES) {
       const { routes } = proxy.pipeline;
       return of(
         this.withStatus(200)
@@ -285,11 +312,11 @@ class RowdyHttpResponse extends HttpResponse {
       );
     }
 
-    if (proxy.uri.host === 'ping') {
+    if (proxy.uri.host === Rowdy.SERVICES.PING) {
       return of(this.withStatus(200).withData(Readable.from('pong')));
     }
 
-    if (proxy.uri.host === 'health') {
+    if (proxy.uri.host === Rowdy.SERVICES.HEALTH) {
       return from(proxy.pipeline.routes.health()).pipe(
         map((backends) => {
           const health = {
@@ -304,14 +331,14 @@ class RowdyHttpResponse extends HttpResponse {
       );
     }
 
-    if (proxy.uri.host === 'http' && Number.isInteger(proxy.uri.port)) {
+    if (proxy.uri.host === Rowdy.SERVICES.HTTP && Number.isInteger(proxy.uri.port)) {
       return of(this.withHeader('x-error', proxy.uri.error).withStatus(Number(proxy.uri.port)));
     }
 
-    if (proxy.uri.host === 'api') {
+    if (proxy.uri.host === Rowdy.SERVICES.API) {
       return this.rowdy
         .withProxy(proxy)
-        .handle()
+        .api()
         .pipe(
           map((response) => {
             return this.withStatus(response.status.code)
@@ -320,6 +347,16 @@ class RowdyHttpResponse extends HttpResponse {
               .withData(Readable.from(JSON.stringify(response, null, 2)));
           })
         );
+    }
+
+    if (proxy.uri.host === Rowdy.SERVICES.CRI) {
+      return this.rowdy.cri(proxy).pipe(
+        map(({ status, body, header }) => {
+          return this.withStatus(status)
+            .withData(Readable.from(body || ''))
+            .withHeaders(HttpHeaders.fromHeaders(header || new Headers()));
+        })
+      );
     }
 
     return of(this);

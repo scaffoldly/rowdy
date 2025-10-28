@@ -219,16 +219,7 @@ export class Routes implements IRoutes, ILoggable {
   private constructor() {}
 
   static empty(): Routes {
-    return new Routes()
-      .withPath(`/${Rowdy.SLUG}/200`, 'rowdy://http:200/')
-      .withPath(`/${Rowdy.SLUG}/204`, 'rowdy://http:204/')
-      .withPath(`/${Rowdy.SLUG}/400`, 'rowdy://http:400/')
-      .withPath(`/${Rowdy.SLUG}/404`, 'rowdy://http:401/')
-      .withPath(`/${Rowdy.SLUG}/500`, 'rowdy://http:500/')
-      .withPath(`/${Rowdy.SLUG}/api{/*path}`, 'rowdy://api/*path')
-      .withPath(`/${Rowdy.SLUG}/health`, 'rowdy://health/')
-      .withPath(`/${Rowdy.SLUG}/ping`, 'rowdy://ping/')
-      .withPath(`/${Rowdy.SLUG}/routes`, 'rowdy://routes/');
+    return new Routes().withPaths(Rowdy.Paths);
   }
 
   static default(): Routes {

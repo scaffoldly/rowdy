@@ -25,7 +25,7 @@ export interface IRegistryApi {
 }
 
 export type ApiVersion = 'rowdy.run/v1alpha1';
-export type ApiKind = 'Routes' | 'NotFound' | Health['kind'] | Image['kind'] | Registry['kind'];
+export type ApiKind = 'Routes' | 'NotFound' | 'BadRequest' | Health['kind'] | Image['kind'] | Registry['kind'];
 export type ApiSchema<Spec, Status> = {
   apiVersion: ApiVersion;
   kind: ApiKind;
