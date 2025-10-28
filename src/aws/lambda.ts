@@ -4,7 +4,7 @@ import { Environment } from '../environment';
 import axios from 'axios';
 import { log, Trace } from '../log';
 import { APIGatewayProxyEventV2 } from 'aws-lambda';
-import { HttpProxy, HttpHeaders, HttpResponse } from '../proxy/http';
+import { HttpProxy, HttpHeaders, HttpResponse, Source } from '../proxy/http';
 import { ShellResponse } from '../proxy/shell';
 import { PassThrough } from 'stream';
 import { URI } from '../routes';
@@ -111,6 +111,12 @@ export class LambdaRequest extends Request<LambdaPipeline> {
       const { body, headers, requestContext, isBase64Encoded, rawPath, rawQueryString } = data;
       const { method } = requestContext.http;
 
+      const source: Source = {
+        method,
+        uri: URI.from(`https://${headers['host']}${rawPath}${rawQueryString ? `?${rawQueryString}` : ''}`),
+        headers,
+      };
+
       let uri: URI;
       try {
         uri = this.pipeline.routes.intoURI(rawPath);
@@ -129,7 +135,8 @@ export class LambdaRequest extends Request<LambdaPipeline> {
           method,
           uri,
           HttpHeaders.fromLambda(headers),
-          isBase64Encoded ? Buffer.from(body || '', 'base64') : Buffer.from(body || '')
+          isBase64Encoded ? Buffer.from(body || '', 'base64') : Buffer.from(body || ''),
+          source
         )
       );
     }

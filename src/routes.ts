@@ -66,8 +66,6 @@ type Search = { key: string; value: string } | URLSearchParams | string;
 
 // eslint-disable-next-line no-restricted-globals
 export class URI extends URL implements ILoggable {
-  // pure is the original string used to create the uri
-  public readonly pure: string;
   protected static awaits: Map<string, Observable<URI>> = new Map<string, Observable<URI>>();
 
   static ERROR = '__error__';
@@ -78,7 +76,6 @@ export class URI extends URL implements ILoggable {
     public readonly insecure: boolean = false
   ) {
     super(url.toString());
-    this.pure = url.toString();
   }
 
   get server(): string {

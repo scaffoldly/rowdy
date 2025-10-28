@@ -101,7 +101,7 @@ export class Rowdy {
     }
     return from(
       proxy.pipeline.cri.route({
-        url: proxy.uri.pure,
+        url: proxy.source.uri.toString(),
         method: proxy.method,
         header: proxy.headers.intoHeaders(),
         body: Readable.from(proxy.body),

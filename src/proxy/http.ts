@@ -11,6 +11,12 @@ import packageJson from '../../package.json';
 
 export type Prelude = { statusCode: number; headers: Headers; cookies: string[] };
 
+export type Source = {
+  method: string;
+  uri: URI;
+  headers: Record<string, unknown>;
+};
+
 export abstract class HttpProxy<P extends Pipeline> extends Proxy<P, HttpResponse> {
   constructor(
     pipeline: P,
@@ -18,7 +24,8 @@ export abstract class HttpProxy<P extends Pipeline> extends Proxy<P, HttpRespons
     public readonly method: string,
     public readonly uri: URI,
     public readonly headers: HttpHeaders,
-    public readonly body: Buffer
+    public readonly body: Buffer,
+    public readonly source: Source
   ) {
     super(pipeline, request);
   }
