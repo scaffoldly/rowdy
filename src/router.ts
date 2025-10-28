@@ -211,7 +211,7 @@ export class GrpcRouter {
     const incoming = url.pathname.toLowerCase();
 
     if (incoming === `${this._prefix}/`.toLowerCase()) {
-      return this.docs(request.header?.get('accept') || undefined);
+      return this.index(request);
     }
 
     const handler = this._router.handlers.find((h) => incoming === `${this._prefix}${h.requestPath}`.toLowerCase());
@@ -223,12 +223,17 @@ export class GrpcRouter {
     return response;
   }
 
-  public async docs(accept?: string | string[] | undefined): Promise<GrpcResponse> {
-    // TODO: server URL from Host/Authority Header
-    const negotiator = new Negotiator({ headers: { accept: accept || undefined } });
+  async index(request: GrpcRequest | string): Promise<GrpcResponse> {
+    const accept = typeof request === 'string' ? request : request.header.get('accept') || '';
+    const url = typeof request === 'string' ? '' : new URL(request.url);
+
+    const negotiator = new Negotiator({ headers: { accept } });
 
     const acceptable = ['application/json', 'text/html'];
     const mediaTypes = negotiator.mediaTypes(acceptable);
+
+    const docs = this._docs;
+    docs.servers = [{ url: url.toString() }];
 
     const response = mediaTypes.reduce<GrpcResponse>(
       (acc, mediaType) => {
@@ -239,17 +244,15 @@ export class GrpcRouter {
           case 'application/json':
             acc.status = 200;
             acc.header?.set('content-type', 'application/json; charset=utf-8');
-            acc.body = Readable.from(JSON.stringify(this._docs, null, 2));
+            acc.body = Readable.from(JSON.stringify(docs, null, 2));
             return acc;
           case 'text/html':
             acc.status = 200;
             acc.header?.set('content-type', 'text/html; charset=utf-8');
-            const docs = this._docs;
-            docs.servers = [{ url: this._prefix }];
             const dom = new DOMParser().parseFromString(docsHtml, 'text/html');
-            dom.querySelector('title')!.textContent = this._docs.info?.title || NAME;
+            dom.querySelector('title')!.textContent = docs.info?.title || NAME;
             dom.querySelector('#redoc-init')!.textContent =
-              `Redoc.init(${JSON.stringify(this._docs)}, {}, document.querySelector('redoc'));`;
+              `Redoc.init(${JSON.stringify(docs)}, {}, document.querySelector('redoc'));`;
             acc.body = Readable.from(dom.toString());
             return acc;
           default:
@@ -259,7 +262,7 @@ export class GrpcRouter {
       {
         status: 406,
         header: new Headers({
-          'x-accept': accept ? (Array.isArray(accept) ? accept.join(', ') : accept) : '',
+          'x-accept': accept,
           'x-acceptable': acceptable.join(', '),
           'content-type': 'text/plain; charset=utf-8',
           'access-control-allow-origin': '*',

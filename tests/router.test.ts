@@ -67,7 +67,7 @@ describe('router', () => {
 
     describe('docs', () => {
       it('should provide docs with json header', async () => {
-        const res = await router.docs('application/json');
+        const res = await router.index('application/json');
         expect(res.status).toBe(200);
         expect(res.body).toBeDefined();
         expect(res.header!.get('content-type')).toMatch(/application\/json/);
@@ -76,10 +76,31 @@ describe('router', () => {
 
         const body = (await new Response(res.body).json()) as Docs;
         expect(Object.keys(body.paths!).length).toEqual(NUM_PATHS);
+        expect(body.servers).toEqual([{ url: '' }]);
+      });
+
+      it('should provide docs with request', async () => {
+        const res = await router.index({
+          url: 'https://rowdy.run/@rowdy/cri',
+          method: 'GET',
+          header: new Headers({ Accept: 'application/json' }),
+          body: Readable.from([]),
+          signal: new AbortController().signal,
+          httpVersion: '1.1',
+        });
+        expect(res.status).toBe(200);
+        expect(res.body).toBeDefined();
+        expect(res.header!.get('content-type')).toMatch(/application\/json/);
+        expect(res.header!.get('x-acceptable')).toBe('application/json, text/html');
+        expect(res.header!.get('x-accept')).toBe('application/json');
+
+        const body = (await new Response(res.body).json()) as Docs;
+        expect(Object.keys(body.paths!).length).toEqual(NUM_PATHS);
+        expect(body.servers).toEqual([{ url: 'https://rowdy.run/@rowdy/cri' }]);
       });
 
       it('should provide docs with html header', async () => {
-        const res = await router.docs('text/html');
+        const res = await router.index('text/html');
         expect(res.status).toBe(200);
         expect(res.body).toBeDefined();
         expect(res.header!.get('content-type')).toMatch(/text\/html/);
@@ -93,7 +114,7 @@ describe('router', () => {
       });
 
       it('should reject unsupported accept header', async () => {
-        const res = await router.docs('application/xml');
+        const res = await router.index('application/xml');
         expect(res.status).toBe(406);
         expect(res.body).toBeUndefined();
         expect(res.header!.get('content-type')).toMatch(/text\/plain/);
@@ -102,7 +123,7 @@ describe('router', () => {
       });
 
       it('should prefer html for browsers', async () => {
-        const res = await router.docs(
+        const res = await router.index(
           'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7'
         );
         expect(res.status).toBe(200);
@@ -115,7 +136,7 @@ describe('router', () => {
       });
 
       it('should prefer json for */*', async () => {
-        const res = await router.docs('*/*');
+        const res = await router.index('*/*');
         expect(res.status).toBe(200);
         expect(res.body).toBeDefined();
         expect(res.header!.get('content-type')).toMatch(/application\/json/);
