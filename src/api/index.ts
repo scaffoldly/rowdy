@@ -39,39 +39,37 @@ export class Rowdy {
     this.http.interceptors.request.use(...auth.request);
     this.http.interceptors.response.use(...auth.response);
 
-    this._cri = new Router(signal)
-      .withServices(
-        new CRIServices()
-          .and()
-          .Runtime.with({
-            version: async () => {
-              return {
-                runtimeApiVersion: '1.2.3',
-                version: '4.5.6',
-                runtimeName: 'test',
-                runtimeVersion: '7.8.9',
-              };
-            },
-          })
-          .and()
-          .Image.with({
-            listImages: () => {
-              return {
-                images: [
-                  {
-                    id: 'image1',
-                    repoTags: ['tag1'],
-                    repoDigests: ['digest1'],
-                    pinned: false,
-                    size: 123456n,
-                    username: 'user1',
-                  },
-                ],
-              };
-            },
-          })
-      )
-      .withPrefix(`/${Rowdy.SLUG}/${Rowdy.CRI}`);
+    this._cri = new Router(signal).withServices(
+      new CRIServices()
+        .and()
+        .Runtime.with({
+          version: async () => {
+            return {
+              runtimeApiVersion: '1.2.3',
+              version: '4.5.6',
+              runtimeName: 'test',
+              runtimeVersion: '7.8.9',
+            };
+          },
+        })
+        .and()
+        .Image.with({
+          listImages: () => {
+            return {
+              images: [
+                {
+                  id: 'image1',
+                  repoTags: ['tag1'],
+                  repoDigests: ['digest1'],
+                  pinned: false,
+                  size: 123456n,
+                  username: 'user1',
+                },
+              ],
+            };
+          },
+        })
+    );
   }
 
   get Cri(): Router {

@@ -27,6 +27,7 @@ const isFunctionUrlEvent = (data: unknown): data is FunctionUrlEvent => {
 export class LambdaPipeline extends Pipeline {
   public readonly runtimeApi: string | undefined = process.env.AWS_LAMBDA_RUNTIME_API;
   private _requestId: string | undefined;
+  private _cri: CRIServices = new LambdaCRI(this);
 
   constructor(environment: Environment) {
     super(environment);
@@ -60,7 +61,7 @@ export class LambdaPipeline extends Pipeline {
   }
 
   override cri(_transport: Transport): CRIServices {
-    throw new Error('Method not implemented.');
+    return this._cri;
   }
 
   override repr(): string {
@@ -209,5 +210,11 @@ export class LambdaResponse extends Response<LambdaPipeline> {
 
   override repr(): string {
     return `LambdaResponse(requestId=${this.pipeline.requestId}, chunks=${this.chunks}, bytes=${this.bytes})`;
+  }
+}
+
+export class LambdaCRI extends CRIServices {
+  constructor(private readonly pipeline: LambdaPipeline) {
+    super();
   }
 }
