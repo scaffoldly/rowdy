@@ -225,26 +225,39 @@ export class LambdaResponse extends Response<LambdaPipeline> {
   }
 }
 
+// eslint-disable-next-line @typescript-eslint/no-empty-object-type
+interface ILambdaImageService extends Partial<ServiceImpl<typeof CRI.ImageService>> {}
+// eslint-disable-next-line @typescript-eslint/no-empty-object-type
+interface ILambdaRuntimeService extends Partial<ServiceImpl<typeof CRI.RuntimeService>> {}
+
+class LambdaImageService implements ILambdaImageService {
+  constructor() {}
+
+  listImages = async (_req: CRI.ListImagesRequest): Promise<CRI.ListImagesResponse> => {
+    return {
+      $typeName: 'runtime.v1.ListImagesResponse',
+      images: [],
+    };
+  };
+}
+
+class LambdaRuntimeService implements ILambdaRuntimeService {
+  constructor() {}
+
+  version = async (_req: CRI.VersionRequest): Promise<CRI.VersionResponse> => {
+    return {
+      $typeName: 'runtime.v1.VersionResponse',
+      version: VERSION,
+      runtimeName: packageJson.name,
+      runtimeVersion: packageJson.version,
+      runtimeApiVersion: 'v1',
+    };
+  };
+}
+
 export class LambdaCri extends CriCollection {
-  image: Partial<ServiceImpl<typeof CRI.ImageService>> = {
-    listImages: async () => {
-      return {
-        $typeName: 'runtime.v1.ListImagesResponse',
-        images: [],
-      };
-    },
-  };
-  runtime: Partial<ServiceImpl<typeof CRI.RuntimeService>> = {
-    version: async () => {
-      return {
-        $typeName: 'runtime.v1.VersionResponse',
-        version: VERSION,
-        runtimeName: packageJson.name,
-        runtimeApiVersion: 'v1',
-        runtimeVersion: packageJson.version,
-      };
-    },
-  };
+  private readonly image: LambdaImageService = new LambdaImageService();
+  private readonly runtime: LambdaRuntimeService = new LambdaRuntimeService();
 
   constructor(private readonly pipeline: LambdaPipeline) {
     super();
