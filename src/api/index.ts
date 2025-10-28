@@ -98,12 +98,12 @@ export class Rowdy {
   public cri(proxy: HttpProxy<Pipeline>): Observable<GrpcResponse> {
     return from(
       proxy.pipeline.cri.route({
-        httpVersion: '1.1',
+        url: proxy.uri.pure,
         method: proxy.method,
-        body: Readable.from(proxy.body),
         header: proxy.headers.intoHeaders(),
+        body: Readable.from(proxy.body),
         signal: proxy.signal,
-        url: proxy.uri.toString(),
+        httpVersion: '1.1',
       })
     );
   }
