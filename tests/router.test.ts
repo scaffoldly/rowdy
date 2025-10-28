@@ -198,7 +198,20 @@ describe('router', () => {
     });
 
     describe('route', () => {
-      it('should return 404 for unknown path', async () => {
+      it('should return 404 for a POST on a unknown path', async () => {
+        const req: GrpcRequest = {
+          url: 'http://localhost/unknown/path',
+          method: 'POST',
+          header: new Headers(),
+          body: Readable.from([]),
+          signal: new AbortController().signal,
+          httpVersion: '1.1',
+        };
+        const res = await router.route(req);
+        expect(res.status).toBe(404);
+      });
+
+      it('should return 404 for a GET on a unknown path', async () => {
         const req: GrpcRequest = {
           url: 'http://localhost/unknown/path',
           method: 'GET',

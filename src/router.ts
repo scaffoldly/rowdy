@@ -201,20 +201,16 @@ export class GrpcRouter {
   }
 
   async route(request: GrpcRequest): Promise<GrpcResponse> {
-    const url = new URL(request.url);
-    const incoming = url.pathname.toLowerCase();
-
-    if (incoming === '/') {
+    if (request.header.get('x-index')) {
       return this.index(request);
     }
 
+    const url = new URL(request.url);
+    const incoming = url.pathname.toLowerCase();
     const handler = this._router.handlers.find((h) => incoming === h.requestPath.toLowerCase());
-    if (!handler) {
-      return uResponseNotFound;
-    }
+    if (handler) return handler(request);
 
-    const response = await handler(request);
-    return response;
+    return uResponseNotFound;
   }
 
   docs(request: GrpcRequest | string): Docs {
