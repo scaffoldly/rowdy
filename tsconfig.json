@@ -23,6 +23,6 @@
     "useUnknownInCatchVariables": true,
     "resolveJsonModule": true
   },
-  "include": ["src/**/*"],
+  "include": ["src/**/*", "static/**/*"],
   "exclude": ["node_modules", "dist"]
 }

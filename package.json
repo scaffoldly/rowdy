@@ -30,7 +30,7 @@
     "rebuild": "yarn build:git && yarn build:buf && yarn build:index",
     "build:git": "git submodule update --init cri-api",
     "build:buf": "buf generate",
-    "build:index": "tsup src/index.ts --sourcemap inline --dts --format cjs --target esnext --cjsInterop --shims",
+    "build:index": "tsup",
     "test": "yarn jest -- --verbose --testTimeout=30000",
     "lint": "eslint .",
     "lint:fix": "eslint . --fix"
@@ -58,7 +58,8 @@
             {
               "tsconfig": "tests/tsconfig.json"
             }
-          ]
+          ],
+          "^.+\\.html$": "<rootDir>/tests/transformers.js"
         },
         "moduleNameMapper": {
           "^@scaffoldly/rowdy-grpc$": "<rootDir>/src/index.ts"

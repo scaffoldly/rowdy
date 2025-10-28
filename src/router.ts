@@ -24,6 +24,7 @@ import Negotiator from 'negotiator';
 import { NAME, VERSION } from '.';
 import { Readable } from 'stream';
 import { createServer } from 'http';
+import docsHtml from '../static/docs.html';
 
 export type Request = UniversalServerRequest;
 export type Response = UniversalServerResponse;
@@ -206,11 +207,17 @@ export class Router {
 
   async route(request: Request): Promise<Response> {
     const url = new URL(request.url);
-    if (url.pathname === '/') {
+    const incoming = url.pathname.toLowerCase();
+
+    if (incoming === `${this._prefix}/`.toLowerCase()) {
       return this.docs(request.header?.get('accept') || undefined);
     }
 
-    const handler = this._router.handlers.find((h) => `${this._prefix}${h.requestPath}` === url.pathname);
+    if (incoming === `${this._prefix}/openapi.json`.toLowerCase()) {
+      return this.docs('application/json');
+    }
+
+    const handler = this._router.handlers.find((h) => incoming === `${this._prefix}${h.requestPath}`.toLowerCase());
     if (!handler) {
       return uResponseNotFound;
     }
@@ -219,15 +226,39 @@ export class Router {
     return response;
   }
 
-  public async docs(accept?: string): Promise<Response> {
+  public async docs(accept?: string | string[] | undefined): Promise<Response> {
     // TODO: server URL from Host/Authority Header
     const negotiator = new Negotiator({ headers: { accept: accept || undefined } });
 
-    if (negotiator.mediaType(['application/json']) === 'application/json') {
-      return {
-        status: 200,
+    const acceptable = ['application/json', 'text/html'];
+    const mediaTypes = negotiator.mediaTypes(acceptable);
+
+    const response = mediaTypes.reduce<Response>(
+      (acc, mediaType) => {
+        if (acc.body) {
+          return acc;
+        }
+        switch (mediaType) {
+          case 'application/json':
+            acc.status = 200;
+            acc.header?.set('content-type', 'application/json; charset=utf-8');
+            acc.body = Readable.from(JSON.stringify(this._docs, null, 2));
+            return acc;
+          case 'text/html':
+            acc.status = 200;
+            acc.header?.set('content-type', 'text/html; charset=utf-8');
+            acc.body = Readable.from(docsHtml.replace('{{TITLE}}', this._docs.info?.title || NAME));
+            return acc;
+          default:
+            return acc;
+        }
+      },
+      {
+        status: 406,
         header: new Headers({
-          'Content-Type': 'application/json; charset=utf-8',
+          'x-accept': accept ? (Array.isArray(accept) ? accept.join(', ') : accept) : '',
+          'x-acceptable': acceptable.join(', '),
+          'content-type': 'text/plain; charset=utf-8',
           'access-control-allow-origin': '*',
           'access-control-allow-methods': '*',
           'access-control-allow-headers': '*',
@@ -235,32 +266,9 @@ export class Router {
           pragma: 'no-cache',
           expires: '0',
         }),
-        body: Readable.from(JSON.stringify(this._docs, null, 2)),
-      };
-    }
+      }
+    );
 
-    if (negotiator.mediaType(['text/html']) === 'text/html') {
-      return {
-        status: 200,
-        header: new Headers({
-          'Content-Type': 'text/html; charset=utf-8',
-          'cache-control': 'no-cache',
-          pragma: 'no-cache',
-          expires: '0',
-        }),
-        body: Readable.from('<h1>TODO</h1>'),
-      };
-    }
-
-    return {
-      status: 406,
-      header: new Headers({
-        'content-type': 'text/plain; charset=utf-8',
-        'cache-control': 'no-cache',
-        pragma: 'no-cache',
-        expires: '0',
-      }),
-      body: Readable.from('Not Acceptable'),
-    };
+    return response;
   }
 }

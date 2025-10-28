@@ -63,6 +63,8 @@ describe('router', () => {
         expect(res.status).toBe(200);
         expect(res.body).toBeDefined();
         expect(res.header!.get('content-type')).toMatch(/application\/json/);
+        expect(res.header!.get('x-acceptable')).toBe('application/json, text/html');
+        expect(res.header!.get('x-accept')).toBe('application/json');
 
         const body = (await new Response(res.body).json()) as Docs;
         expect(Object.keys(body.paths!).length).toEqual(NUM_PATHS);
@@ -73,19 +75,43 @@ describe('router', () => {
         expect(res.status).toBe(200);
         expect(res.body).toBeDefined();
         expect(res.header!.get('content-type')).toMatch(/text\/html/);
+        expect(res.header!.get('x-acceptable')).toBe('application/json, text/html');
+        expect(res.header!.get('x-accept')).toBe('text/html');
 
         const body = await new Response(res.body).text();
-        expect(body).toContain('<h1>TODO</h1>');
+        expect(body).toContain('<redoc spec-url="openapi.json"></redoc>');
+        expect(body).toContain('<title>@scaffoldly/rowdy-grpc</title>');
       });
 
       it('should reject unsupported accept header', async () => {
         const res = await router.docs('application/xml');
         expect(res.status).toBe(406);
-        expect(res.body).toBeDefined();
+        expect(res.body).toBeUndefined();
         expect(res.header!.get('content-type')).toMatch(/text\/plain/);
+        expect(res.header!.get('x-acceptable')).toBe('application/json, text/html');
+        expect(res.header!.get('x-accept')).toBe('application/xml');
+      });
 
-        const body = await new Response(res.body).text();
-        expect(body).toContain('Not Acceptable');
+      it('should prefer html for browsers', async () => {
+        const res = await router.docs(
+          'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7'
+        );
+        expect(res.status).toBe(200);
+        expect(res.body).toBeDefined();
+        expect(res.header!.get('content-type')).toMatch(/text\/html/);
+        expect(res.header!.get('x-acceptable')).toBe('application/json, text/html');
+        expect(res.header!.get('x-accept')).toBe(
+          'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7'
+        );
+      });
+
+      it('should prefer json for */*', async () => {
+        const res = await router.docs('*/*');
+        expect(res.status).toBe(200);
+        expect(res.body).toBeDefined();
+        expect(res.header!.get('content-type')).toMatch(/application\/json/);
+        expect(res.header!.get('x-acceptable')).toBe('application/json, text/html');
+        expect(res.header!.get('x-accept')).toBe('*/*');
       });
     });
 
@@ -155,6 +181,102 @@ describe('router', () => {
         };
         const res = await router.route(req);
         expect(res.status).toBe(404);
+      });
+
+      it('should return docs at root', async () => {
+        const router = new Router(new AbortController().signal).withServices(new CRIServices());
+        const req: Request = {
+          url: 'http://test/',
+          method: 'GET',
+          header: new Headers({ Accept: 'application/json' }),
+          body: Readable.from([]),
+          signal: new AbortController().signal,
+          httpVersion: '1.1',
+        };
+        const res = await router.route(req);
+        expect(res.status).toBe(200);
+        expect(res.header!.get('content-type')).toMatch(/application\/json/);
+      });
+
+      it('should return html docs at root for browsers', async () => {
+        const router = new Router(new AbortController().signal).withServices(new CRIServices());
+        const req: Request = {
+          url: 'http://test/',
+          method: 'GET',
+          header: new Headers({
+            Accept:
+              'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
+          }),
+          body: Readable.from([]),
+          signal: new AbortController().signal,
+          httpVersion: '1.1',
+        };
+        const res = await router.route(req);
+        expect(res.status).toBe(200);
+        expect(res.header!.get('content-type')).toMatch(/text\/html/);
+      });
+
+      it('should return html docs at root for browsers with prefix', async () => {
+        const router = new Router(new AbortController().signal).withServices(new CRIServices()).withPrefix('/prefix');
+        const req: Request = {
+          url: 'http://test/prefix/',
+          method: 'GET',
+          header: new Headers({
+            Accept:
+              'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
+          }),
+          body: Readable.from([]),
+          signal: new AbortController().signal,
+          httpVersion: '1.1',
+        };
+        const res = await router.route(req);
+        expect(res.status).toBe(200);
+        expect(res.header!.get('content-type')).toMatch(/text\/html/);
+      });
+
+      it('should return docs at root with prefix', async () => {
+        const router = new Router(new AbortController().signal).withServices(new CRIServices()).withPrefix('/prefix');
+        const req: Request = {
+          url: 'http://test/prefix/',
+          method: 'GET',
+          header: new Headers({ Accept: 'application/json' }),
+          body: Readable.from([]),
+          signal: new AbortController().signal,
+          httpVersion: '1.1',
+        };
+        const res = await router.route(req);
+        expect(res.status).toBe(200);
+        expect(res.header!.get('content-type')).toMatch(/application\/json/);
+      });
+
+      it('should return openapi.json', async () => {
+        const router = new Router(new AbortController().signal).withServices(new CRIServices());
+        const req: Request = {
+          url: 'http://test/openapi.json',
+          method: 'GET',
+          header: new Headers({ Accept: 'application/json' }),
+          body: Readable.from([]),
+          signal: new AbortController().signal,
+          httpVersion: '1.1',
+        };
+        const res = await router.route(req);
+        expect(res.status).toBe(200);
+        expect(res.header!.get('content-type')).toMatch(/application\/json/);
+      });
+
+      it('should return openapi.json with prefix', async () => {
+        const router = new Router(new AbortController().signal).withServices(new CRIServices()).withPrefix('/prefix');
+        const req: Request = {
+          url: 'http://test/prefix/openapi.json',
+          method: 'GET',
+          header: new Headers({ Accept: 'application/json' }),
+          body: Readable.from([]),
+          signal: new AbortController().signal,
+          httpVersion: '1.1',
+        };
+        const res = await router.route(req);
+        expect(res.status).toBe(200);
+        expect(res.header!.get('content-type')).toMatch(/application\/json/);
       });
     });
 
