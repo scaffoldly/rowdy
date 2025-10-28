@@ -6,7 +6,9 @@ const id = (): string => {
   return `${NAME}@${VERSION}`;
 };
 
+export type { Docs } from './router';
+
 export { fromBinary, toBinary } from '@bufbuild/protobuf';
 export { VERSION, NAME, id };
-export { Router, Service, Docs } from './router';
+export { Router, Service } from './router';
 export * from './cri';

@@ -88,11 +88,12 @@
     "globals": "^16.2.0",
     "jest": "^30.1.3",
     "negotiator": "^1.0.0",
-    "openapi-types": "^12.1.3",
     "prettier": "^3.0.0",
     "ts-jest": "^29.1.0",
     "tsup": "^8.5.0",
     "typescript": "^5.0.0"
   },
-  "dependencies": {}
+  "dependencies": {
+    "openapi-types": "^12.1.3"
+  }
 }
