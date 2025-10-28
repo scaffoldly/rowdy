@@ -3,6 +3,8 @@ import { ILoggable, Logger } from './log';
 import { Environment } from './environment';
 import { Routes } from './routes';
 import { PassThrough, Readable, Writable } from 'stream';
+import { CRIServices } from '@scaffoldly/rowdy-grpc';
+import { Transport } from '@connectrpc/connect';
 
 export abstract class Pipeline implements ILoggable {
   private _createdAt = performance.now();
@@ -29,6 +31,7 @@ export abstract class Pipeline implements ILoggable {
     return this._createdAt;
   }
 
+  abstract cri(transport: Transport): CRIServices;
   abstract into(): Observable<Request<Pipeline>>;
   abstract repr(): string;
 }

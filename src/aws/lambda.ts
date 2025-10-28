@@ -8,6 +8,8 @@ import { HttpProxy, HttpHeaders, HttpResponse } from '../proxy/http';
 import { ShellResponse } from '../proxy/shell';
 import { PassThrough } from 'stream';
 import { URI } from '../routes';
+import { Transport } from '@connectrpc/connect';
+import { CRIServices } from '@scaffoldly/rowdy-grpc';
 
 type FunctionUrlEvent = APIGatewayProxyEventV2;
 
@@ -55,6 +57,10 @@ export class LambdaPipeline extends Pipeline {
         return new LambdaRequest(this, data);
       })
     );
+  }
+
+  override cri(_transport: Transport): CRIServices {
+    throw new Error('Method not implemented.');
   }
 
   override repr(): string {

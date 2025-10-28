@@ -71,7 +71,7 @@ export class Rowdy {
             },
           })
       )
-      .withPrefix(`/${Rowdy.CRI}`);
+      .withPrefix(`/${Rowdy.SLUG}/${Rowdy.CRI}`);
   }
 
   get Cri(): Router {
