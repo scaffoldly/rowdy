@@ -79,15 +79,9 @@ describe('router', () => {
         expect(body.servers).toEqual([{ url: '' }]);
       });
 
-      it('should provide docs with request', async () => {
-        const res = await router.index({
-          url: 'https://rowdy.run/@rowdy/cri',
-          method: 'GET',
-          header: new Headers({ Accept: 'application/json' }),
-          body: Readable.from([]),
-          signal: new AbortController().signal,
-          httpVersion: '1.1',
-        });
+      it('should provide docs with a prefix', async () => {
+        const router = new GrpcRouter(new AbortController().signal).withPrefix('/prefix');
+        const res = await router.index('application/json');
         expect(res.status).toBe(200);
         expect(res.body).toBeDefined();
         expect(res.header!.get('content-type')).toMatch(/application\/json/);
@@ -95,8 +89,7 @@ describe('router', () => {
         expect(res.header!.get('x-accept')).toBe('application/json');
 
         const body = (await new Response(res.body).json()) as Docs;
-        expect(Object.keys(body.paths!).length).toEqual(NUM_PATHS);
-        expect(body.servers).toEqual([{ url: 'https://rowdy.run/@rowdy/cri' }]);
+        expect(body.servers).toEqual([{ url: '/prefix' }]);
       });
 
       it('should provide docs with html header', async () => {
