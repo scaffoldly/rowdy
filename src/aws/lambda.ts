@@ -29,15 +29,14 @@ export class LambdaPipeline extends Pipeline {
   public readonly runtimeApi: string | undefined = process.env.AWS_LAMBDA_RUNTIME_API;
   private _requestId: string | undefined;
   private _cri: GrpcRouter = new GrpcRouter(this.signal, {
-    title: 'AWS Lambda CRI',
-    description: 'Container Runtime Interface for AWS Lambda',
+    title: 'Container Runtime Interface (CRI) over AWS Lambda',
+    description: `An implementation of the Kubernetes Container Runtime Interface (CRI) which leverages technology such as AWS Lambda, AWS ECR and AWS CloudWatch to implement Container Runtime and Image management.`,,
     contact: {
       url: packageJson.homepage,
     },
     license: {
       name: 'FSL-1.1-Apache-2.0',
     },
-    summary: `An implementation of the Kubernetes CRI (Container Runtime Interface) which leverages technology such as AWS Lambda, AWS ECR and AWS CloudWatch to implement Container Runtime and Image management.`,
     version: packageJson.version,
   }).withServices(new LambdaCri(this));
 
