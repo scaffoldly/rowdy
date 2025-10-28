@@ -87,8 +87,8 @@ describe('router', () => {
         expect(res.header!.get('x-accept')).toBe('text/html');
 
         const body = await new Response(res.body).text();
-        expect(body).toContain('<redoc spec-url="./openapi.json"></redoc>');
         expect(body).toContain('<title>@scaffoldly/rowdy-grpc</title>');
+        expect(body).toMatch(/<redoc spec-url="data:application\/json;base64,[^"]+"><\/redoc>/);
       });
 
       it('should reject unsupported accept header', async () => {
@@ -254,38 +254,6 @@ describe('router', () => {
           .withPrefix('/prefix');
         const req: GrpcRequest = {
           url: 'http://test/prefix/',
-          method: 'GET',
-          header: new Headers({ Accept: 'application/json' }),
-          body: Readable.from([]),
-          signal: new AbortController().signal,
-          httpVersion: '1.1',
-        };
-        const res = await router.route(req);
-        expect(res.status).toBe(200);
-        expect(res.header!.get('content-type')).toMatch(/application\/json/);
-      });
-
-      it('should return openapi.json', async () => {
-        const router = new GrpcRouter(new AbortController().signal).withServices(new CriCollection());
-        const req: GrpcRequest = {
-          url: 'http://test/openapi.json',
-          method: 'GET',
-          header: new Headers({ Accept: 'application/json' }),
-          body: Readable.from([]),
-          signal: new AbortController().signal,
-          httpVersion: '1.1',
-        };
-        const res = await router.route(req);
-        expect(res.status).toBe(200);
-        expect(res.header!.get('content-type')).toMatch(/application\/json/);
-      });
-
-      it('should return openapi.json with prefix', async () => {
-        const router = new GrpcRouter(new AbortController().signal)
-          .withServices(new CriCollection())
-          .withPrefix('/prefix');
-        const req: GrpcRequest = {
-          url: 'http://test/prefix/openapi.json',
           method: 'GET',
           header: new Headers({ Accept: 'application/json' }),
           body: Readable.from([]),

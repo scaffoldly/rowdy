@@ -213,10 +213,6 @@ export class GrpcRouter {
       return this.docs(request.header?.get('accept') || undefined);
     }
 
-    if (incoming === `${this._prefix}/openapi.json`.toLowerCase()) {
-      return this.docs('application/json');
-    }
-
     const handler = this._router.handlers.find((h) => incoming === `${this._prefix}${h.requestPath}`.toLowerCase());
     if (!handler) {
       return uResponseNotFound;
@@ -247,7 +243,14 @@ export class GrpcRouter {
           case 'text/html':
             acc.status = 200;
             acc.header?.set('content-type', 'text/html; charset=utf-8');
-            acc.body = Readable.from(docsHtml.replace('{{TITLE}}', this._docs.info?.title || NAME));
+            acc.body = Readable.from(
+              docsHtml
+                .replace('{{TITLE}}', this._docs.info?.title || NAME)
+                .replace(
+                  '{{SPEC}}',
+                  `data:application/json;base64,${Buffer.from(JSON.stringify(this._docs)).toString('base64')}`
+                )
+            );
             return acc;
           default:
             return acc;
