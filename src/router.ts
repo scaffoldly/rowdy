@@ -208,11 +208,22 @@ export class GrpcRouter {
     const url = new URL(request.url);
     const incoming = url.pathname.toLowerCase();
     const handler = this._router.handlers.find((h) => incoming === h.requestPath.toLowerCase());
-    const response = (await handler?.(request)) || uResponseNotFound;
 
-    response.header?.set('access-control-allow-origin', '*');
-    response.header?.set('access-control-allow-methods', '*');
-    response.header?.set('access-control-allow-headers', '*');
+    const response =
+      request.method.toLowerCase() === 'options'
+        ? {
+            status: handler ? 200 : 404,
+            header: new Headers({
+              'access-control-allow-origin': '*',
+              'access-control-allow-methods': '*',
+              'access-control-allow-headers': '*',
+              'access-control-max-age': '86400',
+              'cache-control': 'no-cache',
+              pragma: 'no-cache',
+              expires: '0',
+            }),
+          }
+        : (await handler?.(request)) || uResponseNotFound;
 
     return response;
   }
