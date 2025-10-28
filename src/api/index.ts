@@ -10,7 +10,7 @@ import { ApiResponseStatus, ApiSchema, Health, IImageApi, Image, IRegistryApi, R
 import { Environment } from '../environment';
 import { RegistryApi } from './registry';
 // import { RoutePaths } from '../routes';
-import { CRIServices, Router, Response as RouterResponse } from '@scaffoldly/rowdy-grpc';
+import { GrpcResponse } from '@scaffoldly/rowdy-grpc';
 import { Readable } from 'stream';
 
 export class Rowdy {
@@ -29,8 +29,6 @@ export class Rowdy {
   private _registry: IRegistryApi = new RegistryApi(this);
   private _proxy?: HttpProxy<Pipeline>;
 
-  private _cri: Router;
-
   constructor(
     public readonly log: Logger,
     public readonly signal: AbortSignal
@@ -38,42 +36,6 @@ export class Rowdy {
     const auth = authenticator(this.http, this.log);
     this.http.interceptors.request.use(...auth.request);
     this.http.interceptors.response.use(...auth.response);
-
-    this._cri = new Router(signal).withServices(
-      new CRIServices()
-        .and()
-        .Runtime.with({
-          version: async () => {
-            return {
-              runtimeApiVersion: '1.2.3',
-              version: '4.5.6',
-              runtimeName: 'test',
-              runtimeVersion: '7.8.9',
-            };
-          },
-        })
-        .and()
-        .Image.with({
-          listImages: () => {
-            return {
-              images: [
-                {
-                  id: 'image1',
-                  repoTags: ['tag1'],
-                  repoDigests: ['digest1'],
-                  pinned: false,
-                  size: 123456n,
-                  username: 'user1',
-                },
-              ],
-            };
-          },
-        })
-    );
-  }
-
-  get Cri(): Router {
-    return this._cri;
   }
 
   get Images(): IImageApi {
@@ -133,9 +95,9 @@ export class Rowdy {
     });
   }
 
-  public cri(proxy: HttpProxy<Pipeline>): Observable<RouterResponse> {
+  public cri(proxy: HttpProxy<Pipeline>): Observable<GrpcResponse> {
     return from(
-      this._cri.route({
+      proxy.pipeline.cri.route({
         httpVersion: '1.1',
         method: proxy.method,
         body: Readable.from(proxy.body),

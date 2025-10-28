@@ -12,6 +12,7 @@
   "bin": {
     "rowdy": "dist/index.js"
   },
+  "homepage": "https://rowdy.run",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/scaffoldly/rowdy.git"
@@ -82,7 +83,7 @@
     "@bufbuild/protobuf": "^2.10.0",
     "@connectrpc/connect": "^2.1.0",
     "@eslint/js": "^9.28.0",
-    "@scaffoldly/rowdy-grpc": "^0.0.2-1-beta.20251028092155.2f36ae9",
+    "@scaffoldly/rowdy-grpc": "^0.0.2-1-beta.20251028104112.d7a4827",
     "@types/auth-header": "^1.0.6",
     "@types/aws-lambda": "^8.10.152",
     "@types/data-urls": "^3.0.4",
