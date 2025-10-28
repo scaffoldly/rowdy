@@ -83,7 +83,7 @@
     "@bufbuild/protobuf": "^2.10.0",
     "@connectrpc/connect": "^2.1.0",
     "@eslint/js": "^9.28.0",
-    "@scaffoldly/rowdy-grpc": "^0.0.2-1-beta.20251028122259.7dcdf96",
+    "@scaffoldly/rowdy-grpc": "^0.0.2-1-beta.20251028125520.99beb9f",
     "@types/auth-header": "^1.0.6",
     "@types/aws-lambda": "^8.10.152",
     "@types/data-urls": "^3.0.4",
@@ -118,10 +118,7 @@
     "scripts": "dist/**/*.js",
     "assets": "dist/**/*",
     "targets": [
-      "node22-macos-x64",
-      "node22-macos-arm64",
-      "node22-linuxstatic-x64",
-      "node22-linuxstatic-arm64"
+      "linuxstatic"
     ],
     "outputPath": "bin",
     "compress": "Brotli",
