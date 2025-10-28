@@ -76,39 +76,103 @@ describe('router', () => {
 
         const body = (await new Response(res.body).json()) as Docs;
         expect(Object.keys(body.paths!).length).toEqual(NUM_PATHS);
-        expect(body.servers).toEqual([{ url: '' }]);
       });
 
-      it('should provide docs with a prefix', async () => {
-        const router = new GrpcRouter(new AbortController().signal).withPrefix('/prefix');
-        const res = await router.index('application/json');
-        expect(res.status).toBe(200);
-        expect(res.body).toBeDefined();
-        expect(res.header!.get('content-type')).toMatch(/application\/json/);
-        expect(res.header!.get('x-acceptable')).toBe('application/json, text/html');
-        expect(res.header!.get('x-accept')).toBe('application/json');
-
-        const body = (await new Response(res.body).json()) as Docs;
-        expect(body.servers).toEqual([{ url: '' }]);
-      });
-
-      it('should provide docs with a url', async () => {
-        const res = await router.index({
-          url: 'https://rowdy.run/@rowdy/cri',
-          method: 'GET',
-          header: new Headers({ Accept: 'application/json' }),
-          body: Readable.from([]),
-          signal: new AbortController().signal,
-          httpVersion: '1.1',
+      describe('server url', () => {
+        it('should prefer x-forwarded-host header', async () => {
+          const router = new GrpcRouter(new AbortController().signal);
+          expect(
+            (
+              (await new Response(
+                (
+                  await router.index({
+                    url: 'rowdy://cri/',
+                    method: 'GET',
+                    header: new Headers({
+                      Accept: 'application/json',
+                      'X-Forwarded-Host': 'rowdy.run',
+                      Host: '5f5wgaabjx7yphy7jrquqoqcru0ufgzh.lambda-url.us-east-1.on.aws',
+                    }),
+                    body: Readable.from([]),
+                    signal: new AbortController().signal,
+                    httpVersion: '1.1',
+                  })
+                ).body
+              ).json()) as Docs
+            ).servers?.[0]?.url
+          ).toBe('https://rowdy.run/');
         });
-        expect(res.status).toBe(200);
-        expect(res.body).toBeDefined();
-        expect(res.header!.get('content-type')).toMatch(/application\/json/);
-        expect(res.header!.get('x-acceptable')).toBe('application/json, text/html');
-        expect(res.header!.get('x-accept')).toBe('application/json');
 
-        const body = (await new Response(res.body).json()) as Docs;
-        expect(body.servers).toEqual([{ url: 'https://rowdy.run/@rowdy/cri' }]);
+        it('should prefer host header', async () => {
+          const router = new GrpcRouter(new AbortController().signal);
+          expect(
+            (
+              (await new Response(
+                (
+                  await router.index({
+                    url: 'rowdy://cri/',
+                    method: 'GET',
+                    header: new Headers({
+                      Accept: 'application/json',
+                      Host: '5f5wgaabjx7yphy7jrquqoqcru0ufgzh.lambda-url.us-east-1.on.aws',
+                    }),
+                    body: Readable.from([]),
+                    signal: new AbortController().signal,
+                    httpVersion: '1.1',
+                  })
+                ).body
+              ).json()) as Docs
+            ).servers?.[0]?.url
+          ).toBe('https://5f5wgaabjx7yphy7jrquqoqcru0ufgzh.lambda-url.us-east-1.on.aws/');
+        });
+
+        it('should prefer x-forwarded-host with a prefix', async () => {
+          const router = new GrpcRouter(new AbortController().signal).withPrefix('/@rowdy/cri');
+          expect(
+            (
+              (await new Response(
+                (
+                  await router.index({
+                    url: 'rowdy://cri/',
+                    method: 'GET',
+                    header: new Headers({
+                      Accept: 'application/json',
+                      'X-Forwarded-Proto': 'https',
+                      'X-Forwarded-Host': 'rowdy.run',
+                      Host: '5f5wgaabjx7yphy7jrquqoqcru0ufgzh.lambda-url.us-east-1.on.aws',
+                    }),
+                    body: Readable.from([]),
+                    signal: new AbortController().signal,
+                    httpVersion: '1.1',
+                  })
+                ).body
+              ).json()) as Docs
+            ).servers?.[0]?.url
+          ).toBe('https://rowdy.run/@rowdy/cri');
+        });
+
+        it('should prefer host header with a prefix', async () => {
+          const router = new GrpcRouter(new AbortController().signal).withPrefix('/@rowdy/cri');
+          expect(
+            (
+              (await new Response(
+                (
+                  await router.index({
+                    url: 'rowdy://cri/',
+                    method: 'GET',
+                    header: new Headers({
+                      Accept: 'application/json',
+                      Host: '5f5wgaabjx7yphy7jrquqoqcru0ufgzh.lambda-url.us-east-1.on.aws',
+                    }),
+                    body: Readable.from([]),
+                    signal: new AbortController().signal,
+                    httpVersion: '1.1',
+                  })
+                ).body
+              ).json()) as Docs
+            ).servers?.[0]?.url
+          ).toBe('https://5f5wgaabjx7yphy7jrquqoqcru0ufgzh.lambda-url.us-east-1.on.aws/@rowdy/cri');
+        });
       });
 
       it('should provide docs with html header', async () => {

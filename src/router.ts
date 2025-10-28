@@ -223,17 +223,42 @@ export class GrpcRouter {
     return response;
   }
 
+  docs(request: GrpcRequest | string): Docs {
+    const docs = { ...this._docs };
+    docs.servers = docs.servers || [];
+    if (!request || typeof request === 'string') {
+      return docs;
+    }
+
+    if (request.header.get('x-forwarded-host')) {
+      const protocol = request.header.get('x-forwarded-proto') || 'https';
+      const host = request.header.get('x-forwarded-host');
+      const url = new URL(`${protocol}://${host}${this._prefix}`);
+      docs.servers = [{ url: url.toString() }];
+      return docs;
+    }
+
+    if (request.header.get('host')) {
+      const protocol = request.header.get('x-forwarded-proto') || 'https';
+      const host = request.header.get('host');
+      const url = new URL(`${protocol}://${host}${this._prefix}`);
+      docs.servers = [{ url: url.toString() }];
+      return docs;
+    }
+
+    return this._docs;
+  }
+
   async index(request: GrpcRequest | string): Promise<GrpcResponse> {
+    const docs = this.docs(request);
     const accept = typeof request === 'string' ? request : request.header.get('accept') || '';
-    const url = typeof request === 'string' ? '' : new URL(request.url);
 
     const negotiator = new Negotiator({ headers: { accept } });
 
     const acceptable = ['application/json', 'text/html'];
     const mediaTypes = negotiator.mediaTypes(acceptable);
 
-    const docs = this._docs;
-    docs.servers = [{ url: url.toString() }];
+    // TODO: if servers is empty, disable tryItOut
 
     const response = mediaTypes.reduce<GrpcResponse>(
       (acc, mediaType) => {
