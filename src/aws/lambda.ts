@@ -30,7 +30,7 @@ export class LambdaPipeline extends Pipeline {
   private _requestId: string | undefined;
   private _cri: GrpcRouter = new GrpcRouter(this.signal, {
     title: 'Container Runtime Interface (CRI) over AWS Lambda',
-    description: `An implementation of the Kubernetes Container Runtime Interface (CRI) which leverages technology such as AWS Lambda, AWS ECR and AWS CloudWatch to implement Container Runtime and Image management.`,,
+    description: `An implementation of the Kubernetes Container Runtime Interface (CRI) which leverages technology such as AWS Lambda, AWS ECR and AWS CloudWatch to implement Container Runtime and Image management.`,
     contact: {
       url: packageJson.homepage,
     },
