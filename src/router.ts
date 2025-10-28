@@ -208,9 +208,13 @@ export class GrpcRouter {
     const url = new URL(request.url);
     const incoming = url.pathname.toLowerCase();
     const handler = this._router.handlers.find((h) => incoming === h.requestPath.toLowerCase());
-    if (handler) return handler(request);
+    const response = (await handler?.(request)) || uResponseNotFound;
 
-    return uResponseNotFound;
+    response.header?.set('access-control-allow-origin', '*');
+    response.header?.set('access-control-allow-methods', '*');
+    response.header?.set('access-control-allow-headers', '*');
+
+    return response;
   }
 
   docs(request: GrpcRequest | string): Docs {
