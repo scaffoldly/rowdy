@@ -1,11 +1,23 @@
-import { ConnectRouterOptions, createRouterTransport, ServiceImpl, Transport } from '@connectrpc/connect';
+import {
+  ConnectRouter,
+  ConnectRouterOptions,
+  createConnectRouter,
+  createRouterTransport,
+  ServiceImpl,
+  Transport,
+} from '@connectrpc/connect';
 import {
   compressionBrotli,
   compressionGzip,
   connectNodeAdapter,
   createGrpcWebTransport,
 } from '@connectrpc/connect-node';
-import { UniversalHandlerOptions, UniversalServerRequest, UniversalServerResponse } from '@connectrpc/connect/protocol';
+import {
+  UniversalHandlerOptions,
+  UniversalServerRequest,
+  UniversalServerResponse,
+  uResponseNotFound,
+} from '@connectrpc/connect/protocol';
 import { DescService } from '@bufbuild/protobuf';
 import { OpenAPIV3_1 } from 'openapi-types';
 import Negotiator from 'negotiator';
@@ -57,6 +69,7 @@ export abstract class Services<T> {
 
 export class Router {
   private _services: Service<DescService, unknown>[] = [];
+  private _router: ConnectRouter;
   private _docs: Docs;
   private _routerOptions: ConnectRouterOptions;
 
@@ -73,6 +86,8 @@ export class Router {
       connect: true,
       shutdownSignal: signal,
     };
+
+    this._router = createConnectRouter(this._routerOptions);
 
     this._docs = {
       openapi: '3.1.0',
@@ -123,6 +138,7 @@ export class Router {
 
   private withService<T extends DescService>(service: Service<T, unknown>): this {
     this._services.push(service);
+    this._router.service(service.service, service.implementation, service.options);
     return this;
   }
 
@@ -180,6 +196,21 @@ export class Router {
     };
 
     return { start, stop };
+  }
+
+  async route(request: Request): Promise<Response> {
+    const url = new URL(request.url);
+    if (url.pathname === '/') {
+      return this.docs(request.header?.get('accept') || undefined);
+    }
+
+    const handler = this._router.handlers.find((h) => h.requestPath === url.pathname);
+    if (!handler) {
+      return uResponseNotFound;
+    }
+
+    const response = await handler(request);
+    return response;
   }
 
   public async docs(accept?: string): Promise<Response> {
