@@ -78,6 +78,42 @@ describe('router', () => {
         expect(Object.keys(body.paths!).length).toEqual(NUM_PATHS);
       });
 
+      it('should provide docs with x-index header', async () => {
+        const res = await router.route({
+          url: 'rowdy://cri/foo/bar/baz',
+          method: 'GET',
+          header: new Headers({
+            Accept: 'application/json',
+            'x-index': 'true',
+          }),
+          body: Readable.from([]),
+          signal: new AbortController().signal,
+          httpVersion: '1.1',
+        });
+        expect(res.status).toBe(200);
+        expect(res.body).toBeDefined();
+        expect(res.header!.get('content-type')).toMatch(/application\/json/);
+        expect(res.header!.get('x-acceptable')).toBe('application/json, text/html');
+        expect(res.header!.get('x-accept')).toBe('application/json');
+
+        const body = (await new Response(res.body).json()) as Docs;
+        expect(Object.keys(body.paths!).length).toEqual(NUM_PATHS);
+      });
+
+      it('should not provide docs without x-index header', async () => {
+        const res = await router.route({
+          url: 'rowdy://cri/foo/bar/baz',
+          method: 'GET',
+          header: new Headers({
+            Accept: 'application/json',
+          }),
+          body: Readable.from([]),
+          signal: new AbortController().signal,
+          httpVersion: '1.1',
+        });
+        expect(res.status).toBe(404);
+      });
+
       describe('server url', () => {
         it('should append a path if provided', async () => {
           const router = new GrpcRouter(new AbortController().signal);

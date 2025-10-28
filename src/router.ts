@@ -201,7 +201,7 @@ export class GrpcRouter {
   }
 
   async route(request: GrpcRequest): Promise<GrpcResponse> {
-    if (request.header.get('x-index')) {
+    if (new URL(request.url).pathname === '/' || request.header.get('x-index')) {
       return this.index(request);
     }
 
