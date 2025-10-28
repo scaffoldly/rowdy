@@ -24,6 +24,7 @@ import Negotiator from 'negotiator';
 import { NAME, VERSION } from '.';
 import { Readable } from 'stream';
 import { createServer } from 'http';
+import { DOMParser } from 'linkedom';
 import docsHtml from '../static/docs.html';
 
 export type GrpcRequest = UniversalServerRequest;
@@ -243,11 +244,11 @@ export class GrpcRouter {
           case 'text/html':
             acc.status = 200;
             acc.header?.set('content-type', 'text/html; charset=utf-8');
-            acc.body = Readable.from(
-              docsHtml
-                .replace('{{TITLE}}', this._docs.info?.title || NAME)
-                .replace('{{SPEC}}', `data:application/json,${encodeURIComponent(JSON.stringify(this._docs))}`)
-            );
+            const docs = new DOMParser().parseFromString(docsHtml, 'text/html');
+            docs.querySelector('title')!.textContent = this._docs.info?.title || NAME;
+            docs.querySelector('#redoc-init')!.textContent =
+              `Redoc.init(${JSON.stringify(this._docs)}, {}, document.querySelector('redoc'));`;
+            acc.body = Readable.from(docs.toString());
             return acc;
           default:
             return acc;
