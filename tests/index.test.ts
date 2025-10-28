@@ -1,4 +1,4 @@
-import { id, NAME, VERSION, CRI, fromBinary, toBinary, Router } from '@scaffoldly/rowdy-grpc';
+import { id, NAME, VERSION, CRI, fromBinary, toBinary, GrpcRouter } from '@scaffoldly/rowdy-grpc';
 import packageJson from '../package.json';
 
 describe('exports', () => {
@@ -19,7 +19,7 @@ describe('exports', () => {
   });
 
   it('should export Router module', () => {
-    expect(Router).toBeDefined();
+    expect(GrpcRouter).toBeDefined();
   });
 
   it('should provide fromBinary and toBinary', () => {

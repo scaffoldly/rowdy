@@ -1,32 +1,40 @@
 import { createMethodUrl } from '@connectrpc/connect/protocol';
-import { CRIServices, Docs, ImageService, Router, RuntimeService, Request, CRI } from '@scaffoldly/rowdy-grpc';
+import {
+  CriCollection,
+  Docs,
+  ImageService,
+  GrpcRouter,
+  RuntimeService,
+  GrpcRequest,
+  CRI,
+} from '@scaffoldly/rowdy-grpc';
 import { Readable } from 'stream';
 
 const NUM_PATHS = 35;
 
 describe('router', () => {
   it('should build an empty router', () => {
-    const router = new Router(new AbortController().signal);
+    const router = new GrpcRouter(new AbortController().signal);
     expect(router.size).toEqual(0);
   });
 
   it('should install services', () => {
-    const router = new Router(new AbortController().signal);
-    router.withServices(new CRIServices());
+    const router = new GrpcRouter(new AbortController().signal);
+    router.withServices(new CriCollection());
     expect(router.size).toEqual(NUM_PATHS);
   });
 
   it('should support chaining', () => {
-    const router = new Router(new AbortController().signal).withServices(
-      new CRIServices().Runtime.with({}).and().Image.with({})
+    const router = new GrpcRouter(new AbortController().signal).withServices(
+      new CriCollection().Runtime.with({}).and().Image.with({})
     );
     expect(router.size).toEqual(NUM_PATHS);
   });
 
   describe('routing', () => {
     // Create your custom router
-    const router = new Router(new AbortController().signal).withServices(
-      new CRIServices()
+    const router = new GrpcRouter(new AbortController().signal).withServices(
+      new CriCollection()
         .and()
         .Runtime.with({
           version: async () => {
@@ -117,7 +125,7 @@ describe('router', () => {
 
     describe('route', () => {
       it('should return 404 for unknown path', async () => {
-        const req: Request = {
+        const req: GrpcRequest = {
           url: 'http://localhost/unknown/path',
           method: 'GET',
           header: new Headers(),
@@ -130,7 +138,7 @@ describe('router', () => {
       });
 
       it('should route to images', async () => {
-        const req: Request = {
+        const req: GrpcRequest = {
           url: createMethodUrl('http://test', CRI.ImageService.method.listImages),
           method: 'POST',
           header: new Headers({ 'Content-Type': 'application/grpc' }),
@@ -143,7 +151,7 @@ describe('router', () => {
       });
 
       it('should route to runtime', async () => {
-        const req: Request = {
+        const req: GrpcRequest = {
           url: createMethodUrl('http://test', CRI.RuntimeService.method.version),
           method: 'POST',
           header: new Headers({ 'Content-Type': 'application/grpc' }),
@@ -156,8 +164,10 @@ describe('router', () => {
       });
 
       it('should route with a prefix', async () => {
-        const router = new Router(new AbortController().signal).withServices(new CRIServices()).withPrefix('/prefix');
-        const req: Request = {
+        const router = new GrpcRouter(new AbortController().signal)
+          .withServices(new CriCollection())
+          .withPrefix('/prefix');
+        const req: GrpcRequest = {
           url: createMethodUrl('http://test/prefix', CRI.RuntimeService.method.version),
           method: 'POST',
           header: new Headers({ 'Content-Type': 'application/grpc' }),
@@ -170,8 +180,10 @@ describe('router', () => {
       });
 
       it('should return 404 with a prefix mismatch', async () => {
-        const router = new Router(new AbortController().signal).withServices(new CRIServices()).withPrefix('/prefix');
-        const req: Request = {
+        const router = new GrpcRouter(new AbortController().signal)
+          .withServices(new CriCollection())
+          .withPrefix('/prefix');
+        const req: GrpcRequest = {
           url: createMethodUrl('http://test', CRI.RuntimeService.method.version),
           method: 'POST',
           header: new Headers({ 'Content-Type': 'application/grpc' }),
@@ -184,8 +196,8 @@ describe('router', () => {
       });
 
       it('should return docs at root', async () => {
-        const router = new Router(new AbortController().signal).withServices(new CRIServices());
-        const req: Request = {
+        const router = new GrpcRouter(new AbortController().signal).withServices(new CriCollection());
+        const req: GrpcRequest = {
           url: 'http://test/',
           method: 'GET',
           header: new Headers({ Accept: 'application/json' }),
@@ -199,8 +211,8 @@ describe('router', () => {
       });
 
       it('should return html docs at root for browsers', async () => {
-        const router = new Router(new AbortController().signal).withServices(new CRIServices());
-        const req: Request = {
+        const router = new GrpcRouter(new AbortController().signal).withServices(new CriCollection());
+        const req: GrpcRequest = {
           url: 'http://test/',
           method: 'GET',
           header: new Headers({
@@ -217,8 +229,10 @@ describe('router', () => {
       });
 
       it('should return html docs at root for browsers with prefix', async () => {
-        const router = new Router(new AbortController().signal).withServices(new CRIServices()).withPrefix('/prefix');
-        const req: Request = {
+        const router = new GrpcRouter(new AbortController().signal)
+          .withServices(new CriCollection())
+          .withPrefix('/prefix');
+        const req: GrpcRequest = {
           url: 'http://test/prefix/',
           method: 'GET',
           header: new Headers({
@@ -235,8 +249,10 @@ describe('router', () => {
       });
 
       it('should return docs at root with prefix', async () => {
-        const router = new Router(new AbortController().signal).withServices(new CRIServices()).withPrefix('/prefix');
-        const req: Request = {
+        const router = new GrpcRouter(new AbortController().signal)
+          .withServices(new CriCollection())
+          .withPrefix('/prefix');
+        const req: GrpcRequest = {
           url: 'http://test/prefix/',
           method: 'GET',
           header: new Headers({ Accept: 'application/json' }),
@@ -250,8 +266,8 @@ describe('router', () => {
       });
 
       it('should return openapi.json', async () => {
-        const router = new Router(new AbortController().signal).withServices(new CRIServices());
-        const req: Request = {
+        const router = new GrpcRouter(new AbortController().signal).withServices(new CriCollection());
+        const req: GrpcRequest = {
           url: 'http://test/openapi.json',
           method: 'GET',
           header: new Headers({ Accept: 'application/json' }),
@@ -265,8 +281,10 @@ describe('router', () => {
       });
 
       it('should return openapi.json with prefix', async () => {
-        const router = new Router(new AbortController().signal).withServices(new CRIServices()).withPrefix('/prefix');
-        const req: Request = {
+        const router = new GrpcRouter(new AbortController().signal)
+          .withServices(new CriCollection())
+          .withPrefix('/prefix');
+        const req: GrpcRequest = {
           url: 'http://test/prefix/openapi.json',
           method: 'GET',
           header: new Headers({ Accept: 'application/json' }),
