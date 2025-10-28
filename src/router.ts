@@ -246,10 +246,7 @@ export class GrpcRouter {
             acc.body = Readable.from(
               docsHtml
                 .replace('{{TITLE}}', this._docs.info?.title || NAME)
-                .replace(
-                  '{{SPEC}}',
-                  `data:application/json;base64,${Buffer.from(JSON.stringify(this._docs)).toString('base64')}`
-                )
+                .replace('{{SPEC}}', `data:application/json,${encodeURIComponent(JSON.stringify(this._docs))}`)
             );
             return acc;
           default:
