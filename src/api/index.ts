@@ -15,29 +15,13 @@ import { Readable } from 'stream';
 
 export class Rowdy {
   static readonly SLUG = '@rowdy';
-  static readonly SCHEME = 'rowdy:';
-  static readonly SERVICES = {
-    ERROR: 'error',
-    HTTP: 'http',
-    API: 'api',
-    CRI: 'cri',
-    HEALTH: 'health',
-    PING: 'ping',
-    ROUTES: 'routes',
-  };
-
-  // public static readonly Paths: RoutePaths = {
-  //   [`/${Rowdy.SLUG}/200`]: `${Rowdy.SCHEME}://${Rowdy.SERVICES.HTTP}:200/`,
-  //   [`/${Rowdy.SLUG}/204`]: `${Rowdy.SCHEME}://${Rowdy.SERVICES.HTTP}:204/`,
-  //   [`/${Rowdy.SLUG}/400`]: `${Rowdy.SCHEME}://${Rowdy.SERVICES.HTTP}:400/`,
-  //   [`/${Rowdy.SLUG}/404`]: `${Rowdy.SCHEME}://${Rowdy.SERVICES.HTTP}:404/`,
-  //   [`/${Rowdy.SLUG}/500`]: `${Rowdy.SCHEME}://${Rowdy.SERVICES.HTTP}:500/`,
-  //   [`/${Rowdy.SLUG}/${Rowdy.SERVICES.API}{/*path}`]: `${Rowdy.SCHEME}://${Rowdy.SERVICES.API}/*path`,
-  //   [`/${Rowdy.SLUG}/${Rowdy.SERVICES.CRI}{/*path}`]: `${Rowdy.SCHEME}://${Rowdy.SERVICES.CRI}/*path`,
-  //   [`/${Rowdy.SLUG}/${Rowdy.SERVICES.HEALTH}`]: `${Rowdy.SCHEME}://${Rowdy.SERVICES.HEALTH}/`,
-  //   [`/${Rowdy.SLUG}/${Rowdy.SERVICES.PING}`]: `${Rowdy.SCHEME}://${Rowdy.SERVICES.PING}/`,
-  //   [`/${Rowdy.SLUG}/${Rowdy.SERVICES.ROUTES}`]: `${Rowdy.SCHEME}://${Rowdy.SERVICES.ROUTES}/`,
-  // };
+  static readonly ERROR = 'error';
+  static readonly HTTP = 'http';
+  static readonly API = 'api';
+  static readonly CRI = 'cri';
+  static readonly HEALTH = 'health';
+  static readonly PING = 'ping';
+  static readonly ROUTES = 'routes';
 
   public readonly http: AxiosInstance = axios.create();
 
@@ -87,7 +71,7 @@ export class Rowdy {
             },
           })
       )
-      .withPrefix(`/${Rowdy.SERVICES.CRI}`);
+      .withPrefix(`/${Rowdy.CRI}`);
   }
 
   get Cri(): Router {

@@ -21,6 +21,7 @@ describe('routes', () => {
       expect(routes.intoURI('/@rowdy/api')!.toString()).toBe('rowdy://api/');
       expect(routes.intoURI('/@rowdy/api/foo/bar/baz')!.toString()).toBe('rowdy://api/foo/bar/baz');
       expect(routes.intoURI('/@rowdy/api/foo/bar/baz?bing=bong')!.toString()).toBe('rowdy://api/foo/bar/baz?bing=bong');
+      expect(routes.intoURI('/@rowdy/cri/foo/bar/baz')!.toString()).toBe('rowdy://cri/foo/bar/baz');
       expect(routes.intoURI('/@rowdy/cri/foo/bar/baz?bing=bong')!.toString()).toBe('rowdy://cri/foo/bar/baz?bing=bong');
     });
   });

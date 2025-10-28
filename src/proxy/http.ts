@@ -297,13 +297,13 @@ class RowdyHttpResponse extends HttpResponse {
 
     log.debug('Rowdy Proxy', { method: proxy.method, uri: Logger.asPrimitive(proxy.uri) });
 
-    if (proxy.uri.host === Rowdy.SERVICES.ERROR) {
+    if (proxy.uri.host === Rowdy.ERROR) {
       const reason = proxy.uri.error || 'Unknown error';
       const status = Number(proxy.uri.port) || 500;
       return of(this.withStatus(status).withHeader('x-reason', reason));
     }
 
-    if (proxy.uri.host === Rowdy.SERVICES.ROUTES) {
+    if (proxy.uri.host === Rowdy.ROUTES) {
       const { routes } = proxy.pipeline;
       return of(
         this.withStatus(200)
@@ -312,11 +312,11 @@ class RowdyHttpResponse extends HttpResponse {
       );
     }
 
-    if (proxy.uri.host === Rowdy.SERVICES.PING) {
+    if (proxy.uri.host === Rowdy.PING) {
       return of(this.withStatus(200).withData(Readable.from('pong')));
     }
 
-    if (proxy.uri.host === Rowdy.SERVICES.HEALTH) {
+    if (proxy.uri.host === Rowdy.HEALTH) {
       return from(proxy.pipeline.routes.health()).pipe(
         map((backends) => {
           const health = {
@@ -331,11 +331,11 @@ class RowdyHttpResponse extends HttpResponse {
       );
     }
 
-    if (proxy.uri.host === Rowdy.SERVICES.HTTP && Number.isInteger(proxy.uri.port)) {
+    if (proxy.uri.host === Rowdy.HTTP && Number.isInteger(proxy.uri.port)) {
       return of(this.withHeader('x-error', proxy.uri.error).withStatus(Number(proxy.uri.port)));
     }
 
-    if (proxy.uri.host === Rowdy.SERVICES.API) {
+    if (proxy.uri.host === Rowdy.API) {
       return this.rowdy
         .withProxy(proxy)
         .api()
@@ -349,7 +349,7 @@ class RowdyHttpResponse extends HttpResponse {
         );
     }
 
-    if (proxy.uri.host === Rowdy.SERVICES.CRI) {
+    if (proxy.uri.host === Rowdy.CRI) {
       return this.rowdy.cri(proxy).pipe(
         map(({ status, body, header }) => {
           return this.withStatus(status)

@@ -157,7 +157,7 @@ export class URI extends URL implements ILoggable {
   }
 
   static fromError(error: Error, code?: number): URI {
-    return URI.from(`rowdy://error${code ? `:${code}` : ''}/`).withSearch(URI.ERROR, error.message);
+    return URI.from(`rowdy://${Rowdy.ERROR}${code ? `:${code}` : ''}/`).withSearch(URI.ERROR, error.message);
   }
 
   async health(timeoutMs?: number): Promise<URIHealth> {
@@ -220,16 +220,16 @@ export class Routes implements IRoutes, ILoggable {
 
   static empty(): Routes {
     return new Routes()
-      .withPath(`/${Rowdy.SLUG}/200`, 'rowdy://http:200/')
-      .withPath(`/${Rowdy.SLUG}/204`, 'rowdy://http:204/')
-      .withPath(`/${Rowdy.SLUG}/400`, 'rowdy://http:400/')
-      .withPath(`/${Rowdy.SLUG}/404`, 'rowdy://http:401/')
-      .withPath(`/${Rowdy.SLUG}/500`, 'rowdy://http:500/')
-      .withPath(`/${Rowdy.SLUG}/api{/*path}`, 'rowdy://api/*path')
-      .withPath(`/${Rowdy.SLUG}/cri{/*path}`, 'rowdy://cri/*path')
-      .withPath(`/${Rowdy.SLUG}/health`, 'rowdy://health/')
-      .withPath(`/${Rowdy.SLUG}/ping`, 'rowdy://ping/')
-      .withPath(`/${Rowdy.SLUG}/routes`, 'rowdy://routes/');
+      .withPath(`/${Rowdy.SLUG}/200`, `rowdy://${Rowdy.HTTP}:200/`)
+      .withPath(`/${Rowdy.SLUG}/204`, `rowdy://${Rowdy.HTTP}:204/`)
+      .withPath(`/${Rowdy.SLUG}/400`, `rowdy://${Rowdy.HTTP}:400/`)
+      .withPath(`/${Rowdy.SLUG}/404`, `rowdy://${Rowdy.HTTP}:401/`)
+      .withPath(`/${Rowdy.SLUG}/500`, `rowdy://${Rowdy.HTTP}:500/`)
+      .withPath(`/${Rowdy.SLUG}/${Rowdy.API}{/*path}`, `rowdy://${Rowdy.API}/*path`)
+      .withPath(`/${Rowdy.SLUG}/${Rowdy.CRI}{/*path}`, `rowdy://${Rowdy.CRI}/*path`)
+      .withPath(`/${Rowdy.SLUG}/${Rowdy.HEALTH}`, `rowdy://${Rowdy.HEALTH}/`)
+      .withPath(`/${Rowdy.SLUG}/${Rowdy.PING}`, `rowdy://${Rowdy.PING}/`)
+      .withPath(`/${Rowdy.SLUG}/${Rowdy.ROUTES}`, `rowdy://${Rowdy.ROUTES}/`);
   }
 
   static default(): Routes {
