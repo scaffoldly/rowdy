@@ -79,6 +79,30 @@ describe('router', () => {
       });
 
       describe('server url', () => {
+        it('should append a path if provided', async () => {
+          const router = new GrpcRouter(new AbortController().signal);
+          expect(
+            (
+              (await new Response(
+                (
+                  await router.index({
+                    url: 'rowdy://cri/foo/bar/baz',
+                    method: 'GET',
+                    header: new Headers({
+                      Accept: 'application/json',
+                      'X-Forwarded-Host': 'rowdy.run',
+                      Host: '5f5wgaabjx7yphy7jrquqoqcru0ufgzh.lambda-url.us-east-1.on.aws',
+                    }),
+                    body: Readable.from([]),
+                    signal: new AbortController().signal,
+                    httpVersion: '1.1',
+                  })
+                ).body
+              ).json()) as Docs
+            ).servers?.[0]?.url
+          ).toBe('https://rowdy.run/foo/bar/baz');
+        });
+
         it('should prefer x-forwarded-host header', async () => {
           const router = new GrpcRouter(new AbortController().signal);
           expect(
@@ -124,54 +148,6 @@ describe('router', () => {
               ).json()) as Docs
             ).servers?.[0]?.url
           ).toBe('https://5f5wgaabjx7yphy7jrquqoqcru0ufgzh.lambda-url.us-east-1.on.aws/');
-        });
-
-        it('should prefer x-forwarded-host with a prefix', async () => {
-          const router = new GrpcRouter(new AbortController().signal).withPrefix('/@rowdy/cri');
-          expect(
-            (
-              (await new Response(
-                (
-                  await router.index({
-                    url: 'rowdy://cri/',
-                    method: 'GET',
-                    header: new Headers({
-                      Accept: 'application/json',
-                      'X-Forwarded-Proto': 'https',
-                      'X-Forwarded-Host': 'rowdy.run',
-                      Host: '5f5wgaabjx7yphy7jrquqoqcru0ufgzh.lambda-url.us-east-1.on.aws',
-                    }),
-                    body: Readable.from([]),
-                    signal: new AbortController().signal,
-                    httpVersion: '1.1',
-                  })
-                ).body
-              ).json()) as Docs
-            ).servers?.[0]?.url
-          ).toBe('https://rowdy.run/@rowdy/cri');
-        });
-
-        it('should prefer host header with a prefix', async () => {
-          const router = new GrpcRouter(new AbortController().signal).withPrefix('/@rowdy/cri');
-          expect(
-            (
-              (await new Response(
-                (
-                  await router.index({
-                    url: 'rowdy://cri/',
-                    method: 'GET',
-                    header: new Headers({
-                      Accept: 'application/json',
-                      Host: '5f5wgaabjx7yphy7jrquqoqcru0ufgzh.lambda-url.us-east-1.on.aws',
-                    }),
-                    body: Readable.from([]),
-                    signal: new AbortController().signal,
-                    httpVersion: '1.1',
-                  })
-                ).body
-              ).json()) as Docs
-            ).servers?.[0]?.url
-          ).toBe('https://5f5wgaabjx7yphy7jrquqoqcru0ufgzh.lambda-url.us-east-1.on.aws/@rowdy/cri');
         });
       });
 
@@ -237,7 +213,7 @@ describe('router', () => {
 
       it('should route to images', async () => {
         const req: GrpcRequest = {
-          url: createMethodUrl('http://test', CRI.ImageService.method.listImages),
+          url: createMethodUrl('http://irrelevant', CRI.ImageService.method.listImages),
           method: 'POST',
           header: new Headers({ 'Content-Type': 'application/grpc' }),
           body: Readable.from([]),
@@ -250,7 +226,7 @@ describe('router', () => {
 
       it('should route to runtime', async () => {
         const req: GrpcRequest = {
-          url: createMethodUrl('http://test', CRI.RuntimeService.method.version),
+          url: createMethodUrl('http://irrelevant', CRI.RuntimeService.method.version),
           method: 'POST',
           header: new Headers({ 'Content-Type': 'application/grpc' }),
           body: Readable.from([]),
@@ -259,44 +235,12 @@ describe('router', () => {
         };
         const res = await router.route(req);
         expect(res.status).toBe(200);
-      });
-
-      it('should route with a prefix', async () => {
-        const router = new GrpcRouter(new AbortController().signal)
-          .withServices(new CriCollection())
-          .withPrefix('/prefix');
-        const req: GrpcRequest = {
-          url: createMethodUrl('http://test/prefix', CRI.RuntimeService.method.version),
-          method: 'POST',
-          header: new Headers({ 'Content-Type': 'application/grpc' }),
-          body: Readable.from([]),
-          signal: new AbortController().signal,
-          httpVersion: '1.1',
-        };
-        const res = await router.route(req);
-        expect(res.status).toBe(200);
-      });
-
-      it('should return 404 with a prefix mismatch', async () => {
-        const router = new GrpcRouter(new AbortController().signal)
-          .withServices(new CriCollection())
-          .withPrefix('/prefix');
-        const req: GrpcRequest = {
-          url: createMethodUrl('http://test', CRI.RuntimeService.method.version),
-          method: 'POST',
-          header: new Headers({ 'Content-Type': 'application/grpc' }),
-          body: Readable.from([]),
-          signal: new AbortController().signal,
-          httpVersion: '1.1',
-        };
-        const res = await router.route(req);
-        expect(res.status).toBe(404);
       });
 
       it('should return docs at root', async () => {
         const router = new GrpcRouter(new AbortController().signal).withServices(new CriCollection());
         const req: GrpcRequest = {
-          url: 'http://test/',
+          url: 'http://irrelevant/',
           method: 'GET',
           header: new Headers({ Accept: 'application/json' }),
           body: Readable.from([]),
@@ -311,7 +255,7 @@ describe('router', () => {
       it('should return html docs at root for browsers', async () => {
         const router = new GrpcRouter(new AbortController().signal).withServices(new CriCollection());
         const req: GrpcRequest = {
-          url: 'http://test/',
+          url: 'http://irrelevant/',
           method: 'GET',
           header: new Headers({
             Accept:
@@ -324,43 +268,6 @@ describe('router', () => {
         const res = await router.route(req);
         expect(res.status).toBe(200);
         expect(res.header!.get('content-type')).toMatch(/text\/html/);
-      });
-
-      it('should return html docs at root for browsers with prefix', async () => {
-        const router = new GrpcRouter(new AbortController().signal)
-          .withServices(new CriCollection())
-          .withPrefix('/prefix');
-        const req: GrpcRequest = {
-          url: 'http://test/prefix/',
-          method: 'GET',
-          header: new Headers({
-            Accept:
-              'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
-          }),
-          body: Readable.from([]),
-          signal: new AbortController().signal,
-          httpVersion: '1.1',
-        };
-        const res = await router.route(req);
-        expect(res.status).toBe(200);
-        expect(res.header!.get('content-type')).toMatch(/text\/html/);
-      });
-
-      it('should return docs at root with prefix', async () => {
-        const router = new GrpcRouter(new AbortController().signal)
-          .withServices(new CriCollection())
-          .withPrefix('/prefix');
-        const req: GrpcRequest = {
-          url: 'http://test/prefix/',
-          method: 'GET',
-          header: new Headers({ Accept: 'application/json' }),
-          body: Readable.from([]),
-          signal: new AbortController().signal,
-          httpVersion: '1.1',
-        };
-        const res = await router.route(req);
-        expect(res.status).toBe(200);
-        expect(res.header!.get('content-type')).toMatch(/application\/json/);
       });
     });
 

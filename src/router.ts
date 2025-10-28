@@ -74,7 +74,6 @@ export class GrpcRouter {
   private _router: ConnectRouter;
   private _docs: Docs;
   private _routerOptions: ConnectRouterOptions;
-  private _prefix: string = '';
 
   constructor(
     public readonly signal: AbortSignal,
@@ -117,11 +116,6 @@ export class GrpcRouter {
       }
       return router;
     });
-  }
-
-  withPrefix(prefix: string): this {
-    this._prefix = prefix;
-    return this;
   }
 
   withServices(services: GrpcCollection<unknown>): this {
@@ -210,11 +204,11 @@ export class GrpcRouter {
     const url = new URL(request.url);
     const incoming = url.pathname.toLowerCase();
 
-    if (incoming === `${this._prefix}/`.toLowerCase()) {
+    if (incoming === '/') {
       return this.index(request);
     }
 
-    const handler = this._router.handlers.find((h) => incoming === `${this._prefix}${h.requestPath}`.toLowerCase());
+    const handler = this._router.handlers.find((h) => incoming === h.requestPath.toLowerCase());
     if (!handler) {
       return uResponseNotFound;
     }
@@ -224,6 +218,7 @@ export class GrpcRouter {
   }
 
   docs(request: GrpcRequest | string): Docs {
+    const path = request && typeof request !== 'string' ? new URL(request.url).pathname : '/';
     const docs = { ...this._docs };
     docs.servers = docs.servers || [];
     if (!request || typeof request === 'string') {
@@ -233,7 +228,7 @@ export class GrpcRouter {
     if (request.header.get('x-forwarded-host')) {
       const protocol = request.header.get('x-forwarded-proto') || 'https';
       const host = request.header.get('x-forwarded-host');
-      const url = new URL(`${protocol}://${host}${this._prefix}`);
+      const url = new URL(`${protocol}://${host}${path}`);
       docs.servers = [{ url: url.toString() }];
       return docs;
     }
@@ -241,7 +236,7 @@ export class GrpcRouter {
     if (request.header.get('host')) {
       const protocol = request.header.get('x-forwarded-proto') || 'https';
       const host = request.header.get('host');
-      const url = new URL(`${protocol}://${host}${this._prefix}`);
+      const url = new URL(`${protocol}://${host}${path}`);
       docs.servers = [{ url: url.toString() }];
       return docs;
     }
