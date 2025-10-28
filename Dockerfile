@@ -6,7 +6,7 @@ COPY . .
 
 # The Server
 RUN --mount=type=cache,target=/usr/local/share/.cache \
-    yarn
+    yarn install --frozen-lockfile
 
 ENTRYPOINT [ "yarn" ]
 CMD [ "start:dev" ]
@@ -14,9 +14,9 @@ CMD [ "start:dev" ]
 FROM node:22-alpine AS exe
 WORKDIR /work
 COPY --from=full /work /work
-# ENV PKG_CACHE_PATH=/usr/local/share/.cache/pkg
+ENV PKG_CACHE_PATH=/usr/local/share/.cache/pkg
 RUN --mount=type=cache,target=/usr/local/share/.cache \
-    yarn && \
+    yarn install --frozen-lockfile && \
     yarn build:exe --debug
 
 FROM node:22-alpine AS arch
