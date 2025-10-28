@@ -251,8 +251,12 @@ export class GrpcRouter {
             acc.header?.set('content-type', 'text/html; charset=utf-8');
             const dom = new DOMParser().parseFromString(docsHtml, 'text/html');
             dom.querySelector('title')!.textContent = docs.info?.title || NAME;
-            dom.querySelector('#redoc-init')!.textContent =
-              `Redoc.init(${JSON.stringify(docs)}, {}, document.querySelector('redoc'));`;
+            dom
+              .getElementById('elements')!
+              .setAttribute(
+                'apiDescriptionUrl',
+                `data:application/json;base64,${Buffer.from(JSON.stringify(docs)).toString('base64')}`
+              );
             acc.body = Readable.from(dom.toString());
             return acc;
           default:

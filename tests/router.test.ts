@@ -109,8 +109,8 @@ describe('router', () => {
 
         const body = await new Response(res.body).text();
         expect(body).toContain('<title>@scaffoldly/rowdy-grpc</title>');
-        expect(body).toContain('Redoc.init(');
-        expect(body).toContain('"openapi":"3.1.0"');
+        expect(body).toContain('elements-api');
+        expect(body).toContain('apiDescriptionUrl="data:application/json;base64,');
       });
 
       it('should reject unsupported accept header', async () => {
