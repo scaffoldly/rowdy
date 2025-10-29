@@ -67,7 +67,7 @@ describe('router', () => {
 
     describe('docs', () => {
       it('should provide docs with json header', async () => {
-        const res = await router.index('application/json');
+        const res = await router.docs('application/json');
         expect(res.status).toBe(200);
         expect(res.body).toBeDefined();
         expect(res.header!.get('content-type')).toMatch(/application\/json/);
@@ -130,74 +130,28 @@ describe('router', () => {
             (
               (await new Response(
                 (
-                  await router.index({
-                    url: 'rowdy://cri/foo/bar/baz',
-                    method: 'GET',
-                    header: new Headers({
-                      Accept: 'application/json',
-                      'X-Forwarded-Host': 'rowdy.run',
-                      Host: '5f5wgaabjx7yphy7jrquqoqcru0ufgzh.lambda-url.us-east-1.on.aws',
-                    }),
-                    body: Readable.from([]),
-                    signal: new AbortController().signal,
-                    httpVersion: '1.1',
-                  })
+                  await router.route(
+                    {
+                      url: 'https://rowdy.run/@rowdy/cri',
+                      method: 'GET',
+                      header: new Headers({
+                        Accept: 'application/json',
+                      }),
+                      body: Readable.from([]),
+                      signal: new AbortController().signal,
+                      httpVersion: '1.1',
+                    },
+                    '/@rowdy/cri'
+                  )
                 ).body
               ).json()) as Docs
             ).servers?.[0]?.url
-          ).toBe('https://rowdy.run/foo/bar/baz');
-        });
-
-        it('should prefer x-forwarded-host header', async () => {
-          const router = new GrpcRouter(new AbortController().signal);
-          expect(
-            (
-              (await new Response(
-                (
-                  await router.index({
-                    url: 'rowdy://cri/',
-                    method: 'GET',
-                    header: new Headers({
-                      Accept: 'application/json',
-                      'X-Forwarded-Host': 'rowdy.run',
-                      Host: '5f5wgaabjx7yphy7jrquqoqcru0ufgzh.lambda-url.us-east-1.on.aws',
-                    }),
-                    body: Readable.from([]),
-                    signal: new AbortController().signal,
-                    httpVersion: '1.1',
-                  })
-                ).body
-              ).json()) as Docs
-            ).servers?.[0]?.url
-          ).toBe('https://rowdy.run/');
-        });
-
-        it('should prefer host header', async () => {
-          const router = new GrpcRouter(new AbortController().signal);
-          expect(
-            (
-              (await new Response(
-                (
-                  await router.index({
-                    url: 'rowdy://cri/',
-                    method: 'GET',
-                    header: new Headers({
-                      Accept: 'application/json',
-                      Host: '5f5wgaabjx7yphy7jrquqoqcru0ufgzh.lambda-url.us-east-1.on.aws',
-                    }),
-                    body: Readable.from([]),
-                    signal: new AbortController().signal,
-                    httpVersion: '1.1',
-                  })
-                ).body
-              ).json()) as Docs
-            ).servers?.[0]?.url
-          ).toBe('https://5f5wgaabjx7yphy7jrquqoqcru0ufgzh.lambda-url.us-east-1.on.aws/');
+          ).toBe('https://rowdy.run/@rowdy/cri');
         });
       });
 
       it('should provide docs with html header', async () => {
-        const res = await router.index('text/html');
+        const res = await router.docs('text/html');
         expect(res.status).toBe(200);
         expect(res.body).toBeDefined();
         expect(res.header!.get('content-type')).toMatch(/text\/html/);
@@ -211,7 +165,7 @@ describe('router', () => {
       });
 
       it('should reject unsupported accept header', async () => {
-        const res = await router.index('application/xml');
+        const res = await router.docs('application/xml');
         expect(res.status).toBe(406);
         expect(res.body).toBeUndefined();
         expect(res.header!.get('content-type')).toMatch(/text\/plain/);
@@ -220,7 +174,7 @@ describe('router', () => {
       });
 
       it('should prefer html for browsers', async () => {
-        const res = await router.index(
+        const res = await router.docs(
           'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7'
         );
         expect(res.status).toBe(200);
@@ -233,7 +187,7 @@ describe('router', () => {
       });
 
       it('should prefer json for */*', async () => {
-        const res = await router.index('*/*');
+        const res = await router.docs('*/*');
         expect(res.status).toBe(200);
         expect(res.body).toBeDefined();
         expect(res.header!.get('content-type')).toMatch(/application\/json/);

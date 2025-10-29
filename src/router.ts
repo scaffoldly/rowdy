@@ -207,8 +207,13 @@ export class GrpcRouter {
 
     const requestPath = new URL(request.url).pathname.replace(prefix, '').toLowerCase();
 
-    if (requestPath === '/' || requestPath === '') {
-      return this.index(request, prefix);
+    if (
+      requestPath === '' ||
+      requestPath === '/' ||
+      requestPath.startsWith('/schemas') ||
+      requestPath.startsWith('/operations')
+    ) {
+      return this.docs(request, prefix);
     }
 
     // TODO: prefer Origin header if provided
@@ -218,35 +223,34 @@ export class GrpcRouter {
     return response;
   }
 
-  docs(request: GrpcRequest | string): Docs {
-    const path = request && typeof request !== 'string' ? new URL(request.url).pathname : '/';
-    const docs = { ...this._docs };
-    docs.servers = docs.servers || [];
-    if (!request || typeof request === 'string') {
-      return docs;
-    }
+  // docs(request: GrpcRequest | string): Docs {
+  //   const path = request && typeof request !== 'string' ? new URL(request.url).pathname : '/';
+  //   const docs = { ...this._docs };
+  //   docs.servers = docs.servers || [];
+  //   if (!request || typeof request === 'string') {
+  //     return docs;
+  //   }
 
-    if (request.header.get('x-forwarded-host')) {
-      const protocol = request.header.get('x-forwarded-proto') || 'https';
-      const host = request.header.get('x-forwarded-host');
-      const url = new URL(`${protocol}://${host}${path}`);
-      docs.servers = [{ url: url.toString() }];
-      return docs;
-    }
+  //   if (request.header.get('x-forwarded-host')) {
+  //     const protocol = request.header.get('x-forwarded-proto') || 'https';
+  //     const host = request.header.get('x-forwarded-host');
+  //     const url = new URL(`${protocol}://${host}${path}`);
+  //     docs.servers = [{ url: url.toString() }];
+  //     return docs;
+  //   }
 
-    if (request.header.get('host')) {
-      const protocol = request.header.get('x-forwarded-proto') || 'https';
-      const host = request.header.get('host');
-      const url = new URL(`${protocol}://${host}${path}`);
-      docs.servers = [{ url: url.toString() }];
-      return docs;
-    }
+  //   if (request.header.get('host')) {
+  //     const protocol = request.header.get('x-forwarded-proto') || 'https';
+  //     const host = request.header.get('host');
+  //     const url = new URL(`${protocol}://${host}${path}`);
+  //     docs.servers = [{ url: url.toString() }];
+  //     return docs;
+  //   }
 
-    return this._docs;
-  }
+  //   return this._docs;
+  // }
 
-  async index(request: GrpcRequest | string, prefix: string = ''): Promise<GrpcResponse> {
-    const docs = this.docs(request);
+  async docs(request: GrpcRequest | string, prefix: string = ''): Promise<GrpcResponse> {
     const accept = typeof request === 'string' ? request : request.header.get('accept') || '';
 
     const negotiator = new Negotiator({ headers: { accept } });
@@ -255,6 +259,13 @@ export class GrpcRouter {
     const mediaTypes = negotiator.mediaTypes(acceptable);
 
     // TODO: if servers is empty, disable tryItOut
+    const docs = { ...this._docs };
+
+    docs.servers = docs.servers || [
+      {
+        url: typeof request !== 'string' ? new URL(request.url).href : '',
+      },
+    ];
 
     const response = mediaTypes.reduce<GrpcResponse>(
       (acc, mediaType) => {
@@ -275,6 +286,7 @@ export class GrpcRouter {
             dom
               .getElementById('elements')!
               .setAttribute('basePath', prefix.endsWith('/') ? prefix.slice(0, -1) : prefix);
+            dom.getElementById('elements')!.setAttribute('hideTryIt', !docs.servers ? 'true' : 'false');
             dom
               .getElementById('elements')!
               .setAttribute(
