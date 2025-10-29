@@ -263,7 +263,7 @@ export class GrpcRouter {
 
     docs.servers = docs.servers || [
       {
-        url: typeof request !== 'string' ? new URL(request.url).href : '',
+        url: typeof request !== 'string' ? `${new URL(request.url).origin}${prefix}` : '',
       },
     ];
 
