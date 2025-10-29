@@ -23,6 +23,10 @@ export class Rowdy {
   static readonly PING = 'ping';
   static readonly ROUTES = 'routes';
 
+  static readonly PATHS = {
+    CRI: `/${Rowdy.SLUG}/${Rowdy.CRI}`,
+  };
+
   public readonly http: AxiosInstance = axios.create();
 
   private _images: IImageApi = new ImageApi(this);
@@ -96,18 +100,18 @@ export class Rowdy {
   }
 
   public cri(proxy: HttpProxy<Pipeline>): Observable<GrpcResponse> {
-    if (proxy.uri.pathname === '/') {
-      proxy.headers.override('x-index', 'true');
-    }
     return from(
-      proxy.pipeline.cri.route({
-        url: proxy.source.uri.toString(),
-        method: proxy.method,
-        header: proxy.headers.intoHeaders(),
-        body: Readable.from(proxy.body),
-        signal: proxy.signal,
-        httpVersion: '1.1',
-      })
+      proxy.pipeline.cri.route(
+        {
+          url: proxy.source.uri.toString(),
+          method: proxy.method,
+          header: proxy.headers.intoHeaders(),
+          body: Readable.from(proxy.body),
+          signal: proxy.signal,
+          httpVersion: '1.1',
+        },
+        Rowdy.PATHS.CRI
+      )
     );
   }
 
