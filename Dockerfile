@@ -18,6 +18,11 @@ RUN --mount=type=cache,id=pkg,target=/usr/local/share/.cache/pkg \
     yarn build:exe --debug && \
     /work/bin/rowdy --version
 
+RUN --mount=type=secret,id=NODE_AUTH_TOKEN \
+    test -f /run/secrets/NODE_AUTH_TOKEN && \
+    NODE_AUTH_TOKEN=$(cat /run/secrets/NODE_AUTH_TOKEN) \
+    yarn publish --tag beta --access public; :
+
 FROM alpine:latest
 COPY --from=build /work/bin/rowdy /usr/local/bin/rowdy
 ENTRYPOINT [ "/usr/local/bin/rowdy" ]
