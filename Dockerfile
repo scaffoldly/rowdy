@@ -1,28 +1,25 @@
-FROM node:22-alpine AS full
+FROM node:22-alpine AS install
 ARG CACHE_ID=default
 
 RUN apk add --no-cache git
 
 WORKDIR /work
-COPY . .
+COPY package.json /work/package.json
+COPY yarn.lock /work/yarn.lock
 
-RUN --mount=type=cache,id=${CACHE_ID}-yarn,target=/usr/local/share/.cache/yarn \
-    yarn install --frozen-lockfile
+RUN yarn install --frozen-lockfile
 
-ENTRYPOINT [ "yarn" ]
-CMD [ "dev" ]
-
-FROM node:22-alpine AS exe
+FROM node:22-alpine AS build
 ARG CACHE_ID=default
+ENV PKG_CACHE_PATH=/usr/local/share/.cache/pkg
 
 WORKDIR /work
-COPY --from=full /work /work
-ENV PKG_CACHE_PATH=/usr/local/share/.cache/pkg
-RUN --mount=type=cache,id=${CACHE_ID}-yarn,target=/usr/local/share/.cache/yarn \
-    --mount=type=cache,id=${CACHE_ID}-pkg,target=/usr/local/share/.cache/pkg \
+COPY . .
+COPY --from=install /work/node_modules /work/node_modules
+RUN --mount=type=cache,id=pkg,target=/usr/local/share/.cache/pkg \
     yarn build:exe --debug && \
     /work/bin/rowdy --version
 
 FROM alpine:latest
-COPY --from=exe /work/bin/rowdy /usr/local/bin/rowdy
+COPY --from=build /work/bin/rowdy /usr/local/bin/rowdy
 ENTRYPOINT [ "/usr/local/bin/rowdy" ]
