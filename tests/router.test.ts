@@ -78,13 +78,36 @@ describe('router', () => {
         expect(Object.keys(body.paths!).length).toEqual(NUM_PATHS);
       });
 
-      it('should provide docs with x-index header', async () => {
+      it('should provide docs with prefix', async () => {
+        const res = await router.route(
+          {
+            url: 'rowdy://cri/foo/bar/baz',
+            method: 'GET',
+            header: new Headers({
+              Accept: 'application/json',
+            }),
+            body: Readable.from([]),
+            signal: new AbortController().signal,
+            httpVersion: '1.1',
+          },
+          '/foo/bar/baz'
+        );
+        expect(res.status).toBe(200);
+        expect(res.body).toBeDefined();
+        expect(res.header!.get('content-type')).toMatch(/application\/json/);
+        expect(res.header!.get('x-acceptable')).toBe('application/json, text/html');
+        expect(res.header!.get('x-accept')).toBe('application/json');
+
+        const body = (await new Response(res.body).json()) as Docs;
+        expect(Object.keys(body.paths!).length).toEqual(NUM_PATHS);
+      });
+
+      it('should provide docs with trailing slash', async () => {
         const res = await router.route({
-          url: 'rowdy://cri/foo/bar/baz',
+          url: 'rowdy://cri/',
           method: 'GET',
           header: new Headers({
             Accept: 'application/json',
-            'x-index': 'true',
           }),
           body: Readable.from([]),
           signal: new AbortController().signal,
@@ -98,20 +121,6 @@ describe('router', () => {
 
         const body = (await new Response(res.body).json()) as Docs;
         expect(Object.keys(body.paths!).length).toEqual(NUM_PATHS);
-      });
-
-      it('should not provide docs without x-index header', async () => {
-        const res = await router.route({
-          url: 'rowdy://cri/foo/bar/baz',
-          method: 'GET',
-          header: new Headers({
-            Accept: 'application/json',
-          }),
-          body: Readable.from([]),
-          signal: new AbortController().signal,
-          httpVersion: '1.1',
-        });
-        expect(res.status).toBe(404);
       });
 
       describe('server url', () => {
@@ -196,7 +205,7 @@ describe('router', () => {
         expect(res.header!.get('x-accept')).toBe('text/html');
 
         const body = await new Response(res.body).text();
-        expect(body).toContain('<title>@scaffoldly/rowdy-grpc');
+        expect(body).toContain('<title>gRPC Docs | @scaffoldly/rowdy-grpc | Rowdy');
         expect(body).toContain('elements-api');
         expect(body).toContain('apiDescriptionUrl="data:application/json;base64,');
       });

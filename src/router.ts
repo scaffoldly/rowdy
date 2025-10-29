@@ -200,31 +200,21 @@ export class GrpcRouter {
     return { start, stop };
   }
 
-  async route(request: GrpcRequest): Promise<GrpcResponse> {
-    if (new URL(request.url).pathname === '/' || request.header.get('x-index')) {
-      return this.index(request);
+  async route(request: GrpcRequest, prefix: string = ''): Promise<GrpcResponse> {
+    if (prefix.endsWith('/')) {
+      prefix = prefix.slice(0, -1);
     }
 
-    const url = new URL(request.url);
-    const incoming = url.pathname.toLowerCase();
-    const handler = this._router.handlers.find((h) => incoming === h.requestPath.toLowerCase());
+    const requestPath = new URL(request.url).pathname.replace(prefix, '').toLowerCase();
 
-    const response =
-      request.method.toLowerCase() === 'options'
-        ? {
-            status: handler ? 200 : 404,
-            header: new Headers({
-              'access-control-allow-origin': '*',
-              'access-control-allow-methods': '*',
-              'access-control-allow-headers': '*',
-              'access-control-max-age': '86400',
-              'cache-control': 'no-cache',
-              pragma: 'no-cache',
-              expires: '0',
-            }),
-          }
-        : (await handler?.(request)) || uResponseNotFound;
+    if (requestPath === '/' || requestPath === '') {
+      return this.index(request, prefix);
+    }
 
+    // TODO: prefer Origin header if provided
+    const handler = this._router.handlers.find((h) => requestPath === h.requestPath.toLowerCase());
+
+    const response = (await handler?.(request)) || uResponseNotFound;
     return response;
   }
 
@@ -255,7 +245,7 @@ export class GrpcRouter {
     return this._docs;
   }
 
-  async index(request: GrpcRequest | string): Promise<GrpcResponse> {
+  async index(request: GrpcRequest | string, prefix: string = ''): Promise<GrpcResponse> {
     const docs = this.docs(request);
     const accept = typeof request === 'string' ? request : request.header.get('accept') || '';
 
@@ -281,7 +271,10 @@ export class GrpcRouter {
             acc.status = 200;
             acc.header?.set('content-type', 'text/html; charset=utf-8');
             const dom = new DOMParser().parseFromString(docsHtml, 'text/html');
-            dom.querySelector('title')!.textContent = `${docs.info?.title || NAME} | Rowdy gRPC`;
+            dom.querySelector('title')!.textContent = `gRPC Docs | ${docs.info?.title || NAME} | Rowdy`;
+            dom
+              .getElementById('elements')!
+              .setAttribute('basePath', prefix.endsWith('/') ? prefix.slice(0, -1) : prefix);
             dom
               .getElementById('elements')!
               .setAttribute(
