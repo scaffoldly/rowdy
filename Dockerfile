@@ -1,5 +1,4 @@
 FROM node:22-alpine AS install
-ARG CACHE_ID=default
 
 RUN apk add --no-cache git
 
@@ -10,7 +9,6 @@ COPY yarn.lock /work/yarn.lock
 RUN yarn install --frozen-lockfile
 
 FROM node:22-alpine AS build
-ARG CACHE_ID=default
 ENV PKG_CACHE_PATH=/usr/local/share/.cache/pkg
 
 WORKDIR /work
