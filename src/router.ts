@@ -286,7 +286,6 @@ export class GrpcRouter {
             dom
               .getElementById('elements')!
               .setAttribute('basePath', prefix.endsWith('/') ? prefix.slice(0, -1) : prefix);
-            dom.getElementById('elements')!.setAttribute('hideTryIt', !docs.servers ? 'true' : 'false');
             dom
               .getElementById('elements')!
               .setAttribute(
