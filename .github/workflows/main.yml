@@ -2,7 +2,7 @@ name: CI/CD (@scaffoldly/rowdy)
 
 on:
   push:
-    branches-ignore: 
+    branches-ignore:
       - claude/**,
       - dependabot/**,
       - grpc
@@ -84,7 +84,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Use Node.js 22.x
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
           node-version: 22.x
           cache: 'yarn'
@@ -115,6 +115,7 @@ jobs:
       - name: Generate pre-release version
         id: version
         run: |
+          SHASUM=$(sha256sum package.json | awk '{ print $1 }')
           CURRENT_NAME=$(node -p "require('./package.json').name")
           CURRENT_VERSION=$(node -p "require('./package.json').version")
           TIMESTAMP=$(date +%Y%m%d%H%M%S)
@@ -123,6 +124,7 @@ jobs:
           echo "name=${CURRENT_NAME}" >> $GITHUB_OUTPUT
           echo "version=${PRERELEASE_VERSION}" >> $GITHUB_OUTPUT
           echo "current=${CURRENT_VERSION}" >> $GITHUB_OUTPUT
+          echo "shasum=${SHASUM}" >> $GITHUB_OUTPUT
 
       - name: Update package.json version
         run: |
@@ -151,7 +153,9 @@ jobs:
           platforms: linux/amd64,linux/arm64
           cache-from: type=gha
           cache-to: type=gha,mode=max
-          pull: true
+          build-args: |
+            CACHE_ID=${{ steps.version.outputs.shasum }}
+          pull: truesam
           push: true
 
       - name: Create pre-release summary
