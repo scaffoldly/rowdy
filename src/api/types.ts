@@ -13,8 +13,9 @@ export interface IApi {
 export interface IImageApi {
   log: Logger;
   http: AxiosInstance;
-  getImage(req: Image['Req'], opts?: Image['Opts']['GET']): Observable<ApiSchema<Image['Req'], Image['Res']>>;
-  putImage(req: Image['Req'], opts?: Image['Opts']['PUT']): Observable<ApiSchema<Image['Req'], Image['Res']>>;
+  pullImage(image: string): Observable<PulledImage>;
+  // getImage(req: Image['Req'], opts?: Image['Opts']['GET']): Observable<ApiSchema<Image['Req'], Image['Res']>>;
+  // putImage(req: Image['Req'], opts?: Image['Opts']['PUT']): Observable<ApiSchema<Image['Req'], Image['Res']>>;
 }
 
 export interface IRegistryApi {
@@ -109,4 +110,9 @@ export type Image = {
         layers: Image['External']['Layer'][];
       }>;
   };
+};
+
+export type PulledImage = {
+  image: string;
+  imageRef: string;
 };

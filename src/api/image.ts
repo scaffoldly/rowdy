@@ -1,40 +1,20 @@
-import {
-  catchError,
-  concat,
-  concatMap,
-  defer,
-  from,
-  lastValueFrom,
-  map,
-  mergeAll,
-  mergeMap,
-  Observable,
-  of,
-  OperatorFunction,
-  reduce,
-  retry,
-  switchMap,
-  tap,
-  throwError,
-  timer,
-  toArray,
-} from 'rxjs';
-import { AxiosInstance, AxiosResponse, isAxiosError } from 'axios';
-import { ApiSchema, IApi, Image } from './types';
-import { Readable } from 'stream';
-import { ILoggable, Logger } from '../log';
-import { HttpHeaders } from '../proxy/http';
-import os from 'os';
+import { Observable, of } from 'rxjs';
+import { AxiosInstance } from 'axios';
+import { IApi, IImageApi, PulledImage } from './types';
+import { Logger } from '../log';
+import { Transfer } from './internal/transfer';
 
-const registryUrl = (
-  registry: string,
-  namespace: string,
-  name: string,
-  reference: string,
-  slug: 'manifests' | 'blobs'
-): string => `https://${registry}/v2/${namespace}/${name}/${slug}/${reference}`;
+// TODO: rename to image
 
-export class ImageApi {
+// const registryUrl = (
+//   registry: string,
+//   namespace: string,
+//   name: string,
+//   reference: string,
+//   slug: 'manifests' | 'blobs'
+// ): string => `https://${registry}/v2/${namespace}/${name}/${slug}/${reference}`;
+
+export class ImageApi implements IImageApi {
   constructor(private api: IApi) {}
 
   get http(): AxiosInstance {
@@ -45,687 +25,575 @@ export class ImageApi {
     return this.api.log;
   }
 
-  getImage(req: Image['Req'], opts?: Image['Opts']['GET']): Observable<ApiSchema<Image['Req'], Image['Res']>> {
-    let { image } = req;
-    if (typeof image === 'string') {
-      image = image.split('/');
-    }
-    let registry: string | undefined = 'mirror.gcr.io';
-    let namespace: string | undefined = 'library';
-    let name: string | undefined = undefined;
-    let reference = 'latest';
-
-    if (image.length > 3) {
-      return throwError(() => new Error(`Image name has too many segments`));
-    }
-
-    if (image.length === 3) {
-      registry = image[0] || registry;
-      namespace = image[1] || namespace;
-      name = image[2];
-    }
-
-    if (image.length === 2) {
-      registry = 'mirror.gcr.io';
-      namespace = image[0] || namespace;
-      name = image[1];
-    }
-
-    if (image.length === 1) {
-      registry = 'mirror.gcr.io';
-      namespace = 'library';
-      name = image[0];
-    }
-
-    if (name?.includes('@sha256:')) {
-      [name, reference = ''] = name.split('@sha256:');
-      if (!reference) {
-        return throwError(() => new Error('Invalid image name'));
-      }
-      reference = `sha256:${reference}`;
-    }
-
-    if (!reference.startsWith('sha256:') && name?.includes(':')) {
-      [name, reference = 'latest'] = name.split(':');
-    }
-
-    if (!name) {
-      return throwError(() => new Error('Invalid image name'));
-    }
-
-    req.image = `${registry}/${namespace}/${name}:${reference}`;
-
-    const res: Image['Res'] = {
-      code: 200,
-      registry,
-      namespace,
-      name,
-      reference,
-      index: {},
-      images: {},
-      blobs: [],
-      tags: [],
-    };
-
-    if (!reference.startsWith('sha256:')) {
-      res.tags.push(reference);
-    }
-
-    const respond = (spec: Image['Req'], status: Image['Res']): Observable<ApiSchema<Image['Req'], Image['Res']>> => {
-      this.log.debug(`Image Spec`, JSON.stringify(spec, null, 2));
-      this.log.debug(`Image Status`, JSON.stringify(status, null, 2));
-      return of({
-        apiVersion: 'rowdy.run/v1alpha1',
-        kind: 'Image',
-        spec,
-        status,
-      });
-    };
-
-    const headers: Record<string, string | string[] | undefined> = {
-      Accept: [
-        'application/vnd.oci.image.index.v1+json',
-        'application/vnd.docker.distribution.manifest.list.v2+json',
-        'application/vnd.oci.image.manifest.v1+json',
-        'application/vnd.docker.distribution.manifest.v2+json',
-      ],
-      Authorization: opts?.authorization,
-    };
-
-    return of(registryUrl(registry, namespace, name, reference, 'manifests'))
-      .pipe(
-        mergeMap((u) =>
-          from(this.http.get<Image['External']['ImageIndex']>(u, { headers })).pipe(
-            tap(() => this.log.debug(`Fetched index manifest from ${u}`)),
-            map(({ data, headers, config }) => {
-              if (data.schemaVersion !== 2) {
-                res.index = data;
-                throw new Error(`Unsupported schemaVersion on index: ${data.schemaVersion}`);
-              }
-              if (
-                data.mediaType !== 'application/vnd.oci.image.index.v1+json' &&
-                data.mediaType !== 'application/vnd.docker.distribution.manifest.list.v2+json'
-              ) {
-                res.index = data;
-                throw new Error(`Unsupported mediaType on index: ${data.mediaType}`);
-              }
-
-              if (config.headers.Authorization) {
-                opts = { ...opts, authorization: config.headers.Authorization as string };
-              }
-
-              res.reference = headers['docker-content-digest'] || reference;
-              res.index = data;
-              return (res.index.manifests || []).map((m) => ({
-                platform: `${m.platform?.os}/${m.platform?.architecture}`,
-                digest: m.digest!,
-                url: registryUrl(registry, namespace, name, m.digest!, 'manifests'),
-              }));
-            }),
-            mergeAll()
-          )
-        )
-      )
-      .pipe(
-        mergeMap(({ platform, digest, url: u }) =>
-          from(this.http.get<Image['External']['ImageManifest']>(u, { headers })).pipe(
-            tap(() => this.log.debug(`Fetched ${platform} image manifest from ${u}`)),
-            map(({ data }) => {
-              if (data.schemaVersion !== 2) {
-                res.images[digest] = data;
-                throw new Error(`Unsupported schemaVersion on ${digest}: ${data.schemaVersion}`);
-              }
-              if (
-                data.mediaType !== 'application/vnd.oci.image.manifest.v1+json' &&
-                data.mediaType !== 'application/vnd.docker.distribution.manifest.v2+json'
-              ) {
-                res.images[digest] = data;
-                throw new Error(`Unsupported mediaType on ${digest}: ${data.mediaType}`);
-              }
-
-              res.images[digest] = data;
-              if (data.config && data.config.digest) {
-                res.blobs.push({
-                  ...data.config,
-                  platform,
-                  url: registryUrl(registry, namespace, name, data.config.digest, 'blobs'),
-                });
-              }
-              res.blobs.push(
-                ...(data.layers || [])
-                  .filter((layer) => !!layer.digest)
-                  .map((layer) => ({
-                    ...layer,
-                    platform,
-                    url: registryUrl(registry, namespace, name, layer.digest!, 'blobs'),
-                  }))
-              );
-            })
-          )
-        )
-      )
-      .pipe(toArray())
-      .pipe(mergeMap(() => respond(req, res)))
-      .pipe(
-        catchError((err) => {
-          this.log.warn(`Error fetching image ${req.image}: ${err.message}`);
-          res.code = 206;
-          res.reason = err.message;
-          return respond(req, res);
-        })
-      );
-  }
-
-  putImage(req: Image['Req'], opts?: Image['Opts']['PUT']): Observable<ApiSchema<Image['Req'], Image['Res']>> {
-    this.log.info(`Transferring image ${req.image}`, {
-      concurrency: Transfer.CONCURRENCY,
-    });
-
-    const toImage: Image['Res'] = {
-      code: 206,
-      registry: '',
-      namespace: '',
-      name: '',
-      reference: '',
-      index: {},
-      images: {},
-      blobs: [],
-      tags: [],
-    };
-
-    return this.getImage(req, opts)
-      .pipe(
-        switchMap(({ status: fromImage }) =>
-          this.api.Registry.getRegistry(opts).pipe(
-            map(({ status }) => ({
-              fromImage,
-              toRegistry: status.registry,
-              toNamespace: opts?.namepace || fromImage.namespace,
-            }))
-          )
-        ),
-        map(({ fromImage, toRegistry, toNamespace }) => {
-          toImage.registry = toRegistry;
-          toImage.namespace = toNamespace;
-          toImage.name = fromImage.name;
-          toImage.reference = fromImage.reference;
-          return { fromImage };
-        }),
-        map(({ fromImage }) => {
-          const blobs: Transfer[] = [
-            // First: Blobs
-            ...fromImage.blobs.map((blob) => {
-              const fromUrl = blob.url;
-              const toUrl = fromUrl.replace(fromImage.registry, toImage.registry).replace(blob.digest!, `uploads/`);
-              return new Transfer(
-                this.api,
-                fromUrl,
-                toUrl,
-                {
-                  digest: blob.digest!,
-                  mediaType: blob.mediaType!,
-                  size: blob.size!,
-                },
-                () => {
-                  toImage.blobs.push({ ...blob, url: toUrl });
-                }
-              );
-            }),
-          ];
-
-          const images = fromImage.tags
-            .map((tag) => [
-              ...Object.entries(fromImage.images).map(([digest, manifest]) => {
-                const fromUrl = registryUrl(
-                  fromImage.registry,
-                  fromImage.namespace,
-                  fromImage.name,
-                  digest,
-                  'manifests'
-                );
-                const toUrl = registryUrl(toImage.registry, toImage.namespace, toImage.name, tag, 'manifests');
-                return new Transfer(
-                  this.api,
-                  fromUrl,
-                  toUrl,
-                  {
-                    digest,
-                    mediaType: manifest.mediaType!,
-                    size: manifest.size!,
-                  },
-                  () => {
-                    toImage.images[digest] = manifest;
-                  }
-                );
-              }),
-            ])
-            .flat();
-
-          //TODO: index push still not happening
-          //TODO: find out why errors aren't being reduced at the end
-          const indexes = fromImage.tags.map(
-            (tag) =>
-              new Transfer(
-                this.api,
-                registryUrl(fromImage.registry, fromImage.namespace, fromImage.name, fromImage.reference, 'manifests'),
-                registryUrl(toImage.registry, toImage.namespace, toImage.name, tag, 'manifests'),
-                {
-                  digest: fromImage.reference,
-                  mediaType: fromImage.index.mediaType!,
-                  size: fromImage.index.size!,
-                },
-                () => {
-                  toImage.index = fromImage.index;
-                }
-              )
-          );
-
-          this.log.info(`Prepared transfers for image ${req.image}`, {
-            blobs: blobs.length,
-            images: images.length,
-            indexes: indexes.length,
-          });
-
-          const transfers: Transfers = { blobs, images, indexes };
-          return transfers;
-          // TODO: handle 404 if namespace doesn't exist
-        })
-      )
-      .pipe(Transfer.observeAll(this.log, 1000, Transfer.CONCURRENCY, true)) // TODO: make verify optional
-      .pipe(
-        map((statuses) => {
-          const response: ApiSchema<Image['Req'], Image['Res']> = {
-            apiVersion: 'rowdy.run/v1alpha1',
-            kind: 'Image',
-            spec: req,
-            status: {
-              ...toImage,
-              code: TransferStatus.code(statuses),
-              reason: TransferStatus.reason(statuses),
-            },
-          };
-          return response;
-        }),
-        tap((response) => {
-          this.log.debug(`Image Spec`, JSON.stringify(response.spec));
-          this.log.debug(`Image Status`, JSON.stringify(response.status));
-          this.log.info(`Finished transferring image ${req.image} to ${response.status.registry}`, {
-            status: response.status.code,
-            reason: response.status.reason,
-          });
-        })
-      );
-  }
-}
-
-type Digest = string;
-type TransferRef = Omit<Required<Image['External']['Ref']>, 'annotations'>;
-type Transfers = { blobs: Transfer[]; images: Transfer[]; indexes: Transfer[] };
-
-class Transfer implements ILoggable {
-  private static _CONCURRENCY = {
-    MIN: 1,
-    MAX: 10,
-    CURRENT: 0,
-  };
-
-  static get CONCURRENCY(): number {
-    if (Transfer._CONCURRENCY.CURRENT === 0) {
-      const cpus = os.cpus()?.length || Transfer._CONCURRENCY.MIN;
-      // Use all of the possible CPUs, up to MAX
-      Transfer._CONCURRENCY.CURRENT = Math.min(Math.max(Transfer._CONCURRENCY.MIN, cpus), Transfer._CONCURRENCY.MAX);
-    }
-    return Transfer._CONCURRENCY.CURRENT;
-  }
-
-  private complete: boolean = false;
-  private bytes: { received: number; sent: number; total: number };
-
-  constructor(
-    public api: IApi,
-    public fromUrl: string,
-    public toUrl: string,
-    public ref: TransferRef,
-    public finalizer: () => void
-  ) {
-    this.bytes = { received: 0, sent: 0, total: ref.size || 0 };
-  }
-
-  static observeAll(
-    log: Logger,
-    interval: number,
-    concurrency: number,
-    verify?: boolean
-  ): OperatorFunction<Transfers, Record<Digest, TransferStatus>> {
-    const summary = (transfers: Transfers): string => {
-      const all = [...transfers.blobs, ...transfers.images, ...transfers.indexes];
-      const totalTransfers = all.length;
-      const completedTransfers = all.filter((t) => t.complete).length;
-
-      const totalBytes = all.reduce((acc, t) => acc + t.bytes.total, 0);
-      const completedBytes = all.reduce((acc, t) => acc + t.bytes.sent, 0);
-
-      const transferRatio = `${completedTransfers}/${totalTransfers}`;
-      const pct = totalBytes === 0 ? '100%' : `${((completedBytes / totalBytes) * 100).toFixed(0)}%`;
-      return `${transferRatio} transfers: ${pct} complete`;
-    };
-
-    return (source) =>
-      new Observable((subscriber) => {
-        let latest: Transfers | undefined = undefined;
-        const proc = setInterval(() => {
-          if (latest) log.info(`Transfer progess: ${summary(latest)}`);
-        }, interval);
-
-        const subscription = source
-          .pipe(
-            tap((transfers) => (latest = transfers)),
-            switchMap(({ blobs, images, indexes }) =>
-              concat(
-                Transfer.observe(blobs, concurrency, verify),
-                Transfer.observe(images, concurrency, verify),
-                Transfer.observe(indexes, concurrency, verify)
-              )
-            ),
-            reduce(
-              (acc, cur) => {
-                cur.finalize();
-                acc[cur.digest] = cur;
-                return acc;
-              },
-              {} as Record<Digest, TransferStatus>
-            )
-          )
-          .subscribe(subscriber);
-
-        return () => {
-          if (latest) log.info(`Transfer complete: ${summary(latest)}`);
-          subscription.unsubscribe();
-          clearInterval(proc);
-        };
-      });
-  }
-
-  private static observe(transfers: Transfer[], concurrency: number, verify?: boolean): Observable<TransferStatus> {
-    return from(transfers).pipe(mergeMap((transfer) => transfer.pipe(verify), concurrency));
-  }
-
-  get log(): Logger {
-    return this.api.log;
-  }
-
-  get http(): AxiosInstance {
-    return this.api.http;
-  }
-
-  get digest(): string {
-    return this.ref.digest;
-  }
-
-  get mediaType(): string {
-    return this.ref.mediaType;
-  }
-
-  public pipe(verify?: boolean): Observable<TransferStatus> {
-    return defer(async () => {
-      const status = new TransferStatus(this);
-      let chunked: boolean = false;
-      let chunkSize = 10 * 1024 * 1024; // 10 MB
-      let location: string = this.toUrl;
-
-      this.log.debug('Starting transfer', { transfer: this });
-
-      if (this.toUrl.endsWith('uploads/')) {
-        // Uploads require a POST to get the Location header
-        const start = await lastValueFrom(status.intercept(this.http.post(this.toUrl, null)));
-        const _location = start.headers.get('location');
-        chunked = true;
-        chunkSize = parseInt((start.headers.get('oci-chunk-min-length') as string | undefined) || `${chunkSize}`, 10);
-        if (_location) location = _location as string;
-        this.log.debug('Initialized upload', { transfer: this, location, chunkSize });
-      }
-
-      this.log.debug('Downloading', { transfer: this });
-      const download = await lastValueFrom(
-        status.intercept(
-          this.http.get<Readable>(this.fromUrl, {
-            responseType: 'stream',
-            maxBodyLength: Infinity,
-            maxContentLength: Infinity,
-            headers: { Accept: this.mediaType },
-            onDownloadProgress: (e) => (this.bytes.received = e.bytes),
-          })
-        )
-      );
-
-      const chunks = new Observable<{ chunk: Buffer; final: boolean }>((subscriber) => {
-        let buffer = Buffer.alloc(0);
-
-        if (!download.data) {
-          this.log.warn(`No data stream available for download`, { transfer: this });
-          subscriber.complete();
-          return;
-        }
-
-        download.data.on('data', (chunk: Buffer) => {
-          buffer = Buffer.concat([buffer, chunk]);
-          if (!chunked) {
-            return;
-          }
-
-          if (buffer.length < chunkSize) {
-            return;
-          }
-
-          let upload = buffer;
-          buffer = Buffer.alloc(0);
-
-          subscriber.next({ chunk: upload, final: false });
-        });
-
-        download.data.on('end', () => {
-          if (buffer.length) {
-            subscriber.next({ chunk: buffer, final: true });
-          }
-          subscriber.complete();
-        });
-
-        download.data.on('error', (err) => subscriber.error(err));
-      });
-
-      if (!chunked) {
-        this.log.debug(`Uploading single chunk`, { digest: this.digest, url: location, mediaType: this.mediaType });
-        const data = await lastValueFrom(chunks);
-        const final = await lastValueFrom(
-          status.withResponse(
-            this.http.put(location, data.chunk, {
-              headers: { 'Content-Type': this.mediaType },
-            })
-          )
-        );
-        this.bytes.sent += data.chunk.length;
-        return final;
-      }
-
-      const final = await lastValueFrom(
-        status.withResponse(
-          lastValueFrom(
-            chunks.pipe(
-              concatMap(({ chunk, final }) => {
-                const url = final ? `${location}?digest=${this.digest}` : location;
-                this.log.debug(`Uploading ${chunk.length} bytes`, { digest: this.digest, url, final });
-                return from(
-                  status.intercept(
-                    this.http.patch(url, chunk, {
-                      headers: { 'Content-Type': 'application/octet-stream', 'Content-Length': chunk.length },
-                    })
-                  )
-                ).pipe(
-                  concatMap((response) => {
-                    this.bytes.sent += chunk.length;
-                    if (final) {
-                      this.log.debug(`Finalizing`, { digest: this.digest, location });
-                      return from(this.http.put(`${location}?digest=${this.digest}`, null));
-                    }
-                    const _location = response.headers.get('location');
-                    if (_location) location = _location as string;
-                    return of(response.data);
-                  })
-                );
-              })
-            )
-          )
-        )
-      );
-
-      return final;
-    }).pipe(
-      switchMap((status) => (verify ? status.verify() : of(status))),
-      tap((status) => {
-        this.complete = true;
-        this.log.debug(`Transfer complete`, { status });
-      })
+  pullImage(image: string, authorization?: string): Observable<PulledImage> {
+    return of(image).pipe(
+      Transfer.normalize(authorization),
+      Transfer.collect(this.log, this.http),
+      Transfer.prepare(this.log, this.http),
+      Transfer.upload(this.log, this.http),
+      Transfer.denormalize()
     );
   }
 
-  repr(): string {
-    return `Transfer(from=${this.fromUrl}, to=${this.toUrl}, digest=${this.digest}, mediaType=${this.mediaType})`;
-  }
+  // getImage(req: Image['Req'], opts?: Image['Opts']['GET']): Observable<ApiSchema<Image['Req'], Image['Res']>> {
+  //   let { image } = req;
+  //   if (typeof image === 'string') {
+  //     image = image.split('/');
+  //   }
+  //   let registry: string | undefined = 'mirror.gcr.io';
+  //   let namespace: string | undefined = 'library';
+  //   let name: string | undefined = undefined;
+  //   let reference = 'latest';
+
+  //   if (image.length > 3) {
+  //     return throwError(() => new Error(`Image name has too many segments`));
+  //   }
+
+  //   if (image.length === 3) {
+  //     registry = image[0] || registry;
+  //     namespace = image[1] || namespace;
+  //     name = image[2];
+  //   }
+
+  //   if (image.length === 2) {
+  //     registry = 'mirror.gcr.io';
+  //     namespace = image[0] || namespace;
+  //     name = image[1];
+  //   }
+
+  //   if (image.length === 1) {
+  //     registry = 'mirror.gcr.io';
+  //     namespace = 'library';
+  //     name = image[0];
+  //   }
+
+  //   if (name?.includes('@sha256:')) {
+  //     [name, reference = ''] = name.split('@sha256:');
+  //     if (!reference) {
+  //       return throwError(() => new Error('Invalid image name'));
+  //     }
+  //     reference = `sha256:${reference}`;
+  //   }
+
+  //   if (!reference.startsWith('sha256:') && name?.includes(':')) {
+  //     [name, reference = 'latest'] = name.split(':');
+  //   }
+
+  //   if (!name) {
+  //     return throwError(() => new Error('Invalid image name'));
+  //   }
+
+  //   req.image = `${registry}/${namespace}/${name}:${reference}`;
+
+  //   const res: Image['Res'] = {
+  //     code: 200,
+  //     registry,
+  //     namespace,
+  //     name,
+  //     reference,
+  //     index: {},
+  //     images: {},
+  //     blobs: [],
+  //     tags: [],
+  //   };
+
+  //   if (!reference.startsWith('sha256:')) {
+  //     res.tags.push(reference);
+  //   }
+
+  //   const respond = (spec: Image['Req'], status: Image['Res']): Observable<ApiSchema<Image['Req'], Image['Res']>> => {
+  //     this.log.debug(`Image Spec`, JSON.stringify(spec, null, 2));
+  //     this.log.debug(`Image Status`, JSON.stringify(status, null, 2));
+  //     return of({
+  //       apiVersion: 'rowdy.run/v1alpha1',
+  //       kind: 'Image',
+  //       spec,
+  //       status,
+  //     });
+  //   };
+
+  //   const headers: Record<string, string | string[] | undefined> = {
+  //     Accept: [
+  //       'application/vnd.oci.image.index.v1+json',
+  //       'application/vnd.docker.distribution.manifest.list.v2+json',
+  //       'application/vnd.oci.image.manifest.v1+json',
+  //       'application/vnd.docker.distribution.manifest.v2+json',
+  //     ],
+  //     Authorization: opts?.authorization,
+  //   };
+
+  //   return of(registryUrl(registry, namespace, name, reference, 'manifests'))
+  //     .pipe(
+  //       mergeMap((u) =>
+  //         from(this.http.get<Image['External']['ImageIndex']>(u, { headers })).pipe(
+  //           tap(() => this.log.debug(`Fetched index manifest from ${u}`)),
+  //           map(({ data, headers, config }) => {
+  //             if (data.schemaVersion !== 2) {
+  //               res.index = data;
+  //               throw new Error(`Unsupported schemaVersion on index: ${data.schemaVersion}`);
+  //             }
+  //             if (
+  //               data.mediaType !== 'application/vnd.oci.image.index.v1+json' &&
+  //               data.mediaType !== 'application/vnd.docker.distribution.manifest.list.v2+json'
+  //             ) {
+  //               res.index = data;
+  //               throw new Error(`Unsupported mediaType on index: ${data.mediaType}`);
+  //             }
+
+  //             if (config.headers.Authorization) {
+  //               opts = { ...opts, authorization: config.headers.Authorization as string };
+  //             }
+
+  //             res.reference = headers['docker-content-digest'] || reference;
+  //             res.index = data;
+  //             return (res.index.manifests || []).map((m) => ({
+  //               platform: `${m.platform?.os}/${m.platform?.architecture}`,
+  //               digest: m.digest!,
+  //               url: registryUrl(registry, namespace, name, m.digest!, 'manifests'),
+  //             }));
+  //           }),
+  //           mergeAll()
+  //         )
+  //       )
+  //     )
+  //     .pipe(
+  //       mergeMap(({ platform, digest, url: u }) =>
+  //         from(this.http.get<Image['External']['ImageManifest']>(u, { headers })).pipe(
+  //           tap(() => this.log.debug(`Fetched ${platform} image manifest from ${u}`)),
+  //           map(({ data }) => {
+  //             if (data.schemaVersion !== 2) {
+  //               res.images[digest] = data;
+  //               throw new Error(`Unsupported schemaVersion on ${digest}: ${data.schemaVersion}`);
+  //             }
+  //             if (
+  //               data.mediaType !== 'application/vnd.oci.image.manifest.v1+json' &&
+  //               data.mediaType !== 'application/vnd.docker.distribution.manifest.v2+json'
+  //             ) {
+  //               res.images[digest] = data;
+  //               throw new Error(`Unsupported mediaType on ${digest}: ${data.mediaType}`);
+  //             }
+
+  //             res.images[digest] = data;
+  //             if (data.config && data.config.digest) {
+  //               res.blobs.push({
+  //                 ...data.config,
+  //                 platform,
+  //                 url: registryUrl(registry, namespace, name, data.config.digest, 'blobs'),
+  //               });
+  //             }
+  //             res.blobs.push(
+  //               ...(data.layers || [])
+  //                 .filter((layer) => !!layer.digest)
+  //                 .map((layer) => ({
+  //                   ...layer,
+  //                   platform,
+  //                   url: registryUrl(registry, namespace, name, layer.digest!, 'blobs'),
+  //                 }))
+  //             );
+  //           })
+  //         )
+  //       )
+  //     )
+  //     .pipe(toArray())
+  //     .pipe(mergeMap(() => respond(req, res)))
+  //     .pipe(
+  //       catchError((err) => {
+  //         this.log.warn(`Error fetching image ${req.image}: ${err.message}`);
+  //         res.code = 206;
+  //         res.reason = err.message;
+  //         return respond(req, res);
+  //       })
+  //     );
+  // }
+
+  // putImage(req: Image['Req'], opts?: Image['Opts']['PUT']): Observable<ApiSchema<Image['Req'], Image['Res']>> {
+  //   this.log.info(`Transferring image ${req.image}`, {
+  //     concurrency: Upload.CONCURRENCY,
+  //   });
+
+  //   const toImage: Image['Res'] = {
+  //     code: 206,
+  //     registry: '',
+  //     namespace: '',
+  //     name: '',
+  //     reference: '',
+  //     index: {},
+  //     images: {},
+  //     blobs: [],
+  //     tags: [],
+  //   };
+
+  //   return this.getImage(req, opts)
+  //     .pipe(
+  //       switchMap(({ status: fromImage }) =>
+  //         this.api.Registry.getRegistry(opts).pipe(
+  //           map(({ status }) => ({
+  //             fromImage,
+  //             toRegistry: status.registry,
+  //             toNamespace: opts?.namepace || fromImage.namespace,
+  //           }))
+  //         )
+  //       ),
+  //       map(({ fromImage, toRegistry, toNamespace }) => {
+  //         toImage.registry = toRegistry;
+  //         toImage.namespace = toNamespace;
+  //         toImage.name = fromImage.name;
+  //         toImage.reference = fromImage.reference;
+  //         return { fromImage };
+  //       }),
+  //       map(({ fromImage }) => {
+  //         const blobs: Upload[] = [
+  //           // First: Blobs
+  //           ...fromImage.blobs.map((blob) => {
+  //             const fromUrl = blob.url;
+  //             const toUrl = fromUrl.replace(fromImage.registry, toImage.registry).replace(blob.digest!, `uploads/`);
+  //             return new Upload(
+  //               this.api,
+  //               fromUrl,
+  //               toUrl,
+  //               {
+  //                 digest: blob.digest!,
+  //                 mediaType: blob.mediaType!,
+  //                 size: blob.size!,
+  //               },
+  //               () => {
+  //                 toImage.blobs.push({ ...blob, url: toUrl });
+  //               }
+  //             );
+  //           }),
+  //         ];
+
+  //         const images = fromImage.tags
+  //           .map((tag) => [
+  //             ...Object.entries(fromImage.images).map(([digest, manifest]) => {
+  //               const fromUrl = registryUrl(
+  //                 fromImage.registry,
+  //                 fromImage.namespace,
+  //                 fromImage.name,
+  //                 digest,
+  //                 'manifests'
+  //               );
+  //               const toUrl = registryUrl(toImage.registry, toImage.namespace, toImage.name, tag, 'manifests');
+  //               return new Upload(
+  //                 this.api,
+  //                 fromUrl,
+  //                 toUrl,
+  //                 {
+  //                   digest,
+  //                   mediaType: manifest.mediaType!,
+  //                   size: manifest.size!,
+  //                 },
+  //                 () => {
+  //                   toImage.images[digest] = manifest;
+  //                 }
+  //               );
+  //             }),
+  //           ])
+  //           .flat();
+
+  //         //TODO: index push still not happening
+  //         //TODO: find out why errors aren't being reduced at the end
+  //         const indexes = fromImage.tags.map(
+  //           (tag) =>
+  //             new Upload(
+  //               this.api,
+  //               registryUrl(fromImage.registry, fromImage.namespace, fromImage.name, fromImage.reference, 'manifests'),
+  //               registryUrl(toImage.registry, toImage.namespace, toImage.name, tag, 'manifests'),
+  //               {
+  //                 digest: fromImage.reference,
+  //                 mediaType: fromImage.index.mediaType!,
+  //                 size: fromImage.index.size!,
+  //               },
+  //               () => {
+  //                 toImage.index = fromImage.index;
+  //               }
+  //             )
+  //         );
+
+  //         this.log.info(`Prepared transfers for image ${req.image}`, {
+  //           blobs: blobs.length,
+  //           images: images.length,
+  //           indexes: indexes.length,
+  //         });
+
+  //         const transfers: Transfers = { blobs, images, indexes };
+  //         return transfers;
+  //         // TODO: handle 404 if namespace doesn't exist
+  //       })
+  //     )
+  //     .pipe(Upload.observeAll(this.log, 1000, Upload.CONCURRENCY, true)) // TODO: make verify optional
+  //     .pipe(
+  //       map((statuses) => {
+  //         const response: ApiSchema<Image['Req'], Image['Res']> = {
+  //           apiVersion: 'rowdy.run/v1alpha1',
+  //           kind: 'Image',
+  //           spec: req,
+  //           status: {
+  //             ...toImage,
+  //             code: TransferStatus.code(statuses),
+  //             reason: TransferStatus.reason(statuses),
+  //           },
+  //         };
+  //         return response;
+  //       }),
+  //       tap((response) => {
+  //         this.log.debug(`Image Spec`, JSON.stringify(response.spec));
+  //         this.log.debug(`Image Status`, JSON.stringify(response.status));
+  //         this.log.info(`Finished transferring image ${req.image} to ${response.status.registry}`, {
+  //           status: response.status.code,
+  //           reason: response.status.reason,
+  //         });
+  //       })
+  //     );
+  // }
 }
 
-type Response<T> = { data: T | undefined; headers: HttpHeaders; status: number; method: string; url: string };
+// type Digest = string;
+// type TransferRef = Omit<Required<Image['External']['Ref']>, 'annotations'>;
+// type Transfers = { blobs: Upload[]; images: Upload[]; indexes: Upload[] };
 
-class TransferStatus implements ILoggable {
-  private verified: boolean = false;
-  private _codes: number[] = [];
-  private _reasons: string[] = [];
+// class Upload implements ILoggable {
+//   private static _CONCURRENCY = {
+//     MIN: 1,
+//     MAX: 10,
+//     CURRENT: 0,
+//   };
 
-  static code(statuses: Record<Digest, TransferStatus>): number {
-    const failed = Object.values(statuses).find((s) => s.failed);
-    return failed ? 206 : 200;
-  }
+//   static get CONCURRENCY(): number {
+//     if (Upload._CONCURRENCY.CURRENT === 0) {
+//       const cpus = os.cpus()?.length || Upload._CONCURRENCY.MIN;
+//       // Use all of the possible CPUs, up to MAX
+//       Upload._CONCURRENCY.CURRENT = Math.min(Math.max(Upload._CONCURRENCY.MIN, cpus), Upload._CONCURRENCY.MAX);
+//     }
+//     return Upload._CONCURRENCY.CURRENT;
+//   }
 
-  static reason(statuses: Record<Digest, TransferStatus>): string | undefined {
-    const failures = Object.values(statuses).filter((s) => s.failed);
-    if (!failures.length) {
-      return undefined;
-    }
-    return failures
-      .map((s) => s._reasons)
-      .flat()
-      .join(', ');
-  }
+//   private complete: boolean = false;
+//   private bytes: { received: number; sent: number; total: number };
 
-  constructor(private transfer: Transfer) {}
+//   constructor(
+//     public api: IApi,
+//     public fromUrl: string,
+//     public toUrl: string,
+//     public ref: TransferRef,
+//     public finalizer: () => void
+//   ) {
+//     this.bytes = { received: 0, sent: 0, total: ref.size || 0 };
+//   }
 
-  get log(): Logger {
-    return this.transfer.api.log;
-  }
+//   static observeAll(
+//     log: Logger,
+//     interval: number,
+//     concurrency: number,
+//     verify?: boolean
+//   ): OperatorFunction<Transfers, Record<Digest, TransferStatus>> {
+//     const summary = (transfers: Transfers): string => {
+//       const all = [...transfers.blobs, ...transfers.images, ...transfers.indexes];
+//       const totalTransfers = all.length;
+//       const completedTransfers = all.filter((t) => t.complete).length;
 
-  get http(): AxiosInstance {
-    return this.transfer.http;
-  }
+//       const totalBytes = all.reduce((acc, t) => acc + t.bytes.total, 0);
+//       const completedBytes = all.reduce((acc, t) => acc + t.bytes.sent, 0);
 
-  get url(): string {
-    if (this.transfer.toUrl.endsWith('blobs/uploads/')) {
-      return this.transfer.toUrl.replace('blobs/uploads/', `blobs/${this.transfer.digest}`);
-    }
-    return this.transfer.toUrl;
-  }
+//       const transferRatio = `${completedTransfers}/${totalTransfers}`;
+//       const pct = totalBytes === 0 ? '100%' : `${((completedBytes / totalBytes) * 100).toFixed(0)}%`;
+//       return `${transferRatio} transfers: ${pct} complete`;
+//     };
 
-  get digest(): string {
-    return this.transfer.ref.digest;
-  }
+//     return (source) =>
+//       new Observable((subscriber) => {
+//         let latest: Transfers | undefined = undefined;
+//         const proc = setInterval(() => {
+//           if (latest) log.info(`Transfer progess: ${summary(latest)}`);
+//         }, interval);
 
-  get mediaType(): string {
-    return this.transfer.ref.mediaType;
-  }
+//         const subscription = source
+//           .pipe(
+//             tap((transfers) => (latest = transfers)),
+//             switchMap(({ blobs, images, indexes }) =>
+//               concat(
+//                 Upload.observe(blobs, concurrency, verify),
+//                 Upload.observe(images, concurrency, verify),
+//                 Upload.observe(indexes, concurrency, verify)
+//               )
+//             ),
+//             reduce(
+//               (acc, cur) => {
+//                 cur.finalize();
+//                 acc[cur.digest] = cur;
+//                 return acc;
+//               },
+//               {} as Record<Digest, TransferStatus>
+//             )
+//           )
+//           .subscribe(subscriber);
 
-  get failed(): boolean {
-    return this._codes.some((c) => c >= 400);
-  }
+//         return () => {
+//           if (latest) log.info(`Transfer complete: ${summary(latest)}`);
+//           subscription.unsubscribe();
+//           clearInterval(proc);
+//         };
+//       });
+//   }
 
-  intercept<T>(response: Promise<AxiosResponse<T>>): Observable<Response<T>> {
-    return defer(() => from(response)).pipe(
-      map((res) => {
-        this._codes.push(res.status);
-        this._reasons.push(this.reason(res));
-        return {
-          data: res.data,
-          headers: HttpHeaders.fromAxios(res.headers),
-          status: res.status,
-          method: res.config.method!,
-          url: res.config.url!,
-        };
-      }),
-      catchError((err) => {
-        this.log.warn(`Transfer error`, { error: err, transfer: this.transfer });
-        if (!isAxiosError(err)) {
-          return throwError(() => err);
-        }
-        this._codes.push(err.response?.status || 500);
-        this._reasons.push(this.reason(err.response!));
-        return of({
-          data: undefined,
-          headers: HttpHeaders.fromAxios(err.response?.headers || {}),
-          status: err.response?.status || 500,
-          method: err.config!.method!,
-          url: err.config!.url!,
-        });
-      })
-    );
-  }
+//   private static observe(transfers: Upload[], concurrency: number, verify?: boolean): Observable<TransferStatus> {
+//     return from(transfers).pipe(mergeMap((transfer) => transfer.pipe(verify), concurrency));
+//   }
 
-  withResponse<T>(response: Promise<AxiosResponse<T>>): Observable<this> {
-    return this.intercept(response).pipe(map(() => this));
-  }
+//   get log(): Logger {
+//     return this.api.log;
+//   }
 
-  verify(): Observable<this> {
-    if (this.verified) {
-      return of(this);
-    }
+//   get http(): AxiosInstance {
+//     return this.api.http;
+//   }
 
-    return defer(() => this.http.head(this.url)).pipe(
-      retry({
-        count: 3,
-        delay: (_, retryCount) => timer(Math.pow(2, retryCount) * 1000),
-        resetOnSuccess: true,
-      }),
-      map(() => {
-        this.log.debug(`Transfer verified`, { digest: this.digest, url: this.url });
-        this.verified = true;
-        return this;
-      }),
-      catchError((err) => {
-        if (!isAxiosError(err)) {
-          return throwError(() => err);
-        }
+//   get digest(): string {
+//     return this.ref.digest;
+//   }
 
-        const reason = this.reason(err.response!);
-        this._codes.push(err.response?.status || 500);
-        this._reasons.push(reason);
-        this.log.warn(`Transfer verification failed`, { digest: this.digest, url: this.url, reason });
+//   get mediaType(): string {
+//     return this.ref.mediaType;
+//   }
 
-        return of(this);
-      })
-    );
-  }
+//   repr(): string {
+//     return `Transfer(from=${this.fromUrl}, to=${this.toUrl}, digest=${this.digest}, mediaType=${this.mediaType})`;
+//   }
+// }
 
-  finalize(): void {
-    if (this.failed) {
-      return;
-    }
-    return this.transfer.finalizer();
-  }
+// type Response<T> = { data: T | undefined; headers: HttpHeaders; status: number; method: string; url: string };
 
-  private reason<T>(response: AxiosResponse<T>): string {
-    return `[${this.transfer.mediaType}] HTTP ${response.status}: ${response.config.method?.toUpperCase()} ${response.config.url}`;
-  }
+// class TransferStatus implements ILoggable {
+//   private verified: boolean = false;
+//   private _codes: number[] = [];
+//   private _reasons: string[] = [];
 
-  repr(): string {
-    return `TransferStatus(digest=${this.digest}, mediaType=${this.mediaType}, url=${this.url}, verified=${this.verified})`;
-  }
-}
+//   static code(statuses: Record<Digest, TransferStatus>): number {
+//     const failed = Object.values(statuses).find((s) => s.failed);
+//     return failed ? 206 : 200;
+//   }
+
+//   static reason(statuses: Record<Digest, TransferStatus>): string | undefined {
+//     const failures = Object.values(statuses).filter((s) => s.failed);
+//     if (!failures.length) {
+//       return undefined;
+//     }
+//     return failures
+//       .map((s) => s._reasons)
+//       .flat()
+//       .join(', ');
+//   }
+
+//   constructor(private transfer: Upload) {}
+
+//   get log(): Logger {
+//     return this.transfer.api.log;
+//   }
+
+//   get http(): AxiosInstance {
+//     return this.transfer.http;
+//   }
+
+//   get url(): string {
+//     if (this.transfer.toUrl.endsWith('blobs/uploads/')) {
+//       return this.transfer.toUrl.replace('blobs/uploads/', `blobs/${this.transfer.digest}`);
+//     }
+//     return this.transfer.toUrl;
+//   }
+
+//   get digest(): string {
+//     return this.transfer.ref.digest;
+//   }
+
+//   get mediaType(): string {
+//     return this.transfer.ref.mediaType;
+//   }
+
+//   get failed(): boolean {
+//     return this._codes.some((c) => c >= 400);
+//   }
+
+//   intercept<T>(response: Promise<AxiosResponse<T>>): Observable<Response<T>> {
+//     return defer(() => from(response)).pipe(
+//       map((res) => {
+//         this._codes.push(res.status);
+//         this._reasons.push(this.reason(res));
+//         return {
+//           data: res.data,
+//           headers: HttpHeaders.fromAxios(res.headers),
+//           status: res.status,
+//           method: res.config.method!,
+//           url: res.config.url!,
+//         };
+//       }),
+//       catchError((err) => {
+//         this.log.warn(`Transfer error`, { error: err, transfer: this.transfer });
+//         if (!isAxiosError(err)) {
+//           return throwError(() => err);
+//         }
+//         this._codes.push(err.response?.status || 500);
+//         this._reasons.push(this.reason(err.response!));
+//         return of({
+//           data: undefined,
+//           headers: HttpHeaders.fromAxios(err.response?.headers || {}),
+//           status: err.response?.status || 500,
+//           method: err.config!.method!,
+//           url: err.config!.url!,
+//         });
+//       })
+//     );
+//   }
+
+//   withResponse<T>(response: Promise<AxiosResponse<T>>): Observable<this> {
+//     return this.intercept(response).pipe(map(() => this));
+//   }
+
+//   verify(): Observable<this> {
+//     if (this.verified) {
+//       return of(this);
+//     }
+
+//     return defer(() => this.http.head(this.url)).pipe(
+//       retry({
+//         count: 3,
+//         delay: (_, retryCount) => timer(Math.pow(2, retryCount) * 1000),
+//         resetOnSuccess: true,
+//       }),
+//       map(() => {
+//         this.log.debug(`Transfer verified`, { digest: this.digest, url: this.url });
+//         this.verified = true;
+//         return this;
+//       }),
+//       catchError((err) => {
+//         if (!isAxiosError(err)) {
+//           return throwError(() => err);
+//         }
+
+//         const reason = this.reason(err.response!);
+//         this._codes.push(err.response?.status || 500);
+//         this._reasons.push(reason);
+//         this.log.warn(`Transfer verification failed`, { digest: this.digest, url: this.url, reason });
+
+//         return of(this);
+//       })
+//     );
+//   }
+
+//   finalize(): void {
+//     if (this.failed) {
+//       return;
+//     }
+//     return this.transfer.finalizer();
+//   }
+
+//   private reason<T>(response: AxiosResponse<T>): string {
+//     return `[${this.transfer.mediaType}] HTTP ${response.status}: ${response.config.method?.toUpperCase()} ${response.config.url}`;
+//   }
+
+//   repr(): string {
+//     return `TransferStatus(digest=${this.digest}, mediaType=${this.mediaType}, url=${this.url}, verified=${this.verified})`;
+//   }
+// }
 
 /*
 TODO: Make logs match this

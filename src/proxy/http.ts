@@ -8,6 +8,7 @@ import { URI } from '../routes';
 import { APIGatewayProxyEventV2 } from 'aws-lambda';
 import { Rowdy } from '../api';
 import packageJson from '../../package.json';
+import { Environment } from '../environment';
 
 export type Prelude = { statusCode: number; headers: Headers; cookies: string[] };
 
@@ -30,6 +31,10 @@ export abstract class HttpProxy<P extends Pipeline> extends Proxy<P, HttpRespons
     super(pipeline, request);
   }
 
+  get environment(): Environment {
+    return this.pipeline.environment;
+  }
+
   get httpsAgent(): Agent | undefined {
     if (this.uri.insecure) {
       return new Agent({
@@ -43,9 +48,9 @@ export abstract class HttpProxy<P extends Pipeline> extends Proxy<P, HttpRespons
   @Trace
   override invoke(): Observable<HttpResponse> {
     return race([
-      new LocalHttpResponse().handle(this),
-      new RowdyHttpResponse(this.pipeline.log, this.pipeline.signal).handle(this),
-    ]).pipe(catchError((error) => new RowdyHttpResponse(this.pipeline.log, this.pipeline.signal).catch(error)));
+      new LocalHttpResponse(this.environment).handle(this),
+      new RowdyHttpResponse(this.environment).handle(this),
+    ]).pipe(catchError((error) => new RowdyHttpResponse(this.environment).catch(error)));
   }
 
   override repr(): string {
@@ -101,7 +106,7 @@ export class HttpHeaders implements ILoggable {
     return instance;
   }
 
-  static from(obj: Record<string, string | string[]>): HttpHeaders {
+  static from(obj: Record<string, string | string[] | undefined | null>): HttpHeaders {
     const instance = new HttpHeaders();
     for (let [key, value] of Object.entries(obj || {})) {
       if (!value) continue;
@@ -143,13 +148,7 @@ export class HttpHeaders implements ILoggable {
   intoAxios(): AxiosHeaders {
     const axiosHeaders = new AxiosHeaders();
     for (let [key, value] of Object.entries(this.headers)) {
-      if (Array.isArray(value)) {
-        for (let v of value) {
-          axiosHeaders.append(key, v);
-        }
-      } else {
-        axiosHeaders.set(key, value);
-      }
+      axiosHeaders.set(key, value);
     }
     return axiosHeaders;
   }
@@ -172,7 +171,7 @@ export class HttpHeaders implements ILoggable {
     return headers;
   }
 
-  override(key: string, value?: string | string[]): this {
+  override(key: string, value?: string | string[] | undefined): this {
     if (!value) {
       delete this.headers[key.toLowerCase()];
       return this;
@@ -193,11 +192,21 @@ export abstract class HttpResponse implements ILoggable {
   private _cookies: string[];
   private _data: Readable;
 
-  constructor(status: number, headers: HttpHeaders, cookies: string[], data: Readable) {
+  constructor(
+    protected environment: Environment,
+    status: number,
+    headers: HttpHeaders,
+    cookies: string[],
+    data: Readable
+  ) {
     this._status = status;
     this._headers = headers;
     this._cookies = cookies;
     this._data = data;
+  }
+
+  get rowdy(): Rowdy {
+    return this.environment.rowdy;
   }
 
   get status(): number {
@@ -263,13 +272,9 @@ export abstract class HttpResponse implements ILoggable {
 }
 
 class RowdyHttpResponse extends HttpResponse {
-  private rowdy: Rowdy;
-
-  constructor(
-    private log: Logger,
-    private signal: AbortSignal
-  ) {
+  constructor(environment: Environment) {
     super(
+      environment,
       404,
       HttpHeaders.from({
         // TODO: coerce content type based on accept header
@@ -284,8 +289,6 @@ class RowdyHttpResponse extends HttpResponse {
       [],
       Readable.from('')
     );
-
-    this.rowdy = new Rowdy(this.log, this.signal);
   }
 
   catch(error: unknown): Observable<HttpResponse> {
@@ -342,19 +345,19 @@ class RowdyHttpResponse extends HttpResponse {
       return of(this.withHeader('x-error', proxy.uri.error).withStatus(Number(proxy.uri.port)));
     }
 
-    if (proxy.uri.host === Rowdy.API) {
-      return this.rowdy
-        .withProxy(proxy)
-        .api()
-        .pipe(
-          map((response) => {
-            return this.withStatus(response.status.code)
-              .withHeaders(HttpHeaders.from(response.status.headers || {}))
-              .withHeader('content-type', 'application/json; charset=utf-8')
-              .withData(Readable.from(JSON.stringify(response, null, 2)));
-          })
-        );
-    }
+    // if (proxy.uri.host === Rowdy.API) {
+    //   return this.rowdy
+    //     .withProxy(proxy)
+    //     .api()
+    //     .pipe(
+    //       map((response) => {
+    //         return this.withStatus(response.status.code)
+    //           .withHeaders(HttpHeaders.from(response.status.headers || {}))
+    //           .withHeader('content-type', 'application/json; charset=utf-8')
+    //           .withData(Readable.from(JSON.stringify(response, null, 2)));
+    //       })
+    //     );
+    // }
 
     if (proxy.uri.host === Rowdy.CRI) {
       return this.rowdy.cri(proxy).pipe(
@@ -375,8 +378,8 @@ class RowdyHttpResponse extends HttpResponse {
 }
 
 class LocalHttpResponse extends HttpResponse {
-  constructor() {
-    super(404, HttpHeaders.from({}), [], Readable.from(''));
+  constructor(environment: Environment) {
+    super(environment, 404, HttpHeaders.from({}), [], Readable.from(''));
   }
 
   @Trace

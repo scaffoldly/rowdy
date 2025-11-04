@@ -1,5 +1,4 @@
 import { Rowdy, Logger } from '@scaffoldly/rowdy';
-import { lastValueFrom } from 'rxjs';
 
 describe('api', () => {
   // const logger = new Logger().withDebugging().withTracing();
@@ -20,29 +19,37 @@ describe('api', () => {
   });
 
   describe('image', () => {
-    it('should resolve ubuntu', (done) => {
-      rowdy.Images.getImage({ image: 'ubuntu' }).subscribe((response) => {
-        expect(response.apiVersion).toBe('rowdy.run/v1alpha1');
-        expect(response.kind).toBe('Image');
-        expect(response.spec!.image).toBe('mirror.gcr.io/library/ubuntu:latest');
-        expect(response.status!.registry).toBe('mirror.gcr.io');
-        expect(response.status!.namespace).toBe('library');
-        expect(response.status!.name).toBe('ubuntu');
-        expect(response.status!.reference).toMatch(/^sha256:[a-f0-9]{64}$/);
-        expect(response.status!.tags).toContain('latest');
-        expect(response.status.code).toBe(200);
-        done();
+    describe('pullImage', () => {
+      describe('aws', () => {
+        aws('should pull ubuntu', async () => {
+          // const { imageRef } = await lastValueFrom(rowdy.Images.pullImage('ubuntu'));
+        });
       });
-    }, 5000);
-
-    aws('should copy from gcr mirror to private ecr', async () => {
-      // TODO: support for
-      // - "mirror.gcr.io/ubuntu:latest"
-      // - "public.ecr.aws/docker/library/ubuntu:latest"
-      const response = await lastValueFrom(rowdy.Images.putImage({ image: 'mirror.gcr.io/library/alpine:latest' }));
-      expect(response.apiVersion).toBe('rowdy.run/v1alpha1');
-      expect(response.status.code).toBe(200);
     });
+
+    // it('should resolve ubuntu', (done) => {
+    //   rowdy.Images.getImage({ image: 'ubuntu' }).subscribe((response) => {
+    //     expect(response.apiVersion).toBe('rowdy.run/v1alpha1');
+    //     expect(response.kind).toBe('Image');
+    //     expect(response.spec!.image).toBe('mirror.gcr.io/library/ubuntu:latest');
+    //     expect(response.status!.registry).toBe('mirror.gcr.io');
+    //     expect(response.status!.namespace).toBe('library');
+    //     expect(response.status!.name).toBe('ubuntu');
+    //     expect(response.status!.reference).toMatch(/^sha256:[a-f0-9]{64}$/);
+    //     expect(response.status!.tags).toContain('latest');
+    //     expect(response.status.code).toBe(200);
+    //     done();
+    //   });
+    // }, 5000);
+
+    // aws('should copy from gcr mirror to private ecr', async () => {
+    //   // TODO: support for
+    //   // - "mirror.gcr.io/ubuntu:latest"
+    //   // - "public.ecr.aws/docker/library/ubuntu:latest"
+    //   const response = await lastValueFrom(rowdy.Images.putImage({ image: 'mirror.gcr.io/library/alpine:latest' }));
+    //   expect(response.apiVersion).toBe('rowdy.run/v1alpha1');
+    //   expect(response.status.code).toBe(200);
+    // });
   });
 
   describe('registry', () => {

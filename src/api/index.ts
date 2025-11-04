@@ -6,7 +6,7 @@ import { Logger } from '../log';
 import axios, { AxiosInstance } from 'axios';
 import { authenticator } from '../util/axios';
 import { ImageApi } from './image';
-import { ApiResponseStatus, ApiSchema, Health, IImageApi, Image, IRegistryApi, Registry } from './types';
+import { ApiResponseStatus, ApiSchema, Health, IImageApi, IRegistryApi, Registry } from './types';
 import { Environment } from '../environment';
 import { RegistryApi } from './registry';
 // import { RoutePaths } from '../routes';
@@ -65,20 +65,20 @@ export class Rowdy {
         match: match<Health['req']>('/health'),
         handler: this.health.bind(this),
       },
-      {
-        match: match<Image['Req']>('/images/*image'),
-        handler: this._images.getImage.bind(this.Images),
-      },
+      // {
+      //   match: match<Image['Req']>('/images/*image'),
+      //   handler: this._images.getImage.bind(this.Images),
+      // },
       {
         match: match<Registry['Req']>('/registry'),
         handler: this._registry.getRegistry.bind(this.Registry),
       },
     ],
     PUT: [
-      {
-        match: match<Image['Req']>('/images/*image'),
-        handler: this._images.putImage.bind(this.Images),
-      },
+      // {
+      //   match: match<Image['Req']>('/images/*image'),
+      //   handler: this._images.putImage.bind(this.Images),
+      // },
     ],
   };
 
@@ -115,64 +115,64 @@ export class Rowdy {
     );
   }
 
-  public api(): Observable<ApiSchema<unknown, ApiResponseStatus>> {
-    const { method, body, uri } = this.proxy || {};
-    if (!method || !body || !uri) {
-      this.log.warn('Missing method, body, or uri in proxy', { method, body, uri });
-      return this.badRequest('Missing method, body, or uri in proxy');
-    }
+  // public api(): Observable<ApiSchema<unknown, ApiResponseStatus>> {
+  //   const { method, body, uri } = this.proxy || {};
+  //   if (!method || !body || !uri) {
+  //     this.log.warn('Missing method, body, or uri in proxy', { method, body, uri });
+  //     return this.badRequest('Missing method, body, or uri in proxy');
+  //   }
 
-    const handlers = this.routes[method.toUpperCase() as keyof typeof this.routes];
-    if (!handlers) {
-      this.log.warn(`No handlers for method: ${method}`);
-      return this.notFound(`No handlers for method: ${method}`);
-    }
+  //   const handlers = this.routes[method.toUpperCase() as keyof typeof this.routes];
+  //   if (!handlers) {
+  //     this.log.warn(`No handlers for method: ${method}`);
+  //     return this.notFound(`No handlers for method: ${method}`);
+  //   }
 
-    const { pathname: path, searchParams } = uri;
-    // TODO: handle encoding? or does body.toString() already do that
-    // TODO: type checking and opts validation
-    let opts = { ...Object.fromEntries(searchParams), ...(body.length ? JSON.parse(body.toString()) : {}) };
+  //   const { pathname: path, searchParams } = uri;
+  //   // TODO: handle encoding? or does body.toString() already do that
+  //   // TODO: type checking and opts validation
+  //   let opts = { ...Object.fromEntries(searchParams), ...(body.length ? JSON.parse(body.toString()) : {}) };
 
-    const handler = handlers.reduce(
-      (acc, { match: matcher, handler }) => {
-        if (acc) return acc;
-        const matchers = Array.isArray(matcher) ? matcher : [matcher];
-        const matches = matchers.map((m) => m(path)).find((m) => m !== false);
-        if (!matches) return acc;
-        return handler(matches.params, opts);
-      },
-      undefined as Observable<ApiSchema<unknown, ApiResponseStatus>> | undefined
-    );
+  //   const handler = handlers.reduce(
+  //     (acc, { match: matcher, handler }) => {
+  //       if (acc) return acc;
+  //       const matchers = Array.isArray(matcher) ? matcher : [matcher];
+  //       const matches = matchers.map((m) => m(path)).find((m) => m !== false);
+  //       if (!matches) return acc;
+  //       return handler(matches.params, opts);
+  //     },
+  //     undefined as Observable<ApiSchema<unknown, ApiResponseStatus>> | undefined
+  //   );
 
-    if (!handler) {
-      this.log.warn(`No handler found for ${method} ${path}`);
-      return this.notFound(`No handler found for ${method} ${path}`);
-    }
+  //   if (!handler) {
+  //     this.log.warn(`No handler found for ${method} ${path}`);
+  //     return this.notFound(`No handler found for ${method} ${path}`);
+  //   }
 
-    return handler;
-  }
+  //   return handler;
+  // }
 
-  private notFound(reason: string): Observable<ApiSchema<undefined, ApiResponseStatus>> {
-    return of({
-      apiVersion: 'rowdy.run/v1alpha1',
-      kind: 'NotFound',
-      spec: undefined,
-      status: {
-        code: 404,
-        reason,
-      },
-    });
-  }
+  // private notFound(reason: string): Observable<ApiSchema<undefined, ApiResponseStatus>> {
+  //   return of({
+  //     apiVersion: 'rowdy.run/v1alpha1',
+  //     kind: 'NotFound',
+  //     spec: undefined,
+  //     status: {
+  //       code: 404,
+  //       reason,
+  //     },
+  //   });
+  // }
 
-  private badRequest(reason: string): Observable<ApiSchema<undefined, ApiResponseStatus>> {
-    return of({
-      apiVersion: 'rowdy.run/v1alpha1',
-      kind: 'BadRequest',
-      spec: undefined,
-      status: {
-        code: 400,
-        reason,
-      },
-    });
-  }
+  // private badRequest(reason: string): Observable<ApiSchema<undefined, ApiResponseStatus>> {
+  //   return of({
+  //     apiVersion: 'rowdy.run/v1alpha1',
+  //     kind: 'BadRequest',
+  //     spec: undefined,
+  //     status: {
+  //       code: 400,
+  //       reason,
+  //     },
+  //   });
+  // }
 }
