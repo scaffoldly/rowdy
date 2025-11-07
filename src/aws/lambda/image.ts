@@ -15,8 +15,8 @@ export class LambdaImageService implements ILambdaImageService {
     return this.environment.log;
   }
 
-  get images(): Rowdy['Images'] {
-    return this.environment.rowdy.Images;
+  get images(): Rowdy['images'] {
+    return this.environment.rowdy.images;
   }
 
   pullImage = async (req: CRI.PullImageRequest): Promise<CRI.PullImageResponse> => {

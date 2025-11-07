@@ -21,7 +21,7 @@ import { HttpHeaders } from '../../proxy/http';
 import { createHash } from 'crypto';
 import { ILoggable, Logger } from '../../log';
 import { AxiosInstance, AxiosResponse, isAxiosError } from 'axios';
-import { PulledImage } from '../types';
+import { TRegistry } from '../types';
 import { cpus } from 'os';
 import { Readable } from 'stream';
 
@@ -72,7 +72,6 @@ export type ImageManifestTransfers = ImageManifest & {
   indexes: Upload[];
 };
 
-type Digest = string;
 type Response<T> = { data: T | undefined; headers: HttpHeaders; status: number; method: string; url: string };
 
 export class Transfer {
@@ -91,15 +90,25 @@ export class Transfer {
     return Transfer._CONCURRENCY.CURRENT;
   }
 
-  private uploads: Upload[][] = [];
-  private constructor() {}
+  private _uploads: Upload[][] = [];
+
+  private constructor(
+    public readonly log: Logger,
+    public readonly http: AxiosInstance,
+    public readonly manifest: ImageManifest,
+    public readonly registry: TRegistry
+  ) {}
 
   private with(uploads: Upload[]): this {
     if (!uploads.length) {
       return this;
     }
-    this.uploads.push(uploads);
+    this._uploads.push(uploads);
     return this;
+  }
+
+  get uploads(): Observable<Upload[]> {
+    return of(this._uploads).pipe(mergeMap((u) => from(u), Transfer.CONCURRENCY));
   }
 
   static normalize(authorization?: string, registry: string = 'registry-1.docker.io'): OperatorFunction<string, Image> {
@@ -242,33 +251,43 @@ export class Transfer {
     };
   }
 
-  static prepare(log: Logger, http: AxiosInstance): OperatorFunction<ImageManifest, Transfer> {
+  static prepare(
+    log: Logger,
+    http: AxiosInstance,
+    registry: Observable<TRegistry>
+  ): OperatorFunction<ImageManifest, Transfer> {
     return (source) =>
       source.pipe(
-        map((manifest) => {
-          const blobs: Upload[] = manifest.images
-            .map((img) => [img.config || {}, ...(img.layers || [])])
-            .flatMap((refs) => refs.filter((r): r is Required<External['Ref']> => !!r.digest && !!r.mediaType))
-            .map((ref) => new Upload(log, http, ref));
-
-          const images: Upload[] = (manifest.index.manifests || [])
-            .filter((m): m is Required<External['Ref']> => !!m.digest && !!m.mediaType)
-            .map((manifest) => new Upload(log, http, manifest));
-
-          const indexes: Upload[] = [
-            ...(!manifest.tag
-              ? [] // TODO: handle untagged images
-              : [new Upload(log, http, { digest: manifest.digest, mediaType: manifest.index.mediaType!, size: 0 })]),
-          ];
-
-          return new Transfer().with(blobs).with(images).with(indexes);
-        })
+        switchMap((manifest) => registry.pipe(map((registry) => new Transfer(log, http, manifest, registry)))),
+        map((transfer) =>
+          transfer
+            .with(
+              transfer.manifest.images
+                .map((img) => [img.config || {}, ...(img.layers || [])])
+                .flatMap((refs) => refs.filter((r): r is Required<External['Ref']> => !!r.digest && !!r.mediaType))
+                .map((ref) => new Upload(transfer, 'blob', ref))
+            )
+            .with(
+              (transfer.manifest.index.manifests || [])
+                .filter((m): m is Required<External['Ref']> => !!m.digest && !!m.mediaType)
+                .map((manifest) => new Upload(transfer, 'manifest', manifest))
+            )
+            .with([
+              new Upload(transfer, 'manifest', {
+                digest: transfer.manifest.tag
+                  ? transfer.manifest.tag
+                  : `untagged-${transfer.manifest.digest.replace('sha256:', '').slice(0, 12)}`,
+                mediaType: transfer.manifest.index.mediaType!,
+                size: 0,
+              }),
+            ])
+        )
       );
   }
 
   static upload(log: Logger, _http: AxiosInstance): OperatorFunction<Transfer, TransferStatus> {
     const summary = (transfers: Transfer): string => {
-      const uploads = transfers.uploads.flat();
+      const uploads = transfers._uploads.flat();
       const totalTransfers = uploads.length;
       const completedTransfers = uploads.filter((u) => u.complete).length;
 
@@ -309,8 +328,8 @@ export class Transfer {
       });
   }
 
-  static denormalize(): OperatorFunction<TransferStatus, PulledImage> {
-    return () => throwError(() => new Error('Method not implemented.'));
+  static denormalize(): OperatorFunction<TransferStatus, string> {
+    return (source) => source.pipe(map(({ imageRef }) => imageRef));
   }
 }
 
@@ -333,6 +352,34 @@ export class TransferStatus implements ILoggable {
     return this;
   }
 
+  get image(): string {
+    if (!this._transfer) {
+      throw new Error('Transfer has not been initialized');
+    }
+    return this._transfer.manifest.image;
+  }
+
+  get imageRef(): string {
+    const last = this._statuses.slice(-1)[0];
+    if (!last) {
+      throw new Error('No uploads have occurred');
+    }
+    return last.imageRef;
+  }
+
+  get code(): number {
+    const failed = Object.values(this._statuses).find((s) => s.failed);
+    return failed ? 206 : 200;
+  }
+
+  get reasons(): string[] {
+    const failures = Object.values(this._statuses).filter((s) => s.failed);
+    if (!failures.length) {
+      return [];
+    }
+    return failures.map((s) => s.reasons).flat();
+  }
+
   repr(): string {
     return `TransferStatus()`;
   }
@@ -343,8 +390,8 @@ export class Upload implements ILoggable {
   private bytes: { received: number; sent: number; total: number };
 
   constructor(
-    public readonly log: Logger,
-    public readonly http: AxiosInstance,
+    public readonly transfer: Transfer,
+    public readonly type: 'blob' | 'manifest',
     public readonly ref: Omit<Required<External['Ref']>, 'annotations'>
   ) {
     this.bytes = {
@@ -355,7 +402,15 @@ export class Upload implements ILoggable {
   }
 
   finalizer(): void {
-    throw new Error('Method not implemented.');
+    // TODO: implement finalizer if necesary
+  }
+
+  get log(): Logger {
+    return this.transfer.log;
+  }
+
+  get http(): AxiosInstance {
+    return this.transfer.http;
   }
 
   get complete(): boolean {
@@ -371,11 +426,25 @@ export class Upload implements ILoggable {
   }
 
   get fromUrl(): string {
-    throw new Error('Method not implemented.');
+    const { url } = this.transfer.manifest;
+    if (this.type === 'blob') {
+      return url.split('/').slice(0, -2).join('/') + `/blobs/${this.ref.digest}`;
+    }
+    return url.split('/').slice(0, -2).join('/') + `/manifests/${this.ref.digest}`;
   }
 
   get toUrl(): string {
-    throw new Error('Method not implemented.');
+    // eslint-disable-next-line no-restricted-globals
+    const url = new URL(this.fromUrl);
+    url.host = this.transfer.registry.registry;
+    url.pathname = url.pathname.replace(
+      this.transfer.manifest.slug,
+      `${this.transfer.manifest.namespace}/${this.transfer.manifest.name}`
+    );
+    if (this.type === 'blob') {
+      url.pathname = url.pathname.replace(/blobs\/.*/, 'blobs/uploads/');
+    }
+    return url.toString();
   }
 
   get digest(): string {
@@ -400,7 +469,7 @@ export class Upload implements ILoggable {
 
       this.log.debug('Starting transfer', { transfer: this });
 
-      if (this.toUrl.endsWith('uploads/')) {
+      if (this.type === 'blob') {
         // Uploads require a POST to get the Location header
         const start = await lastValueFrom(status.intercept(this.http.post(this.toUrl, null)));
         const _location = start.headers.get('location');
@@ -523,23 +592,12 @@ class UploadStatus implements ILoggable {
   private _codes: number[] = [];
   private _reasons: string[] = [];
 
-  static code(statuses: Record<Digest, UploadStatus>): number {
-    const failed = Object.values(statuses).find((s) => s.failed);
-    return failed ? 206 : 200;
-  }
-
-  static reason(statuses: Record<Digest, UploadStatus>): string | undefined {
-    const failures = Object.values(statuses).filter((s) => s.failed);
-    if (!failures.length) {
-      return undefined;
-    }
-    return failures
-      .map((s) => s._reasons)
-      .flat()
-      .join(', ');
-  }
-
   constructor(private upload: Upload) {}
+
+  get imageRef(): string {
+    const { digest, namespace, name } = this.upload.transfer.manifest;
+    return `${this.upload.transfer.registry.registry}/${namespace}/${name}@${digest}`;
+  }
 
   get log(): Logger {
     return this.upload.log;
@@ -566,6 +624,10 @@ class UploadStatus implements ILoggable {
 
   get failed(): boolean {
     return this._codes.some((c) => c >= 400);
+  }
+
+  get reasons(): string[] {
+    return this._reasons;
   }
 
   intercept<T>(response: Promise<AxiosResponse<T>>): Observable<Response<T>> {

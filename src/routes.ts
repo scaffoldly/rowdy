@@ -22,7 +22,7 @@ import {
 } from 'rxjs';
 import { ABORT } from '.';
 import { Rowdy } from './api';
-import { ApiSchema, ApiVersion } from './api/types';
+import { ApiVersion, ApiSchema } from './api/types';
 
 export type RoutePaths = { [key: string]: string | undefined };
 export type RoutesSpec = { paths?: RoutePaths; default?: string };
