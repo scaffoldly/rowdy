@@ -15,7 +15,6 @@ export class Rowdy implements IApi {
   static readonly SLUG = '@rowdy';
   static readonly ERROR = 'error';
   static readonly HTTP = 'http';
-  static readonly API = 'api';
   static readonly CRI = 'cri';
   static readonly HEALTH = 'health';
   static readonly PING = 'ping';
