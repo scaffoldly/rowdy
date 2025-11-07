@@ -10,6 +10,14 @@ export abstract class Pipeline implements ILoggable {
 
   constructor(public readonly environment: Environment) {}
 
+  get name(): string {
+    return this.environment.name;
+  }
+
+  get version(): string {
+    return this.environment.version;
+  }
+
   get log(): Logger {
     return this.environment.log;
   }

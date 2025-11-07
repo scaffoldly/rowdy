@@ -8,9 +8,8 @@ import { HttpProxy, HttpHeaders, HttpResponse, Source } from '../proxy/http';
 import { ShellResponse } from '../proxy/shell';
 import { PassThrough } from 'stream';
 import { URI } from '../routes';
-import { ServiceImpl } from '@connectrpc/connect';
-import { CRI, CriCollection, GrpcRouter, VERSION } from '@scaffoldly/rowdy-grpc';
-import * as packageJson from '../../package.json';
+import { GrpcRouter } from '@scaffoldly/rowdy-grpc';
+import { LambdaCri } from './lambda/cri';
 
 type FunctionUrlEvent = APIGatewayProxyEventV2;
 
@@ -30,15 +29,12 @@ export class LambdaPipeline extends Pipeline {
   private _requestId: string | undefined;
   private _cri: GrpcRouter = new GrpcRouter(this.signal, {
     title: 'AWS Lambda CRI',
-    description: `An implementation of the Kubernetes Container Runtime Interface (CRI) which leverages technology such as AWS Lambda, AWS ECR and AWS CloudWatch to implement Container Runtime and Image management.`,
-    contact: {
-      url: packageJson.homepage,
-    },
+    description: `An implementation of the Kubernetes Container Runtime Interface (CRI) which leverages technology such as AWS Lambda, AWS ECR, and AWS CloudWatch to implement Container Runtime and Image management.`,
     license: {
       name: 'FSL-1.1-Apache-2.0',
     },
-    version: packageJson.version,
-  }).withServices(new LambdaCri(this));
+    version: this.version,
+  }).withServices(new LambdaCri(this.environment));
 
   constructor(environment: Environment) {
     super(environment);
@@ -228,45 +224,5 @@ export class LambdaResponse extends Response<LambdaPipeline> {
 
   override repr(): string {
     return `LambdaResponse(requestId=${this.pipeline.requestId}, chunks=${this.chunks}, bytes=${this.bytes})`;
-  }
-}
-
-// eslint-disable-next-line @typescript-eslint/no-empty-object-type
-interface ILambdaImageService extends Partial<ServiceImpl<typeof CRI.ImageService>> {}
-// eslint-disable-next-line @typescript-eslint/no-empty-object-type
-interface ILambdaRuntimeService extends Partial<ServiceImpl<typeof CRI.RuntimeService>> {}
-
-class LambdaImageService implements ILambdaImageService {
-  constructor() {}
-
-  listImages = async (_req: CRI.ListImagesRequest): Promise<CRI.ListImagesResponse> => {
-    return {
-      $typeName: 'runtime.v1.ListImagesResponse',
-      images: [],
-    };
-  };
-}
-
-class LambdaRuntimeService implements ILambdaRuntimeService {
-  constructor() {}
-
-  version = async (_req: CRI.VersionRequest): Promise<CRI.VersionResponse> => {
-    return {
-      $typeName: 'runtime.v1.VersionResponse',
-      version: VERSION,
-      runtimeName: packageJson.name,
-      runtimeVersion: packageJson.version,
-      runtimeApiVersion: 'v1',
-    };
-  };
-}
-
-export class LambdaCri extends CriCollection {
-  private readonly image: LambdaImageService = new LambdaImageService();
-  private readonly runtime: LambdaRuntimeService = new LambdaRuntimeService();
-
-  constructor(private readonly pipeline: LambdaPipeline) {
-    super();
-    this.and().Image.with(this.image).and().Runtime.with(this.runtime);
   }
 }

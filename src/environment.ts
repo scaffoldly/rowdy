@@ -10,7 +10,7 @@ import { LambdaPipeline } from './aws/lambda';
 import packageJson from '../package.json';
 import path from 'path';
 import { isatty } from 'tty';
-import { ABORT } from '.';
+import { ABORT, Rowdy } from '.';
 
 export type Secrets = Record<string, string>;
 
@@ -33,6 +33,7 @@ export class Environment implements ILoggable {
   private _command?: string[] | undefined;
   private _env = process.env;
   private _args: Args;
+  private _rowdy: Rowdy;
 
   constructor(public readonly log: Logger) {
     this.signal.addEventListener('abort', () => {
@@ -70,6 +71,7 @@ export class Environment implements ILoggable {
       this.log = this.log.withTracing();
     }
 
+    this._rowdy = new Rowdy(this.log, this.signal);
     this._command = this._args['--'];
     this._routes = Routes.fromURL(this._args.routes);
 
@@ -87,6 +89,18 @@ export class Environment implements ILoggable {
     const args = { ...this._args };
     delete args['--'];
     return args;
+  }
+
+  get name(): string {
+    return packageJson.name;
+  }
+
+  get version(): string {
+    return packageJson.version;
+  }
+
+  get rowdy(): Rowdy {
+    return this._rowdy;
   }
 
   get routes(): Routes {

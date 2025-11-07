@@ -1,0 +1,43 @@
+import { ConnectError, ServiceImpl } from '@connectrpc/connect';
+import { CRI } from '@scaffoldly/rowdy-grpc';
+import { Logger } from '../../log';
+import { lastValueFrom } from 'rxjs';
+import { Rowdy } from '../../api';
+import { Environment } from '../../environment';
+
+// eslint-disable-next-line @typescript-eslint/no-empty-object-type
+interface ILambdaImageService extends Partial<ServiceImpl<typeof CRI.ImageService>> {}
+
+export class LambdaImageService implements ILambdaImageService {
+  constructor(private environment: Environment) {}
+
+  get log(): Logger {
+    return this.environment.log;
+  }
+
+  get images(): Rowdy['images'] {
+    return this.environment.rowdy.images;
+  }
+
+  pullImage = async (req: CRI.PullImageRequest): Promise<CRI.PullImageResponse> => {
+    const { image } = req.image || {};
+    if (!image) {
+      throw new ConnectError('No image specified');
+    }
+    const { imageRef } = await lastValueFrom(this.images.pullImage(image));
+    return {
+      $typeName: 'runtime.v1.PullImageResponse',
+      imageRef,
+    };
+  };
+
+  listImages = async (req: CRI.ListImagesRequest): Promise<CRI.ListImagesResponse> => {
+    if (req.filter) {
+      throw new ConnectError('Image filtering not supported');
+    }
+    return {
+      $typeName: 'runtime.v1.ListImagesResponse',
+      images: [],
+    };
+  };
+}

@@ -22,7 +22,7 @@ import {
 } from 'rxjs';
 import { ABORT } from '.';
 import { Rowdy } from './api';
-import { ApiSchema, ApiVersion } from './api/types';
+import { ApiVersion, ApiSchema } from './api/types';
 
 export type RoutePaths = { [key: string]: string | undefined };
 export type RoutesSpec = { paths?: RoutePaths; default?: string };
@@ -225,7 +225,6 @@ export class Routes implements IRoutes, ILoggable {
       .withPath(`/${Rowdy.SLUG}/400`, `rowdy://${Rowdy.HTTP}:400/`)
       .withPath(`/${Rowdy.SLUG}/404`, `rowdy://${Rowdy.HTTP}:401/`)
       .withPath(`/${Rowdy.SLUG}/500`, `rowdy://${Rowdy.HTTP}:500/`)
-      .withPath(`/${Rowdy.SLUG}/${Rowdy.API}{/*path}`, `rowdy://${Rowdy.API}/*path`)
       .withPath(`${Rowdy.PATHS.CRI}{/*path}`, `rowdy://${Rowdy.CRI}/*path`)
       .withPath(`/${Rowdy.SLUG}/${Rowdy.HEALTH}`, `rowdy://${Rowdy.HEALTH}/`)
       .withPath(`/${Rowdy.SLUG}/${Rowdy.PING}`, `rowdy://${Rowdy.PING}/`)
