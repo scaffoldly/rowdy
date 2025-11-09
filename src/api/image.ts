@@ -22,15 +22,17 @@ export class ImageApi implements IImageApi {
   }
 
   pullImage(image: string, opts?: PullImageOptions): Observable<TPulledImage> {
-    return of(image)
-      .pipe(
-        Transfer.normalize(opts?.authorization, opts?.registry),
-        Transfer.collect(this.log, this.http),
-        Transfer.prepare(this.log, this.http, this.registry),
-        Transfer.upload(this.log, this.http),
-        Transfer.denormalize()
-      )
-      .pipe(map((imageRef) => ({ image, imageRef })));
+    return defer(() =>
+      of(image)
+        .pipe(
+          Transfer.normalize(opts?.authorization, opts?.registry),
+          Transfer.collect(this.log, this.http),
+          Transfer.prepare(this.log, this.http, this.registry),
+          Transfer.upload(this.log, this.http),
+          Transfer.denormalize()
+        )
+        .pipe(map((imageRef) => ({ image, imageRef })))
+    );
   }
 }
 

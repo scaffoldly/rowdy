@@ -5,7 +5,6 @@ import {
   from,
   map,
   mergeMap,
-  NEVER,
   Observable,
   of,
   OperatorFunction,
@@ -467,174 +466,54 @@ export class Upload implements ILoggable {
   }
 
   static observe(uplods: Upload[], concurrency: number, _verify?: boolean): Observable<UploadStatus> {
-    // return from(uplods).pipe(mergeMap((upload) => upload.pipe(verify), concurrency));
     return from(uplods).pipe(mergeMap((upload) => upload.upload(), concurrency));
   }
 
-  private async upload(): Promise<UploadStatus> {
-    const status = new UploadStatus(this);
-    const fromUrl = this.fromUrl;
-    let toUrl = this.toUrl;
+  private upload(): Observable<UploadStatus> {
+    return defer(async () => {
+      const status = new UploadStatus(this);
+      const fromUrl = this.fromUrl;
+      let toUrl = this.toUrl;
 
-    if (this.type === 'blob') {
-      const location = await this.http
-        .post(toUrl, null, { headers: { 'Content-Type': this.mediaType } })
-        .then((res) => res.headers['location'] as string | undefined);
+      if (this.type === 'blob') {
+        const location = await this.http
+          .post(toUrl, null, { headers: { 'Content-Type': this.mediaType } })
+          .then((res) => res.headers['location'] as string | undefined);
 
-      if (!location) {
-        throw new Error(`No location header received`);
+        if (!location) {
+          throw new Error(`No location header received`);
+        }
+
+        toUrl = location;
       }
 
-      toUrl = location;
-    }
+      let { data: download } = await this.http.get<Readable>(fromUrl, {
+        responseType: 'stream',
+        maxBodyLength: Infinity,
+        maxContentLength: Infinity,
+        headers: { Accept: this.mediaType },
+        onDownloadProgress: (e) => (this.bytes.received += e.bytes),
+      });
 
-    let { data: download } = await this.http.get<Readable>(fromUrl, {
-      responseType: 'stream',
-      maxBodyLength: Infinity,
-      maxContentLength: Infinity,
-      headers: { Accept: this.mediaType },
-      onDownloadProgress: (e) => (this.bytes.received += e.bytes),
-    });
+      if (this.type === 'blob') {
+        await this.http.patch(toUrl, download, {
+          headers: { 'Content-Type': 'application/octet-stream' },
+          onUploadProgress: (e) => (this.bytes.sent += e.bytes),
+        });
+        toUrl = `${toUrl}?digest=${this.digest}`;
+        download = Readable.from('');
+      }
 
-    if (this.type === 'blob') {
-      await this.http.patch(toUrl, download, {
-        headers: { 'Content-Type': 'application/octet-stream' },
+      await this.http.put(toUrl, download, {
+        headers: {
+          'Content-Type': this.mediaType,
+        },
         onUploadProgress: (e) => (this.bytes.sent += e.bytes),
       });
-      toUrl = `${toUrl}?digest=${this.digest}`;
-      download = Readable.from('');
-    }
 
-    await this.http.put(toUrl, download, {
-      headers: {
-        'Content-Type': this.mediaType,
-      },
-      onUploadProgress: (e) => (this.bytes.sent += e.bytes),
+      this._complete = true;
+      return status;
     });
-
-    this._complete = true;
-    return status;
-  }
-
-  public pipe(_verify?: boolean): Observable<UploadStatus> {
-    return NEVER;
-    // const fromUrl = this.fromUrl;
-    // let toUrl = this.toUrl;
-    // if (this.type === 'blob') {
-    // }
-    // return defer(async () => {
-    //   const status = new UploadStatus(this);
-    //   let chunked: boolean = false;
-    //   let chunkSize = 10 * 1024 * 1024; // 10 MB
-    //   let location: string = this.toUrl;
-    //   this.log.debug('Starting transfer', { transfer: this });
-    //   if (this.type === 'blob') {
-    //     // Uploads require a POST to get the Location header
-    //     const start = await lastValueFrom(
-    //       status.intercept(this.http.post(this.toUrl, null, { headers: { 'Content-Type': this.mediaType } }))
-    //     );
-    //     const _location = start.headers.get('location');
-    //     chunked = true;
-    //     chunkSize = parseInt((start.headers.get('oci-chunk-min-length') as string | undefined) || `${chunkSize}`, 10);
-    //     if (_location) location = _location as string;
-    //     this.log.debug('Initialized upload', { transfer: this, location, chunkSize });
-    //   }
-    //   this.log.debug('Downloading', { transfer: this });
-    //   const download = await lastValueFrom(
-    //     status.intercept(
-    //       this.http.get<Readable>(this.fromUrl, {
-    //         responseType: 'stream',
-    //         maxBodyLength: Infinity,
-    //         maxContentLength: Infinity,
-    //         headers: { Accept: this.mediaType },
-    //       })
-    //     )
-    //   );
-    //   const data$ = new Observable<Buffer>((subscriber) => {
-    //     let buffer = Buffer.alloc(0);
-    //     if (!download.data) {
-    //       subscriber.error(new Error('No data stream available for download'));
-    //       return;
-    //     }
-    //     download.data.on('data', (chunk: Buffer) => {
-    //       buffer = Buffer.concat([buffer, chunk]);
-    //       if (!chunked) {
-    //         return;
-    //       }
-    //       if (buffer.length < chunkSize) {
-    //         return;
-    //       }
-    //       const upload = buffer;
-    //       buffer = Buffer.alloc(0);
-    //       subscriber.next(upload);
-    //     });
-    //     download.data.on('end', () => {
-    //       subscriber.next(buffer);
-    //       subscriber.complete();
-    //     });
-    //     download.data.on('error', (err) => subscriber.error(err));
-    //   });
-    //   const uploaded = chunked
-    //     ? data$.pipe(
-    //         tap((data) => {
-    //           this.bytes.received += data.length;
-    //           this.log.debug('Uploading chunk', { digest: this.digest, location, chunkSize: data.length });
-    //         }),
-    //         concatMap((data) =>
-    //           status
-    //             .intercept(
-    //               this.http.patch(location, data, {
-    //                 headers: { 'Content-Type': 'application/octet-stream' },
-    //               })
-    //             )
-    //             .pipe(
-    //               tap(() => {
-    //                 this.bytes.sent += data.length;
-    //                 this.log.debug('Uploaded chunk', { digest: this.digest, location, chunkSize: data.length });
-    //               })
-    //             )
-    //         ),
-    //         toArray(),
-    //         switchMap(() =>
-    //           status.withResponse(this.http.put(`${location}?digest=${this.digest}`, null, {})).pipe(
-    //             tap(() => {
-    //               this.log.debug('Finalized upload', { digest: this.digest, location });
-    //             })
-    //           )
-    //         )
-    //       )
-    //     : data$.pipe(
-    //         tap((data) => {
-    //           this.bytes.received += data.length;
-    //           this.log.debug('Uploading single chunk', { digest: this.digest, location, chunkSize: data.length });
-    //         }),
-    //         switchMap((data) =>
-    //           status
-    //             .withResponse(
-    //               this.http.put(location, data, {
-    //                 headers: { 'Content-Type': this.mediaType },
-    //               })
-    //             )
-    //             .pipe(
-    //               tap(() => {
-    //                 this.bytes.sent += data.length;
-    //                 this.log.debug('Uploaded single chunk', {
-    //                   digest: this.digest,
-    //                   location,
-    //                   chunkSize: data.length,
-    //                 });
-    //               })
-    //             )
-    //         )
-    //       );
-    //   this._complete = true;
-    //   return lastValueFrom(uploaded);
-    // }).pipe(
-    //   tap((status) => {
-    //     this._complete = true;
-    //     return status;
-    //   })
-    // );
   }
 
   repr(): string {
