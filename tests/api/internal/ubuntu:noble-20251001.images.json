@@ -1,0 +1,212 @@
+[
+  {
+    "schemaVersion": 2,
+    "mediaType": "application/vnd.oci.image.manifest.v1+json",
+    "config": {
+      "mediaType": "application/vnd.oci.image.config.v1+json",
+      "digest": "sha256:206b60b2588d4a4f16e933f112a1895644a9d63355ce129aeb3d8eb55acba2db",
+      "size": 167
+    },
+    "layers": [
+      {
+        "mediaType": "application/vnd.in-toto+json",
+        "digest": "sha256:ba223669755123cecd0bc56e1d52fca1436cf70df4b22d34ba5b4ece9f391de7",
+        "size": 1938106,
+        "annotations": {
+          "in-toto.io/predicate-type": "https://spdx.dev/Document"
+        }
+      }
+    ]
+  },
+  {
+    "schemaVersion": 2,
+    "mediaType": "application/vnd.oci.image.manifest.v1+json",
+    "config": {
+      "mediaType": "application/vnd.oci.image.config.v1+json",
+      "size": 2312,
+      "digest": "sha256:5e5a000d140d605ff9f495bddfd11d058cf6c05e8d7273126dcd49125531bd57"
+    },
+    "layers": [
+      {
+        "mediaType": "application/vnd.oci.image.layer.v1.tar+gzip",
+        "size": 26851732,
+        "digest": "sha256:4afa85c5883c0db62b02025c149edaaa237af5ba25ea48039e875a802d465ac7"
+      }
+    ]
+  },
+  {
+    "schemaVersion": 2,
+    "mediaType": "application/vnd.oci.image.manifest.v1+json",
+    "config": {
+      "mediaType": "application/vnd.oci.image.config.v1+json",
+      "size": 2297,
+      "digest": "sha256:97bed23a34971024aa8d254abbe67b7168772340d1f494034773bc464e8dd5b6"
+    },
+    "layers": [
+      {
+        "mediaType": "application/vnd.oci.image.layer.v1.tar+gzip",
+        "size": 29723147,
+        "digest": "sha256:4b3ffd8ccb5201a0fc03585952effb4ed2d1ea5e704d2e7330212fb8b16c86a3"
+      }
+    ]
+  },
+  {
+    "schemaVersion": 2,
+    "mediaType": "application/vnd.oci.image.manifest.v1+json",
+    "config": {
+      "mediaType": "application/vnd.oci.image.config.v1+json",
+      "digest": "sha256:d2c6794a73446c2c200bc221c928576fdf5749d32c7065dfb58fa63e9613810f",
+      "size": 167
+    },
+    "layers": [
+      {
+        "mediaType": "application/vnd.in-toto+json",
+        "digest": "sha256:5f8acbb3bc13c395a998825f929d1be67ccbbc4782d2b8506b822539a77b6372",
+        "size": 1940323,
+        "annotations": {
+          "in-toto.io/predicate-type": "https://spdx.dev/Document"
+        }
+      }
+    ]
+  },
+  {
+    "schemaVersion": 2,
+    "mediaType": "application/vnd.oci.image.manifest.v1+json",
+    "config": {
+      "mediaType": "application/vnd.oci.image.config.v1+json",
+      "digest": "sha256:3b3add7a015eddabe1f8fcb39ffae7def926f67474b3bba47cba0137f343e6a7",
+      "size": 167
+    },
+    "layers": [
+      {
+        "mediaType": "application/vnd.in-toto+json",
+        "digest": "sha256:98cd13f94b85280da21158e1110c44b19a11fb793fd943cb453d8198903f6121",
+        "size": 1942531,
+        "annotations": {
+          "in-toto.io/predicate-type": "https://spdx.dev/Document"
+        }
+      }
+    ]
+  },
+  {
+    "schemaVersion": 2,
+    "mediaType": "application/vnd.oci.image.manifest.v1+json",
+    "config": {
+      "mediaType": "application/vnd.oci.image.config.v1+json",
+      "size": 2299,
+      "digest": "sha256:7bcf37e8ebffb1b727d122f48aed67b0c36c6ec2ea720a6ada3ebfc61b43497e"
+    },
+    "layers": [
+      {
+        "mediaType": "application/vnd.oci.image.layer.v1.tar+gzip",
+        "size": 34303525,
+        "digest": "sha256:199e3830c89a37cc6980743d7c9e0e355251d050c55eb838183c9cf64fac375b"
+      }
+    ]
+  },
+  {
+    "schemaVersion": 2,
+    "mediaType": "application/vnd.oci.image.manifest.v1+json",
+    "config": {
+      "mediaType": "application/vnd.oci.image.config.v1+json",
+      "digest": "sha256:6c6c88baf206d4cc59be6f6718e922fb25b986830bc36b0b699e2299020f8f10",
+      "size": 167
+    },
+    "layers": [
+      {
+        "mediaType": "application/vnd.in-toto+json",
+        "digest": "sha256:f083401df72b3a565a0863d6b77b25bd0b6e64e17e689b530fd1f15055ef0c7b",
+        "size": 1939111,
+        "annotations": {
+          "in-toto.io/predicate-type": "https://spdx.dev/Document"
+        }
+      }
+    ]
+  },
+  {
+    "schemaVersion": 2,
+    "mediaType": "application/vnd.oci.image.manifest.v1+json",
+    "config": {
+      "mediaType": "application/vnd.oci.image.config.v1+json",
+      "size": 2314,
+      "digest": "sha256:e149199029d15548c4f6d2666e88879360381a2be8a1b747412e3fe91fb1d19d"
+    },
+    "layers": [
+      {
+        "mediaType": "application/vnd.oci.image.layer.v1.tar+gzip",
+        "size": 28861712,
+        "digest": "sha256:b8a35db46e38ce87d4e743e1265ff436ed36e01d23246b24a1cbbeaae18ec432"
+      }
+    ]
+  },
+  {
+    "schemaVersion": 2,
+    "mediaType": "application/vnd.oci.image.manifest.v1+json",
+    "config": {
+      "mediaType": "application/vnd.oci.image.config.v1+json",
+      "digest": "sha256:ae5abc725ed95926e2a20319ce3534f7cb6f9dc21fd6d295f1ea4549f6564fda",
+      "size": 167
+    },
+    "layers": [
+      {
+        "mediaType": "application/vnd.in-toto+json",
+        "digest": "sha256:7bae66667b7b05f43acd806d2488878773ca10f1fa2b2e295c67569ef92f900e",
+        "size": 1931899,
+        "annotations": {
+          "in-toto.io/predicate-type": "https://spdx.dev/Document"
+        }
+      }
+    ]
+  },
+  {
+    "schemaVersion": 2,
+    "mediaType": "application/vnd.oci.image.manifest.v1+json",
+    "config": {
+      "mediaType": "application/vnd.oci.image.config.v1+json",
+      "size": 2299,
+      "digest": "sha256:678eefd3f420a76c197da434f174d734b80fffa52cccc288bb4cd763c8765e5a"
+    },
+    "layers": [
+      {
+        "mediaType": "application/vnd.oci.image.layer.v1.tar+gzip",
+        "size": 30951381,
+        "digest": "sha256:ff47a256ba51b80e9880bc96be4ac2f094c47e0fcd7eec71bab85787cfa54b8b"
+      }
+    ]
+  },
+  {
+    "schemaVersion": 2,
+    "mediaType": "application/vnd.oci.image.manifest.v1+json",
+    "config": {
+      "mediaType": "application/vnd.oci.image.config.v1+json",
+      "size": 2295,
+      "digest": "sha256:bec01dfa80e941897d62ca44df1d8b2bde550f5cc4efdfa308170d51e44b1e61"
+    },
+    "layers": [
+      {
+        "mediaType": "application/vnd.oci.image.layer.v1.tar+gzip",
+        "size": 29906151,
+        "digest": "sha256:67735b72a65d308a2c2c9505d0d6e8419b7f2654a16cbd56963d88e01202d507"
+      }
+    ]
+  },
+  {
+    "schemaVersion": 2,
+    "mediaType": "application/vnd.oci.image.manifest.v1+json",
+    "config": {
+      "mediaType": "application/vnd.oci.image.config.v1+json",
+      "digest": "sha256:a7de31bf4341df28f1ad4fe295b287c20d823cd474e081bf4e2945eeac8d7f61",
+      "size": 167
+    },
+    "layers": [
+      {
+        "mediaType": "application/vnd.in-toto+json",
+        "digest": "sha256:e00a0c4a81b2457fe157d12fd1f48ca2b559fe05de7f26993d35247448840b0a",
+        "size": 1940953,
+        "annotations": {
+          "in-toto.io/predicate-type": "https://spdx.dev/Document"
+        }
+      }
+    ]
+  }
+]

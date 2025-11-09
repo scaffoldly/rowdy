@@ -557,16 +557,16 @@ export class Upload implements ILoggable {
           lastValueFrom(
             chunks.pipe(
               concatMap(({ chunk, final }) => {
-                const url = final ? `${location}?digest=${this.digest}` : location;
-                this.log.debug(`Uploading ${chunk.length} bytes`, { digest: this.digest, url, final });
+                // const url = final ? `${location}?digest=${this.digest}` : location;
+                this.log.debug(`Uploading ${chunk.length} bytes`, { digest: this.digest, location, final });
                 return from(
                   status.intercept(
-                    this.http.patch(url, chunk, {
+                    this.http.patch(location, chunk, {
                       headers: { 'Content-Type': 'application/octet-stream', 'Content-Length': chunk.length },
                     })
                   )
                 ).pipe(
-                  concatMap((response) => {
+                  switchMap((response) => {
                     this.bytes.sent += chunk.length;
                     if (final) {
                       this.log.debug(`Finalizing`, { digest: this.digest, location });
@@ -585,7 +585,10 @@ export class Upload implements ILoggable {
 
       return final;
     }).pipe(
-      switchMap((status) => (verify ? status.verify() : of(status))),
+      switchMap((status) => {
+        // console.log('!!! Upload status', { status });
+        return verify ? status.verify() : of(status);
+      }),
       tap((status) => {
         this._complete = true;
         this.log.debug(`Transfer complete`, { status });
