@@ -10,11 +10,9 @@ describe('api', () => {
     describe('pullImage', () => {
       describe('aws', () => {
         aws(
-          'should pull alpine from mirror.gcr.io',
+          'should pull alpine',
           async () => {
-            const { image, imageRef } = await lastValueFrom(
-              rowdy.images.pullImage('alpine', { registry: 'mirror.gcr.io' })
-            );
+            const { image, imageRef } = await lastValueFrom(rowdy.images.pullImage('alpine'));
             expect(image).toEqual('alpine');
             expect(imageRef).toMatch(
               /^[0-9]{12}\.dkr\.ecr\.[a-z0-9-]+\.amazonaws\.com\/library\/alpine@sha256:[a-f0-9]{64}$/
@@ -22,19 +20,15 @@ describe('api', () => {
           },
           60000
         );
-        aws('should pull ubuntu from mirror.gcr.io', async () => {
-          const { image, imageRef } = await lastValueFrom(
-            rowdy.images.pullImage('ubuntu', { registry: 'mirror.gcr.io' })
-          );
+        aws('should pull ubuntu', async () => {
+          const { image, imageRef } = await lastValueFrom(rowdy.images.pullImage('ubuntu'));
           expect(image).toEqual('ubuntu');
           expect(imageRef).toMatch(
             /^[0-9]{12}\.dkr\.ecr\.[a-z0-9-]+\.amazonaws\.com\/library\/ubuntu@sha256:[a-f0-9]{64}$/
           );
         });
-        aws('should pull busybox from mirror.gcr.io', async () => {
-          const { image, imageRef } = await lastValueFrom(
-            rowdy.images.pullImage('busybox', { registry: 'mirror.gcr.io' })
-          );
+        aws('should pull busybox', async () => {
+          const { image, imageRef } = await lastValueFrom(rowdy.images.pullImage('busybox'));
           expect(image).toEqual('busybox');
           expect(imageRef).toMatch(
             /^[0-9]{12}\.dkr\.ecr\.[a-z0-9-]+\.amazonaws\.com\/library\/busybox@sha256:[a-f0-9]{64}$/
