@@ -1,4 +1,4 @@
-import { defer, map, Observable, of, race } from 'rxjs';
+import { catchError, defer, map, Observable, of, race, throwError } from 'rxjs';
 import { AxiosInstance } from 'axios';
 import { IApi, IImageApi, PullImageOptions, TPulledImage, TRegistry } from './types';
 import { Logger } from '../log';
@@ -32,6 +32,11 @@ export class ImageApi implements IImageApi {
           Transfer.denormalize()
         )
         .pipe(map((imageRef) => ({ image, imageRef })))
+    ).pipe(
+      catchError((err) => {
+        this.log.warn(`Failed to pull image ${image}: ${err.message}`, { stack: err.stack });
+        return throwError(() => new Error(`Failed to pull image ${image}: ${err.message}`));
+      })
     );
   }
 }

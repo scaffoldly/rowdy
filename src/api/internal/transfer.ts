@@ -110,7 +110,7 @@ export class Transfer {
     return of(this._uploads).pipe(concatMap((u) => from(u)));
   }
 
-  static normalize(authorization?: string, registry: string = 'registry-1.docker.io'): OperatorFunction<string, Image> {
+  static normalize(authorization?: string, registry: string = 'mirror.gcr.io'): OperatorFunction<string, Image> {
     return (source) =>
       source.pipe(
         map((image) => {
