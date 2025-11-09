@@ -83,7 +83,7 @@ export class Logger {
 
       if (value instanceof Error) {
         const name = value.name || value.constructor?.name || 'Error';
-        return `${name}(${value.message})\n${value.stack?.split('\n').slice(1).join('\n\t')}`;
+        return `${name}: ${value.message}\n${value.stack?.split('\n').slice(1).join('\n\t')}`;
       }
 
       if (value instanceof Buffer) {

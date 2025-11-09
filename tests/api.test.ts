@@ -18,6 +18,15 @@ describe('api', () => {
             /^[0-9]{12}\.dkr\.ecr\.[a-z0-9-]+\.amazonaws\.com\/library\/alpine@sha256:[a-f0-9]{64}$/
           );
         });
+        // aws('should pull ubuntu from mirror.gcr.io', async () => {
+        //   const { image, imageRef } = await lastValueFrom(
+        //     rowdy.images.pullImage('ubuntu', { registry: 'mirror.gcr.io' })
+        //   );
+        //   expect(image).toEqual('ubuntu');
+        //   expect(imageRef).toMatch(
+        //     /^[0-9]{12}\.dkr\.ecr\.[a-z0-9-]+\.amazonaws\.com\/library\/ubuntu@sha256:[a-f0-9]{64}$/
+        //   );
+        // });
       });
     });
   });

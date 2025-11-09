@@ -1,6 +1,11 @@
-import { catchError, combineLatest, from, map, NEVER, Observable, of, switchMap } from 'rxjs';
+import { catchError, combineLatest, from, map, MonoTypeOperatorFunction, NEVER, Observable, of, switchMap } from 'rxjs';
 import { IRegistryApi, TRegistry } from '../api/types';
-import { ECRClient, GetAuthorizationTokenCommand } from '@aws-sdk/client-ecr';
+import {
+  CreateRepositoryCommand,
+  DescribeRepositoriesCommand,
+  ECRClient,
+  GetAuthorizationTokenCommand,
+} from '@aws-sdk/client-ecr';
 import { GetCallerIdentityCommand, STSClient } from '@aws-sdk/client-sts';
 import { Environment } from '../environment';
 
@@ -11,6 +16,16 @@ export class AwsRegistry implements IRegistryApi {
   private sts: STSClient = new STSClient({});
 
   constructor(private enviornment?: Environment) {}
+
+  withSlug(slug: string): MonoTypeOperatorFunction<TRegistry> {
+    return (source) =>
+      from(this.ecr.send(new DescribeRepositoriesCommand({ repositoryNames: [slug] }))).pipe(
+        switchMap(() => source),
+        catchError(() =>
+          from(this.ecr.send(new CreateRepositoryCommand({ repositoryName: slug }))).pipe(switchMap(() => source))
+        )
+      );
+  }
 
   login(): Observable<TRegistry> {
     const { registry = process.env.AWS_ECR_REGISTRY } = this.enviornment?.opts || {};
@@ -28,6 +43,7 @@ export class AwsRegistry implements IRegistryApi {
             const result: TRegistry = {
               registry,
               authorization: `Basic ${token}`,
+              withSlug: (slug: string) => this.withSlug(slug)(of(result)),
             };
             return result;
           })

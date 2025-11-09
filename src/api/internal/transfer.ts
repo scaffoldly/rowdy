@@ -258,7 +258,14 @@ export class Transfer {
   ): OperatorFunction<ImageManifest, Transfer> {
     return (source) =>
       source.pipe(
-        switchMap((manifest) => registry.pipe(map((registry) => new Transfer(log, http, manifest, registry)))),
+        switchMap((manifest) =>
+          registry.pipe(
+            switchMap((registry) => registry.withSlug(manifest.slug)),
+            map((registry) => {
+              return new Transfer(log, http, manifest, registry);
+            })
+          )
+        ),
         map((transfer) =>
           transfer
             .with(
@@ -364,7 +371,11 @@ export class TransferStatus implements ILoggable {
     if (!last) {
       throw new Error('No uploads have occurred');
     }
-    return last.imageRef;
+    try {
+      return last.imageRef;
+    } catch {
+      throw new Error(`Transfer failed:\n${this.reasons.join('\n\t')}`);
+    }
   }
 
   get code(): number {
@@ -595,6 +606,9 @@ class UploadStatus implements ILoggable {
   constructor(private upload: Upload) {}
 
   get imageRef(): string {
+    if (this.failed) {
+      throw new Error(`Upload failed: ${this.reasons.join('; ')}`);
+    }
     const { digest, namespace, name } = this.upload.transfer.manifest;
     return `${this.upload.transfer.registry.registry}/${namespace}/${name}@${digest}`;
   }

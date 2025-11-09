@@ -1,6 +1,6 @@
 import { AxiosInstance } from 'axios';
 import { Logger } from '../log';
-import { Observable } from 'rxjs';
+import { MonoTypeOperatorFunction, Observable } from 'rxjs';
 import { Environment } from '../environment';
 
 export type ApiVersion = 'rowdy.run/v1alpha1';
@@ -32,6 +32,7 @@ export interface IImageApi {
 
 export interface IRegistryApi {
   login(): Observable<TRegistry>;
+  withSlug(slug: string): MonoTypeOperatorFunction<TRegistry>;
 }
 
 export type TPulledImage = {
@@ -42,4 +43,5 @@ export type TPulledImage = {
 export type TRegistry = {
   registry: string;
   authorization?: string;
+  withSlug: (slug: string) => Observable<TRegistry>;
 };
