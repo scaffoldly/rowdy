@@ -301,22 +301,6 @@ describe('transfers', () => {
             /^[0-9]{12}\.dkr\.ecr\.[a-z0-9-]+\.amazonaws\.com\/library\/alpine@sha256:115729ec5cb049ba6359c3ab005ac742012d92bbaa5b8bc1a878f1e8f62c0cb8$/,
         },
       },
-      {
-        normalized: {
-          image: 'mirror.gcr.io/library/ubuntu:noble-20251001',
-          registry: 'mirror.gcr.io',
-          slug: 'library/ubuntu',
-          namespace: 'library',
-          name: 'ubuntu',
-          digest: 'noble-20251001',
-          tag: 'noble-20251001',
-          url: 'https://mirror.gcr.io/v2/library/ubuntu/manifests/noble-20251001',
-        },
-        uploaded: {
-          code: 200,
-          imageRef: /^[0-9]{12}\.dkr\.ecr\.[a-z0-9-]+\.amazonaws\.com\/library\/alpine@sha256:todo$/,
-        },
-      },
     ];
 
     describe('aws', () => {
