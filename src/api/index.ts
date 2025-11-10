@@ -1,4 +1,4 @@
-import { from, Observable } from 'rxjs';
+import { catchError, from, Observable, throwError } from 'rxjs';
 import { Pipeline } from '../pipeline';
 import { HttpProxy } from '../proxy/http';
 import { Logger } from '../log';
@@ -10,6 +10,7 @@ import { Environment } from '../environment';
 // import { RoutePaths } from '../routes';
 import { GrpcResponse } from '@scaffoldly/rowdy-grpc';
 import { Readable } from 'stream';
+import { Code, ConnectError } from '@connectrpc/connect';
 
 export class Rowdy implements IApi {
   static readonly SLUG = '@rowdy';
@@ -73,6 +74,10 @@ export class Rowdy implements IApi {
         },
         Rowdy.PATHS.CRI
       )
+    ).pipe(
+      catchError((err) => {
+        return throwError(() => new ConnectError(`CRI Error: ${err}`, Code.Internal, new Headers(), [], err));
+      })
     );
   }
 }
