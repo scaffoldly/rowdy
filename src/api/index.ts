@@ -10,7 +10,6 @@ import { Environment } from '../environment';
 // import { RoutePaths } from '../routes';
 import { GrpcResponse } from '@scaffoldly/rowdy-grpc';
 import { Readable } from 'stream';
-import { Code, ConnectError } from '@connectrpc/connect';
 
 export class Rowdy implements IApi {
   static readonly SLUG = '@rowdy';
@@ -74,13 +73,6 @@ export class Rowdy implements IApi {
         },
         Rowdy.PATHS.CRI
       )
-    ).pipe(
-      catchError((err) => {
-        if (err instanceof ConnectError) {
-          return throwError(() => err);
-        }
-        return throwError(() => new ConnectError(`CRI Error: ${err}`, Code.Internal, new Headers(), [], err));
-      })
     );
   }
 }

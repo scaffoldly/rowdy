@@ -32,11 +32,6 @@ export class ImageApi implements IImageApi {
           Transfer.denormalize()
         )
         .pipe(map((imageRef) => ({ image, imageRef })))
-    ).pipe(
-      catchError((err) => {
-        this.log.warn(`Failed to pull image ${image}: ${err.message}`, { stack: err.stack });
-        return throwError(() => new Error(`Failed to pull image ${image}: ${err.message}`));
-      })
     );
   }
 }
