@@ -76,6 +76,9 @@ export class Rowdy implements IApi {
       )
     ).pipe(
       catchError((err) => {
+        if (err instanceof ConnectError) {
+          return throwError(() => err);
+        }
         return throwError(() => new ConnectError(`CRI Error: ${err}`, Code.Internal, new Headers(), [], err));
       })
     );
