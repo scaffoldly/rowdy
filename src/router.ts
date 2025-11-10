@@ -28,6 +28,7 @@ import { Readable } from 'stream';
 import { createServer } from 'http';
 import { DOMParser } from 'linkedom';
 import docsHtml from '../static/docs.html';
+import { warn } from 'console';
 
 export type GrpcRequest = UniversalServerRequest;
 export type GrpcResponse = UniversalServerResponse;
@@ -226,6 +227,7 @@ export class GrpcRouter {
       return response;
     } catch (err) {
       let error = ConnectError.from(err);
+      warn(`[GRPCRouter.route][${request.method} ${requestPath}] ${error.name}: ${error.message}`, { cause: err });
       return {
         status: error.code,
         header: error.metadata,
