@@ -2,16 +2,9 @@ import { ServiceImpl } from '@connectrpc/connect';
 import { CRI } from '@scaffoldly/rowdy-grpc';
 import { Environment } from '../../environment';
 import { LambdaImageService } from './image';
-import {
-  // CreateFunctionCommand,
-  // GetFunctionCommand,
-  LambdaClient,
-  // ListFunctionsCommand,
-  // PublishLayerVersionCommand,
-  // PublishVersionCommand,
-  // UpdateFunctionCodeCommand,
-} from '@aws-sdk/client-lambda';
+import { LambdaClient, ListFunctionsCommand } from '@aws-sdk/client-lambda';
 import { Logger } from '../..';
+import { concatMap, defer, EMPTY, expand, filter, lastValueFrom, map, toArray } from 'rxjs';
 
 // eslint-disable-next-line @typescript-eslint/no-empty-object-type
 interface ILambdaRuntimeService extends Partial<ServiceImpl<typeof CRI.RuntimeService>> {}
@@ -28,15 +21,8 @@ export class LambdaRuntimeService implements ILambdaRuntimeService {
     return this.environment.log;
   }
 
-  get functionName(): Promise<string> {
-    return this.version({ $typeName: 'runtime.v1.VersionRequest', version: this.environment.version }).then(
-      ({ runtimeName, runtimeVersion }) =>
-        `${runtimeName.replace(/[^a-zA-Z0-9-_]/g, '_').toLowerCase()}_${runtimeVersion}`
-    );
-  }
-
   createContainer = async (req: CRI.CreateContainerRequest): Promise<CRI.CreateContainerResponse> => {
-    const { items: sandboxes } = await this.listPodSandbox({ $typeName: 'runtime.v1.ListPodSandboxRequest' });
+    // const { items: sandboxes } = await this.listPodSandbox({ $typeName: 'runtime.v1.ListPodSandboxRequest' });
     // const { podSandboxId } = req;
 
     const { imageRef } = await this.image.pullImage({
@@ -47,54 +33,54 @@ export class LambdaRuntimeService implements ILambdaRuntimeService {
 
     return {
       $typeName: 'runtime.v1.CreateContainerResponse',
-      containerId: `todo: ${imageRef} on sandbox ${sandboxes[0]?.id}`,
+      containerId: `todo: ${imageRef}`,
     };
   };
 
   listPodSandbox = async (_req: CRI.ListPodSandboxRequest): Promise<CRI.ListPodSandboxResponse> => {
-    const functionName = await this.functionName;
-    // let sandbox = await this.lambda
-    //   .send(new GetFunctionCommand({ FunctionName: await this.functionName }))
-    //   .then((res) => res.Configuration)
-    //   .catch((err) => {
-    //     this.log.warn(`Unable to get function ${functionName}: ${err.message}`);
-    //     return undefined;
-    //   });
+    const list = (marker?: string) =>
+      defer(() => this.lambda.send(new ListFunctionsCommand({ Marker: marker, MaxItems: 10 })));
 
-    // new UpdateFunctionCodeCommand({});
-
-    // if (!sandbox) {
-    //   const { imageRef } = await this.image.pullImage({
-    //     $typeName: 'runtime.v1.PullImageRequest',
-    //     image: {
-    //       $typeName: 'runtime.v1.ImageSpec',
-    //       image:
-    //     }
-    //   });
-
-    //   await this.lambda.send(
-    //     new CreateFunctionCommand({
-    //       FunctionName: functionName,
-    //       Code: { ImageUri: 'todo' },
-    //       Role: 'todo',
-    //       PackageType: 'Image',
-    //     })
-    //   );
-    // }
+    const items = await lastValueFrom(
+      list().pipe(
+        expand((page) => (page.NextMarker ? list(page.NextMarker) : EMPTY)),
+        concatMap((page) => page.Functions ?? []),
+        filter((fn) => fn.PackageType === 'Image'),
+        map(
+          (fn): CRI.PodSandbox => ({
+            $typeName: 'runtime.v1.PodSandbox',
+            id: fn.FunctionName ?? 'unknown',
+            labels: {
+              runtime: fn.Runtime ?? 'unknown',
+              architecture: fn.Architectures?.[0] ?? 'unknown',
+              memory: fn.MemorySize?.toString() ?? 'unknown',
+            },
+            annotations: {
+              'aws.lambda.arn': fn.FunctionArn ?? '',
+              'aws.lambda.version': fn.Version ?? '',
+              'aws.lambda.lastModified': fn.LastModified ?? '',
+              'aws.lambda.handler': fn.Handler ?? '',
+              'aws.lambda.role': fn.Role ?? '',
+              'aws.lambda.timeout': fn.Timeout?.toString() ?? '',
+              'aws.lambda.codeSize': fn.CodeSize?.toString() ?? '',
+              'aws.lambda.codeSha256': fn.CodeSha256 ?? '',
+              'aws.lambda.description': fn.Description ?? '',
+              'aws.lambda.revisionId': fn.RevisionId ?? '',
+              'aws.lambda.lastUpdateStatus': fn.LastUpdateStatus ?? '',
+              'aws.lambda.lastUpdateStatusReason': fn.LastUpdateStatusReason ?? '',
+            },
+            createdAt: BigInt(fn.LastModified ? new Date(fn.LastModified).getTime() : Date.now()),
+            runtimeHandler: fn.Handler ?? 'unknown',
+            state: fn.State === 'Active' ? CRI.PodSandboxState.SANDBOX_READY : CRI.PodSandboxState.SANDBOX_NOTREADY,
+          })
+        ),
+        toArray()
+      )
+    );
 
     return {
       $typeName: 'runtime.v1.ListPodSandboxResponse',
-      items: [
-        {
-          $typeName: 'runtime.v1.PodSandbox',
-          id: functionName,
-          annotations: { env: JSON.stringify(this.environment.env) },
-          labels: {},
-          createdAt: BigInt(0),
-          runtimeHandler: 'aws.lambda',
-          state: CRI.PodSandboxState.SANDBOX_READY,
-        },
-      ],
+      items,
     };
   };
 
