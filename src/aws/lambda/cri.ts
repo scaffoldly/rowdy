@@ -5,7 +5,7 @@ import { Environment } from '../../environment';
 
 export class LambdaCri extends CriCollection {
   private readonly image: LambdaImageService = new LambdaImageService(this.environment);
-  private readonly runtime: LambdaRuntimeService = new LambdaRuntimeService(this.environment);
+  private readonly runtime: LambdaRuntimeService = new LambdaRuntimeService(this.environment, this.image);
 
   constructor(private environment: Environment) {
     super();
