@@ -1,4 +1,4 @@
-import { catchError, from, Observable, throwError } from 'rxjs';
+import { from, Observable } from 'rxjs';
 import { Pipeline } from '../pipeline';
 import { HttpProxy } from '../proxy/http';
 import { Logger } from '../log';
