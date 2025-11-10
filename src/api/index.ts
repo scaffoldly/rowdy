@@ -1,4 +1,4 @@
-import { from, Observable } from 'rxjs';
+import { defer, Observable } from 'rxjs';
 import { Pipeline } from '../pipeline';
 import { HttpProxy } from '../proxy/http';
 import { Logger } from '../log';
@@ -61,7 +61,7 @@ export class Rowdy implements IApi {
   }
 
   public cri(proxy: HttpProxy<Pipeline>): Observable<GrpcResponse> {
-    return from(
+    return defer(() =>
       proxy.pipeline.cri.route(
         {
           url: proxy.source.uri.toString(),
