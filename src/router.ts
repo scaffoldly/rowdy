@@ -1,4 +1,6 @@
 import {
+  Code,
+  ConnectError,
   ConnectRouter,
   ConnectRouterOptions,
   createConnectRouter,
@@ -219,36 +221,18 @@ export class GrpcRouter {
     // TODO: prefer Origin header if provided
     const handler = this._router.handlers.find((h) => requestPath === h.requestPath.toLowerCase());
 
-    const response = (await handler?.(request)) || uResponseNotFound;
-    return response;
+    try {
+      const response = (await handler?.(request)) || uResponseNotFound;
+      return response;
+    } catch (err) {
+      let error = ConnectError.from(err);
+      return {
+        status: error.code,
+        header: error.metadata,
+        body: Readable.from(JSON.stringify({ code: Code[error.code], message: error.message })),
+      };
+    }
   }
-
-  // docs(request: GrpcRequest | string): Docs {
-  //   const path = request && typeof request !== 'string' ? new URL(request.url).pathname : '/';
-  //   const docs = { ...this._docs };
-  //   docs.servers = docs.servers || [];
-  //   if (!request || typeof request === 'string') {
-  //     return docs;
-  //   }
-
-  //   if (request.header.get('x-forwarded-host')) {
-  //     const protocol = request.header.get('x-forwarded-proto') || 'https';
-  //     const host = request.header.get('x-forwarded-host');
-  //     const url = new URL(`${protocol}://${host}${path}`);
-  //     docs.servers = [{ url: url.toString() }];
-  //     return docs;
-  //   }
-
-  //   if (request.header.get('host')) {
-  //     const protocol = request.header.get('x-forwarded-proto') || 'https';
-  //     const host = request.header.get('host');
-  //     const url = new URL(`${protocol}://${host}${path}`);
-  //     docs.servers = [{ url: url.toString() }];
-  //     return docs;
-  //   }
-
-  //   return this._docs;
-  // }
 
   async docs(request: GrpcRequest | string, prefix: string = ''): Promise<GrpcResponse> {
     const accept = typeof request === 'string' ? request : request.header.get('accept') || '';
