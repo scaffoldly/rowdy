@@ -1,7 +1,8 @@
 import { NEVER, Observable } from 'rxjs';
 import { Environment } from '../environment';
 import { Pipeline, Request } from '../pipeline';
-import { GrpcRouter } from '@scaffoldly/rowdy-grpc';
+import { CRI, GrpcRouter } from '@scaffoldly/rowdy-grpc';
+import { Message } from '@bufbuild/protobuf';
 
 export class ShellPipeline extends Pipeline {
   constructor(environment: Environment) {
@@ -14,6 +15,10 @@ export class ShellPipeline extends Pipeline {
 
   override get cri(): GrpcRouter {
     throw new Error('GRPC is not supported in ShellPipeline');
+  }
+
+  override version(_upgrade?: boolean): Observable<CRI.VersionResponse> {
+    throw new Error('Method not implemented.');
   }
 
   override repr(): string {

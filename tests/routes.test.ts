@@ -4,7 +4,7 @@ describe('routes', () => {
   describe('default', () => {
     it('should handle default', () => {
       const routes = Routes.default();
-      expect(routes.rules).toHaveLength(10);
+      expect(routes.rules).toHaveLength(11);
       expect(routes.intoURI('')!.toString()).toBe('rowdy://http:404/');
       expect(routes.intoURI('/foo/bar')!.toString()).toBe('rowdy://http:404/foo/bar');
       expect(routes.intoURI('/foo/bar?q=1')!.toString()).toBe('rowdy://http:404/foo/bar?q=1');
@@ -20,6 +20,7 @@ describe('routes', () => {
       expect(routes.intoURI('/@rowdy/500/baz')!.toString()).toBe('rowdy://http:404/%40rowdy/500/baz');
       expect(routes.intoURI('/@rowdy/cri/foo/bar/baz')!.toString()).toBe('rowdy://cri/foo/bar/baz');
       expect(routes.intoURI('/@rowdy/cri/foo/bar/baz?bing=bong')!.toString()).toBe('rowdy://cri/foo/bar/baz?bing=bong');
+      expect(routes.intoURI('/@rowdy/version')!.toString()).toBe('rowdy://version/');
     });
   });
 
@@ -33,7 +34,7 @@ describe('routes', () => {
 
     it('should route', () => {
       const routes = Routes.fromDataURL(data);
-      expect(routes.rules).toHaveLength(13);
+      expect(routes.rules).toHaveLength(14);
       expect(routes.intoURI('/github')!.toString()).toBe('https://www.githubstatus.com/api/v2/status.json');
       expect(routes.intoURI('/circleci')!.toString()).toBe('https://status.circleci.com/api/v2/status.json');
       expect(routes.intoURI('/travisci')!.toString()).toBe('https://www.traviscistatus.com/api/v2/status.json');
