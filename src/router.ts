@@ -6,7 +6,9 @@ import {
   createConnectRouter,
   createRouterTransport,
   ServiceImpl,
+  StreamResponse,
   Transport,
+  UnaryResponse,
 } from '@connectrpc/connect';
 import {
   compressionBrotli,
@@ -82,14 +84,29 @@ export class GrpcRouter {
     public readonly signal: AbortSignal,
     info?: Info
   ) {
-    const acceptCompression = [compressionGzip, compressionBrotli];
-
     this._routerOptions = {
-      acceptCompression,
+      acceptCompression: [compressionGzip, compressionBrotli],
       grpc: true,
       grpcWeb: true,
       connect: true,
       shutdownSignal: signal,
+      interceptors: [
+        (next) =>
+          async (req): Promise<UnaryResponse | StreamResponse> => {
+            try {
+              return await next(req);
+            } catch (e) {
+              const err = ConnectError.from(e);
+              warn(`[GRPCRouter][${req.service.name}][${req.method.localName}] Error`, {
+                name: err.name,
+                message: err.message,
+                code: Code[err.code],
+                metadata: JSON.stringify(err.metadata),
+              });
+              throw err;
+            }
+          },
+      ],
     };
 
     this._router = createConnectRouter(this._routerOptions);
@@ -113,12 +130,15 @@ export class GrpcRouter {
   }
 
   get local(): Transport {
-    return createRouterTransport((router) => {
-      for (const service of this._services) {
-        router.service(service.service, service.implementation, service.options);
-      }
-      return router;
-    });
+    return createRouterTransport(
+      (router) => {
+        for (const service of this._services) {
+          router.service(service.service, service.implementation, service.options);
+        }
+        return router;
+      },
+      { router: this._routerOptions }
+    );
   }
 
   withServices(services: GrpcCollection<unknown>): this {
@@ -204,7 +224,6 @@ export class GrpcRouter {
   }
 
   async route(request: GrpcRequest, prefix: string = ''): Promise<GrpcResponse> {
-    log(`[GRPCRouter][route][${request.method}] ${request.url}`);
     if (prefix.endsWith('/')) {
       prefix = prefix.slice(0, -1);
     }
@@ -222,22 +241,12 @@ export class GrpcRouter {
 
     // TODO: prefer Origin header if provided
     const handler = this._router.handlers.find((h) => requestPath === h.requestPath.toLowerCase());
-    let response: UniversalServerResponse;
+
     log(`[GRPCRouter][route][${request.method}] ${request.url}: Service: ${handler?.service.name ?? 'unknown'}`, {
       header: JSON.stringify(request.header),
     });
 
-    try {
-      response = (await handler?.(request)) || uResponseNotFound;
-    } catch (err) {
-      warn(`[GRPCRouter][route][${request.method}] ${request.url}: Unhandled Error: ${err}`);
-      let error = ConnectError.from(err);
-      response = {
-        status: error.code,
-        header: error.metadata,
-        body: Readable.from(JSON.stringify({ code: Code[error.code], message: error.message })),
-      };
-    }
+    const response = (await handler?.(request)) || uResponseNotFound;
 
     log(
       `[GRPCRouter][route][${request.method}] ${request.url}: Service: ${handler?.service.name ?? 'unknown'}: Status: ${response.status}`,
