@@ -2,7 +2,6 @@ import { NEVER, Observable } from 'rxjs';
 import { Environment } from '../environment';
 import { Pipeline, Request } from '../pipeline';
 import { CRI, GrpcRouter } from '@scaffoldly/rowdy-grpc';
-import { Message } from '@bufbuild/protobuf';
 
 export class ShellPipeline extends Pipeline {
   constructor(environment: Environment) {
