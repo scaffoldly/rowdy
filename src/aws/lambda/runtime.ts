@@ -54,7 +54,7 @@ export class LambdaRuntimeService implements ILambdaRuntimeService {
             $typeName: 'runtime.v1.PodSandbox',
             id: fn.FunctionName ?? 'unknown',
             labels: {
-              runtime: 'TODO',
+              entrypoint: fn.ImageConfigResponse?.ImageConfig?.EntryPoint?.[0] ?? 'unknown',
               architecture: fn.Architectures?.[0] ?? 'unknown',
               memory: fn.MemorySize?.toString() ?? 'unknown',
             },
@@ -70,7 +70,7 @@ export class LambdaRuntimeService implements ILambdaRuntimeService {
               'aws.lambda.lastUpdateStatusReason': fn.LastUpdateStatusReason ?? '',
             },
             createdAt: BigInt(fn.LastModified ? new Date(fn.LastModified).getTime() : Date.now()),
-            runtimeHandler: 'TODO',
+            runtimeHandler: fn.ImageConfigResponse?.ImageConfig?.EntryPoint?.[0] ?? 'unknown',
             state:
               !fn.LastUpdateStatus || fn.LastUpdateStatus !== 'Successful'
                 ? CRI.PodSandboxState.SANDBOX_READY
