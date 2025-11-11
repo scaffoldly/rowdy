@@ -20,8 +20,9 @@
     "noUncheckedIndexedAccess": true,
     "exactOptionalPropertyTypes": true,
     "noImplicitOverride": true,
-    "useUnknownInCatchVariables": true
+    "useUnknownInCatchVariables": true,
+    "resolveJsonModule": true
   },
-  "include": ["src/**/*"],
+  "include": ["src/**/*", "static/**/*"],
   "exclude": ["node_modules", "dist"]
 }
