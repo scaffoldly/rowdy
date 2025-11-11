@@ -60,7 +60,7 @@ jobs:
     name: Build and Publish to NPM
     if: |
       success() &&
-      github.ref == 'refs/heads/grpc' &&
+      github.ref == 'refs/heads/cdk' &&
       github.event_name != 'pull_request_target' &&
       !contains(github.event.head_commit.message, '[skip-prerelease]')
 
