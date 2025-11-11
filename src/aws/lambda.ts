@@ -1,4 +1,4 @@
-import { defer, from, map, NEVER, Observable, of, race, tap } from 'rxjs';
+import { defer, from, map, NEVER, Observable, of, race, tap, throwError } from 'rxjs';
 import { Proxy, Pipeline, Request, Response, Result, Chunk } from '../pipeline';
 import { Environment } from '../environment';
 import axios from 'axios';
@@ -8,7 +8,7 @@ import { HttpProxy, HttpHeaders, HttpResponse, Source } from '../proxy/http';
 import { ShellResponse } from '../proxy/shell';
 import { PassThrough } from 'stream';
 import { URI } from '../routes';
-import { GrpcRouter } from '@scaffoldly/rowdy-grpc';
+import { CRI, GrpcRouter, RuntimeService } from '@scaffoldly/rowdy-grpc';
 import { LambdaCri } from './lambda/cri';
 
 type FunctionUrlEvent = APIGatewayProxyEventV2;
@@ -26,6 +26,7 @@ const isFunctionUrlEvent = (data: unknown): data is FunctionUrlEvent => {
 
 export class LambdaPipeline extends Pipeline {
   public readonly runtimeApi: string | undefined = process.env.AWS_LAMBDA_RUNTIME_API;
+
   private _requestId: string | undefined;
   private _cri: GrpcRouter = new GrpcRouter(this.signal, {
     title: 'AWS Lambda CRI',
@@ -33,7 +34,7 @@ export class LambdaPipeline extends Pipeline {
     license: {
       name: 'FSL-1.1-Apache-2.0',
     },
-    version: this.version,
+    version: this.environment.version,
   }).withServices(new LambdaCri(this.environment));
 
   constructor(environment: Environment) {
@@ -69,6 +70,16 @@ export class LambdaPipeline extends Pipeline {
         return new LambdaRequest(this, data);
       })
     );
+  }
+
+  override version(upgrade?: boolean): Observable<CRI.VersionResponse> {
+    const runtime = RuntimeService.client(this.cri.local);
+
+    if (upgrade) {
+      return throwError(() => new Error('Not Implemented'));
+    }
+
+    return defer(() => runtime.version({ version: this.environment.version }));
   }
 
   override repr(): string {

@@ -2249,10 +2249,10 @@
   resolved "https://registry.yarnpkg.com/@rollup/rollup-win32-x64-msvc/-/rollup-win32-x64-msvc-4.52.4.tgz#5b2dd648a960b8fa00d76f2cc4eea2f03daa80f4"
   integrity sha512-bf9PtUa0u8IXDVxzRToFQKsNCRz9qLYfR/MpECxl4mRoWYjAeFjgxj1XdZr2M/GNVpT05p+LgQOHopYDlUu6/w==
 
-"@scaffoldly/rowdy-grpc@^0.1.0-beta.20251110125504.3eee989":
-  version "0.1.0-beta.20251110125504.3eee989"
-  resolved "https://registry.yarnpkg.com/@scaffoldly/rowdy-grpc/-/rowdy-grpc-0.1.0-beta.20251110125504.3eee989.tgz#d9f843cb2e62907545591a99d3b6f791a81239e0"
-  integrity sha512-lcTVxRvJfFKTv8hV6MJNr8fEmc70U4uOtEBL4rfvNOVOurcjkYlQxhcXNo3QiCB3Bryw48k3jc1xlOIoHDCgRg==
+"@scaffoldly/rowdy-grpc@^0.1.0-beta.20251111110152.07f0483":
+  version "0.1.0-beta.20251111110152.07f0483"
+  resolved "https://registry.yarnpkg.com/@scaffoldly/rowdy-grpc/-/rowdy-grpc-0.1.0-beta.20251111110152.07f0483.tgz#2e0cd491dfcdac99a6395da2951a4aae7fec859d"
+  integrity sha512-JABRLvhyn6gdNaGoQdqYu+MbeZlOoGfy6ZfDPeNxiRP/jLgYcCKB5A2BvQxJT8cPDpwvOUxFsMYYQb8NHfsV+w==
   dependencies:
     openapi-types "^12.1.3"
 

@@ -1,4 +1,4 @@
-import { defer, Observable } from 'rxjs';
+import { catchError, defer, map, Observable, throwError } from 'rxjs';
 import { Pipeline } from '../pipeline';
 import { HttpProxy } from '../proxy/http';
 import { Logger } from '../log';
@@ -8,7 +8,7 @@ import { ImageApi } from './image';
 import { IApi, IImageApi, TRegistry } from './types';
 import { Environment } from '../environment';
 // import { RoutePaths } from '../routes';
-import { GrpcResponse } from '@scaffoldly/rowdy-grpc';
+import { CRI, GrpcResponse } from '@scaffoldly/rowdy-grpc';
 import { Readable } from 'stream';
 
 export class Rowdy implements IApi {
@@ -19,9 +19,11 @@ export class Rowdy implements IApi {
   static readonly HEALTH = 'health';
   static readonly PING = 'ping';
   static readonly ROUTES = 'routes';
+  static readonly VERSION = 'version';
 
   static readonly PATHS = {
     CRI: `/${Rowdy.SLUG}/${Rowdy.CRI}`,
+    VERSION: `/${Rowdy.SLUG}/${Rowdy.VERSION}`,
   };
 
   public readonly http: AxiosInstance = axios.create();
@@ -60,6 +62,25 @@ export class Rowdy implements IApi {
     return this;
   }
 
+  public version(proxy: HttpProxy<Pipeline>): Observable<{ version: CRI.VersionResponse; status: number }> {
+    if (proxy.method.toLowerCase() === 'post') {
+      // POST == self upgrade to latest
+      return defer(() => proxy.pipeline.version(true)).pipe(
+        map((version) => ({
+          version,
+          status: 202,
+        }))
+      );
+    }
+
+    return defer(() => proxy.pipeline.version()).pipe(
+      map((version) => ({
+        version,
+        status: 200,
+      }))
+    );
+  }
+
   public cri(proxy: HttpProxy<Pipeline>): Observable<GrpcResponse> {
     return defer(() =>
       proxy.pipeline.cri.route(
@@ -73,6 +94,11 @@ export class Rowdy implements IApi {
         },
         Rowdy.PATHS.CRI
       )
+    ).pipe(
+      catchError((err) => {
+        this.log.error('!!! error cri defer', { err });
+        return throwError(() => err);
+      })
     );
   }
 }

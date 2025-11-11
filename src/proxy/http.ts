@@ -345,6 +345,16 @@ class RowdyHttpResponse extends HttpResponse {
       return of(this.withHeader('x-error', proxy.uri.error).withStatus(Number(proxy.uri.port)));
     }
 
+    if (proxy.uri.host === Rowdy.VERSION) {
+      return this.rowdy.version(proxy).pipe(
+        map(({ version, status }) => {
+          return this.withStatus(status)
+            .withHeader('content-type', 'application/json; charset=utf-8')
+            .withData(Readable.from(JSON.stringify(version, null, 2)));
+        })
+      );
+    }
+
     if (proxy.uri.host === Rowdy.CRI) {
       return this.rowdy.cri(proxy).pipe(
         map(({ status, body, header }) => {

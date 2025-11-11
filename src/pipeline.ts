@@ -3,7 +3,7 @@ import { ILoggable, Logger } from './log';
 import { Environment } from './environment';
 import { Routes } from './routes';
 import { PassThrough, Readable, Writable } from 'stream';
-import { GrpcRouter } from '@scaffoldly/rowdy-grpc';
+import { CRI, GrpcRouter } from '@scaffoldly/rowdy-grpc';
 
 export abstract class Pipeline implements ILoggable {
   private _createdAt = performance.now();
@@ -12,10 +12,6 @@ export abstract class Pipeline implements ILoggable {
 
   get name(): string {
     return this.environment.name;
-  }
-
-  get version(): string {
-    return this.environment.version;
   }
 
   get log(): Logger {
@@ -41,6 +37,7 @@ export abstract class Pipeline implements ILoggable {
   abstract get cri(): GrpcRouter;
 
   abstract into(): Observable<Request<Pipeline>>;
+  abstract version(upgrade?: boolean): Observable<CRI.VersionResponse>;
   abstract repr(): string;
 }
 

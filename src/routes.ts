@@ -226,6 +226,7 @@ export class Routes implements IRoutes, ILoggable {
       .withPath(`/${Rowdy.SLUG}/404`, `rowdy://${Rowdy.HTTP}:401/`)
       .withPath(`/${Rowdy.SLUG}/500`, `rowdy://${Rowdy.HTTP}:500/`)
       .withPath(`${Rowdy.PATHS.CRI}{/*path}`, `rowdy://${Rowdy.CRI}/*path`)
+      .withPath(`${Rowdy.PATHS.VERSION}`, `rowdy://${Rowdy.VERSION}/`)
       .withPath(`/${Rowdy.SLUG}/${Rowdy.HEALTH}`, `rowdy://${Rowdy.HEALTH}/`)
       .withPath(`/${Rowdy.SLUG}/${Rowdy.PING}`, `rowdy://${Rowdy.PING}/`)
       .withPath(`/${Rowdy.SLUG}/${Rowdy.ROUTES}`, `rowdy://${Rowdy.ROUTES}/`);
