@@ -223,14 +223,14 @@ export class GrpcRouter {
     // TODO: prefer Origin header if provided
     const handler = this._router.handlers.find((h) => requestPath === h.requestPath.toLowerCase());
     let response: UniversalServerResponse;
-    log(`[GRPCRouter][route][${request.method}] ${request.url}: Handler: ${handler?.name ?? 'unknown'}`, {
-      header: request.header,
+    log(`[GRPCRouter][route][${request.method}] ${request.url}: Service: ${handler?.service.name ?? 'unknown'}`, {
+      header: JSON.stringify(request.header),
     });
 
     try {
       response = (await handler?.(request)) || uResponseNotFound;
     } catch (err) {
-      warn(`[GRPCRouter][route][${request.method}] ${request.url}: Error: ${err}`);
+      warn(`[GRPCRouter][route][${request.method}] ${request.url}: Unhandled Error: ${err}`);
       let error = ConnectError.from(err);
       response = {
         status: error.code,
@@ -240,10 +240,10 @@ export class GrpcRouter {
     }
 
     log(
-      `[GRPCRouter][route][${request.method}] ${request.url}: Handler: ${handler?.name ?? 'unknown'}: Status: ${response.status}`,
+      `[GRPCRouter][route][${request.method}] ${request.url}: Service: ${handler?.service.name ?? 'unknown'}: Status: ${response.status}`,
       {
-        header: response.header,
-        trailer: response.trailer,
+        header: JSON.stringify(response.header),
+        trailer: JSON.stringify(response.trailer),
       }
     );
 
