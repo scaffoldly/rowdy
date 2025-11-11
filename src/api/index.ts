@@ -1,4 +1,4 @@
-import { catchError, defer, map, Observable, throwError } from 'rxjs';
+import { defer, map, Observable } from 'rxjs';
 import { Pipeline } from '../pipeline';
 import { HttpProxy } from '../proxy/http';
 import { Logger } from '../log';
@@ -94,11 +94,6 @@ export class Rowdy implements IApi {
         },
         Rowdy.PATHS.CRI
       )
-    ).pipe(
-      catchError((err) => {
-        this.log.error('!!! error cri defer', { err });
-        return throwError(() => err);
-      })
     );
   }
 }
