@@ -222,24 +222,32 @@ export class GrpcRouter {
 
     // TODO: prefer Origin header if provided
     const handler = this._router.handlers.find((h) => requestPath === h.requestPath.toLowerCase());
+    let response: UniversalServerResponse;
+    log(`[GRPCRouter][route][${request.method}] ${request.url}: Handler: ${handler?.name ?? 'unknown'}`, {
+      header: request.header,
+    });
 
     try {
-      log(`[GRPCRouter][route][${request.method}] ${request.url}: Handler: ${handler?.name ?? 'unknown'}`);
-      const response = (await handler?.(request)) || uResponseNotFound;
-      return response;
+      response = (await handler?.(request)) || uResponseNotFound;
     } catch (err) {
+      warn(`[GRPCRouter][route][${request.method}] ${request.url}: Error: ${err}`);
       let error = ConnectError.from(err);
-      warn(`[GRPCRouter][route][${request.method}] ${request.url}: ${error.name}: ${error.message}`, {
-        cause: err,
-        code: error.code,
-        metadata: error.metadata,
-      });
-      return {
+      response = {
         status: error.code,
         header: error.metadata,
         body: Readable.from(JSON.stringify({ code: Code[error.code], message: error.message })),
       };
     }
+
+    log(
+      `[GRPCRouter][route][${request.method}] ${request.url}: Handler: ${handler?.name ?? 'unknown'}: Status: ${response.status}`,
+      {
+        header: response.header,
+        trailer: response.trailer,
+      }
+    );
+
+    return response;
   }
 
   async docs(request: GrpcRequest | string, prefix: string = ''): Promise<GrpcResponse> {
