@@ -28,7 +28,7 @@ import { Readable } from 'stream';
 import { createServer } from 'http';
 import { DOMParser } from 'linkedom';
 import docsHtml from '../static/docs.html';
-import { warn } from 'console';
+import { warn, log } from 'console';
 
 export type GrpcRequest = UniversalServerRequest;
 export type GrpcResponse = UniversalServerResponse;
@@ -204,6 +204,7 @@ export class GrpcRouter {
   }
 
   async route(request: GrpcRequest, prefix: string = ''): Promise<GrpcResponse> {
+    log(`[GRPCRouter][route][${request.method}] ${request.url}`);
     if (prefix.endsWith('/')) {
       prefix = prefix.slice(0, -1);
     }
@@ -223,11 +224,16 @@ export class GrpcRouter {
     const handler = this._router.handlers.find((h) => requestPath === h.requestPath.toLowerCase());
 
     try {
+      log(`[GRPCRouter][route][${request.method}] ${request.url}: Handler: ${handler?.name ?? 'unknown'}`);
       const response = (await handler?.(request)) || uResponseNotFound;
       return response;
     } catch (err) {
       let error = ConnectError.from(err);
-      warn(`[GRPCRouter.route][${request.method} ${requestPath}] ${error.name}: ${error.message}`, { cause: err });
+      warn(`[GRPCRouter][route][${request.method}] ${request.url}: ${error.name}: ${error.message}`, {
+        cause: err,
+        code: error.code,
+        metadata: error.metadata,
+      });
       return {
         status: error.code,
         header: error.metadata,
