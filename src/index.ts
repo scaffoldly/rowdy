@@ -7,4 +7,4 @@ const id = (): string => {
 };
 
 export { VERSION, NAME, id };
-export { Cdk } from './cdk';
+export { CloudResource } from './cdk';

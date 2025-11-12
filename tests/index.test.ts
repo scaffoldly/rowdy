@@ -1,4 +1,4 @@
-import { Cdk, id, NAME, VERSION } from '@scaffoldly/rowdy-cdk';
+import { CloudResource, id, NAME, VERSION } from '@scaffoldly/rowdy-cdk';
 import packageJson from '../package.json';
 
 describe('exports', () => {
@@ -14,7 +14,7 @@ describe('exports', () => {
     expect(id()).toBe(`${packageJson.name}@${packageJson.version}`);
   });
 
-  it('should export Cdk module', () => {
-    expect(Cdk).toBeDefined();
+  it('should export CloudResource class', () => {
+    expect(CloudResource).toBeDefined();
   });
 });
