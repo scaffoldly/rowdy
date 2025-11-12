@@ -1,6 +1,5 @@
 describe('cdk', () => {
-  describe('lambda', () => {
-    // TODO
+  it('should test', () => {
     expect(true).toBe(true);
   });
 });
