@@ -26,6 +26,7 @@ if (require.main === module) {
   main().catch(error);
 }
 
+export { Environment };
 export { Routes, URI } from './routes';
 export { Logger } from './log';
 export { Rowdy } from './api';

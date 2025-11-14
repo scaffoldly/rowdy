@@ -76,6 +76,7 @@
   },
   "devDependencies": {
     "@aws-sdk/client-ecr": "^3.891.0",
+    "@aws-sdk/client-iam": "^3.891.0",
     "@aws-sdk/client-lambda": "^3.891.0",
     "@aws-sdk/client-secrets-manager": "^3.891.0",
     "@aws-sdk/client-sts": "^3.891.0",
@@ -84,6 +85,7 @@
     "@bufbuild/protobuf": "^2.10.0",
     "@connectrpc/connect": "^2.1.0",
     "@eslint/js": "^9.28.0",
+    "@scaffoldly/rowdy-cdk": "^0.1.0-beta.20251112134904.206e649",
     "@scaffoldly/rowdy-grpc": "^0.1.0-beta.20251111123007.352fda6",
     "@types/auth-header": "^1.0.6",
     "@types/aws-lambda": "^8.10.152",

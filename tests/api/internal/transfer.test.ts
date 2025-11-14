@@ -197,11 +197,43 @@ describe('transfers', () => {
           },
         },
       },
+      {
+        normalized: {
+          image: 'mirror.gcr.io/library/alpine:20250108',
+          registry: 'mirror.gcr.io',
+          slug: 'library/alpine',
+          namespace: 'library',
+          name: 'alpine',
+          digest: '20250108',
+          tag: '20250108',
+          url: 'https://mirror.gcr.io/v2/library/alpine/manifests/20250108',
+        },
+        collected: {
+          index: JSON.parse(readFileSync(`${__dirname}/alpine:20250108.index.json`, 'utf-8')) as External['Index'],
+          images: JSON.parse(
+            readFileSync(`${__dirname}/alpine:20250108.images.json`, 'utf-8')
+          ) as External['ImageManifest'][],
+        },
+        headers: {
+          headers: {
+            accept: [
+              'application/vnd.oci.image.index.v1+json',
+              'application/vnd.docker.distribution.manifest.list.v2+json',
+              'application/vnd.oci.image.manifest.v1+json',
+              'application/vnd.docker.distribution.manifest.v2+json',
+            ],
+          },
+        },
+      },
     ];
 
     tests.forEach(({ normalized, collected }) => {
       it(`should collect manifests for ${normalized.image}`, async () => {
         const result = await lastValueFrom(of(normalized).pipe(Transfer.collect(logger, rowdy.http)));
+        // hack to write files when updating tests
+        // writeFileSync(`${__dirname}/alpine:20250108.index.json`, JSON.stringify(result.images, null, 2));
+        // writeFileSync(`${__dirname}/alpine:20250108.images.json`, JSON.stringify(result.images, null, 2));
+        // expect(true).toBe(false);
         expect(JSON.parse(JSON.stringify(result.index))).toEqual(JSON.parse(JSON.stringify(collected.index)));
         expect(result.images.length).toEqual(collected.images.length);
         expect(result.images.sort((a, b) => a.config!.digest!.localeCompare(b.config!.digest!))).toEqual(
@@ -283,20 +315,20 @@ describe('transfers', () => {
   describe('transfer', () => {
     const tests = [
       {
+        // TODO: make a test to pull a sha256 digest
         normalized: {
-          image: 'mirror.gcr.io/library/alpine:20250108',
+          image: 'mirror.gcr.io/library/alpine:latest',
           registry: 'mirror.gcr.io',
           slug: 'library/alpine',
           namespace: 'library',
           name: 'alpine',
-          digest: '20250108',
-          tag: '20250108',
-          url: 'https://mirror.gcr.io/v2/library/alpine/manifests/20250108',
+          digest: 'latest',
+          tag: 'latest',
+          url: 'https://mirror.gcr.io/v2/library/alpine/manifests/latest',
         },
         uploaded: {
           code: 200,
-          imageRef:
-            /^[0-9]{12}\.dkr\.ecr\.[a-z0-9-]+\.amazonaws\.com\/library\/alpine@sha256:115729ec5cb049ba6359c3ab005ac742012d92bbaa5b8bc1a878f1e8f62c0cb8$/,
+          imageRef: /^[0-9]{12}\.dkr\.ecr\.[a-z0-9-]+\.amazonaws\.com\/library\/alpine:latest$/,
         },
       },
     ];
@@ -314,7 +346,7 @@ describe('transfers', () => {
           expect(result).toBeDefined();
           expect(result.code).toBe(uploaded.code);
           expect(result.reasons).toEqual([]);
-          expect(result.imageRef).toMatch(uploaded.imageRef);
+          expect(result.imageRef()).toMatch(uploaded.imageRef);
         });
       });
     });

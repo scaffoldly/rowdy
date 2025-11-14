@@ -2,19 +2,13 @@ import { ServiceImpl } from '@connectrpc/connect';
 import { CRI } from '@scaffoldly/rowdy-grpc';
 import { Environment } from '../../environment';
 import { LambdaImageService } from './image';
-import { LambdaClient, ListFunctionsCommand } from '@aws-sdk/client-lambda';
 import { Logger } from '../..';
-import { concatMap, defer, EMPTY, expand, filter, lastValueFrom, map, toArray } from 'rxjs';
+import { ConfigFactory, SandboxResource } from './function';
 
 // eslint-disable-next-line @typescript-eslint/no-empty-object-type
 interface ILambdaRuntimeService extends Partial<ServiceImpl<typeof CRI.RuntimeService>> {}
 
 export class LambdaRuntimeService implements ILambdaRuntimeService {
-  public readonly functionName: string | undefined = process.env.AWS_LAMBDA_FUNCTION_NAME;
-  public readonly functionVersion: string | undefined = process.env.AWS_LAMBDA_FUNCTION_VERSION;
-
-  private lambda: LambdaClient = new LambdaClient(this.environment);
-
   constructor(
     private environment: Environment,
     private image: LambdaImageService
@@ -24,68 +18,59 @@ export class LambdaRuntimeService implements ILambdaRuntimeService {
     return this.environment.log;
   }
 
-  createContainer = async (req: CRI.CreateContainerRequest): Promise<CRI.CreateContainerResponse> => {
-    // const { items: sandboxes } = await this.listPodSandbox({ $typeName: 'runtime.v1.ListPodSandboxRequest' });
-    // const { podSandboxId } = req;
+  runPodSanbox = async (req: CRI.RunPodSandboxRequest): Promise<CRI.RunPodSandboxResponse> => {
+    const factory = ConfigFactory.from(req).withImage(req.config?.annotations?.['run.rowdy.image']);
 
-    const { imageRef } = await this.image.pullImage({
+    req.runtimeHandler = req.runtimeHandler || factory.RuntimeHandler;
+
+    const image = await this.image.pullImage({
       $typeName: 'runtime.v1.PullImageRequest',
-      image: req.config?.image,
-      sandboxConfig: req.sandboxConfig,
+      image: factory.ImageSpec,
+      sandboxConfig: factory.SandboxConfig,
     });
 
+    const resource = new SandboxResource(factory.RunPodSandboxRequest, image);
+    const sandbox = await resource.Sandbox;
+
     return {
-      $typeName: 'runtime.v1.CreateContainerResponse',
-      containerId: `todo: ${imageRef}`,
+      $typeName: 'runtime.v1.RunPodSandboxResponse',
+      podSandboxId: sandbox.id,
     };
   };
 
-  listPodSandbox = async (_req: CRI.ListPodSandboxRequest): Promise<CRI.ListPodSandboxResponse> => {
-    const list = (marker?: string) =>
-      defer(() => this.lambda.send(new ListFunctionsCommand({ Marker: marker, MaxItems: 10 })));
+  // createContainer = async (req: CRI.CreateContainerRequest): Promise<CRI.CreateContainerResponse> => {
+  //   const image = await this.image.pullImage({
+  //     $typeName: 'runtime.v1.PullImageRequest',
+  //     image: req.config?.image,
+  //     sandboxConfig: req.sandboxConfig,
+  //   });
 
-    const items = await lastValueFrom(
-      list().pipe(
-        expand((page) => (page.NextMarker ? list(page.NextMarker) : EMPTY)),
-        concatMap((page) => page.Functions ?? []),
-        filter((fn) => fn.PackageType === 'Image'),
-        map(
-          (fn): CRI.PodSandbox => ({
-            $typeName: 'runtime.v1.PodSandbox',
-            id: fn.FunctionName ?? 'unknown',
-            labels: {
-              entrypoint: fn.ImageConfigResponse?.ImageConfig?.EntryPoint?.[0] ?? 'unknown',
-              architecture: fn.Architectures?.[0] ?? 'unknown',
-              memory: fn.MemorySize?.toString() ?? 'unknown',
-            },
-            annotations: {
-              'aws.lambda.arn': fn.FunctionArn ?? '',
-              'aws.lambda.version': fn.Version ?? '',
-              'aws.lambda.lastModified': fn.LastModified ?? '',
-              'aws.lambda.role': fn.Role ?? '',
-              'aws.lambda.timeout': fn.Timeout?.toString() ?? '',
-              'aws.lambda.codeSha256': fn.CodeSha256 ?? '',
-              'aws.lambda.revisionId': fn.RevisionId ?? '',
-              'aws.lambda.lastUpdateStatus': fn.LastUpdateStatus ?? '',
-              'aws.lambda.lastUpdateStatusReason': fn.LastUpdateStatusReason ?? '',
-            },
-            createdAt: BigInt(fn.LastModified ? new Date(fn.LastModified).getTime() : Date.now()),
-            runtimeHandler: fn.ImageConfigResponse?.ImageConfig?.EntryPoint?.[0] ?? 'unknown',
-            state:
-              !fn.LastUpdateStatus || fn.LastUpdateStatus !== 'Successful'
-                ? CRI.PodSandboxState.SANDBOX_READY
-                : CRI.PodSandboxState.SANDBOX_NOTREADY,
-          })
-        ),
-        toArray()
-      )
-    );
+  //   const resource = new SandboxResource(req, image);
+  //   const sandbox = await resource.Sandbox;
 
-    return {
-      $typeName: 'runtime.v1.ListPodSandboxResponse',
-      items,
-    };
-  };
+  //   return {
+  //     $typeName: 'runtime.v1.CreateContainerResponse',
+  //     containerId: sandbox.id,
+  //   };
+  // };
+
+  // containerStatus = async (req: CRI.ContainerStatusRequest): Promise<CRI.ContainerStatusResponse> => {
+  //   const sandbox = await SandboxResource.fromContainerId(req.containerId);
+
+  //   return {
+  //     $typeName: 'runtime.v1.ContainerStatusResponse',
+  //     info: {},
+  //     status: {
+  //       $typeName: 'runtime.v1.ContainerStatus',
+  //       annotations: sandbox.annotations,
+  //       createdAt: sandbox.createdAt,
+  //       id: sandbox.id,
+  //       state: sandbox.state,
+  //       labels: sandbox.labels,
+  //     },
+  //   };
+  //   throw new Error('Method not implemented.');
+  // };
 
   version = async (req: CRI.VersionRequest): Promise<CRI.VersionResponse> => {
     return {

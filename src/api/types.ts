@@ -21,6 +21,8 @@ export interface IApi {
 export type PullImageOptions = {
   authorization?: string;
   registry?: string;
+  // TODO: Support for plaform annotation
+  platform?: 'linux/amd64' | 'linux/arm64';
 };
 
 export interface IImageApi {

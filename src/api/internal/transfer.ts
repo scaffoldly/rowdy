@@ -20,7 +20,7 @@ import { HttpHeaders } from '../../proxy/http';
 import { createHash } from 'crypto';
 import { ILoggable, Logger } from '../../log';
 import { AxiosInstance, AxiosResponse, isAxiosError } from 'axios';
-import { TRegistry } from '../types';
+import { PullImageOptions, TRegistry } from '../types';
 import { cpus } from 'os';
 import { Readable } from 'stream';
 
@@ -73,7 +73,7 @@ export type ImageManifestTransfers = ImageManifest & {
 
 type Response<T> = { data: T | undefined; headers: HttpHeaders; status: number; method: string; url: string };
 
-export class Transfer {
+export class Transfer implements ILoggable {
   private static _CONCURRENCY = {
     MIN: 1,
     MAX: 10,
@@ -307,6 +307,7 @@ export class Transfer {
 
     return (source) =>
       new Observable((subscriber) => {
+        // TODO: add transfer to constructor and remove withTransfer
         const status = new TransferStatus();
 
         let latest: Transfer | undefined = undefined;
@@ -316,7 +317,10 @@ export class Transfer {
 
         const subscription = source
           .pipe(
-            tap((transfer) => (latest = transfer)),
+            tap((transfer) => {
+              status.withTransfer(transfer);
+              latest = transfer;
+            }),
             concatMap((transfer) => from(transfer.uploads)),
             concatMap((uploads) => Upload.observe(uploads, Transfer.CONCURRENCY)),
             reduce((acc, cur) => {
@@ -334,21 +338,38 @@ export class Transfer {
       });
   }
 
-  static denormalize(): OperatorFunction<TransferStatus, string> {
-    return (source) => source.pipe(map(({ imageRef }) => imageRef));
+  // TODO: Support for platform annotation
+  static denormalize(platform: PullImageOptions['platform'] = 'linux/amd64'): OperatorFunction<TransferStatus, string> {
+    return (source) =>
+      source.pipe(
+        map((status) => {
+          const [os, architecture] = platform.split('/');
+
+          const digest = status.index.manifests?.find(
+            (m) => m.platform?.os === os && m.platform?.architecture === architecture
+          )?.digest;
+
+          if (!digest) {
+            throw new Error(`Unable to find image for platform: ${platform}`);
+          }
+
+          return status.imageRef(digest);
+        })
+      );
+  }
+
+  repr(): string {
+    return `Transfer()`;
   }
 }
 
 export class TransferStatus implements ILoggable {
-  private _transfer: Transfer | undefined = undefined;
+  private _transfer?: Transfer;
   private _statuses: UploadStatus[] = [];
 
   constructor() {}
 
   withTransfer(transfer: Transfer): this {
-    if (this._transfer) {
-      throw new Error('Transfer already set on TransferStatus');
-    }
     this._transfer = transfer;
     return this;
   }
@@ -358,23 +379,28 @@ export class TransferStatus implements ILoggable {
     return this;
   }
 
-  get image(): string {
+  get index(): External['Index'] {
     if (!this._transfer) {
-      throw new Error('Transfer has not been initialized');
+      throw new Error('No transfer associated with this status');
     }
-    return this._transfer.manifest.image;
+    return this._transfer.manifest.index;
   }
 
-  get imageRef(): string {
-    const last = this._statuses.slice(-1)[0];
-    if (!last) {
-      throw new Error('No uploads have occurred');
+  imageRef(digest?: string): string {
+    const desired = this._statuses.find((s) => s.digest === digest) || this._statuses.slice(-1)[0];
+    if (!desired) {
+      throw new Error(`Unable to find status for digest: ${digest}`);
     }
-    try {
-      return last.imageRef;
-    } catch {
-      throw new Error(`Transfer failed:\n${this.reasons.join('\n\t')}`);
+
+    const { namespace, name } = this._transfer?.manifest || {};
+    const { registry } = this._transfer?.registry || {};
+
+    if (!registry || !namespace || !name) {
+      throw new Error('Incomplete transfer information to construct image ref');
     }
+
+    let tag = desired.digest.startsWith('sha256:') ? `@${desired.digest}` : `:${desired.digest}`;
+    return `${registry}/${namespace}/${name}${tag}`;
   }
 
   get code(): number {
@@ -391,7 +417,7 @@ export class TransferStatus implements ILoggable {
   }
 
   repr(): string {
-    return `TransferStatus()`;
+    return `TransferStatus(Transfer=${this._transfer?.repr()})`;
   }
 }
 
@@ -527,14 +553,6 @@ class UploadStatus implements ILoggable {
   private _reasons: string[] = [];
 
   constructor(private upload: Upload) {}
-
-  get imageRef(): string {
-    if (this.failed) {
-      throw new Error(`Upload failed: ${this.reasons.join('; ')}`);
-    }
-    const { digest, namespace, name } = this.upload.transfer.manifest;
-    return `${this.upload.transfer.registry.registry}/${namespace}/${name}@${digest}`;
-  }
 
   get log(): Logger {
     return this.upload.log;

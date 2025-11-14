@@ -1,0 +1,265 @@
+{
+  "manifests": [
+    {
+      "annotations": {
+        "com.docker.official-images.bashbrew.arch": "amd64",
+        "org.opencontainers.image.base.name": "scratch",
+        "org.opencontainers.image.created": "2025-01-08T17:23:15Z",
+        "org.opencontainers.image.revision": "c1f1de232c970df2285c03050ab3747b8563164f",
+        "org.opencontainers.image.source": "https://github.com/alpinelinux/docker-alpine.git#c1f1de232c970df2285c03050ab3747b8563164f:x86_64",
+        "org.opencontainers.image.url": "https://hub.docker.com/_/alpine",
+        "org.opencontainers.image.version": "20250108"
+      },
+      "digest": "sha256:20c6c97faaa88f32bbbc45696d259f0c01404a4ec2f1fa4fa8bc5aa5140443ec",
+      "mediaType": "application/vnd.oci.image.manifest.v1+json",
+      "platform": {
+        "architecture": "amd64",
+        "os": "linux"
+      },
+      "size": 1024
+    },
+    {
+      "annotations": {
+        "com.docker.official-images.bashbrew.arch": "amd64",
+        "vnd.docker.reference.digest": "sha256:20c6c97faaa88f32bbbc45696d259f0c01404a4ec2f1fa4fa8bc5aa5140443ec",
+        "vnd.docker.reference.type": "attestation-manifest"
+      },
+      "digest": "sha256:410edc7834c5dece534e4f1592f581b5e4554a55ebf3871663b1ed0d2c82ff84",
+      "mediaType": "application/vnd.oci.image.manifest.v1+json",
+      "platform": {
+        "architecture": "unknown",
+        "os": "unknown"
+      },
+      "size": 838
+    },
+    {
+      "annotations": {
+        "com.docker.official-images.bashbrew.arch": "arm32v6",
+        "org.opencontainers.image.base.name": "scratch",
+        "org.opencontainers.image.created": "2025-01-08T17:23:22Z",
+        "org.opencontainers.image.revision": "c1f1de232c970df2285c03050ab3747b8563164f",
+        "org.opencontainers.image.source": "https://github.com/alpinelinux/docker-alpine.git#c1f1de232c970df2285c03050ab3747b8563164f:armhf",
+        "org.opencontainers.image.url": "https://hub.docker.com/_/alpine",
+        "org.opencontainers.image.version": "20250108"
+      },
+      "digest": "sha256:c6708006c116cbf1d41de6faa0fcd516b92e83ec632a1cd5dff2324994b0d669",
+      "mediaType": "application/vnd.oci.image.manifest.v1+json",
+      "platform": {
+        "architecture": "arm",
+        "os": "linux",
+        "variant": "v6"
+      },
+      "size": 1025
+    },
+    {
+      "annotations": {
+        "com.docker.official-images.bashbrew.arch": "arm32v6",
+        "vnd.docker.reference.digest": "sha256:c6708006c116cbf1d41de6faa0fcd516b92e83ec632a1cd5dff2324994b0d669",
+        "vnd.docker.reference.type": "attestation-manifest"
+      },
+      "digest": "sha256:95e9403d45ea741cbf50f827eb0c32be4e898633ab8675bc6eb02e2ff459a13b",
+      "mediaType": "application/vnd.oci.image.manifest.v1+json",
+      "platform": {
+        "architecture": "unknown",
+        "os": "unknown"
+      },
+      "size": 566
+    },
+    {
+      "annotations": {
+        "com.docker.official-images.bashbrew.arch": "arm32v7",
+        "org.opencontainers.image.base.name": "scratch",
+        "org.opencontainers.image.created": "2025-01-08T17:32:40Z",
+        "org.opencontainers.image.revision": "c1f1de232c970df2285c03050ab3747b8563164f",
+        "org.opencontainers.image.source": "https://github.com/alpinelinux/docker-alpine.git#c1f1de232c970df2285c03050ab3747b8563164f:armv7",
+        "org.opencontainers.image.url": "https://hub.docker.com/_/alpine",
+        "org.opencontainers.image.version": "20250108"
+      },
+      "digest": "sha256:a91890e39e0d8fdfbbf59ba488ffd5b20182241c550f1b8df4e7b9711c68c5c1",
+      "mediaType": "application/vnd.oci.image.manifest.v1+json",
+      "platform": {
+        "architecture": "arm",
+        "os": "linux",
+        "variant": "v7"
+      },
+      "size": 1025
+    },
+    {
+      "annotations": {
+        "com.docker.official-images.bashbrew.arch": "arm32v7",
+        "vnd.docker.reference.digest": "sha256:a91890e39e0d8fdfbbf59ba488ffd5b20182241c550f1b8df4e7b9711c68c5c1",
+        "vnd.docker.reference.type": "attestation-manifest"
+      },
+      "digest": "sha256:3f3a292fdeb26d5f8fe98bebe57303dd91796d6722428734a74e04a8d34fd154",
+      "mediaType": "application/vnd.oci.image.manifest.v1+json",
+      "platform": {
+        "architecture": "unknown",
+        "os": "unknown"
+      },
+      "size": 838
+    },
+    {
+      "annotations": {
+        "com.docker.official-images.bashbrew.arch": "arm64v8",
+        "org.opencontainers.image.base.name": "scratch",
+        "org.opencontainers.image.created": "2025-01-08T17:23:29Z",
+        "org.opencontainers.image.revision": "c1f1de232c970df2285c03050ab3747b8563164f",
+        "org.opencontainers.image.source": "https://github.com/alpinelinux/docker-alpine.git#c1f1de232c970df2285c03050ab3747b8563164f:aarch64",
+        "org.opencontainers.image.url": "https://hub.docker.com/_/alpine",
+        "org.opencontainers.image.version": "20250108"
+      },
+      "digest": "sha256:5c9f31938e2b7623a20afa034d2edc972393f2d8e36ed107e548ff270973ddd4",
+      "mediaType": "application/vnd.oci.image.manifest.v1+json",
+      "platform": {
+        "architecture": "arm64",
+        "os": "linux",
+        "variant": "v8"
+      },
+      "size": 1027
+    },
+    {
+      "annotations": {
+        "com.docker.official-images.bashbrew.arch": "arm64v8",
+        "vnd.docker.reference.digest": "sha256:5c9f31938e2b7623a20afa034d2edc972393f2d8e36ed107e548ff270973ddd4",
+        "vnd.docker.reference.type": "attestation-manifest"
+      },
+      "digest": "sha256:27a3775743c5c752a54cd60b6065f1f1b5ea72b748853f70117ff378c790ad41",
+      "mediaType": "application/vnd.oci.image.manifest.v1+json",
+      "platform": {
+        "architecture": "unknown",
+        "os": "unknown"
+      },
+      "size": 838
+    },
+    {
+      "annotations": {
+        "com.docker.official-images.bashbrew.arch": "i386",
+        "org.opencontainers.image.base.name": "scratch",
+        "org.opencontainers.image.created": "2025-01-08T17:23:15Z",
+        "org.opencontainers.image.revision": "c1f1de232c970df2285c03050ab3747b8563164f",
+        "org.opencontainers.image.source": "https://github.com/alpinelinux/docker-alpine.git#c1f1de232c970df2285c03050ab3747b8563164f:x86",
+        "org.opencontainers.image.url": "https://hub.docker.com/_/alpine",
+        "org.opencontainers.image.version": "20250108"
+      },
+      "digest": "sha256:e64d053044f41a672c26cf1eb2e5488027499cd58428f6b0a359f5b25303d54e",
+      "mediaType": "application/vnd.oci.image.manifest.v1+json",
+      "platform": {
+        "architecture": "386",
+        "os": "linux"
+      },
+      "size": 1020
+    },
+    {
+      "annotations": {
+        "com.docker.official-images.bashbrew.arch": "i386",
+        "vnd.docker.reference.digest": "sha256:e64d053044f41a672c26cf1eb2e5488027499cd58428f6b0a359f5b25303d54e",
+        "vnd.docker.reference.type": "attestation-manifest"
+      },
+      "digest": "sha256:fb55865cd4c4bc1b1274f3365585a96184bfabc2b4274c5ee1b151dd96b85140",
+      "mediaType": "application/vnd.oci.image.manifest.v1+json",
+      "platform": {
+        "architecture": "unknown",
+        "os": "unknown"
+      },
+      "size": 838
+    },
+    {
+      "annotations": {
+        "com.docker.official-images.bashbrew.arch": "ppc64le",
+        "org.opencontainers.image.base.name": "scratch",
+        "org.opencontainers.image.created": "2025-01-08T17:23:13Z",
+        "org.opencontainers.image.revision": "c1f1de232c970df2285c03050ab3747b8563164f",
+        "org.opencontainers.image.source": "https://github.com/alpinelinux/docker-alpine.git#c1f1de232c970df2285c03050ab3747b8563164f:ppc64le",
+        "org.opencontainers.image.url": "https://hub.docker.com/_/alpine",
+        "org.opencontainers.image.version": "20250108"
+      },
+      "digest": "sha256:d55e5a223aed52ceeedf25c829db5fadc9bbf5acb434e922aa4c0c914167a41e",
+      "mediaType": "application/vnd.oci.image.manifest.v1+json",
+      "platform": {
+        "architecture": "ppc64le",
+        "os": "linux"
+      },
+      "size": 1027
+    },
+    {
+      "annotations": {
+        "com.docker.official-images.bashbrew.arch": "ppc64le",
+        "vnd.docker.reference.digest": "sha256:d55e5a223aed52ceeedf25c829db5fadc9bbf5acb434e922aa4c0c914167a41e",
+        "vnd.docker.reference.type": "attestation-manifest"
+      },
+      "digest": "sha256:5e526c6c813d2d742c5fd024d04dac67c60cb770c7758ac34398f6d053055142",
+      "mediaType": "application/vnd.oci.image.manifest.v1+json",
+      "platform": {
+        "architecture": "unknown",
+        "os": "unknown"
+      },
+      "size": 838
+    },
+    {
+      "annotations": {
+        "com.docker.official-images.bashbrew.arch": "riscv64",
+        "org.opencontainers.image.base.name": "scratch",
+        "org.opencontainers.image.created": "2025-01-08T17:46:59Z",
+        "org.opencontainers.image.revision": "c1f1de232c970df2285c03050ab3747b8563164f",
+        "org.opencontainers.image.source": "https://github.com/alpinelinux/docker-alpine.git#c1f1de232c970df2285c03050ab3747b8563164f:riscv64",
+        "org.opencontainers.image.url": "https://hub.docker.com/_/alpine",
+        "org.opencontainers.image.version": "20250108"
+      },
+      "digest": "sha256:f49dc5274dea0a3600c9c9a603bc8e7628e2b0ac0316626606c340c112dc7af9",
+      "mediaType": "application/vnd.oci.image.manifest.v1+json",
+      "platform": {
+        "architecture": "riscv64",
+        "os": "linux"
+      },
+      "size": 1027
+    },
+    {
+      "annotations": {
+        "com.docker.official-images.bashbrew.arch": "riscv64",
+        "vnd.docker.reference.digest": "sha256:f49dc5274dea0a3600c9c9a603bc8e7628e2b0ac0316626606c340c112dc7af9",
+        "vnd.docker.reference.type": "attestation-manifest"
+      },
+      "digest": "sha256:b6acc0cad7b8d985d4aaabe7de1055a4ee2ce3ba0d620430f9d54bf87ea1fce8",
+      "mediaType": "application/vnd.oci.image.manifest.v1+json",
+      "platform": {
+        "architecture": "unknown",
+        "os": "unknown"
+      },
+      "size": 838
+    },
+    {
+      "annotations": {
+        "com.docker.official-images.bashbrew.arch": "s390x",
+        "org.opencontainers.image.base.name": "scratch",
+        "org.opencontainers.image.created": "2025-01-08T17:24:03Z",
+        "org.opencontainers.image.revision": "c1f1de232c970df2285c03050ab3747b8563164f",
+        "org.opencontainers.image.source": "https://github.com/alpinelinux/docker-alpine.git#c1f1de232c970df2285c03050ab3747b8563164f:s390x",
+        "org.opencontainers.image.url": "https://hub.docker.com/_/alpine",
+        "org.opencontainers.image.version": "20250108"
+      },
+      "digest": "sha256:06c4cec207a7413cd4c188842915e44a3346ac300dd11207fb41a701274acc11",
+      "mediaType": "application/vnd.oci.image.manifest.v1+json",
+      "platform": {
+        "architecture": "s390x",
+        "os": "linux"
+      },
+      "size": 1023
+    },
+    {
+      "annotations": {
+        "com.docker.official-images.bashbrew.arch": "s390x",
+        "vnd.docker.reference.digest": "sha256:06c4cec207a7413cd4c188842915e44a3346ac300dd11207fb41a701274acc11",
+        "vnd.docker.reference.type": "attestation-manifest"
+      },
+      "digest": "sha256:d458746fe026fb9b09a37a966475aff56cb370606e7f51afe5d032dcb662ffb1",
+      "mediaType": "application/vnd.oci.image.manifest.v1+json",
+      "platform": {
+        "architecture": "unknown",
+        "os": "unknown"
+      },
+      "size": 838
+    }
+  ],
+  "mediaType": "application/vnd.oci.image.index.v1+json",
+  "schemaVersion": 2
+}
