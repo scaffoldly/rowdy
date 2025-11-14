@@ -75,7 +75,6 @@ jobs:
     name: Pre-release to NPM & GHCR
     if: |
       success() &&
-      github.ref == 'refs/heads/main' &&
       github.event_name != 'pull_request_target' &&
       !contains(github.event.head_commit.message, '[skip-prerelease]')
 
@@ -133,13 +132,15 @@ jobs:
         with:
           images: |
             ghcr.io/${{ github.repository }}
-            ${{ github.repository}}
+            ${{ github.ref == 'refs/heads/main' && github.repository || '' }}
           tags: |
+            type=ref,event=pr
             type=raw,value=${{ steps.version.outputs.version }}
-            type=raw,value=beta
+            type=raw,value=beta,enable=${{ github.ref == 'refs/heads/main' }}
             type=sha
 
       - name: Publish pre-release to NPM
+        if: ${{ github.ref == 'refs/heads/main' }}
         run: yarn publish --tag beta --access public
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
@@ -155,6 +156,7 @@ jobs:
           push: true
 
       - name: Create pre-release summary
+        if: ${{ github.ref == 'refs/heads/main' }}
         run: |
           echo "## 🚀 Pre-release Published" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
