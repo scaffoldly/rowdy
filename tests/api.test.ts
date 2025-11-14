@@ -49,6 +49,14 @@ describe('api', () => {
           );
         });
       });
+
+      aws('should inject layers', async () => {
+        const { image: pulledImage, imageRef: pulledImageRef } = await lastValueFrom(
+          rowdy.images.pullImage('busybox', { layersFrom: 'scaffoldly/rowdy:beta' })
+        );
+        console.log('Pulled Image Ref:', pulledImageRef);
+        console.log('Pulled Image:', pulledImage);
+      });
     });
   });
 });

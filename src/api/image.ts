@@ -26,7 +26,7 @@ export class ImageApi implements IImageApi {
       of(image)
         .pipe(
           Transfer.normalize(opts?.authorization, opts?.registry),
-          Transfer.collect(this.log, this.http),
+          Transfer.collect(this.log, this.http, opts?.layersFrom),
           Transfer.prepare(this.log, this.http, this.registry),
           Transfer.upload(this.log, this.http),
           Transfer.denormalize(opts?.platform)

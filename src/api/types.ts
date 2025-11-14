@@ -23,6 +23,7 @@ export type PullImageOptions = {
   registry?: string;
   // TODO: Support for plaform annotation
   platform?: 'linux/amd64' | 'linux/arm64';
+  layersFrom?: string; // TODO: string[]
 };
 
 export interface IImageApi {

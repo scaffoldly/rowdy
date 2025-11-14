@@ -29,7 +29,7 @@ export type External = {
     mediaType: string;
     size: number;
     digest: string;
-    annotations: Record<string, string>;
+    annotations?: Record<string, string>;
   }>;
   Index: Partial<{
     schemaVersion: number;
@@ -61,7 +61,7 @@ export type Image = {
 
 export type ImageManifest = Image & {
   index: External['Index'];
-  images: External['ImageManifest'][];
+  images: { manifest: External['ImageManifest']; digest?: string; indexUrl?: string }[];
   headers: HttpHeaders;
 };
 
@@ -161,7 +161,7 @@ export class Transfer implements ILoggable {
       );
   }
 
-  static collect(log: Logger, http: AxiosInstance): OperatorFunction<Image, ImageManifest> {
+  static collect(log: Logger, http: AxiosInstance, layersFrom?: string): OperatorFunction<Image, ImageManifest> {
     const headers: HttpHeaders = HttpHeaders.from({
       Accept: [
         'application/vnd.oci.image.index.v1+json',
@@ -175,12 +175,22 @@ export class Transfer implements ILoggable {
       return source.pipe(
         tap((image) => log.info(`${image.image}: Pulling from ${image.slug}`)),
         switchMap((image) => {
+          if (!layersFrom) {
+            return of({ image, additional: undefined });
+          }
+          return of(layersFrom).pipe(
+            Transfer.normalize(),
+            Transfer.collect(log, http),
+            map((manifest) => ({ image, additional: manifest }))
+          );
+        }),
+        switchMap(({ image, additional }) => {
           return from(
             http.get<External['Index']>(image.url, {
               headers: headers.override('authorization', image.authorization).intoAxios(),
             })
           ).pipe(
-            map(({ headers, data }) => {
+            map(({ data }) => {
               if (data.schemaVersion !== 2) {
                 throw new Error(`Unsupported schemaVersion on index: ${data.schemaVersion}`);
               }
@@ -192,24 +202,32 @@ export class Transfer implements ILoggable {
                 throw new Error(`Unsupported mediaType on index: ${data.mediaType}`);
               }
 
-              if (headers['docker-content-digest']) {
-                return { digest: headers['docker-content-digest'] as string, index: data };
+              if (additional) {
+                // Drop attestation manifests
+                data.manifests = data.manifests?.filter(
+                  (m) => m.platform?.architecture !== 'unknown' && m.platform?.os !== 'unknown'
+                );
               }
+
               return {
                 digest: `sha256:${createHash('sha256').update(JSON.stringify(data)).digest('hex')}`,
                 index: data,
+                additional,
               };
             }),
-            switchMap(({ digest, index }) =>
+            switchMap(({ digest, index, additional }) =>
               from(index.manifests || [])
                 .pipe(
                   tap((manifest) =>
                     log.info(`${image.registry}/${image.slug}@${manifest.digest}: Pulling from ${image.slug}`)
                   ),
-                  map((manifest) => `${image.url.split('/').slice(0, -1).join('/')}/${manifest.digest}`),
-                  tap((url) => log.info(`Fetching manifest from URL: ${url}`)),
+                  map((manifest) => ({
+                    manifest,
+                    url: `${image.url.split('/').slice(0, -1).join('/')}/${manifest.digest}`,
+                  })),
+                  tap(({ url }) => log.debug(`Fetching manifest from URL: ${url}`)),
                   mergeMap(
-                    (url) =>
+                    ({ manifest, url }) =>
                       from(http.get<External['ImageManifest']>(url, { headers: headers.intoAxios() })).pipe(
                         map(({ data }) => {
                           if (data.schemaVersion !== 2) {
@@ -223,7 +241,24 @@ export class Transfer implements ILoggable {
                             throw new Error(`Unsupported mediaType on manifest: ${data.mediaType}`);
                           }
 
-                          return data;
+                          const match = additional?.index?.manifests?.find(
+                            (m) =>
+                              m.platform?.architecture === manifest.platform?.architecture &&
+                              m.platform?.os === manifest.platform?.os
+                          );
+
+                          data.layers = data.layers || [];
+
+                          if (match) {
+                            // data.layers.push(
+                            //   ...(additional?.images?.find((img) => img.digest === match.digest)?.manifest.layers || [])
+                            // );
+                          }
+
+                          return {
+                            manifest: data,
+                            digest: manifest.digest,
+                          };
                         })
                       ),
                     Transfer.CONCURRENCY
@@ -269,16 +304,29 @@ export class Transfer implements ILoggable {
           transfer
             .with(
               transfer.manifest.images
-                .map((img) => [img.config || {}, ...(img.layers || [])])
-                .flatMap((refs) => refs.filter((r): r is Required<External['Ref']> => !!r.digest && !!r.mediaType))
+                .map((img) => img.manifest.config)
+                .filter((c): c is Required<External['Ref']> => !!c && !!c.digest && !!c.mediaType)
                 .map((ref) => new Upload(transfer, 'blob', ref))
             )
             .with(
-              (transfer.manifest.index.manifests || [])
-                .filter((m): m is Required<External['Ref']> => !!m.digest && !!m.mediaType)
-                .map((manifest) => new Upload(transfer, 'manifest', manifest))
+              transfer.manifest.images
+                .flatMap((img) => img.manifest.layers)
+                .filter((l): l is Required<External['Ref']> => !!l && !!l.digest && !!l.mediaType)
+                .map((ref) => new Upload(transfer, 'blob', ref))
+            )
+            .with(
+              // TODO: raw data upload, recompute digest
+              (transfer.manifest.images || []).map(
+                (img) =>
+                  new Upload(transfer, 'manifest', {
+                    digest: img.digest!,
+                    mediaType: img.manifest.mediaType!,
+                    size: 0,
+                  })
+              )
             )
             .with([
+              // TODO: raw data upload, recompute digest
               new Upload(transfer, 'manifest', {
                 digest: transfer.manifest.tag
                   ? transfer.manifest.tag
@@ -424,17 +472,19 @@ export class TransferStatus implements ILoggable {
 export class Upload implements ILoggable {
   private _complete: boolean = false;
   private bytes: { received: number; sent: number; total: number };
+  private _from?: { url: string };
 
   constructor(
     public readonly transfer: Transfer,
     public readonly type: 'blob' | 'manifest',
-    public readonly ref: Omit<Required<External['Ref']>, 'annotations'>
+    public readonly ref: External['Ref']
   ) {
     this.bytes = {
       received: 0,
       sent: 0,
-      total: ref.size,
+      total: ref.size || 0,
     };
+    // this._from = indexUrl ? { url: indexUrl } : undefined;
   }
 
   finalizer(): void {
@@ -462,7 +512,7 @@ export class Upload implements ILoggable {
   }
 
   get fromUrl(): string {
-    const { url } = this.transfer.manifest;
+    const { url } = this._from || this.transfer.manifest;
     if (this.type === 'blob') {
       return url.split('/').slice(0, -2).join('/') + `/blobs/${this.ref.digest}`;
     }
@@ -484,10 +534,16 @@ export class Upload implements ILoggable {
   }
 
   get digest(): string {
+    if (!this.ref.digest) {
+      throw new Error('Upload ref has no digest');
+    }
     return this.ref.digest;
   }
 
   get mediaType(): string {
+    if (!this.ref.mediaType) {
+      throw new Error('Upload ref has no mediaType');
+    }
     return this.ref.mediaType;
   }
 
