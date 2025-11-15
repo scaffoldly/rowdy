@@ -65,12 +65,6 @@ export type ImageManifest = Image & {
   headers: HttpHeaders;
 };
 
-export type ImageManifestTransfers = ImageManifest & {
-  blobs: Upload[];
-  images: Upload[];
-  indexes: Upload[];
-};
-
 type Response<T> = { data: T | undefined; headers: HttpHeaders; status: number; method: string; url: string };
 
 export class Transfer implements ILoggable {
@@ -111,7 +105,6 @@ export class Transfer implements ILoggable {
       schemaVersion: 2,
       mediaType: this.manifest.index.mediaType!,
       manifests: this.manifest.images.map((img) => {
-        // Compute the correct digest from the actual image content
         const content = JSON.stringify(img.image);
         const digest = `sha256:${createHash('sha256').update(content).digest('hex')}`;
         return {
@@ -208,7 +201,7 @@ export class Transfer implements ILoggable {
               headers: headers.override('authorization', image.authorization).intoAxios(),
             })
           ).pipe(
-            map(({ data }) => {
+            map(({ headers, data }) => {
               if (data.schemaVersion !== 2) {
                 throw new Error(`Unsupported schemaVersion on index: ${data.schemaVersion}`);
               }
@@ -225,8 +218,13 @@ export class Transfer implements ILoggable {
                 data.manifests = data.manifests?.filter((m) => m.platform?.architecture !== 'unknown');
               }
 
+              const digest = headers['docker-content-digest'];
+              if (!digest) {
+                throw new Error(`No docker-content-digest header found on response for ${image.url}`);
+              }
+
               return {
-                digest: `sha256:${createHash('sha256').update(JSON.stringify(data)).digest('hex')}`,
+                digest,
                 index: data,
                 additional,
               };
@@ -274,9 +272,6 @@ export class Transfer implements ILoggable {
                                 annotations: { ...l.annotations, 'run.rowdy.index.url': additional!.url },
                               }))
                             );
-
-                            manifest.digest = `sha256:${createHash('sha256').update(JSON.stringify(data)).digest('hex')}`;
-                            manifest.size = JSON.stringify(data).length;
                           }
 
                           return {
