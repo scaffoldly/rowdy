@@ -1,7 +1,8 @@
 import { lastValueFrom, of, toArray } from 'rxjs';
-import { Transfer, External } from '../../../src/api/internal/transfer';
+import { Transfer, External, ImageManifest } from '../../../src/api/internal/transfer';
 import { Logger, Rowdy } from '@scaffoldly/rowdy';
-import { readFileSync } from 'fs';
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+import { readFileSync, writeFileSync } from 'fs';
 
 describe('transfers', () => {
   const logger = new Logger();
@@ -184,7 +185,7 @@ describe('transfers', () => {
           ) as External['Index'],
           images: JSON.parse(
             readFileSync(`${__dirname}/ubuntu:noble-20251001.images.json`, 'utf-8')
-          ) as External['ImageManifest'][],
+          ) as ImageManifest['images'],
         },
         headers: {
           headers: {
@@ -212,7 +213,7 @@ describe('transfers', () => {
           index: JSON.parse(readFileSync(`${__dirname}/alpine:20250108.index.json`, 'utf-8')) as External['Index'],
           images: JSON.parse(
             readFileSync(`${__dirname}/alpine:20250108.images.json`, 'utf-8')
-          ) as External['ImageManifest'][],
+          ) as ImageManifest['images'],
         },
         headers: {
           headers: {
@@ -231,13 +232,19 @@ describe('transfers', () => {
       it(`should collect manifests for ${normalized.image}`, async () => {
         const result = await lastValueFrom(of(normalized).pipe(Transfer.collect(logger, rowdy.http)));
         // hack to write files when updating tests
-        // writeFileSync(`${__dirname}/alpine:20250108.index.json`, JSON.stringify(result.images, null, 2));
-        // writeFileSync(`${__dirname}/alpine:20250108.images.json`, JSON.stringify(result.images, null, 2));
+        // writeFileSync(
+        //   `${__dirname}/${normalized.name}:${normalized.digest}.index.json`,
+        //   JSON.stringify(result.index, null, 2)
+        // );
+        // writeFileSync(
+        //   `${__dirname}/${normalized.name}:${normalized.digest}.images.json`,
+        //   JSON.stringify(result.images, null, 2)
+        // );
         // expect(true).toBe(false);
         expect(JSON.parse(JSON.stringify(result.index))).toEqual(JSON.parse(JSON.stringify(collected.index)));
         expect(result.images.length).toEqual(collected.images.length);
-        expect(result.images.sort((a, b) => a.config!.digest!.localeCompare(b.config!.digest!))).toEqual(
-          collected.images.sort((a, b) => a.config!.digest!.localeCompare(b.config!.digest!))
+        expect(result.images.sort((a, b) => a.image.config!.digest!.localeCompare(b.image.config!.digest!))).toEqual(
+          collected.images.sort((a, b) => a.image.config!.digest!.localeCompare(b.image.config!.digest!))
         );
       });
     });
@@ -271,27 +278,33 @@ describe('transfers', () => {
           expect(prepared).toBeDefined();
 
           const uploads = await lastValueFrom(prepared.uploads.pipe(toArray()));
-          expect(uploads.length).toBe(3);
+          expect(uploads.length).toBe(4);
 
-          // Blobs
-          expect(uploads[0]?.length).toBe(24);
+          // Configs (as blobs)
+          expect(uploads[0]?.length).toBe(12);
           expect(new Set(uploads[0]?.map((upload) => upload.fromUrl.split('sha256:')[0]))).toEqual(
             new Set([`https://${normalized.registry}/v2/${normalized.namespace}/${normalized.name}/blobs/`])
           );
-          expect(new Set(uploads[0]?.map((upload) => upload.toUrl)).size).toBe(1);
-          expect([...new Set(uploads[0]?.map((upload) => upload.toUrl))][0]).toMatch(
+
+          // Layers (as blobs)
+          expect(uploads[1]?.length).toBe(12);
+          expect(new Set(uploads[1]?.map((upload) => upload.fromUrl.split('sha256:')[0]))).toEqual(
+            new Set([`https://${normalized.registry}/v2/${normalized.namespace}/${normalized.name}/blobs/`])
+          );
+          expect(new Set(uploads[1]?.map((upload) => upload.toUrl)).size).toBe(1);
+          expect([...new Set(uploads[1]?.map((upload) => upload.toUrl))][0]).toMatch(
             RegExp(
               `^https://[0-9]{12}\\.dkr\\.ecr\\.[a-z0-9-]+\\.amazonaws\\.com/v2/${normalized.namespace}/${normalized.name}/blobs/uploads/`
             )
           );
 
           // Image Manfiests
-          expect(uploads[1]?.length).toBe(12);
-          expect(new Set(uploads[1]?.map((upload) => upload.fromUrl.split('sha256:')[0]))).toEqual(
+          expect(uploads[2]?.length).toBe(12);
+          expect(new Set(uploads[2]?.map((upload) => upload.fromUrl.split('sha256:')[0]))).toEqual(
             new Set(['https://mirror.gcr.io/v2/library/ubuntu/manifests/'])
           );
-          expect(uploads[1]?.map((upload) => upload.toUrl).length).toBe(12);
-          for (const upload of uploads[1]!) {
+          expect(uploads[2]?.map((upload) => upload.toUrl).length).toBe(12);
+          for (const upload of uploads[2]!) {
             expect(upload.toUrl).toMatch(
               RegExp(
                 `^https://[0-9]{12}\\.dkr\\.ecr\\.[a-z0-9-]+\\.amazonaws\\.com/v2/${normalized.namespace}/${normalized.name}/manifests/`
@@ -300,9 +313,9 @@ describe('transfers', () => {
           }
 
           // Indexes
-          expect(uploads[2]?.length).toBe(1);
-          expect(uploads[2]?.[0]?.fromUrl).toBe(normalized.url);
-          expect(uploads[2]?.[0]?.toUrl).toMatch(
+          expect(uploads[3]?.length).toBe(1);
+          expect(uploads[3]?.[0]?.fromUrl).toBe(normalized.url);
+          expect(uploads[3]?.[0]?.toUrl).toMatch(
             RegExp(
               `^https://[0-9]{12}\\.dkr\\.ecr\\.[a-z0-9-]+\\.amazonaws\\.com/v2/${normalized.namespace}/${normalized.name}/manifests/${normalized.tag}$`
             )
