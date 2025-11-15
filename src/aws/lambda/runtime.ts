@@ -29,7 +29,7 @@ export class LambdaRuntimeService implements ILambdaRuntimeService {
       sandboxConfig: factory.SandboxConfig,
     });
 
-    const resource = new SandboxResource(factory.RunPodSandboxRequest, image);
+    const resource = new SandboxResource(this.environment, factory.RunPodSandboxRequest, image);
     const sandbox = await resource.Sandbox;
 
     return {

@@ -12,6 +12,7 @@ import {
 import { CloudResource } from '@scaffoldly/rowdy-cdk';
 import { IamConsumer, IamRoleResource, PolicyDocument, TrustRelationship } from './iam';
 import { CRI } from '@scaffoldly/rowdy-grpc';
+import { Environment } from '../..';
 
 export class SandboxResource
   extends CloudResource<FunctionConfiguration, GetFunctionCommandOutput>
@@ -81,6 +82,7 @@ export class SandboxResource
   }
 
   constructor(
+    public readonly environment: Environment,
     protected req: CRI.RunPodSandboxRequest,
     protected image: CRI.PullImageResponse
   ) {
@@ -103,8 +105,12 @@ export class SandboxResource
               Architectures: ['x86_64'],
               Timeout: 900,
               MemorySize: this._memorySize,
-              Publish: false,
+              // TODO: flip to false
+              Publish: true,
               Code: { ImageUri: image.imageRef },
+              ImageConfig: { EntryPoint: ['rowdy'] },
+              // TODO: Add environment variables
+              Environment: {},
             })
           ),
         update: async (existing) => {
@@ -113,7 +119,8 @@ export class SandboxResource
               new UpdateFunctionCodeCommand({
                 FunctionName: await this._functionName,
                 ImageUri: this.image.imageRef,
-                Publish: false,
+                // TODO: flip to false
+                Publish: true,
               })
             );
           }
