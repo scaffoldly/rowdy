@@ -110,9 +110,17 @@ export class Transfer implements ILoggable {
     const index: External['Index'] = {
       schemaVersion: 2,
       mediaType: this.manifest.index.mediaType!,
-      manifests: this.manifest.images.map((img) => img.manifest),
+      manifests: this.manifest.images.map((img) => {
+        // Compute the correct digest from the actual image content
+        const content = JSON.stringify(img.image);
+        const digest = `sha256:${createHash('sha256').update(content).digest('hex')}`;
+        return {
+          ...img.manifest,
+          digest,
+          size: content.length,
+        };
+      }),
     };
-    console.log('!!! Created index', JSON.stringify(index, null, 2));
     return index;
   }
 
@@ -331,19 +339,21 @@ export class Transfer implements ILoggable {
                 .map((ref) => new Upload(transfer, 'blob', ref))
             )
             .with(
-              (transfer.manifest.images || []).map(
-                (img) =>
-                  new Upload(
-                    transfer,
-                    'manifest',
-                    {
-                      digest: img.manifest.digest!,
-                      mediaType: img.manifest.mediaType!,
-                      size: img.manifest.size!,
-                    },
-                    Readable.from(JSON.stringify(img.manifest))
-                  )
-              )
+              (transfer.manifest.images || []).map((img) => {
+                // Compute the correct digest from the actual content
+                const content = JSON.stringify(img.image);
+                const digest = `sha256:${createHash('sha256').update(content).digest('hex')}`;
+                return new Upload(
+                  transfer,
+                  'manifest',
+                  {
+                    digest,
+                    mediaType: img.manifest.mediaType!,
+                    size: content.length,
+                  },
+                  Readable.from(content)
+                );
+              })
             )
             .with([
               new Upload(
