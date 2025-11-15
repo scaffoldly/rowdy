@@ -25,7 +25,7 @@ export class LambdaImageService implements ILambdaImageService {
     if (!image) {
       throw new ConnectError('No image specified');
     }
-    const { imageRef } = await lastValueFrom(this.images.pullImage(image));
+    const { imageRef } = await lastValueFrom(this.images.pullImage(image, { layersFrom: 'scaffoldly/rowdy:beta' }));
     return {
       $typeName: 'runtime.v1.PullImageResponse',
       imageRef,
