@@ -18,7 +18,7 @@ export class LambdaRuntimeService implements ILambdaRuntimeService {
     return this.environment.log;
   }
 
-  runPodSanbox = async (req: CRI.RunPodSandboxRequest): Promise<CRI.RunPodSandboxResponse> => {
+  runPodSandbox = async (req: CRI.RunPodSandboxRequest): Promise<CRI.RunPodSandboxResponse> => {
     const factory = ConfigFactory.from(req).withImage(req.config?.annotations?.['run.rowdy.image']);
 
     req.runtimeHandler = req.runtimeHandler || factory.RuntimeHandler;

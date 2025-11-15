@@ -12,7 +12,7 @@ describe('aws lambda', () => {
   aws(
     'should run a pod sandbox',
     async () => {
-      const response = await service.runPodSanbox({
+      const response = await service.runPodSandbox({
         $typeName: 'runtime.v1.RunPodSandboxRequest',
         runtimeHandler: '',
         config: ConfigFactory.new().withImage('alpine').SandboxConfig,
@@ -25,7 +25,7 @@ describe('aws lambda', () => {
   aws(
     'should set memory',
     async () => {
-      const response = await service.runPodSanbox({
+      const response = await service.runPodSandbox({
         $typeName: 'runtime.v1.RunPodSandboxRequest',
         runtimeHandler: 'memory-512mb',
         config: ConfigFactory.new().withImage('alpine').withMemory(512).SandboxConfig,
