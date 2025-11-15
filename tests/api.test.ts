@@ -12,7 +12,7 @@ describe('api', () => {
       const tests = [
         {
           image: 'alpine:20250108',
-          platform: undefined as PullImageOptions['platform'],
+          platform: undefined as PullImageOptions['platform'], // will default to linux/amd64
           imageRef:
             /^[0-9]{12}\.dkr\.ecr\.[a-z0-9-]+\.amazonaws\.com\/library\/alpine@sha256:20c6c97faaa88f32bbbc45696d259f0c01404a4ec2f1fa4fa8bc5aa5140443ec$/,
         },

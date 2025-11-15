@@ -1,7 +1,8 @@
 import { lastValueFrom, of, toArray } from 'rxjs';
 import { Transfer, External, ImageManifest } from '../../../src/api/internal/transfer';
 import { Logger, Rowdy } from '@scaffoldly/rowdy';
-import { readFileSync } from 'fs';
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+import { readFileSync, writeFileSync } from 'fs';
 
 describe('transfers', () => {
   const logger = new Logger();
@@ -242,10 +243,8 @@ describe('transfers', () => {
         // expect(true).toBe(false);
         expect(JSON.parse(JSON.stringify(result.index))).toEqual(JSON.parse(JSON.stringify(collected.index)));
         expect(result.images.length).toEqual(collected.images.length);
-        expect(
-          result.images.sort((a, b) => a.manifest.config!.digest!.localeCompare(b.manifest.config!.digest!))
-        ).toEqual(
-          collected.images.sort((a, b) => a.manifest.config!.digest!.localeCompare(b.manifest.config!.digest!))
+        expect(result.images.sort((a, b) => a.image.config!.digest!.localeCompare(b.image.config!.digest!))).toEqual(
+          collected.images.sort((a, b) => a.image.config!.digest!.localeCompare(b.image.config!.digest!))
         );
       });
     });

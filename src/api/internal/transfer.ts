@@ -37,7 +37,7 @@ export type External = {
     manifests: External['Manifest'][];
   }>;
   Manifest: External['Ref'] & Partial<{ platform: Partial<{ architecture: string; os: string }> }>;
-  ImageManifest: Partial<{
+  Image: Partial<{
     schemaVersion: number;
     mediaType: 'application/vnd.oci.image.manifest.v1+json' | 'application/vnd.docker.distribution.manifest.v2+json';
     config: External['Ref'];
@@ -61,7 +61,7 @@ export type Image = {
 
 export type ImageManifest = Image & {
   index: External['Index'];
-  images: { manifest: External['ImageManifest']; digest?: string; indexUrl?: string }[];
+  images: { manifest: External['Manifest']; image: External['Image'] }[];
   headers: HttpHeaders;
 };
 
@@ -104,6 +104,16 @@ export class Transfer implements ILoggable {
     }
     this._uploads.push(uploads);
     return this;
+  }
+
+  get index(): External['Index'] {
+    const index: External['Index'] = {
+      schemaVersion: 2,
+      mediaType: this.manifest.index.mediaType!,
+      manifests: this.manifest.images.map((img) => img.manifest),
+    };
+    console.log('!!! Created index', JSON.stringify(index, null, 2));
+    return index;
   }
 
   get uploads(): Observable<Upload[]> {
@@ -203,10 +213,8 @@ export class Transfer implements ILoggable {
               }
 
               if (additional) {
-                // Drop attestation manifests
-                data.manifests = data.manifests?.filter(
-                  (m) => m.platform?.architecture !== 'unknown' && m.platform?.os !== 'unknown'
-                );
+                // Drop attestation manifests, since we're fundamentally altering the image with new layers
+                data.manifests = data.manifests?.filter((m) => m.platform?.architecture !== 'unknown');
               }
 
               return {
@@ -228,7 +236,7 @@ export class Transfer implements ILoggable {
                   tap(({ url }) => log.debug(`Fetching manifest from URL: ${url}`)),
                   mergeMap(
                     ({ manifest, url }) =>
-                      from(http.get<External['ImageManifest']>(url, { headers: headers.intoAxios() })).pipe(
+                      from(http.get<External['Image']>(url, { headers: headers.intoAxios() })).pipe(
                         map(({ data }) => {
                           if (data.schemaVersion !== 2) {
                             throw new Error(`Unsupported schemaVersion on manifest: ${data.schemaVersion}`);
@@ -247,17 +255,25 @@ export class Transfer implements ILoggable {
                               m.platform?.os === manifest.platform?.os
                           );
 
-                          data.layers = data.layers || [];
-
                           if (match) {
-                            // data.layers.push(
-                            //   ...(additional?.images?.find((img) => img.digest === match.digest)?.manifest.layers || [])
-                            // );
+                            data.layers = data.layers || [];
+                            data.layers.push(
+                              ...(
+                                additional?.images?.find((img) => img.manifest.digest === match.digest)?.image.layers ||
+                                []
+                              ).map((l) => ({
+                                ...l,
+                                annotations: { ...l.annotations, 'run.rowdy.index.url': additional!.url },
+                              }))
+                            );
+
+                            manifest.digest = `sha256:${createHash('sha256').update(JSON.stringify(data)).digest('hex')}`;
+                            manifest.size = JSON.stringify(data).length;
                           }
 
                           return {
-                            manifest: data,
-                            digest: manifest.digest,
+                            manifest: manifest,
+                            image: data,
                           };
                         })
                       ),
@@ -304,36 +320,44 @@ export class Transfer implements ILoggable {
           transfer
             .with(
               transfer.manifest.images
-                .map((img) => img.manifest.config)
+                .map((img) => img.image.config)
                 .filter((c): c is Required<External['Ref']> => !!c && !!c.digest && !!c.mediaType)
                 .map((ref) => new Upload(transfer, 'blob', ref))
             )
             .with(
               transfer.manifest.images
-                .flatMap((img) => img.manifest.layers)
+                .flatMap((img) => img.image.layers)
                 .filter((l): l is Required<External['Ref']> => !!l && !!l.digest && !!l.mediaType)
                 .map((ref) => new Upload(transfer, 'blob', ref))
             )
             .with(
-              // TODO: raw data upload, recompute digest
               (transfer.manifest.images || []).map(
                 (img) =>
-                  new Upload(transfer, 'manifest', {
-                    digest: img.digest!,
-                    mediaType: img.manifest.mediaType!,
-                    size: 0,
-                  })
+                  new Upload(
+                    transfer,
+                    'manifest',
+                    {
+                      digest: img.manifest.digest!,
+                      mediaType: img.manifest.mediaType!,
+                      size: img.manifest.size!,
+                    },
+                    Readable.from(JSON.stringify(img.manifest))
+                  )
               )
             )
             .with([
-              // TODO: raw data upload, recompute digest
-              new Upload(transfer, 'manifest', {
-                digest: transfer.manifest.tag
-                  ? transfer.manifest.tag
-                  : `untagged-${transfer.manifest.digest.replace('sha256:', '').slice(0, 12)}`,
-                mediaType: transfer.manifest.index.mediaType!,
-                size: 0,
-              }),
+              new Upload(
+                transfer,
+                'manifest',
+                {
+                  digest: transfer.manifest.tag
+                    ? transfer.manifest.tag
+                    : `untagged-${transfer.manifest.digest.replace('sha256:', '').slice(0, 12)}`,
+                  mediaType: transfer.manifest.index.mediaType!,
+                  size: 0,
+                },
+                Readable.from(JSON.stringify(transfer.index))
+              ),
             ])
         )
       );
@@ -412,6 +436,11 @@ export class Transfer implements ILoggable {
 }
 
 export class TransferStatus implements ILoggable {
+  private _index: External['Index'] = {
+    schemaVersion: 2,
+    mediaType: 'application/vnd.oci.image.index.v1+json',
+    manifests: [],
+  };
   private _transfer?: Transfer;
   private _statuses: UploadStatus[] = [];
 
@@ -431,7 +460,7 @@ export class TransferStatus implements ILoggable {
     if (!this._transfer) {
       throw new Error('No transfer associated with this status');
     }
-    return this._transfer.manifest.index;
+    return this._transfer.index;
   }
 
   imageRef(digest?: string): string {
@@ -477,14 +506,18 @@ export class Upload implements ILoggable {
   constructor(
     public readonly transfer: Transfer,
     public readonly type: 'blob' | 'manifest',
-    public readonly ref: External['Ref']
+    public readonly ref: External['Ref'],
+    public readonly content?: Readable
   ) {
     this.bytes = {
       received: 0,
       sent: 0,
       total: ref.size || 0,
     };
-    // this._from = indexUrl ? { url: indexUrl } : undefined;
+
+    this._from = ref.annotations?.['run.rowdy.source.url']
+      ? { url: ref.annotations['run.rowdy.source.url'] }
+      : undefined;
   }
 
   finalizer(): void {
@@ -569,13 +602,16 @@ export class Upload implements ILoggable {
         toUrl = location;
       }
 
-      let { data: download } = await this.http.get<Readable>(fromUrl, {
-        responseType: 'stream',
-        maxBodyLength: Infinity,
-        maxContentLength: Infinity,
-        headers: { Accept: this.mediaType },
-        onDownloadProgress: (e) => (this.bytes.received += e.bytes),
-      });
+      let { data: download } =
+        this.type === 'blob'
+          ? await this.http.get<Readable>(fromUrl, {
+              responseType: 'stream',
+              maxBodyLength: Infinity,
+              maxContentLength: Infinity,
+              headers: { Accept: this.mediaType },
+              onDownloadProgress: (e) => (this.bytes.received += e.bytes),
+            })
+          : { data: this.content };
 
       if (this.type === 'blob') {
         await this.http.patch(toUrl, download, {
@@ -595,7 +631,11 @@ export class Upload implements ILoggable {
 
       this._complete = true;
       return status;
-    });
+    }).pipe(
+      catchError((err) => {
+        return throwError(() => new Error(`${this.repr()} failed: ${err.message}`));
+      })
+    );
   }
 
   repr(): string {
