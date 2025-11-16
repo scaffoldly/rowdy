@@ -8,6 +8,10 @@ import {
   UpdateFunctionCodeCommand,
   UpdateFunctionConfigurationCommand,
   UpdateFunctionConfigurationRequest,
+  TagResourceCommand,
+  ListTagsCommand,
+  FunctionCodeLocation,
+  ListTagsResponse,
 } from '@aws-sdk/client-lambda';
 import { CloudResource } from '@scaffoldly/rowdy-cdk';
 import { IamConsumer, IamRoleResource, PolicyDocument, TrustRelationship } from './iam';
@@ -22,6 +26,27 @@ const isSubset = (subset: Record<string, string>, superset: Record<string, strin
     }
   }
   return true;
+};
+
+export const ANNOTATIONS = {
+  LAMBDA_ARN: 'com.amazonaws.lambda.arn',
+  LAMBDA_VERSION: 'com.amazonaws.lambda.version',
+  LAMBDA_ROLE: 'com.amazonaws.lambda.role',
+  LAMBDA_TIMEOUT: 'com.amazonaws.lambda.timeout',
+  LAMBDA_CODE_SHA256: 'com.amazonaws.lambda.codeSha256',
+  LAMBDA_REVISION_ID: 'com.amazonaws.lambda.revisionId',
+  ROWDY_RUNTIME: 'run.rowdy.runtime',
+  ROWDY_IMAGE: 'run.rowdy.image',
+  ROWDY_IMAGE_REF: 'run.rowdy.image.ref',
+};
+
+export const LABELS = {
+  LAMBDA_ARCHITECTURE: 'com.amazonaws.lambda.architecture',
+  LAMBDA_ENTRYPOINT: 'com.amazonaws.lambda.entrypoint',
+  LAMBDA_MEMORY: 'com.amazonaws.lambda.memory',
+  LAMBDA_TIMEOUT: 'com.amazonaws.lambda.timeout',
+  ROWDY_IMAGE: ANNOTATIONS.ROWDY_IMAGE,
+  ROWDY_RUNTIME: ANNOTATIONS.ROWDY_RUNTIME,
 };
 
 export class SandboxResource
@@ -80,32 +105,28 @@ export class SandboxResource
     };
   }
 
-  get _tags(): Record<string, string> {
-    return {
-      ...this.req.config?.labels,
-      ...this.req.config?.annotations,
-    };
-  }
-
   annotations = (fn: FunctionConfiguration): Record<string, string> => {
     return {
-      'com.amazonaws.lambda.arn': fn.FunctionArn ?? '',
-      'com.amazonaws.lambda.version': fn.Version ?? '',
-      'com.amazonaws.lambda.lastModified': fn.LastModified ?? '',
-      'com.amazonaws.lambda.role': fn.Role ?? '',
-      'com.amazonaws.lambda.timeout': fn.Timeout?.toString() ?? '',
-      'com.amazonaws.lambda.codeSha256': fn.CodeSha256 ?? '',
-      'com.amazonaws.lambda.revisionId': fn.RevisionId ?? '',
-      'com.amazonaws.lambda.lastUpdateStatus': fn.LastUpdateStatus ?? '',
-      'com.amazonaws.lambda.lastUpdateStatusReason': fn.LastUpdateStatusReason ?? '',
+      [`${ANNOTATIONS.LAMBDA_ARN}`]: fn.FunctionArn ?? '',
+      [`${ANNOTATIONS.LAMBDA_VERSION}`]: fn.Version?.replace('$', '') ?? '',
+      [`${ANNOTATIONS.LAMBDA_ROLE}`]: fn.Role ?? '',
+      [`${ANNOTATIONS.LAMBDA_TIMEOUT}`]: fn.Timeout?.toString() ?? '',
+      [`${ANNOTATIONS.LAMBDA_CODE_SHA256}`]: fn.CodeSha256 ?? '',
+      [`${ANNOTATIONS.LAMBDA_REVISION_ID}`]: fn.RevisionId ?? '',
+      [`${ANNOTATIONS.ROWDY_RUNTIME}`]: this.req.config?.annotations?.[`${ANNOTATIONS.ROWDY_RUNTIME}`] ?? '',
+      [`${ANNOTATIONS.ROWDY_IMAGE}`]: this.req.config?.annotations?.[`${ANNOTATIONS.ROWDY_IMAGE}`] ?? '',
+      [`${ANNOTATIONS.ROWDY_IMAGE_REF}`]: this.image.imageRef,
     };
   };
 
   labels = (fn: FunctionConfiguration): Record<string, string> => {
     return {
-      entrypoint: fn.ImageConfigResponse?.ImageConfig?.EntryPoint?.[0] ?? 'unknown',
-      architecture: fn.Architectures?.[0] ?? 'unknown',
-      memory: fn.MemorySize?.toString() ?? 'unknown',
+      [`${LABELS.LAMBDA_ENTRYPOINT}`]: fn.ImageConfigResponse?.ImageConfig?.EntryPoint?.[0] ?? '',
+      [`${LABELS.LAMBDA_ARCHITECTURE}`]: fn.Architectures?.[0] ?? '',
+      [`${LABELS.LAMBDA_MEMORY}`]: fn.MemorySize?.toString() ?? '',
+      [`${LABELS.LAMBDA_TIMEOUT}`]: fn.Timeout?.toString() ?? '',
+      [`${LABELS.ROWDY_RUNTIME}`]: this.req.config?.labels?.[`${LABELS.ROWDY_RUNTIME}`] ?? '',
+      [`${LABELS.ROWDY_IMAGE}`]: this.req.config?.labels?.[`${LABELS.ROWDY_IMAGE}`] ?? '',
     };
   };
 
@@ -119,7 +140,7 @@ export class SandboxResource
         $typeName: 'runtime.v1.PodSandbox',
         id: fn.FunctionArn,
         state:
-          !fn.LastUpdateStatus || fn.LastUpdateStatus !== 'Successful'
+          !fn.LastUpdateStatus || fn.LastUpdateStatus === 'Successful'
             ? CRI.PodSandboxState.SANDBOX_READY
             : CRI.PodSandboxState.SANDBOX_NOTREADY,
         createdAt: BigInt(fn.LastModified ? new Date(fn.LastModified).getTime() : 0),
@@ -138,7 +159,7 @@ export class SandboxResource
   ) {
     super(
       {
-        describe: (config) => ({ type: 'Lambda Function', label: config.FunctionArn || '[new]' }),
+        describe: (config) => ({ type: 'Lambda Function', label: config.FunctionName }),
         read: async () =>
           this.lambda.send(
             new GetFunctionCommand({
@@ -161,18 +182,21 @@ export class SandboxResource
               Environment: {
                 Variables: this._variables,
               },
-              Tags: this._tags,
+              // TODO: Update tags if changed
+              Tags: { ...this.Tags },
             })
           ),
         update: async (existing) => {
+          let updated = false;
           if (existing.CodeSha256 !== this._codeSha256) {
             existing = await this.lambda.send(
               new UpdateFunctionCodeCommand({
-                FunctionName: await this._functionName,
+                FunctionName: existing.FunctionArn,
                 ImageUri: this.image.imageRef,
                 Publish: false,
               })
             );
+            updated = true;
           }
 
           if (
@@ -182,9 +206,31 @@ export class SandboxResource
             existing = await this.lambda.send(
               new UpdateFunctionConfigurationCommand(existing as UpdateFunctionConfigurationRequest)
             );
+            updated = true;
+          }
+
+          if (updated) {
+            // TODO publish new version
           }
 
           return existing;
+        },
+        tag: async (existing, tags) => {
+          const desired = { ...tags, ...this.Tags, ...this.annotations(existing) };
+          const current = await this.lambda
+            .send(new ListTagsCommand({ Resource: existing.FunctionArn! }))
+            .then((res) => res.Tags || {});
+
+          if (isSubset(desired, current)) {
+            return;
+          }
+
+          await this.lambda.send(
+            new TagResourceCommand({
+              Resource: existing.FunctionArn!,
+              Tags: { ...tags, ...this.Tags, ...this.annotations(existing) },
+            })
+          );
         },
         dispose: async () => this.lambda.send(new DeleteFunctionCommand({ FunctionName: await this._functionName })),
       },
@@ -196,28 +242,14 @@ export class SandboxResource
     this.iamRole = new IamRoleResource(image).withConsumer(this);
   }
 
-  // static async fromContainerId(id: string): Promise<CRI.PodSandbox> {
-  //   const resource = new SandboxResource(
-  //     {
-  //       $typeName: 'runtime.v1.CreateContainerRequest',
-  //       podSandboxId: id,
-  //     },
-  //     { $typeName: 'runtime.v1.PullImageResponse', imageRef: '' }
-  //   );
-
-  //   const config = await resource.lambda.send(new GetFunctionCommand({ FunctionName: id }));
-  //   const factory = ConfigFactory.new().withImage(config.Code?.ImageUri).withMemory(config.Configuration?.MemorySize);
-
-  //   resource.req = {
-  //     $typeName: 'runtime.v1.CreateContainerRequest',
-  //     podSandboxId: id,
-  //     config: factory.ContainerConfig,
-  //     sandboxConfig: factory.SandboxConfig,
-  //   };
-  //   resource.image = factory.PullImageResponse;
-
-  //   return resource.Sandbox;
-  // }
+  static async from(environment: Environment, id: string): Promise<CRI.PodSandbox> {
+    const client = new LambdaClient({});
+    const config = await client.send(new GetFunctionCommand({ FunctionName: id }));
+    const tags = await client.send(new ListTagsCommand({ Resource: id }));
+    const factory = ConfigFactory.fromLambda(config.Configuration, config.Code, tags);
+    const resource = new SandboxResource(environment, factory.RunPodSandboxRequest, factory.PullImageResponse);
+    return resource.Sandbox;
+  }
 
   get trustRelationship(): TrustRelationship {
     return {
@@ -267,14 +299,14 @@ export class ConfigFactory {
   private _sandboxConfig: CRI.PodSandboxConfig = {
     $typeName: 'runtime.v1.PodSandboxConfig',
     annotations: {
-      'run.rowdy.image': `scaffoldly/rowdy:beta`,
-      'run.rowdy.runtime': 'com.amazonaws.lambda',
+      [`${ANNOTATIONS.ROWDY_IMAGE}`]: 'scaffoldly/rowdy:beta',
+      [`${ANNOTATIONS.ROWDY_RUNTIME}`]: 'com.amazonaws.lambda',
     },
     hostname: 'not-implemented',
     labels: {
-      'com.amazonaws.lambda.memory': '1024',
-      'com.amazonaws.lambda.timeout': '900',
-      'run.rowdy.runtime': 'com.amazonaws.lambda',
+      [`${LABELS.LAMBDA_MEMORY}`]: '1024',
+      [`${LABELS.LAMBDA_TIMEOUT}`]: '900',
+      [`${LABELS.ROWDY_RUNTIME}`]: 'com.amazonaws.lambda',
     },
     logDirectory: 'not-implemented',
     metadata: {
@@ -311,7 +343,37 @@ export class ConfigFactory {
     return new ConfigFactory();
   }
 
-  static from(req: CRI.RunPodSandboxRequest): ConfigFactory {
+  static fromLambda(
+    config?: FunctionConfiguration,
+    code?: FunctionCodeLocation,
+    tags?: ListTagsResponse
+  ): ConfigFactory {
+    const factory = new ConfigFactory();
+    if (config?.Architectures && config.Architectures[0]) {
+      factory._sandboxConfig.labels![LABELS.LAMBDA_ARCHITECTURE] = config.Architectures[0];
+    }
+    if (config?.ImageConfigResponse?.ImageConfig?.EntryPoint?.[0]) {
+      factory._sandboxConfig.labels![LABELS.LAMBDA_ENTRYPOINT] = config.ImageConfigResponse.ImageConfig.EntryPoint[0];
+    }
+    if (config?.MemorySize) {
+      factory._sandboxConfig.linux!.resources!.memoryLimitInBytes = BigInt(config.MemorySize * 1024 * 1024);
+      factory._sandboxConfig.labels![LABELS.LAMBDA_MEMORY] = config.MemorySize.toString();
+    }
+    if (config?.Timeout) {
+      factory._sandboxConfig.labels![LABELS.LAMBDA_TIMEOUT] = config.Timeout.toString();
+    }
+    if (code?.ImageUri) {
+      const image = Transfer.normalizeImage(code.ImageUri);
+      factory._sandboxConfig.metadata!.name = image.name;
+      factory._sandboxConfig.labels![LABELS.ROWDY_IMAGE] = image.name;
+    }
+    if (tags?.Tags) {
+      factory._sandboxConfig.annotations = tags.Tags;
+    }
+    return factory;
+  }
+
+  static fromRequest(req: CRI.RunPodSandboxRequest): ConfigFactory {
     const factory = new ConfigFactory();
     factory._sandboxConfig = { ...factory._sandboxConfig, ...req.config };
     factory._sandboxConfig.metadata = { ...factory._sandboxConfig.metadata!, ...req.config?.metadata };
@@ -336,77 +398,92 @@ export class ConfigFactory {
       return this;
     }
     this._sandboxConfig.metadata!.name = Transfer.normalizeImage(image).name;
-    this._sandboxConfig.annotations!['run.rowdy.image'] = image;
+    this._sandboxConfig.annotations![ANNOTATIONS.ROWDY_IMAGE] = image;
     return this;
   }
 
   withMemory(megabytes: number = 1024): this {
     this._sandboxConfig.linux!.resources!.memoryLimitInBytes = BigInt(megabytes * 1024 * 1024);
-    this._sandboxConfig.labels!['aws.lambda.memory'] = megabytes.toString();
+    this._sandboxConfig.labels![LABELS.LAMBDA_MEMORY] = megabytes.toString();
     return this;
   }
 
-  get ContainerConfig(): CRI.ContainerConfig {
-    const name = Transfer.normalizeImage(this._sandboxConfig.annotations!['run.rowdy.image']!).name;
-    const containerConfig: CRI.ContainerConfig = {
-      $typeName: 'runtime.v1.ContainerConfig',
-      annotations: { ...this._sandboxConfig.annotations, 'run.rowdy.name': name },
-      args: [],
-      CDIDevices: [],
-      command: [],
-      devices: [],
-      envs: [],
-      labels: { ...this._sandboxConfig.labels },
-      logPath: 'not-implemented',
-      mounts: [],
-      stdin: false,
-      stdinOnce: false,
-      stopSignal: CRI.Signal.RUNTIME_DEFAULT,
-      tty: false,
-      workingDir: 'not-implemented',
-      image: {
-        $typeName: 'runtime.v1.ImageSpec',
-        annotations: { ...this._sandboxConfig.annotations },
-        image: this._sandboxConfig.annotations!['run.rowdy.image']!,
-        runtimeHandler: 'rowdy',
-        userSpecifiedImage: 'not-implemented',
-      },
-      linux: {
-        $typeName: 'runtime.v1.LinuxContainerConfig',
-        resources: {
-          ...this._sandboxConfig.linux!.resources!,
-        },
-      },
-      metadata: {
-        $typeName: 'runtime.v1.ContainerMetadata',
-        name,
-        attempt: 0,
-      },
-    };
+  // get ContainerConfig(): CRI.ContainerConfig {
+  //   const name = Transfer.normalizeImage(this._sandboxConfig.annotations![ANNOTATIONS.ROWDY_IMAGE]!).name;
+  //   const containerConfig: CRI.ContainerConfig = {
+  //     $typeName: 'runtime.v1.ContainerConfig',
+  //     annotations: { ...this._sandboxConfig.annotations, [`${ANNOTATIONS.ROWDY_NAME}`]: name },
+  //     args: [],
+  //     CDIDevices: [],
+  //     command: [],
+  //     devices: [],
+  //     envs: [],
+  //     labels: { ...this._sandboxConfig.labels, [`${LABELS.ROWDY_NAME}`]: name },
+  //     logPath: 'not-implemented',
+  //     mounts: [],
+  //     stdin: false,
+  //     stdinOnce: false,
+  //     stopSignal: CRI.Signal.RUNTIME_DEFAULT,
+  //     tty: false,
+  //     workingDir: 'not-implemented',
+  //     image: {
+  //       $typeName: 'runtime.v1.ImageSpec',
+  //       annotations: { ...this._sandboxConfig.annotations },
+  //       image: this._sandboxConfig.annotations![ANNOTATIONS.ROWDY_IMAGE]!,
+  //       runtimeHandler: 'rowdy',
+  //       userSpecifiedImage: 'not-implemented',
+  //     },
+  //     linux: {
+  //       $typeName: 'runtime.v1.LinuxContainerConfig',
+  //       resources: {
+  //         ...this._sandboxConfig.linux!.resources!,
+  //       },
+  //     },
+  //     metadata: {
+  //       $typeName: 'runtime.v1.ContainerMetadata',
+  //       name,
+  //       attempt: 0,
+  //     },
+  //   };
 
-    return containerConfig;
-  }
+  //   return containerConfig;
+  // }
 
   get SandboxConfig(): CRI.PodSandboxConfig {
     return this._sandboxConfig;
   }
 
   get PullImageResponse(): CRI.PullImageResponse {
+    const imageRef = this._sandboxConfig.annotations![ANNOTATIONS.ROWDY_IMAGE_REF];
+    if (!imageRef) {
+      throw new Error('SandboxConfig is missing required annotation for image reference');
+    }
     const pullImageResponse: CRI.PullImageResponse = {
       $typeName: 'runtime.v1.PullImageResponse',
-      imageRef: this.ContainerConfig.image!.image!,
+      imageRef,
     };
     return pullImageResponse;
   }
 
   get ImageSpec(): CRI.ImageSpec {
-    return this.ContainerConfig.image!;
+    const image = this._sandboxConfig.annotations![ANNOTATIONS.ROWDY_IMAGE];
+    if (!image) {
+      throw new Error('SandboxConfig is missing required annotation for image');
+    }
+    const imageSpec: CRI.ImageSpec = {
+      $typeName: 'runtime.v1.ImageSpec',
+      annotations: { ...this.SandboxConfig.annotations },
+      image,
+      runtimeHandler: this.RunPodSandboxRequest.runtimeHandler,
+      userSpecifiedImage: 'not-implemented',
+    };
+    return imageSpec;
   }
 
   get RunPodSandboxRequest(): CRI.RunPodSandboxRequest {
     const req: CRI.RunPodSandboxRequest = {
       $typeName: 'runtime.v1.RunPodSandboxRequest',
-      runtimeHandler: this._sandboxConfig.annotations!['run.rowdy.runtime']!,
+      runtimeHandler: this._sandboxConfig.annotations![ANNOTATIONS.ROWDY_RUNTIME]!,
       config: this.SandboxConfig,
     };
     return req;

@@ -120,7 +120,7 @@ export class IamRoleResource extends CloudResource<Role, GetRoleResponse> {
   constructor(protected req: CRI.PullImageResponse) {
     super(
       {
-        describe: (role) => ({ type: 'IAM Role', label: role.Arn || '[new]' }),
+        describe: (role) => ({ type: 'IAM Role', label: role.Arn }),
         read: async () => this.client.send(new GetRoleCommand({ RoleName: await this._roleName })),
         create: async () =>
           this.client.send(

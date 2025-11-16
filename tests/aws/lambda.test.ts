@@ -1,5 +1,5 @@
 import { Logger, Environment } from '@scaffoldly/rowdy';
-import { ConfigFactory } from '../../src/aws/lambda/function';
+import { ANNOTATIONS, ConfigFactory, LABELS } from '../../src/aws/lambda/function';
 import { LambdaRuntimeService } from '../../src/aws/lambda/runtime';
 import { LambdaImageService } from '../../src/aws/lambda/image';
 
@@ -10,14 +10,32 @@ describe('aws lambda', () => {
   const service = new LambdaRuntimeService(environment, new LambdaImageService(environment));
 
   aws(
-    'should run a pod sandbox',
+    'should run an alpine sandbox',
     async () => {
-      const response = await service.runPodSandbox({
+      const { podSandboxId } = await service.runPodSandbox({
         $typeName: 'runtime.v1.RunPodSandboxRequest',
         runtimeHandler: '',
         config: ConfigFactory.new().withImage('alpine').SandboxConfig,
       });
-      expect(response.podSandboxId).toMatch(/^arn:aws:lambda:[a-z0-9-]+:[0-9]{12}:function:alpine_ARO[0-9A-Z]{18}$/);
+
+      expect(podSandboxId).toMatch(/^arn:aws:lambda:[a-z0-9-]+:[0-9]{12}:function:alpine_ARO[0-9A-Z]{18}$/);
+
+      const [sandbox] = (
+        await service.listPodSandbox({
+          $typeName: 'runtime.v1.ListPodSandboxRequest',
+          filter: { $typeName: 'runtime.v1.PodSandboxFilter', id: podSandboxId, labelSelector: {} },
+        })
+      ).items;
+
+      expect(sandbox!.id).toEqual(podSandboxId);
+
+      expect(Object.keys(sandbox!.labels!).sort()).toEqual(Object.values(LABELS).sort());
+      expect(sandbox!.labels![ANNOTATIONS.ROWDY_IMAGE]).toEqual('alpine');
+
+      expect(Object.keys(sandbox!.annotations!).sort()).toEqual(Object.values(ANNOTATIONS).sort());
+      expect(sandbox!.annotations![ANNOTATIONS.ROWDY_IMAGE_REF]).toMatch(
+        /^[0-9]{12}\.dkr\.ecr\.[a-z0-9-]+\.amazonaws\.com\/library\/alpine@sha256:[a-f0-9]{64}$/
+      );
     },
     60000
   );
@@ -25,12 +43,20 @@ describe('aws lambda', () => {
   aws(
     'should set memory',
     async () => {
-      const response = await service.runPodSandbox({
+      const { podSandboxId } = await service.runPodSandbox({
         $typeName: 'runtime.v1.RunPodSandboxRequest',
         runtimeHandler: '',
-        config: ConfigFactory.new().withImage('alpine').withMemory(512).SandboxConfig,
+        config: ConfigFactory.new().withMemory(512).SandboxConfig,
       });
-      expect(response.podSandboxId).toMatch(/^arn:aws:lambda:[a-z0-9-]+:[0-9]{12}:function:alpine_ARO[0-9A-Z]{18}$/);
+
+      const [sandbox] = (
+        await service.listPodSandbox({
+          $typeName: 'runtime.v1.ListPodSandboxRequest',
+          filter: { $typeName: 'runtime.v1.PodSandboxFilter', id: podSandboxId, labelSelector: {} },
+        })
+      ).items;
+
+      expect(sandbox!.labels![LABELS.LAMBDA_MEMORY]).toEqual('512');
     },
     60000
   );

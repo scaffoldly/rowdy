@@ -4,7 +4,7 @@ export class NullResource extends CloudResource<undefined, undefined> {
   constructor() {
     super(
       {
-        describe: (_resource) => ({ type: 'Null', label: 'Null' }),
+        describe: (_resource) => ({ type: 'Null' }),
         read: async (_id) => undefined,
         create: async () => undefined,
         update: async (_resource) => undefined,

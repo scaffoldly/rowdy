@@ -19,7 +19,7 @@ export class LambdaRuntimeService implements ILambdaRuntimeService {
   }
 
   runPodSandbox = async (req: CRI.RunPodSandboxRequest): Promise<CRI.RunPodSandboxResponse> => {
-    const factory = ConfigFactory.from(req);
+    const factory = ConfigFactory.fromRequest(req);
 
     const image = await this.image.pullImage({
       $typeName: 'runtime.v1.PullImageRequest',
@@ -33,6 +33,20 @@ export class LambdaRuntimeService implements ILambdaRuntimeService {
     return {
       $typeName: 'runtime.v1.RunPodSandboxResponse',
       podSandboxId: sandbox.id,
+    };
+  };
+
+  listPodSandbox = async (req: CRI.ListPodSandboxRequest): Promise<CRI.ListPodSandboxResponse> => {
+    if (req.filter?.id) {
+      return {
+        $typeName: 'runtime.v1.ListPodSandboxResponse',
+        items: [await SandboxResource.from(this.environment, req.filter.id)],
+      };
+    }
+
+    return {
+      $typeName: 'runtime.v1.ListPodSandboxResponse',
+      items: [],
     };
   };
 

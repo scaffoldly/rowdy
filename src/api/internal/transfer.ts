@@ -121,7 +121,11 @@ export class Transfer implements ILoggable {
     return of(this._uploads).pipe(concatMap((u) => from(u)));
   }
 
-  static normalizeImage(image: string, authorization?: string, registry: string = 'mirror.gcr.io'): Image {
+  static normalizeImage(image?: string, authorization?: string, registry: string = 'mirror.gcr.io'): Image {
+    if (!image) {
+      throw new Error('Image is required');
+    }
+
     const parts = image.split('/');
     if (parts.length > 2) {
       registry = parts[0] || registry;
@@ -637,7 +641,11 @@ export class Upload implements ILoggable {
       return status;
     }).pipe(
       catchError((err) => {
-        return throwError(() => new Error(`${this.repr()} failed: ${err.message}`));
+        let message = err instanceof Error ? err.message : String(err);
+        if (isAxiosError(err)) {
+          message = `${err.config?.method?.toUpperCase()} ${err.config?.url}: HTTP ${err.response?.status}: ${message}`;
+        }
+        return throwError(() => new Error(`${this.repr()} failed: ${message}`));
       })
     );
   }
