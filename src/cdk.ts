@@ -1,13 +1,16 @@
 import promiseRetry from 'promise-retry';
 import { getDifferences } from './internal/diff';
 import { log as consoleLog } from 'console';
+import packageJson from '../package.json';
+const VERSION = packageJson.version;
+const NAME = packageJson.name;
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const log = (message?: any, ...optionalParams: any[]): void => {
   consoleLog('[cdk] ' + message, ...optionalParams);
 };
 
-type NotifyAction = '✨' | 'Created' | 'Updated' | 'Failed to Create' | 'Failed to Update';
+type NotifyAction = '✨' | 'Created' | 'Updated' | 'Tagged' | 'Failed to Create' | 'Failed to Update' | 'Failed to Tag';
 
 interface PermissionAware {
   withPermissions(permissions: string[]): void;
@@ -50,17 +53,30 @@ export class CloudResource<Resource, ReadCommandOutput> implements PromiseLike<P
 
   private desired?: Partial<ReadCommandOutput>;
 
+  private _tags: Record<string, string> = {};
+
   constructor(
     protected readonly requests: {
-      describe: (resource: Partial<Resource>) => { type: string; label: string };
+      describe: (resource: Partial<Resource>) => { type: string; label?: string };
       read: (id?: unknown) => Promise<ReadCommandOutput>;
       create?: () => Promise<unknown>;
       update?: (resource: Partial<Resource>) => Promise<unknown>;
       dispose?: (resource: Partial<Resource>) => Promise<unknown>;
+      tag?: (resource: Partial<Resource>, tags: Record<string, string>) => Promise<unknown>;
       emitPermissions?: (aware: PermissionAware) => void;
     },
-    protected readonly resourceExtractor: ResourceExtractor<Resource, ReadCommandOutput>
-  ) {}
+    protected readonly resourceExtractor: ResourceExtractor<Resource, ReadCommandOutput>,
+    tags: Record<string, string> = {}
+  ) {
+    this._tags = tags;
+  }
+
+  get Tags(): Record<string, string> {
+    return {
+      ...this._tags,
+      'managed-by': `${NAME}@${VERSION}`,
+    };
+  }
 
   then<TResult1 = Partial<Resource>, TResult2 = never>(
     onfulfilled?: ((value: Partial<Resource>) => TResult1 | PromiseLike<TResult1>) | undefined | null,
@@ -120,6 +136,21 @@ export class CloudResource<Resource, ReadCommandOutput> implements PromiseLike<P
 
     if (!existing) {
       throw new Error(`Failed to manage ${this.requests.describe({}).type}`);
+    }
+
+    try {
+      this.logResource('Tagging', existing, options);
+      existing = await this.tag(options, existing, desired);
+      this.logResource('Tagged', existing, options);
+    } catch (e) {
+      if (!(e instanceof Error)) {
+        throw e;
+      }
+      this.logResource('Tagged', e, options);
+    }
+
+    if (!existing) {
+      throw new Error(`Failed to tag ${this.requests.describe({}).type}`);
     }
 
     return existing;
@@ -278,8 +309,46 @@ export class CloudResource<Resource, ReadCommandOutput> implements PromiseLike<P
     return resource;
   }
 
+  private async tag(
+    options: ResourceOptions,
+    existing: Partial<Resource>,
+    desired?: Partial<ReadCommandOutput>
+  ): Promise<Partial<Resource> | undefined> {
+    const { tag } = this.requests;
+    if (!tag) {
+      return existing;
+    }
+
+    await promiseRetry(
+      (retry) =>
+        tag(existing, this.Tags).catch((e) => {
+          if (
+            '$metadata' in e &&
+            'httpStatusCode' in e.$metadata &&
+            (e.$metadata.httpStatusCode === 403 || e.$metadata.httpStatusCode === 401)
+          ) {
+            throw e;
+          }
+
+          if (e instanceof FatalException) {
+            throw e;
+          }
+
+          return retry(e);
+        }),
+      {
+        retries: options.retries !== Infinity ? options.retries || 0 : 0,
+        forever: options.retries === Infinity,
+      }
+    );
+
+    const resource = await this._read(options, desired);
+
+    return resource;
+  }
+
   logResource(
-    action: 'Reading' | 'Creating' | 'Created' | 'Updating' | 'Updated',
+    action: 'Reading' | 'Creating' | 'Created' | 'Updating' | 'Updated' | 'Tagging' | 'Tagged',
     resource: Partial<Resource | undefined> | Error,
     options: ResourceOptions
   ): void {
@@ -290,20 +359,25 @@ export class CloudResource<Resource, ReadCommandOutput> implements PromiseLike<P
       | 'Created'
       | 'Updating'
       | 'Updated'
+      | 'Tagging'
+      | 'Tagged'
       | 'Failed to Create'
-      | 'Failed to Update' = action;
+      | 'Failed to Update'
+      | 'Failed to Tag' = action;
     let emoji = '🤔';
     let type = 'Resource';
-    let label: string | undefined;
+    let label: string;
 
     switch (action) {
       case 'Created':
       case 'Updated':
+      case 'Tagged':
         emoji = '✅';
         break;
       case 'Reading':
       case 'Creating':
       case 'Updating':
+      case 'Tagging':
         emoji = '';
         break;
     }
@@ -317,14 +391,17 @@ export class CloudResource<Resource, ReadCommandOutput> implements PromiseLike<P
         case 'Updated':
           verb = 'Failed to Update';
           break;
+        case 'Tagged':
+          verb = 'Failed to Tag';
+          break;
       }
       const description = this.requests.describe({});
       type = description.type;
-      label = description.label;
+      label = description.label || '[computed]';
     } else {
       const description = this.requests.describe(resource || {});
       type = description.type;
-      label = description.label;
+      label = description.label || '[computed]';
     }
 
     const message = `${verb} ${type}`;
@@ -350,6 +427,7 @@ export class CloudResource<Resource, ReadCommandOutput> implements PromiseLike<P
     switch (verb) {
       case 'Created':
       case 'Updated':
+      case 'Tagged':
       case 'Failed to Create':
       case 'Failed to Update':
         log(`${emoji ? `${emoji} ` : ''}${messageOutput}`);
@@ -360,6 +438,7 @@ export class CloudResource<Resource, ReadCommandOutput> implements PromiseLike<P
       case 'Reading':
       case 'Creating':
       case 'Updating':
+      case 'Tagging':
         log(messageOutput);
         break;
     }
