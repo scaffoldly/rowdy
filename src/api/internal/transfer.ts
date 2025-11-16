@@ -600,7 +600,16 @@ export class Upload implements ILoggable {
       let toUrl = this.toUrl;
 
       if (this.type === 'blob') {
-        if (await this.http.head(this.verifyUrl, { validateStatus: () => true }).then((res) => res.status === 200)) {
+        if (
+          await this.http
+            .head(this.verifyUrl, { validateStatus: () => true })
+            .then(
+              (res) =>
+                res.status === 200 &&
+                res.headers['content-length'] == this.ref.size &&
+                res.headers['docker-content-digest'] === this.digest
+            )
+        ) {
           this.log.info(`${this.digest}: Layer exists, skipping upload`);
           this._complete = true;
           this.bytes.sent = this.bytes.total;
