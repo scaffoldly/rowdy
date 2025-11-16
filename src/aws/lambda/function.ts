@@ -49,7 +49,7 @@ export const LABELS = {
   ROWDY_RUNTIME: ANNOTATIONS.ROWDY_RUNTIME,
 };
 
-export class SandboxResource
+export abstract class FunctionResource
   extends CloudResource<FunctionConfiguration, GetFunctionCommandOutput>
   implements IamConsumer
 {
@@ -61,11 +61,11 @@ export class SandboxResource
   }
 
   private get _functionName(): PromiseLike<string> {
-    return this.iamRole.RoleId.then((roleId) => `${this.req.config?.metadata?.name}_${roleId}`);
+    return this.iamRole.RoleId.then((roleId) => `${this._metadataName}_${roleId}`);
   }
 
   private get _memorySize(): number {
-    const desired = this.req.config?.linux?.resources?.memoryLimitInBytes;
+    const desired = this._memoryLimitInBytes;
     if (!desired) {
       return 1024;
     }
@@ -105,6 +105,12 @@ export class SandboxResource
     };
   }
 
+  protected abstract get _metadataName(): string;
+  protected abstract get _annotations(): Record<string, string>;
+  protected abstract get _labels(): Record<string, string>;
+  protected abstract get _memoryLimitInBytes(): bigint;
+  protected abstract get _runtimeHandler(): string;
+
   annotations = (fn: FunctionConfiguration): Record<string, string> => {
     return {
       [`${ANNOTATIONS.LAMBDA_ARN}`]: fn.FunctionArn ?? '',
@@ -113,8 +119,8 @@ export class SandboxResource
       [`${ANNOTATIONS.LAMBDA_TIMEOUT}`]: fn.Timeout?.toString() ?? '',
       [`${ANNOTATIONS.LAMBDA_CODE_SHA256}`]: fn.CodeSha256 ?? '',
       [`${ANNOTATIONS.LAMBDA_REVISION_ID}`]: fn.RevisionId ?? '',
-      [`${ANNOTATIONS.ROWDY_RUNTIME}`]: this.req.config?.annotations?.[`${ANNOTATIONS.ROWDY_RUNTIME}`] ?? '',
-      [`${ANNOTATIONS.ROWDY_IMAGE}`]: this.req.config?.annotations?.[`${ANNOTATIONS.ROWDY_IMAGE}`] ?? '',
+      [`${ANNOTATIONS.ROWDY_RUNTIME}`]: this._annotations?.[`${ANNOTATIONS.ROWDY_RUNTIME}`] ?? '',
+      [`${ANNOTATIONS.ROWDY_IMAGE}`]: this._annotations?.[`${ANNOTATIONS.ROWDY_IMAGE}`] ?? '',
       [`${ANNOTATIONS.ROWDY_IMAGE_REF}`]: this.image.imageRef,
     };
   };
@@ -125,8 +131,8 @@ export class SandboxResource
       [`${LABELS.LAMBDA_ARCHITECTURE}`]: fn.Architectures?.[0] ?? '',
       [`${LABELS.LAMBDA_MEMORY}`]: fn.MemorySize?.toString() ?? '',
       [`${LABELS.LAMBDA_TIMEOUT}`]: fn.Timeout?.toString() ?? '',
-      [`${LABELS.ROWDY_RUNTIME}`]: this.req.config?.labels?.[`${LABELS.ROWDY_RUNTIME}`] ?? '',
-      [`${LABELS.ROWDY_IMAGE}`]: this.req.config?.labels?.[`${LABELS.ROWDY_IMAGE}`] ?? '',
+      [`${LABELS.ROWDY_RUNTIME}`]: this._labels?.[`${LABELS.ROWDY_RUNTIME}`] ?? '',
+      [`${LABELS.ROWDY_IMAGE}`]: this._labels?.[`${LABELS.ROWDY_IMAGE}`] ?? '',
     };
   };
 
@@ -146,7 +152,7 @@ export class SandboxResource
         createdAt: BigInt(fn.LastModified ? new Date(fn.LastModified).getTime() : 0),
         labels: this.labels(fn),
         annotations: this.annotations(fn),
-        runtimeHandler: this.req.runtimeHandler,
+        runtimeHandler: this._runtimeHandler,
       };
       return sandbox;
     });
@@ -154,7 +160,6 @@ export class SandboxResource
 
   constructor(
     public readonly environment: Environment,
-    protected req: CRI.RunPodSandboxRequest,
     protected image: CRI.PullImageResponse
   ) {
     super(
@@ -242,15 +247,6 @@ export class SandboxResource
     this.iamRole = new IamRoleResource(image).withConsumer(this);
   }
 
-  static async from(environment: Environment, id: string): Promise<CRI.PodSandbox> {
-    const client = new LambdaClient({});
-    const config = await client.send(new GetFunctionCommand({ FunctionName: id }));
-    const tags = await client.send(new ListTagsCommand({ Resource: id }));
-    const factory = ConfigFactory.fromLambda(config.Configuration, config.Code, tags);
-    const resource = new SandboxResource(environment, factory.RunPodSandboxRequest, factory.PullImageResponse);
-    return resource.Sandbox;
-  }
-
   get trustRelationship(): TrustRelationship {
     return {
       Version: '2012-10-17',
@@ -272,20 +268,19 @@ export class SandboxResource
       Statement: [
         {
           Action: [
-            'lambda:Get*',
-            'lambda:List*',
+            // Standard Execution Actions
             'logs:CreateLogStream',
             'logs:CreateLogGroup',
             'logs:TagResource',
             'logs:PutLogEvents',
             'xray:PutTraceSegments',
             'xray:PutTelemetryRecords',
-            // 'ec2:CreateNetworkInterface',
-            // 'ec2:DescribeNetworkInterfaces',
-            // 'ec2:DescribeSubnets',
-            // 'ec2:DeleteNetworkInterface',
-            // 'ec2:AssignPrivateIpAddresses',
-            // 'ec2:UnassignPrivateIpAddresses',
+            'ec2:CreateNetworkInterface',
+            'ec2:DescribeNetworkInterfaces',
+            'ec2:DescribeSubnets',
+            'ec2:DeleteNetworkInterface',
+            'ec2:AssignPrivateIpAddresses',
+            'ec2:UnassignPrivateIpAddresses',
           ],
           Resource: ['*'],
           Effect: 'Allow',
@@ -487,5 +482,9 @@ export class ConfigFactory {
       config: this.SandboxConfig,
     };
     return req;
+  }
+
+  get RuntimeHandler(): string {
+    return this._sandboxConfig.annotations![ANNOTATIONS.ROWDY_RUNTIME]!;
   }
 }

@@ -23,6 +23,7 @@ import { AxiosInstance, AxiosResponse, isAxiosError } from 'axios';
 import { PullImageOptions, TRegistry } from '../types';
 import { cpus } from 'os';
 import { Readable } from 'stream';
+import promiseRetry from 'promise-retry';
 
 export type External = {
   Ref: Partial<{
@@ -601,14 +602,16 @@ export class Upload implements ILoggable {
 
       if (this.type === 'blob') {
         if (
-          await this.http
-            .head(this.verifyUrl, { validateStatus: () => true })
-            .then(
-              (res) =>
-                res.status === 200 &&
-                res.headers['content-length'] == this.ref.size &&
-                res.headers['docker-content-digest'] === this.digest
-            )
+          await promiseRetry(() =>
+            this.http
+              .head(this.verifyUrl, { validateStatus: () => true })
+              .then(
+                (res) =>
+                  res.status === 200 &&
+                  res.headers['content-length'] == this.ref.size &&
+                  res.headers['docker-content-digest'] === this.digest
+              )
+          )
         ) {
           this.log.info(`${this.digest}: Layer exists, skipping upload`);
           this._complete = true;
@@ -616,9 +619,11 @@ export class Upload implements ILoggable {
           return status;
         }
 
-        const location = await this.http
-          .post(toUrl, null, { headers: { 'Content-Type': this.mediaType } })
-          .then((res) => res.headers['location'] as string | undefined);
+        const location = await promiseRetry(() =>
+          this.http
+            .post(toUrl, null, { headers: { 'Content-Type': this.mediaType } })
+            .then((res) => res.headers['location'] as string | undefined)
+        );
 
         if (!location) {
           throw new Error(`No location header received`);
@@ -629,29 +634,37 @@ export class Upload implements ILoggable {
 
       let { data: download } =
         this.type === 'blob'
-          ? await this.http.get<Readable>(fromUrl, {
-              responseType: 'stream',
-              maxBodyLength: Infinity,
-              maxContentLength: Infinity,
-              headers: { Accept: this.mediaType },
-              onDownloadProgress: (e) => (this.bytes.received += e.bytes),
+          ? await promiseRetry(() => {
+              return this.http.get<Readable>(fromUrl, {
+                responseType: 'stream',
+                maxBodyLength: Infinity,
+                maxContentLength: Infinity,
+                headers: { Accept: this.mediaType },
+                onDownloadProgress: (e) => (this.bytes.received += e.bytes),
+              });
             })
           : { data: this.content };
 
       if (this.type === 'blob') {
-        await this.http.patch(toUrl, download, {
-          headers: { 'Content-Type': 'application/octet-stream' },
-          onUploadProgress: (e) => (this.bytes.sent += e.bytes),
+        await promiseRetry(() => {
+          return this.http.patch(toUrl, download, {
+            headers: { 'Content-Type': 'application/octet-stream' },
+            onUploadProgress: (e) => (this.bytes.sent += e.bytes),
+          });
         });
         toUrl = `${toUrl}?digest=${this.digest}`;
         download = Readable.from('');
       }
 
-      await this.http.put(toUrl, download, {
-        headers: {
-          'Content-Type': this.mediaType,
-        },
-        onUploadProgress: (e) => (this.bytes.sent += e.bytes),
+      await promiseRetry(() => {
+        return this.http.put(toUrl, download, {
+          maxBodyLength: Infinity,
+          maxContentLength: Infinity,
+          headers: {
+            'Content-Type': this.mediaType,
+          },
+          onUploadProgress: (e) => (this.bytes.sent += e.bytes),
+        });
       });
 
       this._complete = true;

@@ -3,7 +3,8 @@ import { CRI } from '@scaffoldly/rowdy-grpc';
 import { Environment } from '../../environment';
 import { LambdaImageService } from './image';
 import { Logger } from '../..';
-import { ConfigFactory, SandboxResource } from './function';
+import { ConfigFactory } from './function';
+import { SandboxResource } from './sandbox';
 
 // eslint-disable-next-line @typescript-eslint/no-empty-object-type
 interface ILambdaRuntimeService extends Partial<ServiceImpl<typeof CRI.RuntimeService>> {}
