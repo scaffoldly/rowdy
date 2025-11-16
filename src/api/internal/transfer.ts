@@ -444,11 +444,6 @@ export class Transfer implements ILoggable {
 }
 
 export class TransferStatus implements ILoggable {
-  private _index: External['Index'] = {
-    schemaVersion: 2,
-    mediaType: 'application/vnd.oci.image.index.v1+json',
-    manifests: [],
-  };
   private _transfer?: Transfer;
   private _statuses: UploadStatus[] = [];
 
@@ -560,7 +555,7 @@ export class Upload implements ILoggable {
     return url.split('/').slice(0, -2).join('/') + `/manifests/${this.ref.digest}`;
   }
 
-  get toUrl(): string {
+  get verifyUrl(): string {
     // eslint-disable-next-line no-restricted-globals
     const url = new URL(this.fromUrl);
     url.host = this.transfer.registry.registry;
@@ -568,6 +563,12 @@ export class Upload implements ILoggable {
       this.transfer.manifest.slug,
       `${this.transfer.manifest.namespace}/${this.transfer.manifest.name}`
     );
+    return url.toString();
+  }
+
+  get toUrl(): string {
+    // eslint-disable-next-line no-restricted-globals
+    const url = new URL(this.verifyUrl);
     if (this.type === 'blob') {
       url.pathname = url.pathname.replace(/blobs\/.*/, 'blobs/uploads/');
     }
@@ -599,6 +600,13 @@ export class Upload implements ILoggable {
       let toUrl = this.toUrl;
 
       if (this.type === 'blob') {
+        if (await this.http.head(this.verifyUrl, { validateStatus: () => true }).then((res) => res.status === 200)) {
+          this.log.info(`${this.digest}: Layer exists, skipping upload`);
+          this._complete = true;
+          this.bytes.sent = this.bytes.total;
+          return status;
+        }
+
         const location = await this.http
           .post(toUrl, null, { headers: { 'Content-Type': this.mediaType } })
           .then((res) => res.headers['location'] as string | undefined);
