@@ -143,6 +143,10 @@ export class Environment implements ILoggable {
     return this;
   }
 
+  public serve(): this {
+    return this;
+  }
+
   @Trace
   public poll(): Observable<Result<Pipeline>> {
     return race(this._pipelines.map((p) => p.into())).pipe(

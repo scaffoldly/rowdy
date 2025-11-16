@@ -19,9 +19,7 @@ export class LambdaRuntimeService implements ILambdaRuntimeService {
   }
 
   runPodSandbox = async (req: CRI.RunPodSandboxRequest): Promise<CRI.RunPodSandboxResponse> => {
-    const factory = ConfigFactory.from(req).withImage(req.config?.annotations?.['run.rowdy.image']);
-
-    req.runtimeHandler = req.runtimeHandler || factory.RuntimeHandler;
+    const factory = ConfigFactory.from(req);
 
     const image = await this.image.pullImage({
       $typeName: 'runtime.v1.PullImageRequest',

@@ -121,55 +121,54 @@ export class Transfer implements ILoggable {
     return of(this._uploads).pipe(concatMap((u) => from(u)));
   }
 
-  static normalize(authorization?: string, registry: string = 'mirror.gcr.io'): OperatorFunction<string, Image> {
-    return (source) =>
-      source.pipe(
-        map((image) => {
-          const parts = image.split('/');
-          if (parts.length > 2) {
-            registry = parts[0] || registry;
-          }
+  static normalizeImage(image: string, authorization?: string, registry: string = 'mirror.gcr.io'): Image {
+    const parts = image.split('/');
+    if (parts.length > 2) {
+      registry = parts[0] || registry;
+    }
 
-          let [nameAndTag = '', namespace = 'library'] = [...parts].reverse();
-          let [name, digest = 'latest', tag = null] = nameAndTag.split(':');
+    let [nameAndTag = '', namespace = 'library'] = [...parts].reverse();
+    let [name, digest = 'latest', tag = null] = nameAndTag.split(':');
 
-          if (name?.endsWith('@sha256')) {
-            [name, digest = digest] = nameAndTag.split('@');
-            tag = null;
-          } else {
-            tag = digest;
-          }
+    if (name?.endsWith('@sha256')) {
+      [name, digest = digest] = nameAndTag.split('@');
+      tag = null;
+    } else {
+      tag = digest;
+    }
 
-          if (!name) {
-            throw new Error(`Unable to normalize image: ${image}`);
-          }
+    if (!name) {
+      throw new Error(`Unable to normalize image: ${image}`);
+    }
 
-          if (parts.length <= 2) {
-            image = `${registry}/${namespace}/${name}${tag ? `:${tag}` : `@${digest}`}`;
-          }
+    if (parts.length <= 2) {
+      image = `${registry}/${namespace}/${name}${tag ? `:${tag}` : `@${digest}`}`;
+    }
 
-          let slug = `${namespace}/${name}`;
-          if (parts.length > 3) {
-            slug = `${[...parts].slice(1, -1).join('/')}/${name}`;
-          }
+    let slug = `${namespace}/${name}`;
+    if (parts.length > 3) {
+      slug = `${[...parts].slice(1, -1).join('/')}/${name}`;
+    }
 
-          let url = `https://${registry}/v2/${slug}/manifests/${digest}`;
+    let url = `https://${registry}/v2/${slug}/manifests/${digest}`;
 
-          const result: Image = {
-            registry: registry!,
-            slug,
-            name,
-            namespace,
-            image,
-            digest,
-            tag,
-            url,
-            authorization,
-          };
+    const result: Image = {
+      registry: registry!,
+      slug,
+      name,
+      namespace,
+      image,
+      digest,
+      tag,
+      url,
+      authorization,
+    };
 
-          return result;
-        })
-      );
+    return result;
+  }
+
+  static normalize(authorization?: string, registry?: string): OperatorFunction<string, Image> {
+    return (source) => source.pipe(map((image) => this.normalizeImage(image, authorization, registry)));
   }
 
   static collect(log: Logger, http: AxiosInstance, layersFrom?: string): OperatorFunction<Image, ImageManifest> {

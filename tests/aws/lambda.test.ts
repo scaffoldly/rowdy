@@ -17,7 +17,7 @@ describe('aws lambda', () => {
         runtimeHandler: '',
         config: ConfigFactory.new().withImage('alpine').SandboxConfig,
       });
-      expect(response.podSandboxId).toMatch(/^arn:aws:lambda:[a-z0-9-]+:[0-9]{12}:function:rowdy_ARO[0-9A-Z]{18}$/);
+      expect(response.podSandboxId).toMatch(/^arn:aws:lambda:[a-z0-9-]+:[0-9]{12}:function:alpine_ARO[0-9A-Z]{18}$/);
     },
     60000
   );
@@ -27,12 +27,10 @@ describe('aws lambda', () => {
     async () => {
       const response = await service.runPodSandbox({
         $typeName: 'runtime.v1.RunPodSandboxRequest',
-        runtimeHandler: 'memory-512mb',
+        runtimeHandler: '',
         config: ConfigFactory.new().withImage('alpine').withMemory(512).SandboxConfig,
       });
-      expect(response.podSandboxId).toMatch(
-        /^arn:aws:lambda:[a-z0-9-]+:[0-9]{12}:function:memory-512mb_ARO[0-9A-Z]{18}$/
-      );
+      expect(response.podSandboxId).toMatch(/^arn:aws:lambda:[a-z0-9-]+:[0-9]{12}:function:alpine_ARO[0-9A-Z]{18}$/);
     },
     60000
   );

@@ -137,9 +137,6 @@ export class IamRoleResource extends CloudResource<Role, GetRoleResponse> {
             })
           ),
         dispose: (role) => this.client.send(new DeleteRoleCommand({ RoleName: role.RoleName })),
-        emitPermissions: (aware) => {
-          aware.withPermissions(['iam:CreateRole', 'iam:GetRole', 'iam:UpdateAssumeRolePolicy']);
-        },
       },
       (output) => output.Role
     );
@@ -189,9 +186,6 @@ class IamPolicyResource extends CloudResource<PolicyDocument, GetRolePolicyComma
               PolicyName: this.policyName,
             })
           ),
-        emitPermissions: (aware) => {
-          aware.withPermissions(['iam:PutRolePolicy', 'iam:GetRolePolicy']);
-        },
       },
       (output) => {
         return JSON.parse(output.PolicyDocument ? decodeURIComponent(output.PolicyDocument) : '{}');
