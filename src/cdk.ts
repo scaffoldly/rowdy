@@ -10,17 +10,21 @@ const log = (message?: any, ...optionalParams: any[]): void => {
   consoleLog('[cdk] ' + message, ...optionalParams);
 };
 
-type NotifyAction = '✨' | 'Created' | 'Updated' | 'Tagged' | 'Failed to Create' | 'Failed to Update' | 'Failed to Tag';
-
-interface PermissionAware {
-  withPermissions(permissions: string[]): void;
-  get permissions(): string[];
-}
+type CallbackAction =
+  | 'Created'
+  | 'Updated'
+  | 'Tagged'
+  | 'Deleted'
+  | 'Failed to Create'
+  | 'Failed to Update'
+  | 'Failed to Tag'
+  | 'Failed to Delete';
 
 type ResourceOptions = {
   retries?: number;
-  notify?: (action: NotifyAction, resourceType: string, resourceMessage: string, level?: 'notice' | 'error') => void;
-  permissionsAware?: PermissionAware;
+  readOnly?: boolean;
+  dispose?: boolean;
+  callback?: (action: CallbackAction, level: 'notice' | 'error', type: string, label: string | undefined) => void;
 };
 
 type ResourceExtractor<Resource, ReadCommandOutput> = (
@@ -50,25 +54,32 @@ export class SkipAction extends Error {
 
 export class CloudResource<Resource, ReadCommandOutput> implements PromiseLike<Partial<Resource>> {
   private options: ResourceOptions = {};
-
   private desired?: Partial<ReadCommandOutput>;
-
   private _tags: Record<string, string> = {};
+  private _snapshot?: Partial<Resource>;
 
   constructor(
-    protected readonly requests: {
+    public readonly requests: {
       describe: (resource: Partial<Resource>) => { type: string; label?: string };
       read: (id?: unknown) => Promise<ReadCommandOutput>;
       create?: () => Promise<unknown>;
       update?: (resource: Partial<Resource>) => Promise<unknown>;
       dispose?: (resource: Partial<Resource>) => Promise<unknown>;
       tag?: (resource: Partial<Resource>, tags: Record<string, string>) => Promise<unknown>;
-      emitPermissions?: (aware: PermissionAware) => void;
     },
-    protected readonly resourceExtractor: ResourceExtractor<Resource, ReadCommandOutput>,
+    public readonly resourceExtractor: ResourceExtractor<Resource, ReadCommandOutput>,
     tags: Record<string, string> = {}
   ) {
     this._tags = tags;
+  }
+
+  get Snapshot(): PromiseLike<Partial<Resource>> {
+    if (this._snapshot) {
+      return Promise.resolve(this._snapshot);
+    }
+    return this.manage()
+      .then((resource) => (this._snapshot = resource))
+      .then(() => this.Snapshot);
   }
 
   get Tags(): Record<string, string> {
@@ -83,54 +94,39 @@ export class CloudResource<Resource, ReadCommandOutput> implements PromiseLike<P
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     onrejected?: ((reason: any) => TResult2 | PromiseLike<TResult2>) | undefined | null
   ): PromiseLike<TResult1 | TResult2> {
-    return this._manage(this.options, this.desired).then(onfulfilled, onrejected);
+    return this._manage(this.desired).then(onfulfilled, onrejected);
   }
 
-  public async read(id: unknown): Promise<Partial<Resource> | undefined> {
-    return this.requests.read(id).then((output) => {
-      return this.resourceExtractor(output);
-    });
-  }
-
-  public manage(
-    options: ResourceOptions,
-    desired?: Partial<ReadCommandOutput>
-  ): CloudResource<Resource, ReadCommandOutput> {
-    this.options = options;
+  public manage(desired?: Partial<ReadCommandOutput>): CloudResource<Resource, ReadCommandOutput> {
     this.desired = desired;
     return this;
   }
 
-  async _manage(options: ResourceOptions, desired?: Partial<ReadCommandOutput>): Promise<Partial<Resource>> {
-    const { emitPermissions } = this.requests;
-    if (emitPermissions && options.permissionsAware) {
-      emitPermissions(options.permissionsAware);
+  private async _manage(desired?: Partial<ReadCommandOutput>): Promise<Partial<Resource>> {
+    let existing = await this._read(desired);
+    if (this.options.readOnly) {
+      return existing || {};
     }
 
-    this.logResource('Reading', {}, options);
-    let existing = await this._read(options);
+    if (this.options.dispose) {
+      return (await this._dispose(existing || {})) || {};
+    }
 
     if (existing) {
       try {
-        this.logResource('Updating', existing, options);
-        existing = await this.update(options, existing, desired);
-        this.logResource('Updated', existing, options);
+        existing = await this._update(existing, desired);
       } catch (e) {
         if (!(e instanceof Error)) {
           throw e;
         }
-        this.logResource('Updated', e, options);
       }
     } else {
       try {
-        this.logResource('Creating', existing, options);
-        existing = await this.create(options, desired);
-        this.logResource('Created', existing, options);
+        existing = await this._create(desired);
       } catch (e) {
         if (!(e instanceof Error)) {
           throw e;
         }
-        this.logResource('Created', e, options);
       }
     }
 
@@ -139,14 +135,11 @@ export class CloudResource<Resource, ReadCommandOutput> implements PromiseLike<P
     }
 
     try {
-      this.logResource('Tagging', existing, options);
-      existing = await this.tag(options, existing, desired);
-      this.logResource('Tagged', existing, options);
+      existing = await this._tag(existing, desired);
     } catch (e) {
       if (!(e instanceof Error)) {
         throw e;
       }
-      this.logResource('Tagged', e, options);
     }
 
     if (!existing) {
@@ -156,38 +149,11 @@ export class CloudResource<Resource, ReadCommandOutput> implements PromiseLike<P
     return existing;
   }
 
-  public async dispose(): Promise<Partial<Resource>> {
-    const existing = await this;
-
-    if (!existing) {
-      return {} as Partial<Resource>;
-    }
-
-    const { dispose } = this.requests;
-    if (!dispose) {
-      return existing;
-    }
-
-    await dispose(existing).catch(() => {});
-    const current = await this._read(this.options).catch(() => ({}) as Partial<Resource>);
-
-    if (!current) {
-      return {} as Partial<Resource>;
-    }
-
-    return current;
-  }
-
-  private async _read(options: ResourceOptions, desired?: Partial<unknown>): Promise<Partial<Resource> | undefined> {
-    const { read } = this.requests;
-    if (!read) {
-      return undefined;
-    }
-
+  private async _read(desired?: Partial<ReadCommandOutput>): Promise<Partial<Resource> | undefined> {
     const response = await promiseRetry(
       async (retry) => {
         try {
-          const readResponse = await read();
+          const readResponse = await this.requests.read();
 
           const difference = getDifferences(desired || {}, readResponse);
 
@@ -225,24 +191,21 @@ export class CloudResource<Resource, ReadCommandOutput> implements PromiseLike<P
         }
       },
       {
-        retries: options.retries !== Infinity ? options.retries || 0 : 0,
-        forever: options.retries === Infinity,
+        retries: this.options.retries !== Infinity ? this.options.retries || 0 : 0,
+        forever: this.options.retries === Infinity,
       }
     );
 
     return response;
   }
 
-  private async create(
-    options: ResourceOptions,
-    desired?: Partial<ReadCommandOutput>
-  ): Promise<Partial<Resource> | undefined> {
+  private async _create(desired?: Partial<ReadCommandOutput>): Promise<Partial<Resource> | undefined> {
     const { create } = this.requests;
-
     if (!create) {
       return undefined;
     }
 
+    this._log('Creating', {});
     await promiseRetry(
       (retry) =>
         create().catch((e) => {
@@ -261,18 +224,18 @@ export class CloudResource<Resource, ReadCommandOutput> implements PromiseLike<P
           return retry(e);
         }),
       {
-        retries: options.retries !== Infinity ? options.retries || 0 : 0,
-        forever: options.retries === Infinity,
+        retries: this.options.retries !== Infinity ? this.options.retries || 0 : 0,
+        forever: this.options.retries === Infinity,
       }
-    );
+    ).catch((e) => this._log('Created', e));
 
-    const resource = await this._read(options, desired);
+    const resource = await this._read(desired);
+    this._log('Created', resource);
 
     return resource;
   }
 
-  private async update(
-    options: ResourceOptions,
+  private async _update(
     existing: Partial<Resource>,
     desired?: Partial<ReadCommandOutput>
   ): Promise<Partial<Resource> | undefined> {
@@ -281,6 +244,7 @@ export class CloudResource<Resource, ReadCommandOutput> implements PromiseLike<P
       return existing;
     }
 
+    this._log('Updating', existing);
     await promiseRetry(
       (retry) =>
         update(existing).catch((e) => {
@@ -299,18 +263,56 @@ export class CloudResource<Resource, ReadCommandOutput> implements PromiseLike<P
           return retry(e);
         }),
       {
-        retries: options.retries !== Infinity ? options.retries || 0 : 0,
-        forever: options.retries === Infinity,
+        retries: this.options.retries !== Infinity ? this.options.retries || 0 : 0,
+        forever: this.options.retries === Infinity,
       }
-    );
+    ).catch((e) => this._log('Updated', e));
 
-    const resource = await this._read(options, desired);
+    const resource = await this._read(desired);
+    this._log('Updated', resource);
 
     return resource;
   }
 
-  private async tag(
-    options: ResourceOptions,
+  private async _dispose(existing: Partial<Resource>): Promise<Partial<Resource> | undefined> {
+    const { dispose } = this.requests;
+    if (!dispose) {
+      throw new Error('Dispose operation not provided');
+    }
+
+    this._log('Deleting', existing);
+    await promiseRetry(
+      (retry) =>
+        dispose(existing).catch((e) => {
+          if ('$metadata' in e && 'httpStatusCode' in e.$metadata && e.$metadata.httpStatusCode === 404) {
+            return {} as Partial<Resource>;
+          }
+
+          if (
+            '$metadata' in e &&
+            'httpStatusCode' in e.$metadata &&
+            (e.$metadata.httpStatusCode === 403 || e.$metadata.httpStatusCode === 401)
+          ) {
+            throw e;
+          }
+
+          if (e instanceof FatalException) {
+            throw e;
+          }
+
+          return retry(e);
+        }),
+      {
+        retries: this.options.retries !== Infinity ? this.options.retries || 0 : 0,
+        forever: this.options.retries === Infinity,
+      }
+    ).catch((e) => this._log('Deleted', e));
+
+    this._log('Deleted', existing);
+    return existing;
+  }
+
+  private async _tag(
     existing: Partial<Resource>,
     desired?: Partial<ReadCommandOutput>
   ): Promise<Partial<Resource> | undefined> {
@@ -319,6 +321,7 @@ export class CloudResource<Resource, ReadCommandOutput> implements PromiseLike<P
       return existing;
     }
 
+    this._log('Tagging', existing);
     await promiseRetry(
       (retry) =>
         tag(existing, this.Tags).catch((e) => {
@@ -337,53 +340,38 @@ export class CloudResource<Resource, ReadCommandOutput> implements PromiseLike<P
           return retry(e);
         }),
       {
-        retries: options.retries !== Infinity ? options.retries || 0 : 0,
-        forever: options.retries === Infinity,
+        retries: this.options.retries !== Infinity ? this.options.retries || 0 : 0,
+        forever: this.options.retries === Infinity,
       }
-    );
+    ).catch((e) => this._log('Tagged', e));
 
-    const resource = await this._read(options, desired);
+    const resource = await this._read(desired);
+    this._log('Tagged', resource);
 
     return resource;
   }
 
-  logResource(
-    action: 'Reading' | 'Creating' | 'Created' | 'Updating' | 'Updated' | 'Tagging' | 'Tagged',
-    resource: Partial<Resource | undefined> | Error,
-    options: ResourceOptions
+  private _log(
+    action: 'Creating' | 'Created' | 'Updating' | 'Updated' | 'Tagging' | 'Tagged' | 'Deleting' | 'Deleted',
+    resource: Partial<Resource | undefined> | Error
   ): void {
     let verb:
-      | '✨'
-      | 'Reading'
       | 'Creating'
       | 'Created'
       | 'Updating'
       | 'Updated'
       | 'Tagging'
       | 'Tagged'
+      | 'Deleting'
+      | 'Deleted'
       | 'Failed to Create'
       | 'Failed to Update'
-      | 'Failed to Tag' = action;
-    let emoji = '🤔';
+      | 'Failed to Tag'
+      | 'Failed to Delete' = action;
     let type = 'Resource';
     let label: string;
 
-    switch (action) {
-      case 'Created':
-      case 'Updated':
-      case 'Tagged':
-        emoji = '✅';
-        break;
-      case 'Reading':
-      case 'Creating':
-      case 'Updating':
-      case 'Tagging':
-        emoji = '';
-        break;
-    }
-
     if (resource instanceof Error) {
-      emoji = '❌';
       switch (action) {
         case 'Created':
           verb = 'Failed to Create';
@@ -393,6 +381,9 @@ export class CloudResource<Resource, ReadCommandOutput> implements PromiseLike<P
           break;
         case 'Tagged':
           verb = 'Failed to Tag';
+          break;
+        case 'Deleted':
+          verb = 'Failed to Delete';
           break;
       }
       const description = this.requests.describe({});
@@ -428,17 +419,20 @@ export class CloudResource<Resource, ReadCommandOutput> implements PromiseLike<P
       case 'Created':
       case 'Updated':
       case 'Tagged':
+      case 'Deleted':
       case 'Failed to Create':
       case 'Failed to Update':
-        log(`${emoji ? `${emoji} ` : ''}${messageOutput}`);
-        if (options.notify) {
-          options.notify(verb, type, resourceMessage, resource instanceof Error ? 'error' : 'notice');
-        }
+      case 'Failed to Tag':
+      case 'Failed to Delete':
+        log(messageOutput);
+        this.options.callback?.(
+          verb,
+          resource instanceof Error ? 'error' : 'notice',
+          type,
+          label === '[computed]' ? undefined : label
+        );
         break;
-      case 'Reading':
-      case 'Creating':
-      case 'Updating':
-      case 'Tagging':
+      default:
         log(messageOutput);
         break;
     }
@@ -446,5 +440,25 @@ export class CloudResource<Resource, ReadCommandOutput> implements PromiseLike<P
     if (resource instanceof Error) {
       throw new Error(`Unable to manage resource: ${resource}`);
     }
+  }
+
+  public readOnly(): this {
+    this.options.readOnly = true;
+    return this;
+  }
+
+  public retries(retries: number): this {
+    this.options.retries = retries;
+    return this;
+  }
+
+  public callback(callback: ResourceOptions['callback']): this {
+    this.options.callback = callback;
+    return this;
+  }
+
+  public dispose(): this {
+    this.options.dispose = true;
+    return this;
   }
 }
