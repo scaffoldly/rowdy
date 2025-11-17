@@ -25,7 +25,7 @@ export class ContainerResource extends FunctionResource {
   ): Promise<{ factory: ConfigFactory; container: CRI.Container }> {
     const client = new LambdaClient({});
     const config = await client.send(new GetFunctionCommand({ FunctionName: id }));
-    const tags = await client.send(new ListTagsCommand({ Resource: id }));
+    const tags = await client.send(new ListTagsCommand({ Resource: sandbox.id }));
     const factory = ConfigFactory.fromLambda(config.Configuration, config.Code, tags);
     const resource = new ContainerResource(environment, sandbox, factory.CreateContainerRequest, factory.ImageSpec);
     return { factory, container: await resource.readOnly().Container };

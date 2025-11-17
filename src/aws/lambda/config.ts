@@ -3,6 +3,7 @@ import { Transfer } from '../../api/internal/transfer';
 import { FunctionCodeLocation, FunctionConfiguration, ListTagsResponse } from '@aws-sdk/client-lambda';
 
 export const ANNOTATIONS = {
+  MANAGED_BY: 'managed-by', // Added by rowdy-cdk
   LAMBDA_ARN: 'com.amazonaws.lambda.arn',
   LAMBDA_VERSION: 'com.amazonaws.lambda.version',
   LAMBDA_ROLE: 'com.amazonaws.lambda.role',

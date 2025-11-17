@@ -150,6 +150,7 @@ export abstract class FunctionResource
 
   annotations = (fn: FunctionConfiguration): Record<string, string> => {
     return {
+      ...this.Tags,
       [`${ANNOTATIONS.LAMBDA_ARN}`]: fn.FunctionArn ?? '',
       [`${ANNOTATIONS.LAMBDA_VERSION}`]: fn.Version?.replace('$', '') ?? '',
       [`${ANNOTATIONS.LAMBDA_ROLE}`]: fn.Role ?? '',

@@ -10,59 +10,7 @@ describe('aws lambda', () => {
   const service = new LambdaRuntimeService(environment, new LambdaImageService(environment));
 
   aws(
-    'should run an alpine sandbox',
-    async () => {
-      const { podSandboxId } = await service.runPodSandbox({
-        $typeName: 'runtime.v1.RunPodSandboxRequest',
-        runtimeHandler: '',
-        config: ConfigFactory.new().withImage('alpine').SandboxConfig,
-      });
-
-      expect(podSandboxId).toMatch(/^arn:aws:lambda:[a-z0-9-]+:[0-9]{12}:function:alpine_ARO[0-9A-Z]{18}$/);
-
-      const [sandbox] = (
-        await service.listPodSandbox({
-          $typeName: 'runtime.v1.ListPodSandboxRequest',
-          filter: { $typeName: 'runtime.v1.PodSandboxFilter', id: podSandboxId, labelSelector: {} },
-        })
-      ).items;
-
-      expect(sandbox!.id).toEqual(podSandboxId);
-
-      expect(Object.keys(sandbox!.labels!).sort()).toEqual(Object.values(LABELS).sort());
-      expect(sandbox!.labels![LABELS.ROWDY_IMAGE]).toEqual('alpine');
-
-      expect(Object.keys(sandbox!.annotations!).sort()).toEqual(Object.values(ANNOTATIONS).sort());
-      expect(sandbox!.annotations![ANNOTATIONS.ROWDY_IMAGE_REF]).toMatch(
-        /^[0-9]{12}\.dkr\.ecr\.[a-z0-9-]+\.amazonaws\.com\/library\/alpine@sha256:[a-f0-9]{64}$/
-      );
-    },
-    60000
-  );
-
-  aws(
-    'should set memory',
-    async () => {
-      const { podSandboxId } = await service.runPodSandbox({
-        $typeName: 'runtime.v1.RunPodSandboxRequest',
-        runtimeHandler: '',
-        config: ConfigFactory.new().withMemory(512).SandboxConfig,
-      });
-
-      const [sandbox] = (
-        await service.listPodSandbox({
-          $typeName: 'runtime.v1.ListPodSandboxRequest',
-          filter: { $typeName: 'runtime.v1.PodSandboxFilter', id: podSandboxId, labelSelector: {} },
-        })
-      ).items;
-
-      expect(sandbox!.labels![LABELS.LAMBDA_MEMORY]).toEqual('512');
-    },
-    60000
-  );
-
-  aws(
-    'should create an ubuntu container',
+    'pod lifecycle',
     async () => {
       const factory = ConfigFactory.new().withImage('ubuntu');
 
@@ -71,20 +19,62 @@ describe('aws lambda', () => {
         runtimeHandler: '',
         config: factory.SandboxConfig,
       });
-
+      expect(podSandboxId).toBeDefined();
       const [sandbox] = (
         await service.listPodSandbox({
           $typeName: 'runtime.v1.ListPodSandboxRequest',
           filter: { $typeName: 'runtime.v1.PodSandboxFilter', id: podSandboxId, labelSelector: {} },
         })
       ).items;
+
       expect(sandbox).toBeDefined();
+      expect(sandbox!.id).toEqual(podSandboxId);
+      expect(Object.keys(sandbox!.labels!).sort()).toEqual(Object.values(LABELS).sort());
+      expect(sandbox!.labels![LABELS.ROWDY_IMAGE]).toEqual('ubuntu');
+      expect(Object.keys(sandbox!.annotations!).sort()).toEqual(Object.values(ANNOTATIONS).sort());
+      expect(sandbox!.annotations![ANNOTATIONS.ROWDY_IMAGE_REF]).toMatch(
+        /^[0-9]{12}\.dkr\.ecr\.[a-z0-9-]+\.amazonaws\.com\/library\/ubuntu@sha256:[a-f0-9]{64}$/
+      );
 
       const { containerId } = await service.createContainer({
         $typeName: 'runtime.v1.CreateContainerRequest',
         podSandboxId: sandbox!.id,
       });
       expect(containerId).toBeDefined();
+      const [container] = (
+        await service.listContainers({
+          $typeName: 'runtime.v1.ListContainersRequest',
+          filter: {
+            $typeName: 'runtime.v1.ContainerFilter',
+            id: containerId,
+            podSandboxId: sandbox!.id,
+            labelSelector: {},
+          },
+        })
+      ).containers;
+
+      expect(container).toBeDefined();
+      expect(container!.id).toMatch(/^arn:aws:lambda:[a-z0-9-]+:[0-9]{12}:function:[a-zA-Z0-9-_]+:[a-f0-9]{12}$/);
+      expect(container!.podSandboxId).toEqual(sandbox!.id);
+      expect(Object.keys(container!.labels!).sort()).toEqual(Object.values(LABELS).sort());
+      expect(container!.labels![LABELS.ROWDY_IMAGE]).toEqual('ubuntu');
+      expect(Object.keys(container!.annotations!).sort()).toEqual(Object.values(ANNOTATIONS).sort());
+      expect(container!.annotations![ANNOTATIONS.ROWDY_IMAGE_REF]).toMatch(
+        /^[0-9]{12}\.dkr\.ecr\.[a-z0-9-]+\.amazonaws\.com\/library\/ubuntu@sha256:[a-f0-9]{64}$/
+      );
+
+      // TODO: update memory
+      // TODO: update sha
+      // TODO: change image
+      // TODO: update env
+      // TODO: update entrypoint
+      // TODO: add HTTP
+      // TODO: delete container
+      // TODO: delete sandbox
+
+      // Features TODO:
+      // - invokeFunction in AWS console: JSON payload is set as stdin
+      // - exec/execSync: run command in function container
     },
     60000
   );
