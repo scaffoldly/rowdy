@@ -488,4 +488,9 @@ export class CloudResource<Resource, ReadCommandOutput> implements PromiseLike<P
     this.options.dispose = true;
     return this;
   }
+
+  public withTag(key: string, value: string): this {
+    this._tags[key] = value;
+    return this;
+  }
 }
