@@ -23,6 +23,7 @@ type CallbackAction =
 type ResourceOptions = {
   retries?: number;
   readOnly?: boolean;
+  stateless?: boolean;
   dispose?: boolean;
   callback?: (action: CallbackAction, level: 'notice' | 'error', type: string, label: string | undefined) => void;
 };
@@ -56,7 +57,8 @@ export class CloudResource<Resource, ReadCommandOutput> implements PromiseLike<P
   private options: ResourceOptions = {};
   private desired?: Partial<ReadCommandOutput>;
   private _tags: Record<string, string> = {};
-  private _snapshot?: Partial<ReadCommandOutput>;
+  private _output?: Partial<ReadCommandOutput>;
+  private _resource?: Partial<Resource>;
 
   constructor(
     public readonly requests: {
@@ -73,11 +75,26 @@ export class CloudResource<Resource, ReadCommandOutput> implements PromiseLike<P
     this._tags = tags;
   }
 
-  get Snapshot(): PromiseLike<Partial<ReadCommandOutput>> {
-    if (this._snapshot) {
-      return Promise.resolve(this._snapshot);
+  get Output(): PromiseLike<Partial<ReadCommandOutput>> {
+    if (this.options.stateless) {
+      throw new Error('Cannot get Output of stateless resource');
     }
-    return this.manage().then(() => this.Snapshot);
+
+    if (this._output) {
+      return Promise.resolve(this._output);
+    }
+    return this.manage().then(() => this.Output);
+  }
+
+  get Resource(): PromiseLike<Partial<Resource>> {
+    if (this.options.stateless) {
+      return this.manage();
+    }
+
+    if (this._resource) {
+      return Promise.resolve(this._resource);
+    }
+    return this.manage().then(() => this.Resource);
   }
 
   get Tags(): Record<string, string> {
@@ -160,10 +177,16 @@ export class CloudResource<Resource, ReadCommandOutput> implements PromiseLike<P
           }
 
           const resource = this.resourceExtractor(readResponse);
-          this._snapshot = readResponse;
+
+          if (!this.options.stateless) {
+            this._output = readResponse;
+            this._resource = resource;
+          }
 
           return resource;
         } catch (e) {
+          delete this._output;
+          delete this._resource;
           if (!(e instanceof Error)) {
             throw e;
           }
@@ -439,6 +462,11 @@ export class CloudResource<Resource, ReadCommandOutput> implements PromiseLike<P
     if (resource instanceof Error) {
       throw new Error(`Unable to manage resource: ${resource}`);
     }
+  }
+
+  public stateless(): this {
+    this.options.stateless = true;
+    return this;
   }
 
   public readOnly(): this {
