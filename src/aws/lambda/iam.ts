@@ -102,26 +102,16 @@ export class IamRoleResource extends CloudResource<Role, GetRoleResponse> {
     return `${namespace}+${name}@${registry}`;
   }
 
-  public get Role(): PromiseLike<Partial<Role>> {
-    if (this._role) {
-      return Promise.resolve(this._role);
-    }
-    return this.manage({})
-      .then((role) => (this._role = role))
-      .then(() => this._policy.manage({}))
-      .then(() => this.Role);
-  }
-
   public get RoleId(): PromiseLike<string> {
-    return this.Role.then((role) => role.RoleId!);
+    return this.Resource.then((r) => r.RoleId!);
   }
 
   public get RoleName(): PromiseLike<string> {
-    return this.Role.then((role) => role.RoleName!);
+    return this.Resource.then((r) => r.RoleName!);
   }
 
   public get RoleArn(): PromiseLike<string> {
-    return this.Role.then((role) => role.Arn!);
+    return this.Resource.then((r) => r.Arn!);
   }
 
   public withConsumer(consumer: IamConsumer): this {

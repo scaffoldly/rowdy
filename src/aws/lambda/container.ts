@@ -1,7 +1,7 @@
 import { CRI } from '@scaffoldly/rowdy-grpc';
 import { Environment } from '../..';
 import { FunctionResource } from './function';
-import { LABELS } from './config';
+import { ConfigFactory, LABELS } from './config';
 import {
   FunctionConfiguration,
   UpdateFunctionCodeCommand,
@@ -12,10 +12,25 @@ import {
   GetAliasCommand,
   UpdateAliasCommand,
   DeleteAliasCommand,
+  GetFunctionCommand,
+  ListTagsCommand,
 } from '@aws-sdk/client-lambda';
 import { CloudResource } from '@scaffoldly/rowdy-cdk';
 
 export class ContainerResource extends FunctionResource {
+  static async from(
+    environment: Environment,
+    sandbox: CRI.PodSandbox,
+    id: string
+  ): Promise<{ factory: ConfigFactory; container: CRI.Container }> {
+    const client = new LambdaClient({});
+    const config = await client.send(new GetFunctionCommand({ FunctionName: id }));
+    const tags = await client.send(new ListTagsCommand({ Resource: id }));
+    const factory = ConfigFactory.fromLambda(config.Configuration, config.Code, tags);
+    const resource = new ContainerResource(environment, sandbox, factory.CreateContainerRequest, factory.ImageSpec);
+    return { factory, container: await resource.readOnly().Container };
+  }
+
   private _alias: AliasResource;
   private _configuration?: FunctionConfiguration;
   private _id?: string;
@@ -30,16 +45,22 @@ export class ContainerResource extends FunctionResource {
     this._alias = new AliasResource(this, image);
   }
 
-  protected override async _update(existing?: FunctionConfiguration): Promise<FunctionConfiguration> {
-    const updated = await this.lambda.send(
-      new UpdateFunctionCodeCommand({
-        FunctionName: this.sandbox.id,
-        ImageUri: this.image?.image,
-        Publish: true,
-      })
-    );
-    this._configuration = updated;
-    return updated;
+  protected override async update(existing: FunctionConfiguration): Promise<FunctionConfiguration> {
+    // TODO update environment variables
+    // TODO create function URL
+
+    if (existing.CodeSha256 !== this._codeSha256) {
+      existing = await this.lambda.send(
+        new UpdateFunctionCodeCommand({
+          FunctionName: this.sandbox.id,
+          ImageUri: this.image?.image,
+          Publish: true,
+        })
+      );
+    }
+
+    this._configuration = existing;
+    return existing;
   }
 
   get Container(): PromiseLike<CRI.Container> {
@@ -65,19 +86,12 @@ export class ContainerResource extends FunctionResource {
     });
   }
 
-  get Configuration(): PromiseLike<FunctionConfiguration> {
-    if (this._configuration) {
-      return Promise.resolve(this._configuration);
-    }
-    return this.manage({}).then(() => this.Configuration);
-  }
-
   get FunctionArn(): PromiseLike<string> {
-    return this.Configuration.then((config) => config.FunctionArn!);
+    return this.Resource.then((r) => r.FunctionArn!);
   }
 
   get FunctionVersion(): PromiseLike<string> {
-    return this.Configuration.then((config) => config.Version!);
+    return this.Resource.then((r) => r.Version!);
   }
 
   get Id(): PromiseLike<string> {
@@ -90,6 +104,7 @@ export class ContainerResource extends FunctionResource {
   protected override get _type(): 'Sandbox' | 'Container' {
     return 'Container';
   }
+
   protected override get _metadataName(): string {
     return (
       this.container.config?.metadata?.name ||
@@ -97,6 +112,7 @@ export class ContainerResource extends FunctionResource {
       this.sandbox.metadata!.name!
     );
   }
+
   protected override get _annotations(): Record<string, string> {
     return {
       ...this.sandbox.annotations,
@@ -104,6 +120,7 @@ export class ContainerResource extends FunctionResource {
       ...this.container.sandboxConfig?.annotations,
     };
   }
+
   protected override get _labels(): Record<string, string> {
     return {
       ...this.sandbox.labels,
@@ -111,6 +128,7 @@ export class ContainerResource extends FunctionResource {
       ...this.container.sandboxConfig?.labels,
     };
   }
+
   protected override get _memoryLimitInBytes(): bigint {
     return (
       this.container.config?.linux?.resources?.memoryLimitInBytes ||
@@ -118,6 +136,7 @@ export class ContainerResource extends FunctionResource {
       BigInt(parseInt(this.sandbox.labels![LABELS.LAMBDA_MEMORY]!) * 1024 * 1024)
     );
   }
+
   protected override get _runtimeHandler(): string {
     return this.container.config?.image?.runtimeHandler || this.sandbox.runtimeHandler!;
   }
@@ -133,7 +152,7 @@ class AliasResource extends CloudResource<AliasConfiguration, GetAliasCommandOut
   ) {
     super(
       {
-        describe: (resource) => ({ type: 'Function Alias', label: resource.Name }),
+        describe: () => ({ type: 'Function Alias', label: this._name }),
         read: async () =>
           this.lambda.send(new GetAliasCommand({ FunctionName: await container.FunctionName, Name: this._name })),
         create: async () => {
@@ -173,6 +192,6 @@ class AliasResource extends CloudResource<AliasConfiguration, GetAliasCommandOut
     if (this._id) {
       return Promise.resolve(this._id);
     }
-    return this.manage({}).then((alias) => (this._id = alias.AliasArn!));
+    return this.Resource.then((r) => (this._id = r.AliasArn!));
   }
 }

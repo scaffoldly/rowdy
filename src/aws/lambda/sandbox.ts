@@ -21,8 +21,8 @@ export class SandboxResource extends FunctionResource {
     const config = await client.send(new GetFunctionCommand({ FunctionName: id }));
     const tags = await client.send(new ListTagsCommand({ Resource: id }));
     const factory = ConfigFactory.fromLambda(config.Configuration, config.Code, tags);
-    const resource = new SandboxResource(environment, factory.RunPodSandboxRequest, factory.ImageSpec);
-    return { factory, sandbox: await resource.Sandbox };
+    const resource = new SandboxResource(environment, factory.RunPodSandboxRequest, factory.ImageSpec).readOnly();
+    return { factory, sandbox: await resource.readOnly().Sandbox };
   }
 
   constructor(
@@ -33,7 +33,7 @@ export class SandboxResource extends FunctionResource {
     super(environment, image);
   }
 
-  protected override async _update(existing: FunctionConfiguration): Promise<FunctionConfiguration> {
+  protected override async update(existing: FunctionConfiguration): Promise<FunctionConfiguration> {
     let updated = false;
     if (existing.MemorySize !== this._memorySize || !isSubset(this._variables, existing.Environment?.Variables || {})) {
       existing = await this.lambda.send(
@@ -50,7 +50,7 @@ export class SandboxResource extends FunctionResource {
   }
 
   get Sandbox(): PromiseLike<CRI.PodSandbox> {
-    return this.manage({ retries: 10 }).then((fn) => {
+    return this.retries(10).Resource.then((fn) => {
       if (!fn.FunctionArn) {
         throw new Error('Function ARN is undefined');
       }

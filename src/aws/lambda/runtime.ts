@@ -62,39 +62,25 @@ export class LambdaRuntimeService implements ILambdaRuntimeService {
     };
   };
 
-  // createContainer = async (req: CRI.CreateContainerRequest): Promise<CRI.CreateContainerResponse> => {
-  //   const image = await this.image.pullImage({
-  //     $typeName: 'runtime.v1.PullImageRequest',
-  //     image: req.config?.image,
-  //     sandboxConfig: req.sandboxConfig,
-  //   });
+  listContainers = async (req: CRI.ListContainersRequest): Promise<CRI.ListContainersResponse> => {
+    if (req.filter?.id) {
+      const { sandbox } = await SandboxResource.from(this.environment, req.filter.podSandboxId);
+      const { container } = await ContainerResource.from(this.environment, sandbox, req.filter.id);
+      return {
+        $typeName: 'runtime.v1.ListContainersResponse',
+        containers: [container],
+      };
+    }
 
-  //   const resource = new SandboxResource(req, image);
-  //   const sandbox = await resource.Sandbox;
+    if (req.filter?.podSandboxId) {
+      // TODO List all function aliases
+    }
 
-  //   return {
-  //     $typeName: 'runtime.v1.CreateContainerResponse',
-  //     containerId: sandbox.id,
-  //   };
-  // };
-
-  // containerStatus = async (req: CRI.ContainerStatusRequest): Promise<CRI.ContainerStatusResponse> => {
-  //   const sandbox = await SandboxResource.fromContainerId(req.containerId);
-
-  //   return {
-  //     $typeName: 'runtime.v1.ContainerStatusResponse',
-  //     info: {},
-  //     status: {
-  //       $typeName: 'runtime.v1.ContainerStatus',
-  //       annotations: sandbox.annotations,
-  //       createdAt: sandbox.createdAt,
-  //       id: sandbox.id,
-  //       state: sandbox.state,
-  //       labels: sandbox.labels,
-  //     },
-  //   };
-  //   throw new Error('Method not implemented.');
-  // };
+    return {
+      $typeName: 'runtime.v1.ListContainersResponse',
+      containers: [],
+    };
+  };
 
   version = async (req: CRI.VersionRequest): Promise<CRI.VersionResponse> => {
     return {

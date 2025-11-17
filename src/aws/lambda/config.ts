@@ -77,6 +77,9 @@ export class ConfigFactory {
     tags?: ListTagsResponse
   ): ConfigFactory {
     const factory = new ConfigFactory();
+    if (config?.FunctionArn) {
+      factory._sandboxConfig.metadata!.name = config.FunctionArn;
+    }
     if (config?.Architectures && config.Architectures[0]) {
       factory._sandboxConfig.labels![LABELS.LAMBDA_ARCHITECTURE] = config.Architectures[0];
     }
@@ -156,47 +159,6 @@ export class ConfigFactory {
     return this;
   }
 
-  // get ContainerConfig(): CRI.ContainerConfig {
-  //   const name = Transfer.normalizeImage(this._sandboxConfig.annotations![ANNOTATIONS.ROWDY_IMAGE]!).name;
-  //   const containerConfig: CRI.ContainerConfig = {
-  //     $typeName: 'runtime.v1.ContainerConfig',
-  //     annotations: { ...this._sandboxConfig.annotations, [`${ANNOTATIONS.ROWDY_NAME}`]: name },
-  //     args: [],
-  //     CDIDevices: [],
-  //     command: [],
-  //     devices: [],
-  //     envs: [],
-  //     labels: { ...this._sandboxConfig.labels, [`${LABELS.ROWDY_NAME}`]: name },
-  //     logPath: 'not-implemented',
-  //     mounts: [],
-  //     stdin: false,
-  //     stdinOnce: false,
-  //     stopSignal: CRI.Signal.RUNTIME_DEFAULT,
-  //     tty: false,
-  //     workingDir: 'not-implemented',
-  //     image: {
-  //       $typeName: 'runtime.v1.ImageSpec',
-  //       annotations: { ...this._sandboxConfig.annotations },
-  //       image: this._sandboxConfig.annotations![ANNOTATIONS.ROWDY_IMAGE]!,
-  //       runtimeHandler: 'rowdy',
-  //       userSpecifiedImage: 'not-implemented',
-  //     },
-  //     linux: {
-  //       $typeName: 'runtime.v1.LinuxContainerConfig',
-  //       resources: {
-  //         ...this._sandboxConfig.linux!.resources!,
-  //       },
-  //     },
-  //     metadata: {
-  //       $typeName: 'runtime.v1.ContainerMetadata',
-  //       name,
-  //       attempt: 0,
-  //     },
-  //   };
-
-  //   return containerConfig;
-  // }
-
   get SandboxConfig(): CRI.PodSandboxConfig {
     return this._sandboxConfig;
   }
@@ -237,6 +199,33 @@ export class ConfigFactory {
       $typeName: 'runtime.v1.RunPodSandboxRequest',
       runtimeHandler: this._sandboxConfig.annotations![ANNOTATIONS.ROWDY_RUNTIME]!,
       config: this.SandboxConfig,
+    };
+    return req;
+  }
+
+  get CreateContainerRequest(): CRI.CreateContainerRequest {
+    const req: CRI.CreateContainerRequest = {
+      $typeName: 'runtime.v1.CreateContainerRequest',
+      sandboxConfig: this.SandboxConfig,
+      podSandboxId: this.SandboxConfig.metadata!.name!,
+      config: {
+        $typeName: 'runtime.v1.ContainerConfig',
+        annotations: {},
+        args: [],
+        CDIDevices: [],
+        command: [],
+        envs: [],
+        devices: [],
+        image: this.ImageSpec,
+        labels: {},
+        logPath: 'not-implemented',
+        mounts: [],
+        stdin: false,
+        stdinOnce: false,
+        tty: false,
+        stopSignal: CRI.Signal.RUNTIME_DEFAULT,
+        workingDir: 'not-implemented',
+      },
     };
     return req;
   }

@@ -603,14 +603,12 @@ export class Upload implements ILoggable {
       if (this.type === 'blob') {
         if (
           await promiseRetry(() =>
-            this.http
-              .head(this.verifyUrl, { validateStatus: () => true })
-              .then(
-                (res) =>
-                  res.status === 200 &&
-                  res.headers['content-length'] == this.ref.size &&
-                  res.headers['docker-content-digest'] === this.digest
-              )
+            status.intercept(this.http.head(this.verifyUrl, { validateStatus: () => true }))
+          ).then(
+            (res) =>
+              res.status === 200 &&
+              res.headers.get('content-length') == this.ref.size &&
+              res.headers.get('docker-content-digest') === this.digest
           )
         ) {
           this.log.info(`${this.digest}: Layer exists, skipping upload`);
@@ -620,9 +618,9 @@ export class Upload implements ILoggable {
         }
 
         const location = await promiseRetry(() =>
-          this.http
-            .post(toUrl, null, { headers: { 'Content-Type': this.mediaType } })
-            .then((res) => res.headers['location'] as string | undefined)
+          status
+            .intercept(this.http.post(toUrl, null, { headers: { 'Content-Type': this.mediaType } }))
+            .then((res) => res.headers.get('location') as string | undefined)
         );
 
         if (!location) {
@@ -635,49 +633,47 @@ export class Upload implements ILoggable {
       let { data: download } =
         this.type === 'blob'
           ? await promiseRetry(() => {
-              return this.http.get<Readable>(fromUrl, {
-                responseType: 'stream',
-                maxBodyLength: Infinity,
-                maxContentLength: Infinity,
-                headers: { Accept: this.mediaType },
-                onDownloadProgress: (e) => (this.bytes.received += e.bytes),
-              });
+              return status.intercept(
+                this.http.get<Readable>(fromUrl, {
+                  responseType: 'stream',
+                  maxBodyLength: Infinity,
+                  maxContentLength: Infinity,
+                  headers: { Accept: this.mediaType },
+                  onDownloadProgress: (e) => (this.bytes.received += e.bytes),
+                })
+              );
             })
           : { data: this.content };
 
       if (this.type === 'blob') {
         await promiseRetry(() => {
-          return this.http.patch(toUrl, download, {
-            headers: { 'Content-Type': 'application/octet-stream' },
-            onUploadProgress: (e) => (this.bytes.sent += e.bytes),
-          });
+          return status.intercept(
+            this.http.patch(toUrl, download, {
+              headers: { 'Content-Type': 'application/octet-stream' },
+              onUploadProgress: (e) => (this.bytes.sent += e.bytes),
+            })
+          );
         });
         toUrl = `${toUrl}?digest=${this.digest}`;
         download = Readable.from('');
       }
 
       await promiseRetry(() => {
-        return this.http.put(toUrl, download, {
-          maxBodyLength: Infinity,
-          maxContentLength: Infinity,
-          headers: {
-            'Content-Type': this.mediaType,
-          },
-          onUploadProgress: (e) => (this.bytes.sent += e.bytes),
-        });
+        return status.intercept(
+          this.http.put(toUrl, download, {
+            maxBodyLength: Infinity,
+            maxContentLength: Infinity,
+            headers: {
+              'Content-Type': this.mediaType,
+            },
+            onUploadProgress: (e) => (this.bytes.sent += e.bytes),
+          })
+        );
       });
 
       this._complete = true;
       return status;
-    }).pipe(
-      catchError((err) => {
-        let message = err instanceof Error ? err.message : String(err);
-        if (isAxiosError(err)) {
-          message = `${err.config?.method?.toUpperCase()} ${err.config?.url}: HTTP ${err.response?.status}: ${message}`;
-        }
-        return throwError(() => new Error(`${this.repr()} failed: ${message}`));
-      })
-    );
+    });
   }
 
   repr(): string {
@@ -723,39 +719,29 @@ class UploadStatus implements ILoggable {
     return this._reasons;
   }
 
-  intercept<T>(response: Promise<AxiosResponse<T>>): Observable<Response<T>> {
-    return defer(() => from(response)).pipe(
-      map((res) => {
+  async intercept<T>(response: Promise<AxiosResponse<T>>): Promise<Response<T>> {
+    return response
+      .then((res) => {
         this._codes.push(res.status);
         this._reasons.push(this.reason(res));
-        return {
+        const response: Response<T> = {
           data: res.data,
           headers: HttpHeaders.fromAxios(res.headers),
           status: res.status,
-          method: res.config.method!,
-          url: res.config.url!,
+          method: res.config.method?.toUpperCase() || 'UNKNOWN',
+          url: res.config.url || 'UNKNOWN',
         };
-      }),
-      catchError((err) => {
-        this.log.warn(`Upload error`, { error: err, transfer: this.upload });
+        return response;
+      })
+      .catch((err) => {
+        this.log.debug(`Upload error`, { error: err, transfer: this.upload });
         if (!isAxiosError(err)) {
-          return throwError(() => err);
+          throw err;
         }
         this._codes.push(err.response?.status || 500);
         this._reasons.push(this.reason(err.response!));
-        return of({
-          data: undefined,
-          headers: HttpHeaders.fromAxios(err.response?.headers || {}),
-          status: err.response?.status || 500,
-          method: err.config!.method!,
-          url: err.config!.url!,
-        });
-      })
-    );
-  }
-
-  withResponse<T>(response: Promise<AxiosResponse<T>>): Observable<this> {
-    return this.intercept(response).pipe(map(() => this));
+        throw new Error(`Upload failed: ${this.reasons.reverse().join('\n\t')}`);
+      });
   }
 
   verify(): Observable<this> {

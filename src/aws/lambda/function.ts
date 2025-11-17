@@ -63,7 +63,7 @@ export abstract class FunctionResource
               Tags: { ...this.Tags },
             })
           ),
-        update: (existing) => this._update(existing),
+        update: (existing) => this.update(existing),
         tag: async (existing, tags) => {
           const desired = { ...tags, ...this.Tags, ...this.annotations(existing) };
           const current = await this.lambda
@@ -91,7 +91,7 @@ export abstract class FunctionResource
     this.iamRole = new IamRoleResource(image).withConsumer(this);
   }
 
-  protected abstract _update(existing: FunctionConfiguration): Promise<FunctionConfiguration>;
+  protected abstract update(existing: FunctionConfiguration): Promise<FunctionConfiguration>;
   protected abstract get _type(): 'Sandbox' | 'Container';
   protected abstract get _metadataName(): string;
   protected abstract get _annotations(): Record<string, string>;
@@ -105,6 +105,14 @@ export abstract class FunctionResource
 
   get FunctionName(): PromiseLike<string> {
     return this.iamRole.RoleId.then((roleId) => `${this._metadataName}_${roleId}`);
+  }
+
+  protected get _codeSha256(): string {
+    const sha256 = this.image?.image?.split('@sha256:')[1];
+    if (!sha256) {
+      throw new Error('Image reference does not contain sha256 digest');
+    }
+    return sha256;
   }
 
   protected get _memorySize(): number {
