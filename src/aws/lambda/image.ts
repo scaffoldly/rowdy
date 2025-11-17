@@ -32,6 +32,22 @@ export class LambdaImageService implements ILambdaImageService {
     };
   };
 
+  pullImageSpec = async (req: CRI.ImageSpec, config: CRI.PodSandboxConfig): Promise<CRI.ImageSpec> => {
+    const { imageRef } = await this.pullImage({
+      $typeName: 'runtime.v1.PullImageRequest',
+      image: req,
+      sandboxConfig: config,
+    });
+
+    return {
+      $typeName: 'runtime.v1.ImageSpec',
+      annotations: req.annotations,
+      image: imageRef,
+      runtimeHandler: req.runtimeHandler,
+      userSpecifiedImage: req.userSpecifiedImage,
+    };
+  };
+
   listImages = async (req: CRI.ListImagesRequest): Promise<CRI.ListImagesResponse> => {
     if (req.filter) {
       throw new ConnectError('Image filtering not supported');

@@ -1,25 +1,81 @@
 import { CRI } from '@scaffoldly/rowdy-grpc';
 import { Environment } from '../..';
-import { ConfigFactory, FunctionResource } from './function';
+import { FunctionResource, isSubset } from './function';
 import { PolicyDocument } from './iam';
-import { GetFunctionCommand, LambdaClient, ListTagsCommand } from '@aws-sdk/client-lambda';
+import {
+  FunctionConfiguration,
+  GetFunctionCommand,
+  LambdaClient,
+  ListTagsCommand,
+  UpdateFunctionConfigurationCommand,
+  UpdateFunctionConfigurationRequest,
+} from '@aws-sdk/client-lambda';
+import { ConfigFactory } from './config';
 
 export class SandboxResource extends FunctionResource {
-  static async from(environment: Environment, id: string): Promise<CRI.PodSandbox> {
+  static async from(
+    environment: Environment,
+    id: string
+  ): Promise<{ factory: ConfigFactory; sandbox: CRI.PodSandbox }> {
     const client = new LambdaClient({});
     const config = await client.send(new GetFunctionCommand({ FunctionName: id }));
     const tags = await client.send(new ListTagsCommand({ Resource: id }));
     const factory = ConfigFactory.fromLambda(config.Configuration, config.Code, tags);
-    const resource = new SandboxResource(environment, factory.RunPodSandboxRequest, factory.PullImageResponse);
-    return resource.Sandbox;
+    const resource = new SandboxResource(environment, factory.RunPodSandboxRequest, factory.ImageSpec);
+    return { factory, sandbox: await resource.Sandbox };
   }
 
   constructor(
     environment: Environment,
     protected sandbox: CRI.RunPodSandboxRequest,
-    image: CRI.PullImageResponse
+    image: CRI.ImageSpec
   ) {
     super(environment, image);
+  }
+
+  protected override async _update(existing: FunctionConfiguration): Promise<FunctionConfiguration> {
+    let updated = false;
+    if (existing.MemorySize !== this._memorySize || !isSubset(this._variables, existing.Environment?.Variables || {})) {
+      existing = await this.lambda.send(
+        new UpdateFunctionConfigurationCommand(existing as UpdateFunctionConfigurationRequest)
+      );
+      updated = true;
+    }
+
+    if (updated) {
+      // TODO publish new version
+    }
+
+    return existing;
+  }
+
+  get Sandbox(): PromiseLike<CRI.PodSandbox> {
+    return this.manage({ retries: 10 }).then((fn) => {
+      if (!fn.FunctionArn) {
+        throw new Error('Function ARN is undefined');
+      }
+
+      const sandbox: CRI.PodSandbox = {
+        $typeName: 'runtime.v1.PodSandbox',
+        id: fn.FunctionArn,
+        metadata: {
+          $typeName: 'runtime.v1.PodSandboxMetadata',
+          name: this._metadataName,
+          attempt: 0,
+          namespace: 'not-implemented',
+          uid: 'not-implemented',
+        },
+        state:
+          !fn.LastUpdateStatus || fn.LastUpdateStatus === 'Successful'
+            ? CRI.PodSandboxState.SANDBOX_READY
+            : CRI.PodSandboxState.SANDBOX_NOTREADY,
+        createdAt: BigInt(fn.LastModified ? new Date(fn.LastModified).getTime() : 0),
+        labels: this.labels(fn),
+        annotations: this.annotations(fn),
+        runtimeHandler: this._runtimeHandler,
+      };
+      return sandbox;
+    });
   }
 
   override get policyDocument(): PolicyDocument {
@@ -52,6 +108,10 @@ export class SandboxResource extends FunctionResource {
         },
       ],
     };
+  }
+
+  protected override get _type(): 'Sandbox' | 'Container' {
+    return 'Sandbox';
   }
 
   protected override get _metadataName(): string {
