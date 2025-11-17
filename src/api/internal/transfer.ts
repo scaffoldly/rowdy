@@ -485,8 +485,8 @@ export class TransferStatus implements ILoggable {
   }
 
   get code(): number {
-    const failed = Object.values(this._statuses).find((s) => s.failed);
-    return failed ? 206 : 200;
+    const failed = Object.values(this._statuses).filter((s) => s.failed);
+    return failed.length ? 206 : 200;
   }
 
   get reasons(): string[] {
@@ -603,7 +603,9 @@ export class Upload implements ILoggable {
       if (this.type === 'blob') {
         if (
           await promiseRetry(() =>
-            status.intercept(this.http.head(this.verifyUrl, { validateStatus: () => true }))
+            status.intercept(
+              this.http.head(this.verifyUrl, { validateStatus: (status) => [200, 404].includes(status) })
+            )
           ).then(
             (res) =>
               res.status === 200 &&
@@ -722,7 +724,6 @@ class UploadStatus implements ILoggable {
   async intercept<T>(response: Promise<AxiosResponse<T>>): Promise<Response<T>> {
     return response
       .then((res) => {
-        this._codes.push(res.status);
         this._reasons.push(this.reason(res));
         const response: Response<T> = {
           data: res.data,
