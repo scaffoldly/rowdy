@@ -7,4 +7,4 @@ const id = (): string => {
 };
 
 export { VERSION, NAME, id };
-export { CloudResource } from './cdk';
+export { CloudResource, NotFoundException, FatalException, SkipAction } from './cdk';

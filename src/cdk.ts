@@ -34,14 +34,22 @@ type ResourceExtractor<Resource, ReadCommandOutput> = (
 
 export class NotFoundException extends Error {
   constructor(message: string, cause?: Error) {
-    super(`Not Found: ${message}: ${cause}`);
+    if (!cause) {
+      super(`Not Found: ${message}`);
+    } else {
+      super(`Not Found: ${message}: ${cause}`);
+    }
     this.name = 'NotFoundException';
   }
 }
 
 export class FatalException extends Error {
   constructor(message: string, cause?: Error) {
-    super(`Not Found: ${message}: ${cause}`);
+    if (!cause) {
+      super(`Fatal: ${message}`);
+    } else {
+      super(`Fatal: ${message}: ${cause}`);
+    }
     this.name = 'NotFoundException';
   }
 }
