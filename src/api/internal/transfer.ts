@@ -519,9 +519,7 @@ export class Upload implements ILoggable {
       total: ref.size || 0,
     };
 
-    this._from = ref.annotations?.['run.rowdy.source.url']
-      ? { url: ref.annotations['run.rowdy.source.url'] }
-      : undefined;
+    this._from = ref.annotations?.['run.rowdy.index.url'] ? { url: ref.annotations['run.rowdy.index.url'] } : undefined;
   }
 
   finalizer(): void {
@@ -560,10 +558,11 @@ export class Upload implements ILoggable {
     // eslint-disable-next-line no-restricted-globals
     const url = new URL(this.fromUrl);
     url.host = this.transfer.registry.registry;
-    url.pathname = url.pathname.replace(
-      this.transfer.manifest.slug,
-      `${this.transfer.manifest.namespace}/${this.transfer.manifest.name}`
-    );
+    const match = url.pathname.match(/v2\/(.*)\/(blobs|manifests)\/(.*)/);
+    if (!match) {
+      throw new Error(`Unable to parse upload URL: ${url.toString()}`);
+    }
+    url.pathname = `/v2/${this.transfer.manifest.namespace}/${this.transfer.manifest.name}/${match[2]}/${match[3]}`;
     return url.toString();
   }
 

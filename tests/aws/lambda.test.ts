@@ -63,6 +63,8 @@ describe('aws lambda', () => {
         /^[0-9]{12}\.dkr\.ecr\.[a-z0-9-]+\.amazonaws\.com\/library\/ubuntu@sha256:[a-f0-9]{64}$/
       );
 
+      // TODO: ensure image can't be changed, only tag
+      // TODO: make alias the same as image tag
       // TODO: update memory
       // TODO: update sha
       // TODO: change image

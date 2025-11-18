@@ -2,17 +2,18 @@ import { CRI } from '@scaffoldly/rowdy-grpc';
 import { Transfer } from '../../api/internal/transfer';
 import { FunctionCodeLocation, FunctionConfiguration, ListTagsResponse } from '@aws-sdk/client-lambda';
 
+export const TAGS = {
+  MANAGED_BY: 'managed-by',
+  LAMBDA_URL: 'com.amazonaws.lambda.url',
+};
+
 export const ANNOTATIONS = {
-  MANAGED_BY: 'managed-by', // Added by rowdy-cdk
   LAMBDA_ARN: 'com.amazonaws.lambda.arn',
-  LAMBDA_VERSION: 'com.amazonaws.lambda.version',
   LAMBDA_ROLE: 'com.amazonaws.lambda.role',
-  LAMBDA_TIMEOUT: 'com.amazonaws.lambda.timeout',
-  LAMBDA_CODE_SHA256: 'com.amazonaws.lambda.codeSha256',
-  LAMBDA_REVISION_ID: 'com.amazonaws.lambda.revisionId',
   ROWDY_RUNTIME: 'run.rowdy.runtime',
   ROWDY_IMAGE: 'run.rowdy.image',
   ROWDY_IMAGE_REF: 'run.rowdy.image.ref',
+  ...TAGS,
 };
 
 export const LABELS = {

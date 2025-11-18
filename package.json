@@ -85,7 +85,7 @@
     "@bufbuild/protobuf": "^2.10.0",
     "@connectrpc/connect": "^2.1.0",
     "@eslint/js": "^9.28.0",
-    "@scaffoldly/rowdy-cdk": "^0.1.0-beta.20251117133459.13a0a08",
+    "@scaffoldly/rowdy-cdk": "^0.1.0-beta.20251117184537.fb94bab",
     "@scaffoldly/rowdy-grpc": "^0.1.0-beta.20251111123007.352fda6",
     "@types/auth-header": "^1.0.6",
     "@types/aws-lambda": "^8.10.152",

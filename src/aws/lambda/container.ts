@@ -1,7 +1,7 @@
 import { CRI } from '@scaffoldly/rowdy-grpc';
 import { Environment } from '../..';
 import { FunctionResource } from './function';
-import { ConfigFactory, LABELS } from './config';
+import { ConfigFactory, LABELS, TAGS } from './config';
 import {
   FunctionConfiguration,
   UpdateFunctionCodeCommand,
@@ -14,8 +14,29 @@ import {
   DeleteAliasCommand,
   GetFunctionCommand,
   ListTagsCommand,
+  FunctionUrlConfig,
+  GetFunctionUrlConfigCommandOutput,
+  GetFunctionUrlConfigCommand,
+  CreateFunctionUrlConfigCommand,
+  UpdateFunctionUrlConfigCommand,
+  DeleteFunctionUrlConfigCommand,
 } from '@aws-sdk/client-lambda';
 import { CloudResource } from '@scaffoldly/rowdy-cdk';
+
+export const environmental = (tags: Record<string, string>): Record<string, string> => {
+  return Object.entries(tags).reduce(
+    (env, [key, value]) => {
+      env[
+        `${key
+          .replace(/([a-z0-9])([A-Z])/g, '$1_$2')
+          .replace(/[^A-Za-z0-9]+/g, '_')
+          .toUpperCase()}`
+      ] = value;
+      return env;
+    },
+    {} as Record<string, string>
+  );
+};
 
 export class ContainerResource extends FunctionResource {
   static async from(
@@ -31,8 +52,8 @@ export class ContainerResource extends FunctionResource {
     return { factory, container: await resource.readOnly().Container };
   }
 
-  private _alias: AliasResource;
   private _configuration?: FunctionConfiguration;
+  private _alias: AliasResource;
   private _id?: string;
 
   constructor(
@@ -42,63 +63,82 @@ export class ContainerResource extends FunctionResource {
     image: CRI.ImageSpec
   ) {
     super(environment, image);
-    this._alias = new AliasResource(this, image);
+    this._alias = new AliasResource(this, image).retries(10);
   }
 
   protected override async update(existing: FunctionConfiguration): Promise<FunctionConfiguration> {
-    // TODO update environment variables
-    // TODO create function URL
+    await this._alias.manage();
+    await this._alias.Url;
+    // const { Tags = {} } = await this.lambda.send(new ListTagsCommand({ Resource: this.sandbox.id }));
 
-    if (existing.CodeSha256 !== this._codeSha256) {
-      existing = await this.lambda.send(
-        new UpdateFunctionCodeCommand({
-          FunctionName: this.sandbox.id,
-          ImageUri: this.image?.image,
-          Publish: true,
-        })
-      );
-    }
+    // if (!Tags[TAGS.LAMBDA_URL] || Tags[TAGS.LAMBDA_URL] !== url) {
+    //   Tags[TAGS.LAMBDA_URL] = url;
+    //   await this.lambda.send(
+    //     new TagResourceCommand({
+    //       Resource: this.sandbox.id,
+    //       Tags,
+    //     })
+    //   );
+    // }
 
-    this._configuration = existing;
+    // const env = {
+    //   ...environmental(existing.Environment?.Variables || {}),
+    //   ...environmental(this._variables),
+    //   ...environmental(this.annotations(existing)),
+    //   ...environmental(Tags),
+    // };
+
+    // console.log('!!! desired env', env);
+    // console.log('!!! existing env', existing.Environment?.Variables);
+    // console.log('!!! isSubset', isSubset(env, existing.Environment?.Variables || {}));
+
+    // if (!isSubset(env, existing.Environment?.Variables || {})) {
+    //   // Update the sandbox with the updated environment
+    //   existing = await this.lambda.send(
+    //     new UpdateFunctionConfigurationCommand({
+    //       ...(existing as UpdateFunctionConfigurationCommandInput),
+    //       FunctionName: this.sandbox.id,
+    //       Environment: { Variables: env },
+    //     })
+    //   );
+    //   // Re-manage to re-alias with new version / env
+    //   // return this.manage();
+    //   return existing;
+    // }
+
     return existing;
   }
 
   get Container(): PromiseLike<CRI.Container> {
-    return this.Id.then((id) => {
-      const image = this.image?.image;
-      if (!image) {
-        throw new Error('Image is undefined');
-      }
+    return this.retries(10)
+      .Resource.then(() => this._alias.Id)
+      .then((id) => {
+        const image = this.image?.image;
+        if (!image) {
+          throw new Error('Image is undefined');
+        }
 
-      const container: CRI.Container = {
-        $typeName: 'runtime.v1.Container',
-        id,
-        annotations: this._annotations,
-        createdAt: BigInt(0), // TODO
-        imageId: 'not-implemented',
-        imageRef: image,
-        labels: this._labels,
-        podSandboxId: this.sandbox.id,
-        state: CRI.ContainerState.CONTAINER_CREATED,
-      };
+        const container: CRI.Container = {
+          $typeName: 'runtime.v1.Container',
+          id,
+          annotations: this._annotations,
+          createdAt: BigInt(0), // not-implemented
+          imageId: 'not-implemented',
+          imageRef: image,
+          labels: this._labels,
+          podSandboxId: this.sandbox.id,
+          state: CRI.ContainerState.CONTAINER_CREATED,
+        };
 
-      return container;
-    });
+        return container;
+      });
   }
 
   get FunctionArn(): PromiseLike<string> {
-    return this.Resource.then((r) => r.FunctionArn!);
-  }
-
-  get FunctionVersion(): PromiseLike<string> {
-    return this.Resource.then((r) => r.Version!);
-  }
-
-  get Id(): PromiseLike<string> {
-    if (this._id) {
-      return Promise.resolve(this._id);
+    if (this._configuration && !!this._configuration.FunctionArn) {
+      return Promise.resolve(this._configuration.FunctionArn);
     }
-    return this._alias.Id.then((id) => (this._id = id));
+    return this.manage().then(() => this.FunctionArn);
   }
 
   protected override get _type(): 'Sandbox' | 'Container' {
@@ -144,7 +184,7 @@ export class ContainerResource extends FunctionResource {
 
 class AliasResource extends CloudResource<AliasConfiguration, GetAliasCommandOutput> {
   private lambda = new LambdaClient({});
-  private _id?: string;
+  private _url: UrlResource;
 
   constructor(
     container: ContainerResource,
@@ -152,46 +192,139 @@ class AliasResource extends CloudResource<AliasConfiguration, GetAliasCommandOut
   ) {
     super(
       {
-        describe: () => ({ type: 'Function Alias', label: this._name }),
+        describe: () => ({ type: 'Function Alias', label: this.Name }),
         read: async () =>
-          this.lambda.send(new GetAliasCommand({ FunctionName: await container.FunctionName, Name: this._name })),
-        create: async () => {
-          return this.lambda.send(
-            new CreateAliasCommand({
-              FunctionName: await container.FunctionName,
-              Name: this._name,
-              FunctionVersion: await container.FunctionVersion,
-            })
-          );
-        },
-        update: async () => {
-          return this.lambda.send(
-            new UpdateAliasCommand({
-              FunctionName: await container.FunctionName,
-              Name: this._name,
-              FunctionVersion: await container.FunctionVersion,
-            })
-          );
-        },
+          this.lambda.send(new GetAliasCommand({ FunctionName: await container.FunctionName, Name: this.Name })),
+        create: async () =>
+          this.lambda
+            .send(
+              new UpdateFunctionCodeCommand({
+                FunctionName: await container.FunctionName,
+                ImageUri: this.image.image,
+                Publish: true,
+              })
+            )
+            .then((config) =>
+              this.lambda.send(
+                new CreateAliasCommand({
+                  FunctionName: config.FunctionName,
+                  Name: this.Name,
+                  FunctionVersion: config.Version,
+                })
+              )
+            ),
+        update: async () =>
+          this.lambda
+            .send(
+              new UpdateFunctionCodeCommand({
+                FunctionName: await container.FunctionName,
+                ImageUri: this.image.image,
+                Publish: true,
+              })
+            )
+            .then((config) =>
+              this.lambda.send(
+                new UpdateAliasCommand({
+                  FunctionName: config.FunctionName,
+                  Name: this.Name,
+                  FunctionVersion: config.Version,
+                })
+              )
+            ),
         dispose: async (_resource) =>
-          this.lambda.send(new DeleteAliasCommand({ FunctionName: await container.FunctionName, Name: this._name })),
+          this.lambda.send(new DeleteAliasCommand({ FunctionName: await container.FunctionName, Name: this.Name })),
       },
       (output) => output as AliasConfiguration
     );
+
+    this._url = new UrlResource(container, this);
   }
 
-  get _name(): string {
+  get Id(): PromiseLike<string> {
+    return this.Resource.then((r) => this._url.Url.then(() => r.AliasArn!));
+  }
+
+  get Version(): PromiseLike<string> {
+    return this.Resource.then((r) => this._url.Url.then(() => r.FunctionVersion!));
+  }
+
+  get Url(): PromiseLike<string> {
+    return this.Resource.then(() => this._url.Url);
+  }
+
+  get Name(): string {
     const sha256 = this.image.image.split('@sha256:')[1];
     if (!sha256) {
       throw new Error(`Invalid image: ${this.image.image}`);
     }
     return sha256.substring(0, 12);
   }
+}
 
-  get Id(): PromiseLike<string> {
-    if (this._id) {
-      return Promise.resolve(this._id);
-    }
-    return this.Resource.then((r) => (this._id = r.AliasArn!));
+class UrlResource extends CloudResource<FunctionUrlConfig, GetFunctionUrlConfigCommandOutput> {
+  private lambda = new LambdaClient({});
+
+  constructor(
+    private container: ContainerResource,
+    private alias: AliasResource
+  ) {
+    super(
+      {
+        describe: (url) => ({ type: 'Function URL', label: url.FunctionUrl }),
+        read: async () =>
+          this.lambda.send(
+            new GetFunctionUrlConfigCommand({
+              FunctionName: await container.FunctionName,
+              Qualifier: await this.Alias,
+            })
+          ),
+        create: async () =>
+          this.lambda.send(
+            new CreateFunctionUrlConfigCommand({
+              FunctionName: await container.FunctionName,
+              AuthType: 'NONE',
+              Cors: {
+                AllowCredentials: true,
+                AllowHeaders: ['*'],
+                AllowMethods: ['*'],
+                AllowOrigins: ['*'],
+                MaxAge: 3600,
+              },
+              InvokeMode: 'RESPONSE_STREAM',
+              Qualifier: await this.Alias,
+            })
+          ),
+        update: async () =>
+          this.lambda.send(
+            new UpdateFunctionUrlConfigCommand({
+              FunctionName: await container.FunctionName,
+              AuthType: 'NONE',
+              Cors: {
+                AllowCredentials: true,
+                AllowHeaders: ['*'],
+                AllowMethods: ['*'],
+                AllowOrigins: ['*'],
+                MaxAge: 3600,
+              },
+              InvokeMode: 'RESPONSE_STREAM',
+              Qualifier: alias.Name,
+            })
+          ),
+        dispose: async (_resource) =>
+          this.lambda.send(new DeleteFunctionUrlConfigCommand({ FunctionName: await container.FunctionName })),
+      },
+      (output) => output as FunctionUrlConfig
+    );
+  }
+
+  get Alias(): PromiseLike<string> {
+    return this.alias.Resource.then((r) => r.Name!);
+  }
+
+  get Url(): PromiseLike<string> {
+    return this.Resource.then((r) => {
+      this.container.withTag(TAGS.LAMBDA_URL, r.FunctionUrl!);
+      return r.FunctionUrl!;
+    });
   }
 }

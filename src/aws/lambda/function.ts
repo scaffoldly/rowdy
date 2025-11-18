@@ -150,16 +150,13 @@ export abstract class FunctionResource
 
   annotations = (fn: FunctionConfiguration): Record<string, string> => {
     return {
-      ...this.Tags,
       [`${ANNOTATIONS.LAMBDA_ARN}`]: fn.FunctionArn ?? '',
-      [`${ANNOTATIONS.LAMBDA_VERSION}`]: fn.Version?.replace('$', '') ?? '',
       [`${ANNOTATIONS.LAMBDA_ROLE}`]: fn.Role ?? '',
-      [`${ANNOTATIONS.LAMBDA_TIMEOUT}`]: fn.Timeout?.toString() ?? '',
-      [`${ANNOTATIONS.LAMBDA_CODE_SHA256}`]: fn.CodeSha256 ?? '',
-      [`${ANNOTATIONS.LAMBDA_REVISION_ID}`]: fn.RevisionId ?? '',
+      [`${ANNOTATIONS.LAMBDA_URL}`]: '',
       [`${ANNOTATIONS.ROWDY_RUNTIME}`]: this._annotations?.[`${ANNOTATIONS.ROWDY_RUNTIME}`] ?? '',
       [`${ANNOTATIONS.ROWDY_IMAGE}`]: this._annotations?.[`${ANNOTATIONS.ROWDY_IMAGE}`] ?? '',
       [`${ANNOTATIONS.ROWDY_IMAGE_REF}`]: this.image?.image ?? '',
+      ...this.Tags,
     };
   };
 
