@@ -206,6 +206,7 @@ export class LambdaFunction
         this.Alias.subscribe((v) => this.withState('Alias', v)),
       ];
 
+      // TODO: Figure out a better completion condition
       combineLatest([this.FunctionVersion, this.FunctionUrl]).subscribe(([version, url]) => {
         if (version !== '$LATEST' && url) subscriber.complete();
       });
@@ -220,7 +221,7 @@ export class LambdaFunction
     return defer(() =>
       merge(
         // Role
-        combineLatest([this.Image]).pipe(
+        combineLatest([this.Image.pipe(take(1))]).pipe(
           switchMap(([{ normalized }]) =>
             _create(
               () =>
@@ -243,7 +244,7 @@ export class LambdaFunction
           )
         ),
         // Function
-        combineLatest([this.FunctionName, this.RoleArn, this.ImageRef.pipe(take(1))]).pipe(
+        combineLatest([this.FunctionName.pipe(take(1)), this.RoleArn.pipe(take(1)), this.ImageRef.pipe(take(1))]).pipe(
           switchMap(([FunctionName, Role, ImageUri]) =>
             _create(
               () => this.lambda.send(new GetFunctionCommand({ FunctionName })),
@@ -256,8 +257,9 @@ export class LambdaFunction
                     PackageType: 'Image',
                     // TODO: Support for platform annotation
                     Architectures: ['x86_64'],
+                    ImageConfig: { EntryPoint: ['rowdy'] },
                     Timeout: 900,
-                    Publish: true,
+                    Publish: false,
                   })
                 ),
               (fn) => {
@@ -268,7 +270,11 @@ export class LambdaFunction
           )
         ),
         // Alias
-        combineLatest([this.FunctionName, this.Alias.pipe(take(1)), this.FunctionVersion]).pipe(
+        combineLatest([
+          this.FunctionName.pipe(take(1)),
+          this.Alias.pipe(take(1)),
+          this.FunctionVersion.pipe(take(1)),
+        ]).pipe(
           switchMap(([FunctionName, Name, FunctionVersion]) =>
             _create(
               () =>
@@ -293,7 +299,7 @@ export class LambdaFunction
           )
         ),
         // Function URL
-        combineLatest([this.FunctionName, this.FunctionQualifier]).pipe(
+        combineLatest([this.FunctionName.pipe(take(1)), this.FunctionQualifier.pipe(take(1))]).pipe(
           switchMap(([FunctionName, Qualifier]) =>
             _create(
               () =>
@@ -325,7 +331,7 @@ export class LambdaFunction
           )
         ),
         // Function Policy
-        combineLatest([this.FunctionName, this.FunctionQualifier]).pipe(
+        combineLatest([this.FunctionName.pipe(take(1)), this.FunctionQualifier.pipe(take(1))]).pipe(
           switchMap(([FunctionName, Qualifier]) =>
             _create(
               () =>
@@ -383,25 +389,25 @@ export class LambdaFunction
         // Update Trigger Emission
         combineLatest({
           Alias: this.Alias,
-          Environment: this.Environment,
           FunctionArn: this.FunctionArn,
           FunctionName: this.FunctionName,
           FunctionQualifier: this.FunctionQualifier,
-          FunctionVersion: this.FunctionVersion,
+          FunctionVersion: this.FunctionVersion.pipe(take(1)),
           ImageRef: this.ImageRef,
           MemorySize: this.MemorySize,
           Tags: this.Tags,
+          Environment: this.Environment,
         }).pipe(
           switchMap(
             async ({
               Alias,
-              Environment,
               FunctionArn,
               FunctionName,
               FunctionQualifier,
               FunctionVersion,
               ImageRef,
               MemorySize,
+              Environment,
               Tags,
             }) => {
               const fn = await this.lambda.send(new GetFunctionCommand({ FunctionName, Qualifier: FunctionQualifier }));
