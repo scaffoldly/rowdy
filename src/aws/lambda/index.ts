@@ -21,7 +21,6 @@ import {
   PublishVersionCommand,
   GetFunctionConfigurationCommand,
   GetFunctionConfigurationCommandOutput,
-  FunctionVersion,
 } from '@aws-sdk/client-lambda';
 import { PolicyDocument } from 'aws-lambda';
 import { ILoggable } from '../../log';
@@ -33,7 +32,6 @@ import {
   combineLatest,
   concatMap,
   defer,
-  forkJoin,
   map,
   merge,
   Observable,
@@ -43,7 +41,6 @@ import {
   shareReplay,
   switchMap,
   take,
-  takeUntil,
   tap,
 } from 'rxjs';
 
