@@ -5,11 +5,16 @@ import { FunctionCodeLocation, FunctionConfiguration, ListTagsResponse } from '@
 export const ANNOTATIONS = {
   LAMBDA_ARN: 'com.amazonaws.lambda.arn',
   LAMBDA_ROLE: 'com.amazonaws.lambda.role',
+  LAMBDA_ROLE_NAME: 'com.amazonaws.lambda.role.name',
   LAMBDA_ROLE_ARN: 'com.amazonaws.lambda.role.arn',
+  LAMBDA_ROLE_ID: 'com.amazonaws.lambda.role.id',
+  LAMBDA_URL: 'com.amazonaws.lambda.url',
   ROWDY_RUNTIME: 'run.rowdy.runtime',
   ROWDY_IMAGE: 'run.rowdy.image',
+  ROWDY_IMAGE_NAME: 'run.rowdy.image.name',
+  ROWDY_IMAGE_NAMESPACE: 'run.rowdy.image.namespace',
   ROWDY_IMAGE_REF: 'run.rowdy.image.ref',
-  LAMBDA_URL: 'com.amazonaws.lambda.url',
+  ROWDY_IMAGE_LAYERS_FROM: 'run.rowdy.image.layers.from',
 };
 
 export const TAGS = {
