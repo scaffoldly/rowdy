@@ -4,6 +4,7 @@ import { LambdaImageService } from '../../../src/aws/lambda/image';
 // import { ANNOTATIONS, ConfigFactory, LABELS } from '../../src/aws/lambda/config';
 import { LambdaFunction } from '../../../src/aws/lambda/index';
 import { inspect } from 'util';
+import { lastValueFrom } from 'rxjs';
 
 describe('aws lambda', () => {
   const logger = new Logger();
@@ -112,6 +113,62 @@ describe('aws lambda', () => {
           });
 
           expect(fn.State).toEqual({});
+        },
+        120_000
+      );
+
+      aws(
+        'should change container memory',
+        async () => {
+          // Create with 256
+          let fn = new LambdaFunction('Container', imageService).withMemory(256).withName('custom-memory');
+          fn = await lastValueFrom(fn.observe());
+          expect(fn.Status.Configuration?.MemorySize).toBe(256);
+
+          // Update to 128
+          fn = await lastValueFrom(fn.withMemory(128).observe());
+          expect(fn.Status.Configuration?.MemorySize).toBe(128);
+
+          // Update to 256
+          fn = await lastValueFrom(fn.withMemory(256).observe());
+          expect(fn.Status.Configuration?.MemorySize).toBe(256);
+
+          // Cleanup
+          fn = await lastValueFrom(fn.delete());
+          expect(fn.Status?.Configuration?.MemorySize).toBeUndefined();
+        },
+        120_000
+      );
+
+      aws(
+        'should serve python3 http server',
+        async () => {
+          let fn = new LambdaFunction('Container', imageService)
+            .withName('python3-http')
+            .withImage('python:3-slim')
+            .withMemory(256)
+            .withCommand('python3 -m http.server 8080')
+            .withRoute('{/*path}', 'http://localhost:8080/*path');
+
+          fn = await lastValueFrom(fn.observe());
+
+          // State
+          expect(fn.State.RoleName).toBe('library+python@rowdy.run');
+          expect(fn.State.ImageUri).toMatch(
+            /^[0-9]{12}\.dkr\.ecr\.[a-z0-9-]+\.amazonaws\.com\/library\/python@sha256:[a-f0-9]{64}$/
+          );
+          expect(fn.State.Qualifier).toBe('3-slim');
+          expect(fn.State.FunctionUrl).toMatch(/^https:\/\/[a-z0-9-]+\.lambda-url\.[a-z0-9-]+\.on\.aws\/$/);
+
+          // Status
+          expect(fn.Status.Configuration?.MemorySize).toBe(256);
+          expect(fn.Status.Configuration?.ImageConfigResponse?.ImageConfig?.EntryPoint).toEqual(['rowdy']);
+          expect(fn.Status.Configuration?.ImageConfigResponse?.ImageConfig?.Command).toEqual([
+            'python3',
+            '-m',
+            'http.server',
+            '8080',
+          ]);
         },
         120_000
       );

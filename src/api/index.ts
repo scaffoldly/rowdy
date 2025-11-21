@@ -24,6 +24,8 @@ export class Rowdy implements IApi {
   static readonly PATHS = {
     CRI: `/${Rowdy.SLUG}/${Rowdy.CRI}`,
     VERSION: `/${Rowdy.SLUG}/${Rowdy.VERSION}`,
+    HEALTH: `/${Rowdy.SLUG}/${Rowdy.HEALTH}`,
+    PING: `/${Rowdy.SLUG}/${Rowdy.PING}`,
   };
 
   public readonly http: AxiosInstance = axios.create();

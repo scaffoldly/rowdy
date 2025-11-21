@@ -34,7 +34,7 @@ describe('routes', () => {
 
     it('should route', () => {
       const routes = Routes.fromDataURL(data);
-      expect(routes.rules).toHaveLength(14);
+      expect(routes.rules).toHaveLength(7);
       expect(routes.intoURI('/github')!.toString()).toBe('https://www.githubstatus.com/api/v2/status.json');
       expect(routes.intoURI('/circleci')!.toString()).toBe('https://status.circleci.com/api/v2/status.json');
       expect(routes.intoURI('/travisci')!.toString()).toBe('https://www.traviscistatus.com/api/v2/status.json');

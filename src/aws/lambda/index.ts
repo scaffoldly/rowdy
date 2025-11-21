@@ -27,9 +27,9 @@ import {
   CreateFunctionUrlConfigCommand,
   AddPermissionCommand,
   GetPolicyCommand,
+  FunctionConfiguration,
 } from '@aws-sdk/client-lambda';
 import { PolicyDocument } from 'aws-lambda';
-import { ILoggable } from '../../log';
 import { LambdaImageService } from './image';
 import { Image, Transfer } from '../../api/internal/transfer';
 import {
@@ -52,6 +52,7 @@ import {
 import { ANNOTATIONS, TAGS } from './config';
 import promiseRetry from 'promise-retry';
 import { inspect } from 'util';
+import { Routes } from '../..';
 
 export const isSubset = (subset: Record<string, string>, superset: Record<string, string>): boolean => {
   for (const key of Object.keys(subset)) {
@@ -114,10 +115,7 @@ const pullImage = (lambda: LambdaFunction): OperatorFunction<{ requested: string
     );
 };
 
-export class LambdaFunction
-  // extends CloudResource<Resources, LambdaFunction>
-  implements ILoggable, Logger
-{
+export class LambdaFunction implements Logger {
   private iam = new IAMClient({ logger: this });
   private lambda = new LambdaClient({ logger: this });
 
@@ -125,6 +123,7 @@ export class LambdaFunction
   private deleting: boolean = false;
 
   // Reactive Properties
+  private Name: BehaviorSubject<string | undefined> = new BehaviorSubject<string | undefined>(undefined);
   private Image: BehaviorSubject<{ requested: string; normalized: Image }> = new BehaviorSubject({
     requested: 'scaffoldly/rowdy:beta',
     normalized: Transfer.normalizeImage('scaffoldly/rowdy:beta'),
@@ -134,6 +133,8 @@ export class LambdaFunction
   private Tags: BehaviorSubject<Record<string, string>> = new BehaviorSubject(
     Object.entries(TAGS).reduce((acc, [, v]) => ({ ...acc, [v]: '' }), {})
   );
+  private Command: BehaviorSubject<string[]> = new BehaviorSubject<string[]>([]);
+  private Routes = new BehaviorSubject<Routes>(Routes.empty());
 
   // Resource Properties
   private RoleName = new ReplaySubject<string | undefined>(1);
@@ -145,9 +146,9 @@ export class LambdaFunction
   private FunctionVersion = new ReplaySubject<string | undefined>(1);
   private AliasArn = new ReplaySubject<string | undefined>(1);
   private FunctionUrl = new ReplaySubject<string | undefined>(1);
+  // Status Properties
+  private Configuration = new ReplaySubject<FunctionConfiguration | undefined>(1);
 
-  // DEVNOTE: Do not use these in the observe() method directly
-  // Use the corresponding Observable properties instead
   public readonly State: {
     RoleArn?: string;
     RoleId?: string;
@@ -160,11 +161,16 @@ export class LambdaFunction
     FunctionUrl?: string;
   } = {};
 
+  public readonly Status: {
+    Configuration?: FunctionConfiguration;
+  } = {};
+
   constructor(
     _type: LambdaFunction['type'],
     public readonly imageService: LambdaImageService
   ) {
     this.type = _type;
+    // State:
     this.RoleArn.subscribe((v) => this.withState('RoleArn', v));
     this.RoleId.subscribe((v) => this.withState('RoleId', v));
     this.RoleName.subscribe((v) => this.withState('RoleName', v));
@@ -174,6 +180,8 @@ export class LambdaFunction
     this.FunctionVersion.subscribe((v) => this.withState('FunctionVersion', v));
     this.AliasArn.subscribe((v) => this.withState('AliasArn', v));
     this.FunctionUrl.subscribe((v) => this.withState('FunctionUrl', v));
+    // Status:
+    this.Configuration.subscribe((v) => this.withStatus('Configuration', v));
   }
 
   isSandbox(): boolean {
@@ -186,6 +194,11 @@ export class LambdaFunction
 
   get log(): Logger {
     return this.imageService.log;
+  }
+
+  withName(name: string): this {
+    this.Name.next(name);
+    return this;
   }
 
   withImage(image: string): this {
@@ -215,9 +228,35 @@ export class LambdaFunction
     return this;
   }
 
-  withState(key: keyof LambdaFunction['State'], value?: string): this {
+  withCommand(command: string | string[]): this {
+    if (typeof command === 'string') {
+      // TODO: use a proper shell parser
+      this.Command.next(command.split(' '));
+      return this;
+    }
+    const commands = this.Command.getValue();
+    commands.push(...command);
+    this.Command.next(commands);
+    return this;
+  }
+
+  withRoute(path: string, target: string): this {
+    const routes = this.Routes.getValue();
+    routes.withPath(path, target);
+    this.Routes.next(routes);
+    this.withEnvironment('ROWDY_ROUTES', routes.intoDataURL());
+    return this;
+  }
+
+  private withState<K extends keyof LambdaFunction['State']>(key: K, value?: LambdaFunction['State'][K]): this {
     if (value) this.State[key] = value;
     if (!value) delete this.State[key];
+    return this;
+  }
+
+  private withStatus<K extends keyof LambdaFunction['Status']>(key: K, value?: LambdaFunction['Status'][K]): this {
+    if (value) this.Status[key] = value;
+    if (!value) delete this.Status[key];
     return this;
   }
 
@@ -273,8 +312,8 @@ export class LambdaFunction
     tags: Observable<MetadataBearer>[];
     deletes: Observable<MetadataBearer>[];
   } {
-    const _roleName = (image: Image) => `${image.namespace}+${image.name}@rowdy.run`;
-    const _functionName = (roleName: string, roleId: string) =>
+    const _generateRoleName = (image: Image) => `${image.namespace}+${image.name}@rowdy.run`;
+    const _generateFunctionName = (roleName: string, roleId: string) =>
       `${roleName
         .replace(/@.*/, '')
         .replace(/[+]/g, '-')
@@ -283,7 +322,7 @@ export class LambdaFunction
     const creates: Observable<MetadataBearer>[] = [
       this.Image.pipe(take(1)).pipe(
         map(({ normalized }) => ({
-          RoleName: _roleName(normalized),
+          RoleName: _generateRoleName(normalized),
           Description: `Execution role to run ${normalized.namespace}/${normalized.name} in AWS Lambda`,
           Qualifier: this.type === 'Sandbox' ? '$LATEST' : normalized.tag || normalized.digest,
         })),
@@ -311,14 +350,15 @@ export class LambdaFunction
         )
       ),
       combineLatest({
+        Name: this.Name.pipe(take(1)),
         RoleName: this.RoleName.pipe(take(1)),
         RoleArn: this.RoleArn.pipe(take(1)),
         RoleId: this.RoleId.pipe(take(1)),
         ImageUri: this.Image.pipe(take(1), pullImage(this)),
       }).pipe(
-        map(({ RoleName, RoleArn, RoleId, ImageUri }) => ({
-          FunctionName: _functionName(RoleName!, RoleId!),
-          Description: `A function to run ${ImageUri} in AWS Lambda`,
+        map(({ Name, RoleName, RoleArn, RoleId, ImageUri }) => ({
+          FunctionName: Name || _generateFunctionName(RoleName!, RoleId!),
+          Description: `A function to run the ${ImageUri} container in AWS Lambda`,
           Role: RoleArn,
           ImageUri,
         })),
@@ -344,6 +384,7 @@ export class LambdaFunction
                   .catch(retry)
               ),
             (fn) => {
+              this.Configuration.next(fn.Configuration);
               this.FunctionArn.next(fn.Configuration!.FunctionArn?.replace(`:${fn.Configuration!.Version}`, ''));
               this.ImageUri.next(ImageUri);
             }
@@ -365,17 +406,11 @@ export class LambdaFunction
       ),
     ];
 
-    this.Image.pipe(take(1)).pipe(
-      map(({ normalized }) => ({
-        RoleName: _roleName(normalized),
-      })),
-      switchMap(({ RoleName }) => this.iam.send(new DeleteRoleCommand({ RoleName })).catch(() => undefined))
-    );
-
     const deletes = [
       this.FunctionArn.pipe(take(1)).pipe(
         switchMap((FunctionName) => this.lambda.send(new DeleteFunctionCommand({ FunctionName }))),
         tap(() => {
+          this.Configuration.next(undefined);
           this.FunctionArn.next(undefined);
           this.ImageUri.next(undefined);
           this.Qualifier.next(undefined);
@@ -426,8 +461,9 @@ export class LambdaFunction
         MemorySize: this.MemorySize.pipe(take(1)),
         Environment: this.Environment.pipe(take(1)),
         ImageUri: this.ImageUri.pipe(take(1)),
+        Command: this.Command.pipe(take(1)),
       }).pipe(
-        switchMap(({ FunctionArn, Qualifier, MemorySize, Environment, ImageUri }) =>
+        switchMap(({ FunctionArn, Qualifier, MemorySize, Environment, ImageUri, Command }) =>
           from(
             this.lambda
               .send(new GetFunctionCommand({ FunctionName: FunctionArn, Qualifier }))
@@ -439,10 +475,11 @@ export class LambdaFunction
               Environment,
               ImageUri,
               Qualifier,
+              Command,
             }))
           )
         ),
-        switchMap(({ Function, MemorySize, Environment, ImageUri, Qualifier }) => {
+        switchMap(({ Function, MemorySize, Environment, ImageUri, Qualifier, Command }) => {
           const operations: Observable<GetFunctionConfigurationCommandOutput>[] = [];
           const { Code = {} } = Function;
           let { Configuration = {} } = Function;
@@ -458,11 +495,14 @@ export class LambdaFunction
             config:
               Configuration.Version === '$LATEST' || // An Alias was never created for the Qualifier
               Configuration.ImageConfigResponse?.ImageConfig?.EntryPoint?.[0] !== 'rowdy' ||
+              Configuration.ImageConfigResponse?.ImageConfig?.Command?.toString() !== Command.toString() ||
               Configuration.MemorySize !== MemorySize ||
               !isSubset(Environment, Configuration.Environment?.Variables || {}),
           };
 
           if (update.config) {
+            delete Configuration.RevisionId;
+
             Configuration.MemorySize = MemorySize;
             Configuration.Environment = {
               Variables: { ...Configuration.Environment?.Variables, ...Environment },
@@ -477,7 +517,7 @@ export class LambdaFunction
                       Layers: [],
                       ImageConfig: {
                         EntryPoint: ['rowdy'],
-                        Command: [], // TODO: infer from image, and also create a withCommand() method
+                        Command,
                         WorkingDirectory: '/', // TODO: infer from image
                       },
                     })
@@ -519,6 +559,7 @@ export class LambdaFunction
           return concat(...operations).pipe(
             // TODO: handle the unlikely case when Version is $LATEST
             last(),
+            tap((Configuration) => this.Configuration.next(Configuration)),
             switchMap(({ FunctionName, Version: FunctionVersion }) =>
               this.lambda
                 .send(
@@ -681,23 +722,6 @@ export class LambdaFunction
       return;
     }
   };
-
-  repr(): string {
-    const parts: string[] = [];
-    // if (this.resources.function?.Configuration?.FunctionName) {
-    //   parts.push(`name=${this.resources.function.Configuration.FunctionName}`);
-    // }
-    // if (this.resources.alias?.Name) {
-    //   parts.push(`alias=${this.resources.alias.Name}`);
-    // }
-    // if (this.resources.role?.Role?.RoleName) {
-    //   parts.push(`role=${this.resources.role.Role.RoleName}`);
-    // }
-    // if (this.resources.url?.FunctionUrl) {
-    //   parts.push(`url=${this.resources.url.FunctionUrl}`);
-    // }
-    return `${this.type}(${parts.join(', ')})`;
-  }
 
   private get AssumeRolePolicyDocument(): string {
     const document: PolicyDocument = {

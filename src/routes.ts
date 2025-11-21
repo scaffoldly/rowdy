@@ -220,20 +220,21 @@ export class Routes implements IRoutes, ILoggable {
 
   static empty(): Routes {
     return new Routes()
+      .withPath(`${Rowdy.PATHS.VERSION}`, `rowdy://${Rowdy.VERSION}/`)
+      .withPath(`${Rowdy.PATHS.HEALTH}`, `rowdy://${Rowdy.HEALTH}/`)
+      .withPath(`${Rowdy.PATHS.PING}`, `rowdy://${Rowdy.PING}/`);
+  }
+
+  static default(): Routes {
+    return Routes.empty()
       .withPath(`/${Rowdy.SLUG}/200`, `rowdy://${Rowdy.HTTP}:200/`)
       .withPath(`/${Rowdy.SLUG}/204`, `rowdy://${Rowdy.HTTP}:204/`)
       .withPath(`/${Rowdy.SLUG}/400`, `rowdy://${Rowdy.HTTP}:400/`)
       .withPath(`/${Rowdy.SLUG}/404`, `rowdy://${Rowdy.HTTP}:401/`)
       .withPath(`/${Rowdy.SLUG}/500`, `rowdy://${Rowdy.HTTP}:500/`)
       .withPath(`${Rowdy.PATHS.CRI}{/*path}`, `rowdy://${Rowdy.CRI}/*path`)
-      .withPath(`${Rowdy.PATHS.VERSION}`, `rowdy://${Rowdy.VERSION}/`)
-      .withPath(`/${Rowdy.SLUG}/${Rowdy.HEALTH}`, `rowdy://${Rowdy.HEALTH}/`)
-      .withPath(`/${Rowdy.SLUG}/${Rowdy.PING}`, `rowdy://${Rowdy.PING}/`)
-      .withPath(`/${Rowdy.SLUG}/${Rowdy.ROUTES}`, `rowdy://${Rowdy.ROUTES}/`);
-  }
-
-  static default(): Routes {
-    return Routes.empty().withDefault('');
+      .withPath(`/${Rowdy.SLUG}/${Rowdy.ROUTES}`, `rowdy://${Rowdy.ROUTES}/`)
+      .withDefault('rowdy://http:404/');
   }
 
   static fromURL(url: string): Routes {
@@ -269,7 +270,7 @@ export class Routes implements IRoutes, ILoggable {
           throw new Error(`Unsupported routes kind: ${routes.kind}`);
         }
 
-        return Routes.empty()
+        return Routes.default()
           .withPaths(routes.spec?.paths || {})
           .withDefault(routes.spec?.default || '');
       }
@@ -286,7 +287,7 @@ export class Routes implements IRoutes, ILoggable {
           throw new Error(`Unsupported routes kind: ${routes.kind}`);
         }
 
-        return Routes.empty()
+        return Routes.default()
           .withPaths(routes.spec?.paths || {})
           .withDefault(routes.spec?.default || '');
       }
