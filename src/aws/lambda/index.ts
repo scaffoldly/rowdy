@@ -52,7 +52,7 @@ import {
 import { ANNOTATIONS, TAGS } from './config';
 import promiseRetry from 'promise-retry';
 import { inspect } from 'util';
-import { Routes } from '../..';
+import { Routes, Rowdy } from '../..';
 
 export const isSubset = (subset: Record<string, string>, superset: Record<string, string>): boolean => {
   for (const key of Object.keys(subset)) {
@@ -248,6 +248,11 @@ export class LambdaFunction implements Logger {
     return this;
   }
 
+  withCRI(): this {
+    this.withRoute('{/*path}', `rowdy://${Rowdy.CRI}/*path`);
+    return this;
+  }
+
   private withState<K extends keyof LambdaFunction['State']>(key: K, value?: LambdaFunction['State'][K]): this {
     if (value) this.State[key] = value;
     if (!value) delete this.State[key];
@@ -260,9 +265,10 @@ export class LambdaFunction implements Logger {
     return this;
   }
 
-  observe(): Observable<this> {
+  observe(signal?: AbortSignal): Observable<this> {
     return new Observable<this>((subscriber) => {
       this.deleting = false;
+      signal?.addEventListener('abort', () => subscriber.error(new Error(`Observation aborted: ${signal.reason}`)));
       const { creates, updates, tags } = this.prepare();
       const subscription = combineLatest(creates)
         .pipe(
@@ -693,10 +699,8 @@ export class LambdaFunction implements Logger {
         input?: unknown;
         output?: unknown;
       };
-      this.log.info(`[${clientName ?? 'UnknownClient'}] [${commandName ?? 'UnknownCommand'}]`, {
-        input: JSON.stringify(input),
-      });
       this.log.debug(`[${clientName ?? 'UnknownClient'}] [${commandName ?? 'UnknownCommand'}]`, {
+        input: JSON.stringify(input),
         output: JSON.stringify(output),
       });
     }
@@ -711,10 +715,6 @@ export class LambdaFunction implements Logger {
         input?: unknown;
         error?: unknown;
       };
-      this.log.warn(`[${clientName ?? 'UnknownClient'}] [${commandName ?? 'UnknownCommand'}]}`, {
-        input: JSON.stringify(input),
-        error: error instanceof Error ? error.message : `${error}`,
-      });
       this.log.debug(`[${clientName ?? 'UnknownClient'}] [${commandName ?? 'UnknownCommand'}]`, {
         input: JSON.stringify(input),
         error: inspect(error),

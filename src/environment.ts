@@ -11,6 +11,9 @@ import packageJson from '../package.json';
 import { ABORT, Rowdy } from '.';
 import { isatty } from 'tty';
 import { Transport } from '@connectrpc/connect';
+import { LambdaFunction } from './aws/lambda/index';
+import { LambdaImageService } from './aws/lambda/image';
+import { inspect } from 'util';
 
 export type Secrets = Record<string, string>;
 type Args = yargs.ArgumentsCamelCase<
@@ -37,7 +40,6 @@ const entrypoint = <T>(
   }
 > => {
   const modified = argv
-    .parserConfiguration({ 'populate--': true })
     .option('routes', {
       type: 'string',
       description: 'Path or URL to routing rules (file:// or data:).',
@@ -81,9 +83,11 @@ export class Environment implements ILoggable {
     this._routes = Routes.default();
 
     const parsed = yargs(hideBin(process.argv))
+      .parserConfiguration({ 'populate--': true })
       .scriptName(this.bin!)
       .env(this.bin!.toUpperCase())
       .version(packageJson.version)
+      .strict()
       .option('debug', {
         type: 'boolean',
         default: false,
@@ -119,7 +123,84 @@ export class Environment implements ILoggable {
           ),
         handler: (argv: Partial<Args>) => this.setup(argv),
       })
-      .strict()
+      .command({
+        command: 'install',
+        describe: 'Install Rowdy',
+        builder: (yargs) =>
+          yargs.demandCommand(1, 'Please specify a subcommand').command({
+            command: 'aws',
+            describe: 'Install Rowdy to AWS',
+            builder: (yargs) =>
+              yargs.demandCommand(1, 'Please specify a subcommand').command({
+                command: 'lambda',
+                describe: 'Install Rowdy to AWS Lambda',
+                builder: (yargs) =>
+                  yargs
+                    .option('name', {
+                      type: 'string',
+                      global: false,
+                      description: 'Name of the Lambda function to create',
+                      default: 'rowdy',
+                      group: 'Lambda:',
+                    })
+                    .option('cri', {
+                      type: 'boolean',
+                      global: false,
+                      description: 'Enable the Lambda CRI service',
+                      default: true,
+                      group: 'Lambda:',
+                    })
+                    .usage('$0 install aws lambda [options]'),
+                handler: (argv) => {
+                  let lambda = new LambdaFunction('Container', new LambdaImageService(this))
+                    .withImage('python:3-slim')
+                    .withMemory(256)
+                    .withCommand('python3 -m http.server 8080')
+                    .withRoute('{/*path}', 'http://localhost:8080/*path')
+                    .withEnvironment('ROWDY_DEBUG', 'true')
+                    .withEnvironment('ROWDY_TRACE', 'true');
+                  if (argv.name) {
+                    lambda = lambda.withName(argv.name);
+                  }
+                  // if (argv.cri) {
+                  //   lambda = lambda.withCRI();
+                  // }
+                  this._subscriptions.push(
+                    lambda.observe(this.abort.signal).subscribe({
+                      next: (fn) => this.log.info(`State Updated: ${inspect(fn.State)}`),
+                      complete: () => this.log.info('Lambda Function Installation Complete'),
+                    })
+                  );
+                },
+              }),
+            handler: (_argv: Partial<Args>) => {},
+          }),
+        handler: (_argv: Partial<Args>) => {},
+      })
+      .command({
+        command: 'run',
+        describe: 'Create and run a new container from an image',
+        builder: (yargs) =>
+          yargs
+            .option('rm', {
+              type: 'boolean',
+              default: false,
+              description: 'Automatically remove the container when it exits',
+              global: false,
+              group: 'Run:',
+            })
+            .usage('$0 run [options] IMAGE <command> [args...]')
+            .strict(false)
+            .strictOptions(true),
+        handler: (argv: Partial<Args>) => {
+          const command = argv['_']?.slice(1).map(String) ?? [];
+          const image = command.shift();
+          if (!image) {
+            throw new Error('Image is required');
+          }
+          throw new Error('Not implemented');
+        },
+      })
       .help()
       .parseSync();
 
