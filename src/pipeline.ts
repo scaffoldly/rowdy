@@ -34,10 +34,10 @@ export abstract class Pipeline implements ILoggable {
     return this._createdAt;
   }
 
-  abstract get cri(): GrpcRouter;
+  abstract get cri(): Observable<GrpcRouter>;
 
   abstract into(): Observable<Request<Pipeline>>;
-  abstract version(upgrade?: boolean): Observable<CRI.VersionResponse>;
+  abstract version(): Observable<CRI.VersionResponse>;
   abstract repr(): string;
 }
 

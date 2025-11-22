@@ -12,11 +12,11 @@ export class ShellPipeline extends Pipeline {
     return NEVER;
   }
 
-  override get cri(): GrpcRouter {
-    throw new Error('GRPC is not supported in ShellPipeline');
+  override get cri(): Observable<GrpcRouter> {
+    return NEVER;
   }
 
-  override version(_upgrade?: boolean): Observable<CRI.VersionResponse> {
+  override version(): Observable<CRI.VersionResponse> {
     throw new Error('Method not implemented.');
   }
 

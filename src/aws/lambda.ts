@@ -1,4 +1,4 @@
-import { defer, from, map, NEVER, Observable, of, race, tap, throwError } from 'rxjs';
+import { defer, from, map, NEVER, Observable, of, race, switchMap, tap } from 'rxjs';
 import { Proxy, Pipeline, Request, Response, Result, Chunk } from '../pipeline';
 import { Environment } from '../environment';
 import axios from 'axios';
@@ -48,8 +48,8 @@ export class LambdaPipeline extends Pipeline {
     return this._requestId;
   }
 
-  get cri(): GrpcRouter {
-    return this._cri;
+  get cri(): Observable<GrpcRouter> {
+    return defer(() => of(this._cri));
   }
 
   @Trace
@@ -72,14 +72,10 @@ export class LambdaPipeline extends Pipeline {
     );
   }
 
-  override version(upgrade?: boolean): Observable<CRI.VersionResponse> {
-    const runtime = RuntimeService.client(this.cri.local);
-
-    if (upgrade) {
-      return throwError(() => new Error('Not Implemented'));
-    }
-
-    return defer(() => runtime.version({ version: this.environment.version }));
+  override version(): Observable<CRI.VersionResponse> {
+    return this.cri.pipe(
+      switchMap((cri) => RuntimeService.client(cri.local).version({ version: this.environment.version }))
+    );
   }
 
   override repr(): string {

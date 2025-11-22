@@ -1,4 +1,4 @@
-import { defer, map, Observable } from 'rxjs';
+import { defer, map, Observable, switchMap } from 'rxjs';
 import { Pipeline } from '../pipeline';
 import { HttpProxy } from '../proxy/http';
 import { Logger } from '../log';
@@ -65,16 +65,6 @@ export class Rowdy implements IApi {
   }
 
   public version(proxy: HttpProxy<Pipeline>): Observable<{ version: CRI.VersionResponse; status: number }> {
-    if (proxy.method.toLowerCase() === 'post') {
-      // POST == self upgrade to latest
-      return defer(() => proxy.pipeline.version(true)).pipe(
-        map((version) => ({
-          version,
-          status: 202,
-        }))
-      );
-    }
-
     return defer(() => proxy.pipeline.version()).pipe(
       map((version) => ({
         version,
@@ -84,17 +74,19 @@ export class Rowdy implements IApi {
   }
 
   public cri(proxy: HttpProxy<Pipeline>): Observable<GrpcResponse> {
-    return defer(() =>
-      proxy.pipeline.cri.route(
-        {
-          url: proxy.source.uri.toString(),
-          method: proxy.method,
-          header: proxy.headers.intoHeaders(),
-          body: Readable.from(proxy.body),
-          signal: proxy.signal,
-          httpVersion: '1.1',
-        },
-        Rowdy.PATHS.CRI
+    return proxy.pipeline.cri.pipe(
+      switchMap((cri) =>
+        cri.route(
+          {
+            url: proxy.source.uri.toString(),
+            method: proxy.method,
+            header: proxy.headers.intoHeaders(),
+            body: Readable.from(proxy.body),
+            signal: proxy.signal,
+            httpVersion: '1.1',
+          },
+          Rowdy.PATHS.CRI
+        )
       )
     );
   }

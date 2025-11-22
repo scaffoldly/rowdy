@@ -41,7 +41,8 @@
     "lint": "eslint .",
     "lint:fix": "eslint . --fix",
     "jest": "NODE_OPTIONS='--experimental-vm-modules --trace-warnings' jest",
-    "test": "yarn jest -- --testTimeout=30000 --verbose"
+    "test": "yarn jest -- --testTimeout=30000 --verbose",
+    "rowdy": "tsx src/index.ts"
   },
   "prettier": {
     "semi": true,
