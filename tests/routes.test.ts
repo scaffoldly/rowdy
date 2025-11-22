@@ -1,5 +1,10 @@
 import { Routes, URI } from '@scaffoldly/rowdy';
 
+// TODO
+// expect(routes.intoURI('/')!.toString()).toBe('file:///var/www/html/');
+// expect(routes.intoURI('/stdout')!.toString()).toBe('rowdy://stdout/');
+// expect(routes.intoURI('/stderr')!.toString()).toBe('rowdy://stderr/');
+
 describe('routes', () => {
   describe('default', () => {
     it('should handle default', () => {
