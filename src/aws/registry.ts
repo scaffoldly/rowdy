@@ -28,7 +28,7 @@ export class AwsRegistry implements IRegistryApi {
   }
 
   login(): Observable<TRegistry> {
-    const { registry = process.env.AWS_ECR_REGISTRY } = this.enviornment?.opts || {};
+    const { registry = process.env.AWS_ECR_REGISTRY } = this.enviornment || {};
 
     if (registry && !registry.match(ECR_REGISTRY_REGEX)) {
       return NEVER;

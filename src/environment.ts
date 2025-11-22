@@ -69,6 +69,7 @@ export class Environment implements ILoggable {
   private _transports: {
     cri?: Transport;
   } = {};
+  private _registry: string | undefined;
 
   constructor(public readonly log: Logger) {
     this.signal.addEventListener('abort', () => {
@@ -141,11 +142,14 @@ export class Environment implements ILoggable {
     if (argv['--']) {
       this._command = argv['--'] as string[];
     }
-    if (argv.routes) {
-      this._routes = Routes.fromURL(argv.routes);
-    }
     if (argv.port) {
       this._port = argv.port;
+    }
+    if (argv.registry) {
+      this._registry = argv.registry;
+    }
+    if (argv.routes) {
+      this._routes = Routes.fromURL(argv.routes);
     }
   }
 
@@ -159,6 +163,10 @@ export class Environment implements ILoggable {
 
   get rowdy(): Rowdy {
     return this._rowdy;
+  }
+
+  get registry(): string | undefined {
+    return this._registry;
   }
 
   get routes(): Routes {
