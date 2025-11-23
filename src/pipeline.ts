@@ -1,4 +1,4 @@
-import { Observable, ReplaySubject } from 'rxjs';
+import { defer, Observable, ReplaySubject } from 'rxjs';
 import { ILoggable, Logger } from './log';
 import { Environment } from './environment';
 import { Routes } from './routes';
@@ -7,12 +7,9 @@ import { CRI, GrpcRouter } from '@scaffoldly/rowdy-grpc';
 
 export abstract class Pipeline implements ILoggable {
   private _createdAt = performance.now();
+  private _router = new ReplaySubject<GrpcRouter>(1);
 
   constructor(public readonly environment: Environment) {}
-
-  get name(): string {
-    return this.environment.name;
-  }
 
   get log(): Logger {
     return this.environment.log;
@@ -34,8 +31,16 @@ export abstract class Pipeline implements ILoggable {
     return this._createdAt;
   }
 
-  abstract get cri(): Observable<GrpcRouter>;
+  get router(): Observable<GrpcRouter> {
+    return defer(() => this._router.asObservable());
+  }
 
+  withRouter(router: GrpcRouter): this {
+    this._router.next(router);
+    return this;
+  }
+
+  abstract get name(): string;
   abstract into(): Observable<Request<Pipeline>>;
   abstract version(): Observable<CRI.VersionResponse>;
   abstract repr(): string;

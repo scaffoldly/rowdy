@@ -1,6 +1,6 @@
 import yargs from 'yargs';
 import { hideBin } from 'yargs/helpers';
-import { fromEvent, mergeMap, Observable, of, race, repeat, Subscription, switchMap, takeUntil, tap } from 'rxjs';
+import { fromEvent, map, mergeMap, Observable, of, race, repeat, Subscription, switchMap, takeUntil, tap } from 'rxjs';
 import { Routes } from './routes';
 import { ILoggable, log, Logger, Trace } from './log';
 import { ShellProxy, ShellRequest } from './proxy/shell';
@@ -10,7 +10,6 @@ import { LambdaPipeline } from './aws/lambda';
 import packageJson from '../package.json';
 import { ABORT, Rowdy } from '.';
 import { isatty } from 'tty';
-import { Transport } from '@connectrpc/connect';
 import { LambdaFunction } from './aws/lambda/index';
 import { LambdaImageService } from './aws/lambda/image';
 import { inspect } from 'util';
@@ -79,9 +78,6 @@ export class Environment implements ILoggable {
   private _env = process.env;
   private _rowdy: Rowdy;
   private _port?: number;
-  private _transports: {
-    cri?: Transport;
-  } = {};
   private _registry: string | undefined;
   private _keepAlive: boolean = false;
 
@@ -166,6 +162,8 @@ export class Environment implements ILoggable {
                     .usage('$0 install aws lambda [options]'),
                 handler: (argv) => {
                   let lambda = new LambdaFunction('Container', new LambdaImageService(this))
+                    .withMemory(1024)
+                    .withCommand('sleep infinity')
                     .withEnvironment('ROWDY_DEBUG', 'true')
                     .withEnvironment('ROWDY_TRACE', 'true');
 
@@ -281,29 +279,29 @@ export class Environment implements ILoggable {
   }
 
   public init(): this {
-    const pipeline = new ShellPipeline(this);
-    this._pipelines.push(pipeline);
+    const shell = new ShellPipeline(this);
+    this._pipelines.push(shell);
 
     this._subscriptions.push(
-      race(this._pipelines.map((p) => p.cri))
+      race(this._pipelines.map((p) => p.router.pipe(map((router) => ({ name: p.name, router })))))
         .pipe(
-          switchMap((cri) => {
+          switchMap(({ name, router }) => {
             if (!this._port) {
-              return of(cri.local);
+              return of({ name, router });
             }
 
-            const { start, stop } = cri.server(this._port);
+            const { start, stop } = router.server(this._port);
             this.abort.signal.addEventListener('abort', () => {
-              this.log.info('CRI gRPC server stopping', { port: this._port });
+              this.log.info('RPC server stopping', { port: this._port });
               stop();
             });
-            this.log.info('CRI gRPC server starting', { port: this._port });
+            this.log.info('gRPC server starting', { port: this._port });
             return start();
           })
         )
-        .subscribe((transport) => {
-          this.log.info('CRI gRPC initialized');
-          this._transports.cri = transport;
+        .subscribe(({ name, router }) => {
+          this._pipelines.forEach((p) => p.withRouter(router));
+          this.log.info(`gRPC server initialized by ${name}`);
         })
     );
 
@@ -311,7 +309,7 @@ export class Environment implements ILoggable {
       log.info(`Starting command`, { command: this.command });
 
       this._subscriptions.push(
-        new ShellProxy(pipeline, new ShellRequest(pipeline, this.command).withInput(process.stdin))
+        new ShellProxy(shell, new ShellRequest(shell, this.command).withInput(process.stdin))
           .background()
           .invoke()
           .subscribe((response) => {

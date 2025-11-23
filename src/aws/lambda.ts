@@ -28,17 +28,19 @@ export class LambdaPipeline extends Pipeline {
   public readonly runtimeApi: string | undefined = process.env.AWS_LAMBDA_RUNTIME_API;
 
   private _requestId: string | undefined;
-  private _cri: GrpcRouter = new GrpcRouter(this.signal, {
-    title: 'AWS Lambda CRI',
-    description: `An implementation of the Kubernetes Container Runtime Interface (CRI) which leverages technology such as AWS Lambda, AWS ECR, and AWS CloudWatch to implement Container Runtime and Image management.`,
-    license: {
-      name: 'FSL-1.1-Apache-2.0',
-    },
-    version: this.environment.version,
-  }).withServices(new LambdaCri(this.environment));
 
   constructor(environment: Environment) {
     super(environment);
+    this.withRouter(
+      new GrpcRouter(this.signal, {
+        title: 'AWS Lambda CRI',
+        description: `An implementation of the Kubernetes Container Runtime Interface (CRI) which leverages technology such as AWS Lambda, AWS ECR, and AWS CloudWatch to implement Container Runtime and Image management.`,
+        license: {
+          name: 'FSL-1.1-Apache-2.0',
+        },
+        version: this.environment.version,
+      }).withServices(new LambdaCri(this.environment))
+    );
   }
 
   get requestId(): string {
@@ -48,8 +50,8 @@ export class LambdaPipeline extends Pipeline {
     return this._requestId;
   }
 
-  get cri(): Observable<GrpcRouter> {
-    return defer(() => of(this._cri));
+  override get name(): string {
+    return this.constructor.name;
   }
 
   @Trace
@@ -73,8 +75,8 @@ export class LambdaPipeline extends Pipeline {
   }
 
   override version(): Observable<CRI.VersionResponse> {
-    return this.cri.pipe(
-      switchMap((cri) => RuntimeService.client(cri.local).version({ version: this.environment.version }))
+    return this.router.pipe(
+      switchMap((router) => RuntimeService.client(router.local).version({ version: this.environment.version }))
     );
   }
 

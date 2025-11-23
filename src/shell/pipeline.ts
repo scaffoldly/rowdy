@@ -1,7 +1,7 @@
 import { NEVER, Observable } from 'rxjs';
 import { Environment } from '../environment';
 import { Pipeline, Request } from '../pipeline';
-import { CRI, GrpcRouter } from '@scaffoldly/rowdy-grpc';
+import { CRI } from '@scaffoldly/rowdy-grpc';
 
 export class ShellPipeline extends Pipeline {
   constructor(environment: Environment) {
@@ -12,8 +12,8 @@ export class ShellPipeline extends Pipeline {
     return NEVER;
   }
 
-  override get cri(): Observable<GrpcRouter> {
-    return NEVER;
+  override get name(): string {
+    return this.constructor.name;
   }
 
   override version(): Observable<CRI.VersionResponse> {

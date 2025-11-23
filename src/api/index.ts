@@ -78,9 +78,9 @@ export class Rowdy implements IApi {
   }
 
   public cri(proxy: HttpProxy<Pipeline>): Observable<GrpcResponse> {
-    return proxy.pipeline.cri.pipe(
-      switchMap((cri) =>
-        cri.route(
+    return proxy.pipeline.router.pipe(
+      switchMap((router) =>
+        router.route(
           {
             url: proxy.source.uri.toString(),
             method: proxy.method,

@@ -520,7 +520,7 @@ export class LambdaFunction implements Logger {
               Environment,
               ImageUri,
               Qualifier,
-              EntryPoint,
+              EntryPoint: [...EntryPoint, '--'],
               Command,
             }))
           )
