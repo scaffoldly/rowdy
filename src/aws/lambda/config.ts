@@ -35,7 +35,7 @@ export class ConfigFactory {
   private _sandboxConfig: CRI.PodSandboxConfig = {
     $typeName: 'runtime.v1.PodSandboxConfig',
     annotations: {
-      [`${ANNOTATIONS.ROWDY_IMAGE}`]: 'scaffoldly/rowdy:beta',
+      [`${ANNOTATIONS.ROWDY_IMAGE}`]: 'ghcr.io/scaffoldly/rowdy:beta',
       [`${ANNOTATIONS.ROWDY_RUNTIME}`]: 'com.amazonaws.lambda',
     },
     hostname: 'not-implemented',

@@ -63,6 +63,12 @@ export const isSubset = (subset: Record<string, string>, superset: Record<string
   return true;
 };
 
+const isEqual = <T extends number | string | string[]>(a?: T, b?: T): boolean =>
+  a === b ||
+  (!!a &&
+    !!b &&
+    (Array.isArray(a) && Array.isArray(b) ? a.length === b.length && !a.some((v, i) => v !== b[i]) : a === b));
+
 const _create = <T>(read: () => Promise<T>, write: () => Promise<unknown>, cb?: (res: T) => void): Observable<T> => {
   return defer(() =>
     read().catch((err) => {
@@ -105,7 +111,7 @@ const pullImage = (lambda: LambdaFunction): OperatorFunction<{ requested: string
             image: requested,
             annotations: lambda.isSandbox()
               ? {}
-              : { [`${ANNOTATIONS.ROWDY_IMAGE_LAYERS_FROM}`]: 'scaffoldly/rowdy:beta' },
+              : { [`${ANNOTATIONS.ROWDY_IMAGE_LAYERS_FROM}`]: 'ghcr.io/scaffoldly/rowdy:beta' },
             runtimeHandler: '',
             userSpecifiedImage: '',
           },
@@ -125,8 +131,8 @@ export class LambdaFunction implements Logger {
   // Reactive Properties
   private Name: BehaviorSubject<string | undefined> = new BehaviorSubject<string | undefined>(undefined);
   private Image: BehaviorSubject<{ requested: string; normalized: Image }> = new BehaviorSubject({
-    requested: 'scaffoldly/rowdy:beta',
-    normalized: Transfer.normalizeImage('scaffoldly/rowdy:beta'),
+    requested: 'ghcr.io/scaffoldly/rowdy:beta',
+    normalized: Transfer.normalizeImage('ghcr.io/scaffoldly/rowdy:beta'),
   });
   private MemorySize: BehaviorSubject<number> = new BehaviorSubject(128);
   private Environment: BehaviorSubject<Record<string, string>> = new BehaviorSubject({});
@@ -499,10 +505,10 @@ export class LambdaFunction implements Logger {
           const update: { code: boolean; config: boolean } = {
             code: Code?.ImageUri !== ImageUri,
             config:
-              Configuration.Version === '$LATEST' || // An Alias was never created for the Qualifier
-              Configuration.ImageConfigResponse?.ImageConfig?.EntryPoint?.[0] !== 'rowdy' ||
-              Configuration.ImageConfigResponse?.ImageConfig?.Command?.toString() !== Command.toString() ||
-              Configuration.MemorySize !== MemorySize ||
+              !isEqual(Configuration.Version, '$LATEST') || // An Alias was never created for the Qualifier
+              !isEqual(Configuration.ImageConfigResponse?.ImageConfig?.EntryPoint, ['rowdy', '--']) ||
+              !isEqual(Configuration.ImageConfigResponse?.ImageConfig?.Command, Command) ||
+              !isEqual(Configuration.MemorySize, MemorySize) ||
               !isSubset(Environment, Configuration.Environment?.Variables || {}),
           };
 
@@ -522,7 +528,7 @@ export class LambdaFunction implements Logger {
                       FunctionName,
                       Layers: [],
                       ImageConfig: {
-                        EntryPoint: ['rowdy'],
+                        EntryPoint: ['rowdy', '--'],
                         Command,
                         WorkingDirectory: '/', // TODO: infer from image
                       },
