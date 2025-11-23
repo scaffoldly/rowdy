@@ -27,6 +27,8 @@ type Args = yargs.ArgumentsCamelCase<
     registry: string | undefined;
   } & {
     port: number | undefined;
+  } & {
+    'keep-alive': boolean;
   }
 >;
 
@@ -37,6 +39,8 @@ const entrypoint = <T>(
     routes: string | undefined;
   } & {
     registry: string | undefined;
+  } & {
+    'keep-alive': boolean;
   }
 > => {
   const modified = argv
@@ -49,6 +53,13 @@ const entrypoint = <T>(
     .option('registry', {
       type: 'string',
       description: 'Image registry to use for pushing and serving images.',
+      global: false,
+      group: 'Entrypoint:',
+    })
+    .option('keep-alive', {
+      type: 'boolean',
+      default: false,
+      description: 'Keep the process alive after command completion.',
       global: false,
       group: 'Entrypoint:',
     });
@@ -72,6 +83,7 @@ export class Environment implements ILoggable {
     cri?: Transport;
   } = {};
   private _registry: string | undefined;
+  private _keepAlive: boolean = false;
 
   constructor(public readonly log: Logger) {
     this.log.info('Initializing Environment', { argv: process.argv, bin: this.bin });
@@ -85,7 +97,7 @@ export class Environment implements ILoggable {
     this._routes = Routes.default();
 
     const parsed = yargs(hideBin(process.argv))
-      .parserConfiguration({ 'populate--': true })
+      .parserConfiguration({ 'populate--': true, 'boolean-negation': true })
       .scriptName(this.bin!)
       .env(this.bin!.toUpperCase())
       .version(packageJson.version)
@@ -142,7 +154,6 @@ export class Environment implements ILoggable {
                       type: 'string',
                       global: false,
                       description: 'Name of the Lambda function to create',
-                      default: 'rowdy',
                       group: 'Lambda:',
                     })
                     .option('cri', {
@@ -155,18 +166,16 @@ export class Environment implements ILoggable {
                     .usage('$0 install aws lambda [options]'),
                 handler: (argv) => {
                   let lambda = new LambdaFunction('Container', new LambdaImageService(this))
-                    .withImage('python:3-slim')
-                    .withMemory(256)
-                    .withCommand('python3 -m http.server 8080')
-                    .withRoute('{/*path}', 'http://localhost:8080/*path')
                     .withEnvironment('ROWDY_DEBUG', 'true')
                     .withEnvironment('ROWDY_TRACE', 'true');
+
                   if (argv.name) {
                     lambda = lambda.withName(argv.name);
                   }
-                  // if (argv.cri) {
-                  //   lambda = lambda.withCRI();
-                  // }
+                  if (argv.cri) {
+                    lambda = lambda.withCRI();
+                  }
+
                   this._subscriptions.push(
                     lambda.observe(this.abort.signal).subscribe({
                       next: (fn) => this.log.info(`State Updated: ${inspect(fn.State)}`),
@@ -234,6 +243,9 @@ export class Environment implements ILoggable {
     if (argv.routes) {
       this._routes = Routes.fromURL(argv.routes);
     }
+    if (argv['keep-alive']) {
+      this._keepAlive = argv['keep-alive'];
+    }
   }
 
   get name(): string {
@@ -262,6 +274,10 @@ export class Environment implements ILoggable {
 
   get env(): Record<string, string | undefined> {
     return this._env;
+  }
+
+  private get keepAlive(): boolean {
+    return this._keepAlive;
   }
 
   public init(): this {
@@ -303,8 +319,12 @@ export class Environment implements ILoggable {
               response.subscribe({
                 complete: () => {
                   log.info(`'${response.bin}' completed`, { response });
-                  this.abort.abort('Command complete');
+                  if (!this.keepAlive) {
+                    return;
+                  }
+                  // TODO: Clean up CTRL+C
                   response.fds.end();
+                  this.abort.abort('Command complete');
                 },
               })
             );

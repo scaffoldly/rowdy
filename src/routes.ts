@@ -232,7 +232,7 @@ export class Routes implements IRoutes, ILoggable {
       .withPath(`/${Rowdy.SLUG}/400`, `rowdy://${Rowdy.HTTP}:400/`)
       .withPath(`/${Rowdy.SLUG}/404`, `rowdy://${Rowdy.HTTP}:401/`)
       .withPath(`/${Rowdy.SLUG}/500`, `rowdy://${Rowdy.HTTP}:500/`)
-      .withPath(`${Rowdy.PATHS.CRI}{/*path}`, `rowdy://${Rowdy.CRI}/*path`)
+      .withPath(Rowdy.PATHS.CRI, Rowdy.TARGETS.CRI)
       .withPath(`/${Rowdy.SLUG}/${Rowdy.ROUTES}`, `rowdy://${Rowdy.ROUTES}/`)
       .withDefault('rowdy://http:404/');
   }

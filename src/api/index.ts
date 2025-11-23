@@ -22,10 +22,14 @@ export class Rowdy implements IApi {
   static readonly VERSION = 'version';
 
   static readonly PATHS = {
-    CRI: `/${Rowdy.SLUG}/${Rowdy.CRI}`,
+    CRI: `/${Rowdy.SLUG}/${Rowdy.CRI}{/*path}`,
     VERSION: `/${Rowdy.SLUG}/${Rowdy.VERSION}`,
     HEALTH: `/${Rowdy.SLUG}/${Rowdy.HEALTH}`,
     PING: `/${Rowdy.SLUG}/${Rowdy.PING}`,
+  };
+
+  static readonly TARGETS = {
+    CRI: `rowdy://${Rowdy.CRI}/*path`,
   };
 
   public readonly http: AxiosInstance = axios.create();

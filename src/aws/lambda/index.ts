@@ -1,4 +1,3 @@
-import { createHash } from 'crypto';
 import { MetadataBearer, Logger } from '@smithy/types';
 import {
   CreateRoleCommand,
@@ -29,7 +28,7 @@ import {
   GetPolicyCommand,
   FunctionConfiguration,
 } from '@aws-sdk/client-lambda';
-import { PolicyDocument } from 'aws-lambda';
+import { PolicyDocument, Statement } from 'aws-lambda';
 import { LambdaImageService } from './image';
 import { Image, Transfer } from '../../api/internal/transfer';
 import {
@@ -85,7 +84,7 @@ const _create = <T>(read: () => Promise<T>, write: () => Promise<unknown>, cb?: 
     .pipe(tap((res) => cb?.(res)));
 };
 
-const waitForSuccess = (lambda: LambdaClient, FunctionName: string) => (res: GetFunctionConfigurationCommandOutput) =>
+const waitForSuccess = (lambda: LambdaClient) => (res: GetFunctionConfigurationCommandOutput) =>
   new Promise<GetFunctionConfigurationCommandOutput>((resolve, reject) => {
     if (res.LastUpdateStatus === 'Successful' && res.State === 'Active') {
       return resolve(res);
@@ -93,8 +92,8 @@ const waitForSuccess = (lambda: LambdaClient, FunctionName: string) => (res: Get
     setTimeout(
       () =>
         lambda
-          .send(new GetFunctionConfigurationCommand({ FunctionName }))
-          .then(waitForSuccess(lambda, FunctionName))
+          .send(new GetFunctionConfigurationCommand({ FunctionName: res.FunctionName }))
+          .then(waitForSuccess(lambda))
           .then(resolve)
           .catch(reject),
       1000
@@ -135,13 +134,15 @@ export class LambdaFunction implements Logger {
     requested: 'ghcr.io/scaffoldly/rowdy:beta',
     normalized: Transfer.normalizeImage('ghcr.io/scaffoldly/rowdy:beta'),
   });
-  private MemorySize: BehaviorSubject<number> = new BehaviorSubject(128);
-  private Environment: BehaviorSubject<Record<string, string>> = new BehaviorSubject({});
-  private Tags: BehaviorSubject<Record<string, string>> = new BehaviorSubject(
+  private MemorySize = new BehaviorSubject(128);
+  private Environment = new BehaviorSubject<Record<string, string>>({});
+  private Tags = new BehaviorSubject<Record<string, string>>(
     Object.entries(TAGS).reduce((acc, [, v]) => ({ ...acc, [v]: '' }), {})
   );
-  private Command: BehaviorSubject<string[]> = new BehaviorSubject<string[]>([]);
+  private EntryPoint = new BehaviorSubject<string[]>(['rowdy']);
+  private Command = new BehaviorSubject<string[]>([]);
   private Routes = new BehaviorSubject<Routes>(Routes.empty());
+  private RoleStatements = new BehaviorSubject<Statement[]>([]);
 
   // Resource Properties
   private RoleName = new ReplaySubject<string | undefined>(1);
@@ -251,12 +252,42 @@ export class LambdaFunction implements Logger {
     const routes = this.Routes.getValue();
     routes.withPath(path, target);
     this.Routes.next(routes);
-    this.withEnvironment('ROWDY_ROUTES', routes.intoDataURL());
-    return this;
+    return this.withEnvironment('ROWDY_ROUTES', routes.intoDataURL());
   }
 
   withCRI(): this {
-    this.withRoute('{/*path}', `rowdy://${Rowdy.CRI}/*path`);
+    return this.withKeepAlive()
+      .withRoute(Rowdy.PATHS.CRI, Rowdy.TARGETS.CRI)
+      .withRoleStatement({
+        Effect: 'Allow',
+        Resource: '*',
+        Action: [
+          'ecr:*',
+          'lambda:*',
+          'iam:CreateRole',
+          'iam:GetRole',
+          'iam:GetRolePolicy',
+          'iam:PassRole',
+          'iam:PutRolePolicy',
+          'iam:UpdateAssumeRolePolicy',
+        ],
+        // TODO: Restrict to resources tagged by Rowdy
+      });
+  }
+
+  private withRoleStatement(statement: Statement): this {
+    const statements = this.RoleStatements.getValue();
+    statements.push(statement);
+    this.RoleStatements.next(statements);
+    return this;
+  }
+
+  private withKeepAlive(): this {
+    const entryPoint = this.EntryPoint.getValue();
+    if (!entryPoint.includes('--keep-alive')) {
+      entryPoint.push('--keep-alive');
+    }
+    this.EntryPoint.next(entryPoint);
     return this;
   }
 
@@ -326,11 +357,6 @@ export class LambdaFunction implements Logger {
     deletes: Observable<MetadataBearer>[];
   } {
     const _generateRoleName = (image: Image) => `${image.namespace}+${image.name}@rowdy.run`;
-    const _generateFunctionName = (roleName: string, roleId: string) =>
-      `${roleName
-        .replace(/@.*/, '')
-        .replace(/[+]/g, '-')
-        .replace(/[^a-zA-Z0-9-_]/g, '_')}-${createHash('sha256').update(roleId).digest('hex').substring(0, 4)}`;
 
     const creates: Observable<MetadataBearer>[] = [
       this.Image.pipe(take(1)).pipe(
@@ -350,7 +376,7 @@ export class LambdaFunction implements Logger {
                 new CreateRoleCommand({
                   RoleName,
                   Description,
-                  AssumeRolePolicyDocument: this.AssumeRolePolicyDocument,
+                  AssumeRolePolicyDocument: JSON.stringify(this.AssumeRolePolicyDocument),
                 })
               ),
             (role) => {
@@ -364,13 +390,12 @@ export class LambdaFunction implements Logger {
       ),
       combineLatest({
         Name: this.Name.pipe(take(1)),
-        RoleName: this.RoleName.pipe(take(1)),
         RoleArn: this.RoleArn.pipe(take(1)),
         RoleId: this.RoleId.pipe(take(1)),
         ImageUri: this.Image.pipe(take(1), pullImage(this)),
       }).pipe(
-        map(({ Name, RoleName, RoleArn, RoleId, ImageUri }) => ({
-          FunctionName: Name || _generateFunctionName(RoleName!, RoleId!),
+        map(({ Name, RoleArn, RoleId, ImageUri }) => ({
+          FunctionName: Name || RoleId,
           Description: `A function to run the ${ImageUri} container in AWS Lambda`,
           Role: RoleArn,
           ImageUri,
@@ -393,7 +418,7 @@ export class LambdaFunction implements Logger {
                       Publish: false,
                     })
                   )
-                  .then(waitForSuccess(this.lambda, FunctionName))
+                  .then(waitForSuccess(this.lambda))
                   .catch(retry)
               ),
             (fn) => {
@@ -456,13 +481,19 @@ export class LambdaFunction implements Logger {
       // Role Policy
       combineLatest({
         RoleName: this.RoleName.pipe(take(1)),
+        RoleStatements: this.RoleStatements.pipe(take(1)),
       }).pipe(
-        switchMap(({ RoleName }) =>
+        map(({ RoleName, RoleStatements }) => {
+          const RolePolicyDocument = this.RolePolicyDocument;
+          RolePolicyDocument.Statement.push(...RoleStatements);
+          return { RoleName, RolePolicyDocument };
+        }),
+        switchMap(({ RoleName, RolePolicyDocument }) =>
           this.iam.send(
             new PutRolePolicyCommand({
               RoleName,
               PolicyName: 'RowdyPolicy',
-              PolicyDocument: this.RolePolicyDocument,
+              PolicyDocument: JSON.stringify(RolePolicyDocument),
             })
           )
         )
@@ -474,9 +505,10 @@ export class LambdaFunction implements Logger {
         MemorySize: this.MemorySize.pipe(take(1)),
         Environment: this.Environment.pipe(take(1)),
         ImageUri: this.ImageUri.pipe(take(1)),
+        EntryPoint: this.EntryPoint.pipe(take(1)),
         Command: this.Command.pipe(take(1)),
       }).pipe(
-        switchMap(({ FunctionArn, Qualifier, MemorySize, Environment, ImageUri, Command }) =>
+        switchMap(({ FunctionArn, Qualifier, MemorySize, Environment, ImageUri, EntryPoint, Command }) =>
           from(
             this.lambda
               .send(new GetFunctionCommand({ FunctionName: FunctionArn, Qualifier }))
@@ -488,11 +520,12 @@ export class LambdaFunction implements Logger {
               Environment,
               ImageUri,
               Qualifier,
+              EntryPoint,
               Command,
             }))
           )
         ),
-        switchMap(({ Function, MemorySize, Environment, ImageUri, Qualifier, Command }) => {
+        switchMap(({ Function, MemorySize, Environment, ImageUri, Qualifier, EntryPoint, Command }) => {
           const { Code = {} } = Function;
           let { Configuration = {} } = Function;
           const { FunctionName } = Configuration;
@@ -508,7 +541,7 @@ export class LambdaFunction implements Logger {
             code: Code?.ImageUri !== ImageUri,
             config:
               !isEqual(Configuration.Version, '$LATEST') || // An Alias was never created for the Qualifier
-              !isEqual(Configuration.ImageConfigResponse?.ImageConfig?.EntryPoint, ['rowdy', '--']) ||
+              !isEqual(Configuration.ImageConfigResponse?.ImageConfig?.EntryPoint, EntryPoint) ||
               !isEqual(Configuration.ImageConfigResponse?.ImageConfig?.Command, Command) ||
               !isEqual(Configuration.MemorySize, MemorySize) ||
               !isSubset(Environment, Configuration.Environment?.Variables || {}),
@@ -528,14 +561,14 @@ export class LambdaFunction implements Logger {
                     ...Configuration,
                     FunctionName,
                     ImageConfig: {
-                      EntryPoint: ['rowdy', '--'],
+                      EntryPoint,
                       Command,
                       WorkingDirectory: '/', // TODO: infer from image
                     },
                     Layers: [],
                   })
                 )
-                .then(waitForSuccess(this.lambda, FunctionName))
+                .then(waitForSuccess(this.lambda))
                 .then((Configuration) =>
                   update.code
                     ? Promise.resolve(Configuration)
@@ -546,7 +579,7 @@ export class LambdaFunction implements Logger {
                         })
                       )
                 )
-                .then(waitForSuccess(this.lambda, FunctionName))
+                .then(waitForSuccess(this.lambda))
             );
 
             if (update.code) {
@@ -560,7 +593,7 @@ export class LambdaFunction implements Logger {
                     })
                   )
                 )
-                .then(waitForSuccess(this.lambda, FunctionName));
+                .then(waitForSuccess(this.lambda));
             }
           }
 
@@ -722,7 +755,7 @@ export class LambdaFunction implements Logger {
     }
   };
 
-  private get AssumeRolePolicyDocument(): string {
+  private get AssumeRolePolicyDocument(): PolicyDocument {
     const document: PolicyDocument = {
       Version: '2012-10-17',
       Statement: [
@@ -735,10 +768,10 @@ export class LambdaFunction implements Logger {
         },
       ],
     };
-    return JSON.stringify(document);
+    return document;
   }
 
-  private get RolePolicyDocument(): string {
+  private get RolePolicyDocument(): PolicyDocument {
     const document: PolicyDocument = {
       Version: '2012-10-17',
       Statement: [
@@ -763,6 +796,6 @@ export class LambdaFunction implements Logger {
         },
       ],
     };
-    return JSON.stringify(document);
+    return document;
   }
 }
