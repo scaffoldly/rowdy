@@ -167,7 +167,10 @@ export class GrpcRouter {
     return this;
   }
 
-  server(port?: number): { start: () => Promise<{ transport: Transport; name: string }>; stop: () => Promise<void> } {
+  server(port?: number): {
+    start: () => Promise<{ router: GrpcRouter; transport: Transport; name: string }>;
+    stop: () => Promise<void>;
+  } {
     const abortController = new AbortController();
     this.signal.addEventListener('abort', () => {
       abortController.abort();
@@ -185,7 +188,7 @@ export class GrpcRouter {
       })
     );
 
-    const start = (): Promise<{ transport: Transport; name: string }> => {
+    const start = (): Promise<{ router: GrpcRouter; transport: Transport; name: string }> => {
       return new Promise((resolve, reject) => {
         server.listen({ host: '::', port: port ? port : undefined }, () => {
           const address = server.address();
@@ -198,7 +201,7 @@ export class GrpcRouter {
             httpVersion: '1.1',
           });
 
-          resolve({ transport, name: `${this.constructor.name}${server.constructor.name}` });
+          resolve({ router: this, transport, name: `${this.constructor.name}${server.constructor.name}` });
         });
 
         server.on('error', (err) => {
