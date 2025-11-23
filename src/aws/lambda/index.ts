@@ -38,7 +38,6 @@ import {
   concat,
   defer,
   from,
-  last,
   map,
   Observable,
   OperatorFunction,
@@ -86,19 +85,21 @@ const _create = <T>(read: () => Promise<T>, write: () => Promise<unknown>, cb?: 
     .pipe(tap((res) => cb?.(res)));
 };
 
-const waitForSuccess = (lambda: LambdaClient, FunctionName: string) => {
-  const waiter = async (res: GetFunctionConfigurationCommandOutput): Promise<GetFunctionConfigurationCommandOutput> => {
-    if (res.LastUpdateStatus === 'Successful') {
-      return res;
+const waitForSuccess = (lambda: LambdaClient, FunctionName: string) => (res: GetFunctionConfigurationCommandOutput) =>
+  new Promise<GetFunctionConfigurationCommandOutput>((resolve, reject) => {
+    if (res.LastUpdateStatus === 'Successful' && res.State === 'Active') {
+      return resolve(res);
     }
-    await new Promise((resolve) => setTimeout(resolve, 1000));
-    return await lambda
-      .send(new GetFunctionConfigurationCommand({ FunctionName, Qualifier: res.Version }))
-      .then(waitForSuccess(lambda, FunctionName));
-  };
-
-  return waiter;
-};
+    setTimeout(
+      () =>
+        lambda
+          .send(new GetFunctionConfigurationCommand({ FunctionName }))
+          .then(waitForSuccess(lambda, FunctionName))
+          .then(resolve)
+          .catch(reject),
+      1000
+    );
+  });
 
 const pullImage = (lambda: LambdaFunction): OperatorFunction<{ requested: string; normalized: Image }, string> => {
   return (source) =>
@@ -492,7 +493,6 @@ export class LambdaFunction implements Logger {
           )
         ),
         switchMap(({ Function, MemorySize, Environment, ImageUri, Qualifier, Command }) => {
-          const operations: Observable<GetFunctionConfigurationCommandOutput>[] = [];
           const { Code = {} } = Function;
           let { Configuration = {} } = Function;
           const { FunctionName } = Configuration;
@@ -501,6 +501,8 @@ export class LambdaFunction implements Logger {
             // Maybe just return EMPTY
             throw new Error('FunctionName or Qualifier is undefined');
           }
+
+          let operations: Promise<FunctionConfiguration> = Promise.resolve(Configuration);
 
           const update: { code: boolean; config: boolean } = {
             code: Code?.ImageUri !== ImageUri,
@@ -514,64 +516,58 @@ export class LambdaFunction implements Logger {
 
           if (update.config) {
             delete Configuration.RevisionId;
-
             Configuration.MemorySize = MemorySize;
             Configuration.Environment = {
               Variables: { ...Configuration.Environment?.Variables, ...Environment },
             };
-            operations.push(
-              from(
-                this.lambda
-                  .send(
-                    new UpdateFunctionConfigurationCommand({
-                      ...Configuration,
-                      FunctionName,
-                      Layers: [],
-                      ImageConfig: {
-                        EntryPoint: ['rowdy', '--'],
-                        Command,
-                        WorkingDirectory: '/', // TODO: infer from image
-                      },
-                    })
-                  )
-                  .then(waitForSuccess(this.lambda, FunctionName))
-                  .then(({ RevisionId }) =>
-                    this.lambda.send(
-                      new PublishVersionCommand({
-                        FunctionName,
-                        RevisionId,
-                      })
-                    )
-                  )
-                  .then(waitForSuccess(this.lambda, FunctionName))
-              )
-            );
-          }
 
-          if (update.code) {
-            operations.push(
-              from(
-                this.lambda
-                  .send(
+            operations = operations.then(() =>
+              this.lambda
+                .send(
+                  new UpdateFunctionConfigurationCommand({
+                    ...Configuration,
+                    FunctionName,
+                    ImageConfig: {
+                      EntryPoint: ['rowdy', '--'],
+                      Command,
+                      WorkingDirectory: '/', // TODO: infer from image
+                    },
+                    Layers: [],
+                  })
+                )
+                .then(waitForSuccess(this.lambda, FunctionName))
+                .then((Configuration) =>
+                  update.code
+                    ? Promise.resolve(Configuration)
+                    : this.lambda.send(
+                        new PublishVersionCommand({
+                          FunctionName,
+                          RevisionId: Configuration.RevisionId,
+                        })
+                      )
+                )
+                .then(waitForSuccess(this.lambda, FunctionName))
+            );
+
+            if (update.code) {
+              operations = operations
+                .then(() =>
+                  this.lambda.send(
                     new UpdateFunctionCodeCommand({
                       FunctionName,
                       ImageUri,
                       Publish: true,
                     })
                   )
-                  .then(waitForSuccess(this.lambda, FunctionName))
-              )
-            );
+                )
+                .then(waitForSuccess(this.lambda, FunctionName));
+            }
           }
 
-          if (operations.length === 0) {
-            operations.push(from(this.lambda.send(new GetFunctionConfigurationCommand({ FunctionName, Qualifier }))));
-          }
-
-          return concat(...operations).pipe(
-            // TODO: handle the unlikely case when Version is $LATEST
-            last(),
-            tap((Configuration) => this.Configuration.next(Configuration)),
+          return from(operations).pipe(
+            tap((Configuration) => {
+              this.Configuration.next(Configuration);
+            }),
             switchMap(({ FunctionName, Version: FunctionVersion }) =>
               this.lambda
                 .send(
@@ -590,11 +586,8 @@ export class LambdaFunction implements Logger {
                     })
                   )
                 )
-                .then((alias) => {
-                  this.AliasArn.next(alias.AliasArn);
-                  return alias;
-                })
-            )
+            ),
+            tap((alias) => this.AliasArn.next(alias.AliasArn))
           );
         })
       ),
