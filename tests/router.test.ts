@@ -299,14 +299,16 @@ describe('router', () => {
       const { start, stop } = router.server();
 
       it('should route to image service', async () => {
-        const transport = await start();
+        const { transport, name } = await start();
+        expect(name).toBe('GrpcRouterServer');
         const client = ImageService.client(transport);
         expect((await client.listImages({})).images.length).toBe(1);
         await stop();
       });
 
       it('should route to runtime service', async () => {
-        const transport = await start();
+        const { transport, name } = await start();
+        expect(name).toBe('GrpcRouterServer');
         const client = RuntimeService.client(transport);
         expect((await client.version({ version: '1.0.0' })).runtimeApiVersion).toBe('1.2.3');
         await stop();
