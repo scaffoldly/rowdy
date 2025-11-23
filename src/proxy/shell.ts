@@ -4,7 +4,6 @@ import { PassThrough, Writable } from 'stream';
 import { ILoggable, log, Logger, Trace } from '../log';
 import { execa } from 'execa';
 import type { Options } from 'execa';
-import { Environment } from '..';
 
 export class ShellRequest<P extends Pipeline> extends Request<P> {
   constructor(
