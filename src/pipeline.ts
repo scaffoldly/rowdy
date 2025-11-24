@@ -7,7 +7,7 @@ import { CRI, GrpcRouter } from '@scaffoldly/rowdy-grpc';
 
 export abstract class Pipeline implements ILoggable {
   private _createdAt = performance.now();
-  private _router = new ReplaySubject<GrpcRouter>(1);
+  private _router?: ReplaySubject<GrpcRouter>;
 
   constructor(public readonly environment: Environment) {}
 
@@ -32,11 +32,18 @@ export abstract class Pipeline implements ILoggable {
   }
 
   get router(): Observable<GrpcRouter> {
-    return defer(() => this._router.asObservable());
+    let router = this._router;
+    if (!router) {
+      router = new ReplaySubject<GrpcRouter>(1);
+    }
+    return defer(() => router.asObservable());
   }
 
   withRouter(router: GrpcRouter): this {
-    this._router.next(router);
+    if (!this._router) {
+      this._router = new ReplaySubject<GrpcRouter>(1);
+      this._router.next(router);
+    }
     return this;
   }
 
