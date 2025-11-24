@@ -21,8 +21,12 @@ export class Rowdy implements IApi {
   static readonly ROUTES = 'routes';
   static readonly VERSION = 'version';
 
+  static readonly PREFIXES = {
+    CRI: `/${Rowdy.SLUG}/${Rowdy.CRI}`,
+  };
+
   static readonly PATHS = {
-    CRI: `/${Rowdy.SLUG}/${Rowdy.CRI}{/*path}`,
+    CRI: `${Rowdy.PREFIXES.CRI}{/*path}`,
     VERSION: `/${Rowdy.SLUG}/${Rowdy.VERSION}`,
     HEALTH: `/${Rowdy.SLUG}/${Rowdy.HEALTH}`,
     PING: `/${Rowdy.SLUG}/${Rowdy.PING}`,
@@ -89,7 +93,7 @@ export class Rowdy implements IApi {
             signal: proxy.signal,
             httpVersion: '1.1',
           },
-          Rowdy.PATHS.CRI
+          Rowdy.PREFIXES.CRI
         )
       )
     );
