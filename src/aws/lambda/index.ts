@@ -92,7 +92,7 @@ const waitForSuccess = (lambda: LambdaClient) => (res: GetFunctionConfigurationC
     setTimeout(
       () =>
         lambda
-          .send(new GetFunctionConfigurationCommand({ FunctionName: res.FunctionName }))
+          .send(new GetFunctionConfigurationCommand({ FunctionName: res.FunctionName, Qualifier: res.Version }))
           .then(waitForSuccess(lambda))
           .then(resolve)
           .catch(reject),
@@ -535,8 +535,6 @@ export class LambdaFunction implements Logger {
             throw new Error('FunctionName or Qualifier is undefined');
           }
 
-          let operations: Promise<FunctionConfiguration> = Promise.resolve(Configuration);
-
           const update: { code: boolean; config: boolean } = {
             code: Code?.ImageUri !== ImageUri,
             config:
@@ -547,6 +545,8 @@ export class LambdaFunction implements Logger {
               !isSubset(Environment, Configuration.Environment?.Variables || {}),
           };
 
+          let deploy: Promise<FunctionConfiguration> = Promise.resolve(Configuration);
+
           if (update.config) {
             delete Configuration.RevisionId;
             Configuration.MemorySize = MemorySize;
@@ -554,7 +554,7 @@ export class LambdaFunction implements Logger {
               Variables: { ...Configuration.Environment?.Variables, ...Environment },
             };
 
-            operations = operations.then(() =>
+            deploy = deploy.then(() =>
               this.lambda
                 .send(
                   new UpdateFunctionConfigurationCommand({
@@ -581,48 +581,62 @@ export class LambdaFunction implements Logger {
                 )
                 .then(waitForSuccess(this.lambda))
             );
-
-            if (update.code) {
-              operations = operations
-                .then(() =>
-                  this.lambda.send(
-                    new UpdateFunctionCodeCommand({
-                      FunctionName,
-                      ImageUri,
-                      Publish: true,
-                    })
-                  )
-                )
-                .then(waitForSuccess(this.lambda));
-            }
           }
 
-          return from(operations).pipe(
-            tap((Configuration) => {
-              this.Configuration.next(Configuration);
-            }),
-            switchMap(({ FunctionName, Version: FunctionVersion }) =>
-              this.lambda
-                .send(
-                  new UpdateAliasCommand({
+          if (update.code) {
+            deploy = deploy
+              .then(() =>
+                this.lambda.send(
+                  new UpdateFunctionCodeCommand({
                     FunctionName,
-                    Name: Qualifier,
-                    FunctionVersion,
+                    ImageUri,
+                    Publish: true,
                   })
                 )
-                .catch(() =>
-                  this.lambda.send(
-                    new CreateAliasCommand({
-                      FunctionName,
-                      Name: Qualifier,
-                      FunctionVersion,
-                    })
-                  )
-                )
+              )
+              .then(waitForSuccess(this.lambda));
+          }
+
+          return from(deploy).pipe(
+            switchMap(({ FunctionArn }) =>
+              this.lambda.send(new GetFunctionConfigurationCommand({ FunctionName: FunctionArn }))
             ),
-            tap((alias) => this.AliasArn.next(alias.AliasArn))
+            tap((Configuration) => {
+              this.Configuration.next(Configuration);
+              this.FunctionVersion.next(Configuration.Version);
+            })
           );
         })
+      ),
+      // Function Alias
+      combineLatest([
+        this.FunctionArn.pipe(take(1)),
+        this.Qualifier.pipe(take(1)),
+        this.FunctionVersion.pipe(take(1)),
+      ]).pipe(
+        switchMap(([FunctionArn, Qualifier, FunctionVersion]) =>
+          this.lambda
+            .send(
+              new UpdateAliasCommand({
+                FunctionName: FunctionArn,
+                Name: Qualifier!,
+                FunctionVersion: FunctionVersion!,
+              })
+            )
+            .catch(() =>
+              this.lambda.send(
+                new CreateAliasCommand({
+                  FunctionName: FunctionArn,
+                  Name: Qualifier!,
+                  FunctionVersion: FunctionVersion!,
+                })
+              )
+            )
+            .then((alias) => {
+              this.AliasArn.next(alias.AliasArn);
+              return alias;
+            })
+        )
       ),
       // Fuction URL
       combineLatest([this.FunctionArn.pipe(take(1)), this.AliasArn.pipe(take(1))]).pipe(

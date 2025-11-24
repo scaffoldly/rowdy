@@ -170,6 +170,7 @@ export class Environment implements ILoggable {
                   if (argv.name) {
                     lambda = lambda.withName(argv.name);
                   }
+
                   if (argv.cri) {
                     lambda = lambda.withCRI();
                   }
@@ -272,6 +273,10 @@ export class Environment implements ILoggable {
 
   get env(): Record<string, string | undefined> {
     return this._env;
+  }
+
+  get debug(): boolean {
+    return this.log.isDebugging;
   }
 
   private get keepAlive(): boolean {

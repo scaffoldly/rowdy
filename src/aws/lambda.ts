@@ -31,16 +31,21 @@ export class LambdaPipeline extends Pipeline {
 
   constructor(environment: Environment) {
     super(environment);
-    this.withRouter(
-      new GrpcRouter(this.signal, {
-        title: 'AWS Lambda CRI',
-        description: `An implementation of the Kubernetes Container Runtime Interface (CRI) which leverages technology such as AWS Lambda, AWS ECR, and AWS CloudWatch to implement Container Runtime and Image management.`,
-        license: {
-          name: 'FSL-1.1-Apache-2.0',
-        },
-        version: this.environment.version,
-      }).withServices(new LambdaCri(this.environment))
-    );
+
+    let router = new GrpcRouter(this.signal, {
+      title: 'AWS Lambda CRI',
+      description: `An implementation of the Kubernetes Container Runtime Interface (CRI) which leverages technology such as AWS Lambda, AWS ECR, and AWS CloudWatch to implement Container Runtime and Image management.`,
+      license: {
+        name: 'FSL-1.1-Apache-2.0',
+      },
+      version: this.environment.version,
+    }).withServices(new LambdaCri(this.environment));
+
+    if (this.environment.debug) {
+      router = router.withDebug();
+    }
+
+    return this.withRouter(router);
   }
 
   get requestId(): string {
