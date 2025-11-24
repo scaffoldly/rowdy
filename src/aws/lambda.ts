@@ -32,6 +32,10 @@ export class LambdaPipeline extends Pipeline {
   constructor(environment: Environment) {
     super(environment);
 
+    if (!this.runtimeApi) {
+      return;
+    }
+
     let router = new GrpcRouter(this.signal, {
       title: 'AWS Lambda CRI',
       description: `An implementation of the Kubernetes Container Runtime Interface (CRI) which leverages technology such as AWS Lambda, AWS ECR, and AWS CloudWatch to implement Container Runtime and Image management.`,
@@ -40,10 +44,6 @@ export class LambdaPipeline extends Pipeline {
       },
       version: this.environment.version,
     }).withServices(new LambdaCri(this.environment));
-
-    if (this.environment.debug) {
-      router = router.withDebug();
-    }
 
     return this.withRouter(router);
   }

@@ -134,28 +134,30 @@ export class Environment implements ILoggable {
         handler: (argv: Partial<Args>) => this.setup(argv),
       })
       .command({
-        command: 'install',
-        describe: 'Install Rowdy',
+        command: 'aws',
+        describe: 'AWS utilities',
+        handler: (_argv: Partial<Args>) => {},
         builder: (yargs) =>
           yargs.demandCommand(1, 'Please specify a subcommand').command({
-            command: 'aws',
-            describe: 'Install Rowdy to AWS',
+            command: 'lambda',
+            describe: 'AWS Lambda utilities',
+            handler: (_argv: Partial<Args>) => {},
             builder: (yargs) =>
               yargs.demandCommand(1, 'Please specify a subcommand').command({
-                command: 'lambda',
+                command: 'install',
                 describe: 'Install Rowdy to AWS Lambda',
                 builder: (yargs) =>
                   yargs
                     .option('name', {
                       type: 'string',
                       global: false,
-                      description: 'Name of the Lambda function to create',
+                      description: 'Name of the Lambda function',
                       group: 'Lambda:',
                     })
                     .option('cri', {
                       type: 'boolean',
                       global: false,
-                      description: 'Enable the Lambda CRI service',
+                      description: 'Enable the CRI service',
                       default: true,
                       group: 'Lambda:',
                     })
@@ -183,9 +185,7 @@ export class Environment implements ILoggable {
                   );
                 },
               }),
-            handler: (_argv: Partial<Args>) => {},
           }),
-        handler: (_argv: Partial<Args>) => {},
       })
       .command({
         command: 'run',
