@@ -218,6 +218,9 @@ export class LambdaFunction implements Logger {
   }
 
   withMemory(memory: number): this {
+    if (memory < 128) {
+      memory = 128;
+    }
     this.MemorySize.next(memory);
     return this;
   }

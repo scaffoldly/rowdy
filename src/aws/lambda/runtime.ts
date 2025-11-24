@@ -3,9 +3,8 @@ import { CRI } from '@scaffoldly/rowdy-grpc';
 import { Environment } from '../../environment';
 import { LambdaImageService } from './image';
 import { Logger } from '../..';
-import { SandboxResource } from './sandbox';
-import { ContainerResource } from './container';
-import { ConfigFactory } from './config';
+import { LambdaFunction } from '.';
+import { lastValueFrom } from 'rxjs';
 
 // eslint-disable-next-line @typescript-eslint/no-empty-object-type
 interface ILambdaRuntimeService extends Partial<ServiceImpl<typeof CRI.RuntimeService>> {}
@@ -20,65 +19,25 @@ export class LambdaRuntimeService implements ILambdaRuntimeService {
     return this.environment.log;
   }
 
-  runPodSandbox = async (req: CRI.RunPodSandboxRequest): Promise<CRI.RunPodSandboxResponse> => {
-    const factory = ConfigFactory.fromSandboxRequest(req);
-
-    const image = await this.image.pullImageSpec(factory.ImageSpec, factory.SandboxConfig);
-    const resource = new SandboxResource(this.environment, factory.RunPodSandboxRequest, image);
-    const sandbox = await resource.Sandbox;
-
-    return {
-      $typeName: 'runtime.v1.RunPodSandboxResponse',
-      podSandboxId: sandbox.id,
-    };
-  };
-
-  listPodSandbox = async (req: CRI.ListPodSandboxRequest): Promise<CRI.ListPodSandboxResponse> => {
-    if (req.filter?.id) {
-      const { sandbox } = await SandboxResource.from(this.environment, req.filter.id);
-      return {
-        $typeName: 'runtime.v1.ListPodSandboxResponse',
-        items: [sandbox],
-      };
-    }
-
-    return {
-      $typeName: 'runtime.v1.ListPodSandboxResponse',
-      items: [],
-    };
-  };
-
   createContainer = async (req: CRI.CreateContainerRequest): Promise<CRI.CreateContainerResponse> => {
-    const { factory, sandbox } = await SandboxResource.from(this.environment, req.podSandboxId);
-    factory.withImage(req?.config?.image?.image);
-    // TODO: Check if image needs to be pulled (e.g. not in ecr)
-    // const image = await this.image.pullImageSpec(factory.ImageSpec, factory.SandboxConfig);
-    const resource = new ContainerResource(this.environment, sandbox, req, factory.ImageSpec);
-    const container = await resource.Container;
+    let lambda = new LambdaFunction('Container', this.image);
+    const name = req.config?.metadata?.name || req.sandboxConfig?.metadata?.name;
+    const image = req.config?.image?.image;
+    const memory =
+      req?.config?.linux?.resources?.memoryLimitInBytes || req.sandboxConfig?.linux?.resources?.memoryLimitInBytes;
+
+    lambda = name ? lambda.withName(name) : lambda;
+    lambda = image ? lambda.withImage(image) : lambda;
+    lambda = memory ? lambda.withMemory(Math.floor(Number(memory) / (1024 * 1024))) : lambda;
+    lambda = await lastValueFrom(lambda.observe(this.environment.signal));
+
+    // TODO: environment
+    // TODO: debug/trace
+    // TODO: command/entrypoint
 
     return {
       $typeName: 'runtime.v1.CreateContainerResponse',
-      containerId: container.id,
-    };
-  };
-
-  listContainers = async (req: CRI.ListContainersRequest): Promise<CRI.ListContainersResponse> => {
-    if (req.filter?.id) {
-      const { sandbox } = await SandboxResource.from(this.environment, req.filter.podSandboxId);
-      const { container } = await ContainerResource.from(this.environment, sandbox, req.filter.id);
-      return {
-        $typeName: 'runtime.v1.ListContainersResponse',
-        containers: [container],
-      };
-    }
-
-    if (req.filter?.podSandboxId) {
-      // TODO List all function aliases
-    }
-
-    return {
-      $typeName: 'runtime.v1.ListContainersResponse',
-      containers: [],
+      containerId: lambda.State.FunctionArn!,
     };
   };
 
