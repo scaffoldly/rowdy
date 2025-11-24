@@ -5,12 +5,13 @@ import { lastValueFrom } from 'rxjs';
 import { Rowdy } from '../../api';
 import { Environment } from '../../environment';
 import { PullImageOptions } from '../../api/types';
-import { ANNOTATIONS } from './config';
 
 // eslint-disable-next-line @typescript-eslint/no-empty-object-type
 interface ILambdaImageService extends Partial<ServiceImpl<typeof CRI.ImageService>> {}
 
 export class LambdaImageService implements ILambdaImageService {
+  private _layersFrom?: string;
+
   constructor(private environment: Environment) {}
 
   get log(): Logger {
@@ -21,6 +22,11 @@ export class LambdaImageService implements ILambdaImageService {
     return this.environment.rowdy.images;
   }
 
+  withLayersFrom(layersFrom: string): this {
+    this._layersFrom = layersFrom;
+    return this;
+  }
+
   pullImage = async (req: CRI.PullImageRequest): Promise<CRI.PullImageResponse> => {
     // TODO: Support for platform annotation
     let opts: PullImageOptions = {};
@@ -28,8 +34,8 @@ export class LambdaImageService implements ILambdaImageService {
       throw new ConnectError('No image specified');
     }
 
-    if (req.image?.annotations?.[ANNOTATIONS.ROWDY_IMAGE_LAYERS_FROM]) {
-      opts.layersFrom = req.image.annotations[ANNOTATIONS.ROWDY_IMAGE_LAYERS_FROM];
+    if (this._layersFrom) {
+      opts.layersFrom = this._layersFrom;
     }
 
     const { imageRef } = await lastValueFrom(this.images.pullImage(req.image.image, opts));

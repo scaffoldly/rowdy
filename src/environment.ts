@@ -82,8 +82,6 @@ export class Environment implements ILoggable {
   private _keepAlive: boolean = false;
 
   constructor(public readonly log: Logger) {
-    this.log.info('Initializing Environment', { argv: process.argv, bin: this.bin });
-
     this.signal.addEventListener('abort', () => {
       this.log.debug(`Aborting environment: ${this.signal.reason}`);
       this._subscriptions.forEach((s) => s.unsubscribe());
