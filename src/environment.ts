@@ -141,73 +141,122 @@ export class Environment implements ILoggable {
             describe: 'AWS Lambda utilities',
             handler: (_argv: Partial<Args>) => {},
             builder: (yargs) =>
-              yargs.demandCommand(1, 'Please specify a subcommand').command({
-                command: 'install',
-                describe: 'Install Rowdy to AWS Lambda',
-                builder: (yargs) =>
-                  yargs
-                    .option('name', {
-                      type: 'string',
-                      global: false,
-                      description: 'Name of the Lambda function',
-                      group: 'Lambda:',
-                    })
-                    .option('cri', {
-                      type: 'boolean',
-                      global: false,
-                      description: 'Enable the CRI service',
-                      default: true,
-                      group: 'Lambda:',
-                    })
-                    .usage('$0 install aws lambda [options]'),
-                handler: (argv) => {
-                  let lambda = new LambdaFunction('Container', new LambdaImageService(this))
-                    .withMemory(1024)
-                    .withCommand('sleep infinity')
-                    .withEnvironment('ROWDY_DEBUG', 'true')
-                    .withEnvironment('ROWDY_TRACE', 'true');
+              yargs
+                .demandCommand(1, 'Please specify a subcommand')
+                .command({
+                  command: 'create <image> [command...]',
+                  describe: 'Create a new container in AWS Lambda',
+                  builder: (yargs) =>
+                    yargs
+                      .parserConfiguration({ 'unknown-options-as-args': true })
+                      .positional('image', {
+                        describe: 'Container image to deploy',
+                        type: 'string',
+                        demandOption: true,
+                      })
+                      .positional('command', {
+                        describe: 'Command and arguments to run in the container',
+                        type: 'string',
+                        array: true,
+                      })
+                      .option('name', {
+                        describe: 'Assign a name to the Lambda function',
+                        type: 'string',
+                        group: 'Lambda:',
+                      })
+                      .option('memory', {
+                        describe: 'Memory limit in megabytes',
+                        default: 256,
+                        type: 'number',
+                        group: 'Container:',
+                      })
+                      .option('publish', {
+                        alias: 'p',
+                        description: "Publish a container's port(s) to the host",
+                        type: 'number',
+                        group: 'Container:',
+                      }),
+                  handler: (argv) => {
+                    let lambda = new LambdaFunction(
+                      'Container',
+                      new LambdaImageService(this).withLayersFrom('ghcr.io/scaffoldly/rowdy:beta')
+                    ).withImage(argv.image);
 
-                  if (argv.name) {
-                    lambda = lambda.withName(argv.name);
-                  }
+                    if (argv.debug) {
+                      lambda = lambda.withEnvironment('ROWDY_DEBUG', 'true');
+                    }
+                    if (argv.trace) {
+                      lambda = lambda.withEnvironment('ROWDY_TRACE', 'true');
+                    }
+                    if (argv.command) {
+                      lambda = lambda.withCommand(argv.command.join(' '));
+                    }
+                    if (argv.name) {
+                      lambda = lambda.withName(argv.name);
+                    }
+                    if (argv.memory) {
+                      lambda = lambda.withMemory(argv.memory);
+                    }
+                    if (argv.publish) {
+                      lambda = lambda.withRoute('{/*path}', `http://localhost:${argv.publish}/*path`);
+                    } else {
+                      // TODO: Keepalive?
+                    }
 
-                  if (argv.cri) {
-                    lambda = lambda.withCRI();
-                  }
+                    // TODO: Infer entrypoint from image
+                    // TODO: Infer command from image
 
-                  this._subscriptions.push(
-                    lambda.observe(this.abort.signal).subscribe({
-                      next: (fn) => this.log.info(`State Updated: ${inspect(fn.State)}`),
-                      complete: () => this.log.info('Lambda Function Installation Complete'),
-                    })
-                  );
-                },
-              }),
+                    this._subscriptions.push(
+                      lambda.observe(this.abort.signal).subscribe({
+                        next: (fn) => this.log.info(`State Updated: ${inspect(fn.State)}`),
+                        complete: () => this.log.info('Lambda Function Installation Complete'),
+                      })
+                    );
+                  },
+                })
+                .command({
+                  command: 'install',
+                  describe: 'Install Rowdy to AWS Lambda',
+                  builder: (yargs) =>
+                    yargs
+                      .option('name', {
+                        type: 'string',
+                        global: false,
+                        description: 'Name of the Lambda function',
+                        group: 'Lambda:',
+                      })
+                      .option('cri', {
+                        type: 'boolean',
+                        global: false,
+                        description: 'Enable the CRI service',
+                        default: true,
+                        group: 'Lambda:',
+                      })
+                      .usage('$0 aws lambda install [options]'),
+                  handler: (argv) => {
+                    let lambda = new LambdaFunction('Container', new LambdaImageService(this))
+                      .withMemory(1024)
+                      .withCommand('sleep infinity')
+                      .withEnvironment('ROWDY_DEBUG', `${argv.debug}`)
+                      .withEnvironment('ROWDY_TRACE', `${argv.trace}`);
+
+                    if (argv.name) {
+                      lambda = lambda.withName(argv.name);
+                    }
+
+                    if (argv.cri) {
+                      lambda = lambda.withCRI();
+                    }
+
+                    this._subscriptions.push(
+                      lambda.observe(this.abort.signal).subscribe({
+                        next: (fn) => this.log.info(`State Updated: ${inspect(fn.State)}`),
+                        complete: () => this.log.info('Lambda Function Installation Complete'),
+                      })
+                    );
+                  },
+                }),
           }),
-      })
-      .command({
-        command: 'run',
-        describe: 'Create and run a new container from an image',
-        builder: (yargs) =>
-          yargs
-            .option('rm', {
-              type: 'boolean',
-              default: false,
-              description: 'Automatically remove the container when it exits',
-              global: false,
-              group: 'Run:',
-            })
-            .usage('$0 run [options] IMAGE <command> [args...]')
-            .strict(false)
-            .strictOptions(true),
-        handler: (argv: Partial<Args>) => {
-          const command = argv['_']?.slice(1).map(String) ?? [];
-          const image = command.shift();
-          if (!image) {
-            throw new Error('Image is required');
-          }
-          throw new Error('Not implemented');
-        },
       })
       .help()
       .parseSync();
