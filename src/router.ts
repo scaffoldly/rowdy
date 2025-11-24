@@ -227,18 +227,25 @@ export class GrpcRouter {
   }
 
   async route(request: GrpcRequest, prefix: string = ''): Promise<GrpcResponse> {
-    log(`[GRPCRouter][route] Routing request`, {
-      prefix,
-      services: this._services.map((s) => s.service.name),
-      handlers: this._router.handlers.map((h) => h.requestPath),
-      request,
-    });
-
     if (prefix.endsWith('/')) {
       prefix = prefix.slice(0, -1);
     }
 
     const requestPath = new URL(request.url).pathname.replace(prefix, '').toLowerCase();
+
+    log(
+      `[GRPCRouter][route] Routing request`,
+      JSON.stringify({
+        prefix,
+        requestPath,
+        httpVersion: request.httpVersion,
+        url: request.url,
+        method: request.method,
+        headers: Array.from(request.header.keys()),
+        services: this._services.map((s) => s.service.name),
+        // handlers: this._router.handlers.map((h) => h.requestPath),
+      })
+    );
 
     if (
       requestPath === '' ||
@@ -252,22 +259,16 @@ export class GrpcRouter {
     // TODO: prefer Origin header if provided
     const handler = this._router.handlers.find((h) => requestPath === h.requestPath.toLowerCase());
 
-    log(`[GRPCRouter][route][${request.method}] ${request.url}: Service: ${handler?.service.name ?? 'unknown'}`, {
-      prefix,
-      requestPath,
-      header: JSON.stringify(request.header),
-    });
+    log(`[GRPCRouter][route][${request.method}] ${request.url}: Service: ${handler?.service.name ?? 'unknown'}`);
 
     const response = (await handler?.(request)) || uResponseNotFound;
 
     log(
       `[GRPCRouter][route][${request.method}] ${request.url}: Service: ${handler?.service.name ?? 'unknown'}: Status: ${response.status}`,
-      {
-        header: JSON.stringify(response.header),
-        trailer: JSON.stringify(response.trailer),
-        prefix,
-        requestPath,
-      }
+      JSON.stringify({
+        header: Array.from(response.header?.keys() || []),
+        trailer: Array.from(response.trailer?.keys() || []),
+      })
     );
 
     return response;
