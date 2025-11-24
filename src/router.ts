@@ -30,7 +30,10 @@ import { Readable } from 'stream';
 import { createServer } from 'http';
 import { DOMParser } from 'linkedom';
 import docsHtml from '../static/docs.html';
-import { warn, log } from 'console';
+import { warn, log, debug as consoleDebug } from 'console';
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+let debug = (_message?: any, ..._optionalParams: any[]): void => {};
 
 export type GrpcRequest = UniversalServerRequest;
 export type GrpcResponse = UniversalServerResponse;
@@ -167,6 +170,11 @@ export class GrpcRouter {
     return this;
   }
 
+  public withDebug(): this {
+    debug = consoleDebug;
+    return this;
+  }
+
   server(port?: number): {
     start: () => Promise<{ router: GrpcRouter; transport: Transport; name: string }>;
     stop: () => Promise<void>;
@@ -232,6 +240,14 @@ export class GrpcRouter {
     }
 
     const requestPath = new URL(request.url).pathname.replace(prefix, '').toLowerCase();
+
+    debug(`[GRPCRouter][route] Routing request`, {
+      prefix,
+      requestPath,
+      services: this._services.map((s) => s.service.name),
+      handlers: this._router.handlers.map((h) => h.requestPath),
+      request,
+    });
 
     if (
       requestPath === '' ||
