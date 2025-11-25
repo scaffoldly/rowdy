@@ -39,6 +39,7 @@ runs:
       uses: actions/setup-node@v6
 
     - name: Deploy with Rowdy
+      shell: bash
       run: |
         npx @scaffoldly/rowdy@beta 
         ${{ inputs.cloud }} 
