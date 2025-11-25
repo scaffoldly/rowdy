@@ -1,0 +1,47 @@
+name: Rowdy Deploy Action
+description: Deploy a Docker Image with Rowdy
+author: Scaffoldly <github.com/scaffoldly>
+branding:
+  icon: upload-cloud
+  color: gray-dark
+inputs:
+  cloud:
+    description: The cloud provider to deploy to (aws, gcp, azure, or digitalocean)
+    required: true
+  compute:
+    description: The compute type to deploy to (lambda, ecs, app-engine, azure-functions, or app-platform)
+    required: true
+  image:
+    description: The Docker image to deploy (e.g. ghcr.io/owner/repo@sha256:...)
+    required: true
+  # routes:
+  #   description: Path to the routes configuration file
+  #   required: false
+  #   default: ""
+  # cri:
+  #   description: Whether to enable the Container Runtime Interface (CRI) in the deployed container
+  #   required: false
+  #   default: "false"
+outputs:
+  url:
+    description: The URL of the deployed application.
+runs:
+  using: "composite"
+  steps:
+    - name: Configure AWS Credentials
+      if: ${{ inputs.cloud == 'aws' }}
+      uses: aws-actions/configure-aws-credentials@v5
+      with:
+        aws-region: ${{ env.AWS_REGION || 'us-east-1' }}
+        role-to-assume: ${{ env.AWS_ROLE_ARN }}
+
+    - name: Set up Node.js
+      uses: actions/setup-node@v6
+
+    - name: Deploy with Rowdy
+      run: |
+        npx @scaffoldly/rowdy@beta 
+        ${{ inputs.cloud }} 
+        ${{ inputs.compute }} 
+        create 
+        ${{ inputs.image }}

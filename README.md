@@ -1,3 +1,3 @@
-# app-template
+# Rowdy GitHub Action
 
-app-template for Scaffoldly
+GitHub Action for Rowdy
