@@ -367,13 +367,23 @@ export class LambdaFunction implements Logger {
   } {
     const _generateRoleName = (image: Image, name?: string) =>
       name ? `${image.namespace}+${image.name}@${name}.rowdy.run` : `${image.namespace}+${image.name}@rowdy.run`;
+    const _generateQualifier = (image: Image) => {
+      if (this.type === 'Sandbox') {
+        return '$LATEST';
+      }
+      let qualifier = image.tag || image.digest;
+      if (qualifier.startsWith('sha256:')) {
+        qualifier = `sha256-${qualifier.split('sha256:')[1]?.substring(0, 12)}`;
+      }
+      return qualifier;
+    };
 
     const creates: Observable<MetadataBearer>[] = [
       combineLatest([this.Image.pipe(take(1)), this.Name.pipe(take(1))]).pipe(
-        map(([{ normalized }, name]) => ({
-          RoleName: _generateRoleName(normalized, name),
-          Description: `Execution role to run ${normalized.namespace}/${normalized.name} in AWS Lambda`,
-          Qualifier: this.type === 'Sandbox' ? '$LATEST' : normalized.tag || normalized.digest,
+        map(([{ normalized: Image }, Name]) => ({
+          RoleName: _generateRoleName(Image, Name),
+          Description: `Execution role to run ${Image.namespace}/${Image.name} in AWS Lambda`,
+          Qualifier: _generateQualifier(Image),
         })),
         switchMap(({ RoleName, Description, Qualifier }) =>
           _create(

@@ -149,7 +149,7 @@ describe('aws lambda', () => {
           fn = await lastValueFrom(fn.observe());
 
           // State
-          expect(fn.State.RoleName).toBe('library+python@rowdy.run');
+          expect(fn.State.RoleName).toBe('library+python@python3-http.rowdy.run');
           expect(fn.State.ImageUri).toMatch(
             /^[0-9]{12}\.dkr\.ecr\.[a-z0-9-]+\.amazonaws\.com\/library\/python@sha256:[a-f0-9]{64}$/
           );
