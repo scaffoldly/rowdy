@@ -364,10 +364,10 @@ export class Routes implements IRoutes, ILoggable {
       target = `${target}/`;
     }
 
-    this.rules
-      .filter((r) => r.matches?.filter((m) => m.path?.value === '{/*path}'))
-      .forEach((r) => (r.backendRefs = []));
-
+    const existing = this.rules.find((rule) => rule.matches?.[0]?.path?.value === '{/*path}');
+    if (existing) {
+      existing.backendRefs = [];
+    }
     return this.withPath('{/*path}', `${target}*path`);
   }
 
