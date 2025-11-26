@@ -258,6 +258,11 @@ export class LambdaFunction implements Logger {
     return this.withEnvironment('ROWDY_ROUTES', routes.intoDataURL());
   }
 
+  withRoutes(routes: Routes): this {
+    this.Routes.next(routes);
+    return this.withEnvironment('ROWDY_ROUTES', routes.intoDataURL());
+  }
+
   withCRI(): this {
     return this.withKeepAlive()
       .withRoute(Rowdy.PATHS.CRI, Rowdy.TARGETS.CRI)

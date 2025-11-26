@@ -23,6 +23,7 @@ import {
 import { ABORT } from '.';
 import { Rowdy } from './api';
 import { ApiVersion, ApiSchema } from './api/types';
+import { sep } from 'path';
 
 export type RoutePaths = { [key: string]: string | undefined };
 export type RoutesSpec = { paths?: RoutePaths; default?: string };
@@ -242,7 +243,7 @@ export class Routes implements IRoutes, ILoggable {
       return Routes.fromDataURL(url);
     }
 
-    if (url.startsWith('file:')) {
+    if (url.startsWith('file:') || url.startsWith('.') || url.startsWith(sep)) {
       const path = url.replace(/^file:\/\//, '');
       return Routes.fromPath(path);
     }
