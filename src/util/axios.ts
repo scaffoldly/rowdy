@@ -3,9 +3,6 @@ import { parse } from 'auth-header';
 import { Logger } from '../log';
 import { HttpHeaders } from '../proxy/http';
 import { headers as awsHeaders } from '../aws/headers';
-import { homedir } from 'os';
-import { join } from 'path';
-import { existsSync, readFileSync } from 'fs';
 
 const AUTH_CACHE: Record<string, { headers: HttpHeaders; expires: Date }> = {};
 
@@ -24,7 +21,7 @@ const headers = async (
 
   log.debug(`Requesting ${scheme} token from ${realm.toString()}...`);
   const auth = await axios.get(realm.toString(), {
-    _retryingWwwAuth: true,
+    _isRetry: true,
   } as AxiosConfig);
 
   log.debug(`Received ${scheme} token response`, { status: auth.status, statusText: auth.statusText });
@@ -39,7 +36,7 @@ const headers = async (
   return HttpHeaders.from({ Authorization: authorization });
 };
 
-type AxiosConfig = InternalAxiosRequestConfig & { _retryingWwwAuth?: boolean; _retryingDockerAuth?: boolean };
+type AxiosConfig = InternalAxiosRequestConfig & { _isRetry?: boolean };
 type Authenticator = {
   request: [
     (config: InternalAxiosRequestConfig) => Promise<InternalAxiosRequestConfig>,
@@ -60,7 +57,7 @@ export function authenticator(axios: AxiosInstance, log: Logger): Authenticator 
 
   const preRequest = async (config: AxiosConfig): Promise<AxiosConfig> => {
     if (config.headers.Authorization) return config;
-    if (config._retryingWwwAuth || config._retryingDockerAuth) return config;
+    if (config._isRetry) return config;
 
     const existing = AUTH_CACHE[key(config.url)];
     if (!existing) return config;
@@ -92,36 +89,16 @@ export function authenticator(axios: AxiosInstance, log: Logger): Authenticator 
     const request = response.config as AxiosConfig;
 
     // Bail if we've already retried
-    if (request._retryingWwwAuth && request._retryingDockerAuth) throw error;
+    if (request._isRetry) throw error;
+    request._isRetry = true;
 
     const wwwAuth = response.headers['www-authenticate'];
     if (!wwwAuth) {
       throw error;
     }
 
-    // // Bail if we sent an authorization header and we're still getting a www-authenticate challenge
-    // if (request.headers['authorization'] && wwwAuth) throw error;
-
     const { scheme, params } = parse(wwwAuth);
     let existing = AUTH_CACHE[key(request.url)];
-
-    if (!existing && existsSync(join(homedir(), '.docker', 'config.json'))) {
-      log.debug('Checking Docker config for existing auth token...');
-
-      const config = JSON.parse(readFileSync(join(homedir(), '.docker', 'config.json'), 'utf-8')) as {
-        auths?: Record<string, { auth?: string }>;
-      };
-      const auth = config?.auths?.[`${params.service}`]?.auth;
-
-      if (auth) {
-        request._retryingDockerAuth = true;
-        log.debug(`Found Docker Config auth token for ${params.service}`);
-        existing = AUTH_CACHE[key(request.url)] = {
-          headers: HttpHeaders.from({ Authorization: `Basic ${auth}` }),
-          expires: new Date(Date.now() + 5 * 60 * 1000), // Cache for 5 minutes
-        };
-      }
-    }
 
     if (!existing || new Date() >= existing.expires) {
       delete AUTH_CACHE[key(request.url)];
@@ -141,7 +118,6 @@ export function authenticator(axios: AxiosInstance, log: Logger): Authenticator 
         url.searchParams.append('scope', scope);
       }
 
-      request._retryingWwwAuth = true;
       existing = AUTH_CACHE[key(request.url)] = {
         headers: await headers(axios, log, scheme, url, service),
         expires: new Date(Date.now() + 5 * 60 * 1000), // Cache for 5 minutes

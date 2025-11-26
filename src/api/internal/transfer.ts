@@ -21,9 +21,11 @@ import { createHash } from 'crypto';
 import { ILoggable, Logger } from '../../log';
 import { AxiosInstance, AxiosResponse, isAxiosError } from 'axios';
 import { PullImageOptions, TRegistry } from '../types';
-import { cpus } from 'os';
+import { cpus, homedir } from 'os';
 import { Readable } from 'stream';
 import promiseRetry from 'promise-retry';
+import { readFileSync } from 'fs';
+import { join } from 'path';
 
 export type External = {
   Ref: Partial<{
@@ -68,6 +70,10 @@ export type ImageManifest = Image & {
 
 type Response<T> = { data: T | undefined; headers: HttpHeaders; status: number; method: string; url: string };
 
+type DockerConfig = {
+  auths?: Record<string, { auth?: string }>;
+};
+
 export class Transfer implements ILoggable {
   private static _CONCURRENCY = {
     MIN: 1,
@@ -82,6 +88,14 @@ export class Transfer implements ILoggable {
       Transfer._CONCURRENCY.CURRENT = Math.min(Math.max(Transfer._CONCURRENCY.MIN, num), Transfer._CONCURRENCY.MAX);
     }
     return Transfer._CONCURRENCY.CURRENT;
+  }
+
+  static get DOCKER_CONFIG(): DockerConfig {
+    try {
+      return JSON.parse(readFileSync(join(homedir(), '.docker', 'config.json'), 'utf-8'));
+    } catch {
+      return {};
+    }
   }
 
   private _uploads: Upload[][] = [];
@@ -157,8 +171,10 @@ export class Transfer implements ILoggable {
 
     let url = `https://${registry}/v2/${slug}/manifests/${digest}`;
 
-    const result: Image = {
-      registry: registry!,
+    authorization = authorization || Transfer.DOCKER_CONFIG.auths?.[registry]?.auth;
+
+    return {
+      registry,
       slug,
       name,
       namespace,
@@ -168,8 +184,6 @@ export class Transfer implements ILoggable {
       url,
       authorization,
     };
-
-    return result;
   }
 
   static normalize(authorization?: string, registry?: string): OperatorFunction<string, Image> {
