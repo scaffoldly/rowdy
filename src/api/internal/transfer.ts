@@ -47,10 +47,7 @@ export type External = {
     layers: External['Ref'][];
   }>;
   Config: Partial<{
-    architecture: string;
-    os: string;
     config: Partial<{
-      Env: string[];
       Cmd: string[];
       Entrypoint: string[];
       WorkingDir: string;
@@ -493,9 +490,9 @@ export class Transfer implements ILoggable {
 
           return {
             imageRef: status.imageRef(digest),
-            command: status.command(digest),
-            entrypoint: status.entrypoint(digest),
-            workdir: status.workdir(digest),
+            command: status.command,
+            entrypoint: status.entrypoint,
+            workdir: status.workdir,
           };
         })
       );
@@ -530,16 +527,16 @@ export class TransferStatus implements ILoggable {
     return this;
   }
 
-  command(digest?: string): string[] | undefined {
-    return this._statuses.find((s) => s.digest === digest)?.command;
+  get command(): string[] | undefined {
+    return this._statuses.find((s) => s.config !== undefined)?.config!.config?.Cmd;
   }
 
-  entrypoint(digest?: string): string[] | undefined {
-    return this._statuses.find((s) => s.digest === digest)?.entrypoint;
+  get entrypoint(): string[] | undefined {
+    return this._statuses.find((s) => s.config !== undefined)?.config!.config?.Entrypoint;
   }
 
-  workdir(digest?: string): string | undefined {
-    return this._statuses.find((s) => s.digest === digest)?.workdir;
+  get workdir(): string | undefined {
+    return this._statuses.find((s) => s.config !== undefined)?.config!.config?.WorkingDir;
   }
 
   get index(): External['Index'] {
@@ -782,9 +779,7 @@ class UploadStatus implements ILoggable {
   private verified: boolean = false;
   private _codes: number[] = [];
   private _reasons: string[] = [];
-  private _command?: string[];
-  private _entrypoint?: string[];
-  private _workdir?: string;
+  private _config?: External['Config'];
 
   constructor(private upload: Upload) {}
 
@@ -819,19 +814,14 @@ class UploadStatus implements ILoggable {
     return this._reasons;
   }
 
-  get command(): string[] | undefined {
-    return this._command;
-  }
-
-  get entrypoint(): string[] | undefined {
-    return this._entrypoint;
-  }
-
-  get workdir(): string | undefined {
-    return this._workdir;
+  get config(): External['Config'] | undefined {
+    return this._config;
   }
 
   withConfig(config: Buffer, mediaType: string): this {
+    if (this._config) {
+      return this;
+    }
     try {
       if (
         mediaType !== 'application/vnd.oci.image.config.v1+json' &&
@@ -839,37 +829,10 @@ class UploadStatus implements ILoggable {
       ) {
         throw new Error(`Unsupported config media type: ${mediaType}`);
       }
-      const parsed = JSON.parse(config.toString('utf-8')) as External['Config'];
-      return this.withCommand(parsed?.config?.Cmd)
-        .withEntrypoint(parsed?.config?.Entrypoint)
-        .withWorkdir(parsed?.config?.WorkingDir);
+      this._config = JSON.parse(config.toString('utf-8')) as External['Config'];
     } catch (err) {
       this.log.warn(`Unable to parse image config: ${err}`);
     }
-    return this;
-  }
-
-  private withCommand(command?: string[]): this {
-    if (!command || !command.length) {
-      return this;
-    }
-    this._command = command;
-    return this;
-  }
-
-  private withEntrypoint(entrypoint?: string[]): this {
-    if (!entrypoint || !entrypoint.length) {
-      return this;
-    }
-    this._entrypoint = entrypoint;
-    return this;
-  }
-
-  private withWorkdir(workdir?: string): this {
-    if (!workdir) {
-      return this;
-    }
-    this._workdir = workdir;
     return this;
   }
 

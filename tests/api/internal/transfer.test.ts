@@ -361,6 +361,9 @@ describe('transfers', () => {
           expect(result.code).toBe(uploaded.code);
           expect(result.reasons).toEqual([]);
           expect(result.imageRef()).toMatch(uploaded.imageRef);
+          expect(result.command).toEqual(['/bin/sh']);
+          expect(result.entrypoint).toBeUndefined();
+          expect(result.workdir).toBe('/');
         });
       });
     });
