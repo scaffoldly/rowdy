@@ -681,7 +681,7 @@ export class Upload implements ILoggable {
       const fromUrl = this.fromUrl;
       let toUrl = this.toUrl;
 
-      if (this.type === 'blob') {
+      if (this.type !== 'manifest') {
         if (
           await promiseRetry(() =>
             status.intercept(
@@ -697,10 +697,12 @@ export class Upload implements ILoggable {
               res.headers.get('docker-content-digest') === this.digest
           )
         ) {
-          this.log.info(`${this.digest}: Layer exists, skipping upload`);
-          this._complete = true;
-          this.bytes.sent = this.bytes.total;
-          return status;
+          if (this.type === 'blob') {
+            this.log.info(`${this.digest}: Layer exists, skipping upload`);
+            this._complete = true;
+            this.bytes.sent = this.bytes.total;
+            return status;
+          }
         }
 
         const location = await promiseRetry(() =>
