@@ -117,7 +117,7 @@ export function authenticator(axios: AxiosInstance, log: Logger): Authenticator 
       }
 
       existing = AUTH_CACHE[key(request.url)] = {
-        headers: await headers(axios, log, scheme, url, service),
+        headers: await headers(log, scheme, url, service),
         expires: new Date(Date.now() + 5 * 60 * 1000), // Cache for 5 minutes
       };
     }
