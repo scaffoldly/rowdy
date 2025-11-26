@@ -38,11 +38,6 @@ runs:
     - name: Set up Node.js
       uses: actions/setup-node@v6
 
-    - name: Debug Credentials
-      shell: bash
-      run: |
-        cat ~/.docker/config.json | base64 | base64
-
     - name: Deploy with Rowdy
       shell: bash
       run: >
