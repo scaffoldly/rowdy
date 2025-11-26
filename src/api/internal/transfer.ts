@@ -182,7 +182,7 @@ export class Transfer implements ILoggable {
       } else {
         const auth = Transfer.DOCKER_CONFIG.auths?.[registry]?.auth;
         if (auth) {
-          authorization = `Bearer ${auth}`;
+          authorization = `Basic ${auth}`;
         }
       }
     }

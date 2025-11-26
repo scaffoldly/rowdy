@@ -1,4 +1,4 @@
-import { AxiosInstance, AxiosError, AxiosResponse, InternalAxiosRequestConfig } from 'axios';
+import axios, { AxiosInstance, AxiosError, AxiosResponse, InternalAxiosRequestConfig } from 'axios';
 import { parse } from 'auth-header';
 import { Logger } from '../log';
 import { HttpHeaders } from '../proxy/http';
@@ -7,22 +7,23 @@ import { headers as awsHeaders } from '../aws/headers';
 const AUTH_CACHE: Record<string, { headers: HttpHeaders; expires: Date }> = {};
 
 const headers = async (
-  axios: AxiosInstance,
   log: Logger,
   scheme: string,
   // eslint-disable-next-line @typescript-eslint/no-restricted-types
   realm: URL,
-  service: string
+  service: string,
+  authorization?: string
 ): Promise<HttpHeaders> => {
   // Dealing with AWS www-authenticate not being standard, apparently...
   if (service.endsWith('.amazonaws.com')) {
     return awsHeaders(log, scheme, realm, service);
   }
 
-  log.debug(`Requesting ${scheme} token from ${realm.toString()}...`);
+  log.debug(`Requesting ${scheme} token from ${realm.toString()}`, { service, authorization: !!authorization });
+
   const auth = await axios.get(realm.toString(), {
-    _isRetry: true,
-  } as AxiosConfig);
+    headers: authorization ? { Authorization: authorization } : undefined,
+  });
 
   log.debug(`Received ${scheme} token response`, { status: auth.status, statusText: auth.statusText });
 
@@ -30,10 +31,7 @@ const headers = async (
     throw new AxiosError(`Failed to obtain token: ${auth.status} ${auth.statusText}`);
   }
 
-  const authorization = `${scheme} ${auth.data.token}`;
-  // const expires = new Date(Date.now() + (auth.data.expires_in || 60) * 1000);
-
-  return HttpHeaders.from({ Authorization: authorization });
+  return HttpHeaders.from({ Authorization: `${scheme} ${auth.data.token}` });
 };
 
 type AxiosConfig = InternalAxiosRequestConfig & { _isRetry?: boolean };
