@@ -18,6 +18,10 @@ inputs:
     description: Override the ENTRYPOINT/CMD in the Docker image
     required: false
     default: ""
+  memory:
+    description: Amount of memory to allocate to the deployed container in megbytes
+    required: false
+    default: "256"
   routes:
     description: Path to the routes configuration file
     required: false
@@ -52,3 +56,4 @@ runs:
         ROWDY_DEBUG: "true"
         ROWDY_TRACE: "true"
         ROWDY_ROUTES: ${{ inputs.routes }}
+        ROWDY_MEMORY: ${{ inputs.memory }}
