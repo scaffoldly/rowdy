@@ -104,6 +104,7 @@ export class Transfer implements ILoggable {
   }
 
   private _uploads: Upload[][] = [];
+  private _uploadHeaders = HttpHeaders.from({});
 
   private constructor(
     public readonly log: Logger,
@@ -205,16 +206,15 @@ export class Transfer implements ILoggable {
   }
 
   static collect(log: Logger, http: AxiosInstance, layersFrom?: string): OperatorFunction<Image, ImageManifest> {
-    const headers: HttpHeaders = HttpHeaders.from({
-      Accept: [
-        'application/vnd.oci.image.index.v1+json',
-        'application/vnd.docker.distribution.manifest.list.v2+json',
-        'application/vnd.oci.image.manifest.v1+json',
-        'application/vnd.docker.distribution.manifest.v2+json',
-      ],
-    });
-
     return (source) => {
+      const headers: HttpHeaders = HttpHeaders.from({
+        Accept: [
+          'application/vnd.oci.image.index.v1+json',
+          'application/vnd.docker.distribution.manifest.list.v2+json',
+          'application/vnd.oci.image.manifest.v1+json',
+          'application/vnd.docker.distribution.manifest.v2+json',
+        ],
+      });
       return source.pipe(
         tap((image) => log.info(`${image.image}: Pulling from ${image.slug}`)),
         switchMap((image) => {
@@ -229,10 +229,23 @@ export class Transfer implements ILoggable {
           );
         }),
         switchMap(({ image, additional }) => {
+          headers.override('authorization', image.authorization);
           return from(
-            http.get<External['Index']>(image.url, {
-              headers: headers.override('authorization', image.authorization).intoAxios(),
-            })
+            http
+              .get<External['Index']>(image.url, {
+                headers: headers.intoAxios(),
+              })
+              .then((response) => {
+                const authorization = response.config?.headers?.['Authorization'] as string | undefined;
+                if (authorization && headers.get('authorization') !== authorization) {
+                  log.debug(`Updating authorization header from response`, {
+                    previous: headers.get('authorization'),
+                    new: authorization,
+                  });
+                  headers.override('authorization', authorization);
+                }
+                return response;
+              })
           ).pipe(
             map(({ headers, data }) => {
               if (data.schemaVersion !== 2) {
@@ -468,6 +481,14 @@ export class Transfer implements ILoggable {
       );
   }
 
+  get fromHeaders(): HttpHeaders {
+    return this.manifest.headers;
+  }
+
+  get toHeaders(): HttpHeaders {
+    return this._uploadHeaders;
+  }
+
   repr(): string {
     return `Transfer()`;
   }
@@ -632,7 +653,10 @@ export class Upload implements ILoggable {
         if (
           await promiseRetry(() =>
             status.intercept(
-              this.http.head(this.verifyUrl, { validateStatus: (status) => [200, 404].includes(status) })
+              this.http.head(this.verifyUrl, {
+                validateStatus: (status) => [200, 404].includes(status),
+                headers: this.transfer.toHeaders.intoAxios(),
+              })
             )
           ).then(
             (res) =>
@@ -649,7 +673,11 @@ export class Upload implements ILoggable {
 
         const location = await promiseRetry(() =>
           status
-            .intercept(this.http.post(toUrl, null, { headers: { 'Content-Type': this.mediaType } }))
+            .intercept(
+              this.http.post(toUrl, null, {
+                headers: this.transfer.toHeaders.with('Content-Type', this.mediaType).intoAxios(),
+              })
+            )
             .then((res) => res.headers.get('location') as string | undefined)
         );
 
@@ -662,24 +690,22 @@ export class Upload implements ILoggable {
 
       let { data: download } =
         this.type === 'blob'
-          ? await promiseRetry(() => {
-              return status.intercept(
-                this.http.get<Readable>(fromUrl, {
-                  responseType: 'stream',
-                  maxBodyLength: Infinity,
-                  maxContentLength: Infinity,
-                  headers: { Accept: this.mediaType },
-                  onDownloadProgress: (e) => (this.bytes.received += e.bytes),
-                })
-              );
-            })
+          ? await promiseRetry(() =>
+              this.http.get<Readable>(fromUrl, {
+                responseType: 'stream',
+                maxBodyLength: Infinity,
+                maxContentLength: Infinity,
+                headers: this.transfer.fromHeaders.with('accept', this.mediaType).intoAxios(),
+                onDownloadProgress: (e) => (this.bytes.received += e.bytes),
+              })
+            )
           : { data: this.content };
 
       if (this.type === 'blob') {
         await promiseRetry(() => {
           return status.intercept(
             this.http.patch(toUrl, download, {
-              headers: { 'Content-Type': 'application/octet-stream' },
+              headers: this.transfer.toHeaders.with('Content-Type', 'application/octet-stream').intoAxios(),
               onUploadProgress: (e) => (this.bytes.sent += e.bytes),
             })
           );
@@ -693,9 +719,7 @@ export class Upload implements ILoggable {
           this.http.put(toUrl, download, {
             maxBodyLength: Infinity,
             maxContentLength: Infinity,
-            headers: {
-              'Content-Type': this.mediaType,
-            },
+            headers: this.transfer.toHeaders.with('Content-Type', this.mediaType).intoAxios(),
             onUploadProgress: (e) => (this.bytes.sent += e.bytes),
           })
         );
@@ -752,6 +776,10 @@ class UploadStatus implements ILoggable {
   async intercept<T>(response: Promise<AxiosResponse<T>>): Promise<Response<T>> {
     return response
       .then((res) => {
+        const authorization = res.config?.headers?.get('authorization') as string | undefined;
+        if (authorization) {
+          this.upload.transfer.toHeaders.override('authorization', authorization);
+        }
         this._reasons.push(this.reason(res));
         const response: Response<T> = {
           data: res.data,

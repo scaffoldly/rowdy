@@ -187,16 +187,6 @@ describe('transfers', () => {
             readFileSync(`${__dirname}/ubuntu:noble-20251001.images.json`, 'utf-8')
           ) as ImageManifest['images'],
         },
-        headers: {
-          headers: {
-            accept: [
-              'application/vnd.oci.image.index.v1+json',
-              'application/vnd.docker.distribution.manifest.list.v2+json',
-              'application/vnd.oci.image.manifest.v1+json',
-              'application/vnd.docker.distribution.manifest.v2+json',
-            ],
-          },
-        },
       },
       {
         normalized: {
@@ -215,15 +205,23 @@ describe('transfers', () => {
             readFileSync(`${__dirname}/alpine:20250108.images.json`, 'utf-8')
           ) as ImageManifest['images'],
         },
-        headers: {
-          headers: {
-            accept: [
-              'application/vnd.oci.image.index.v1+json',
-              'application/vnd.docker.distribution.manifest.list.v2+json',
-              'application/vnd.oci.image.manifest.v1+json',
-              'application/vnd.docker.distribution.manifest.v2+json',
-            ],
-          },
+      },
+      {
+        normalized: {
+          image: 'ghcr.io/scaffoldly/scratch:sha-4d8e686',
+          registry: 'ghcr.io',
+          slug: 'scaffoldly/scratch',
+          namespace: 'scaffoldly',
+          name: 'scratch',
+          digest: 'sha-4d8e686',
+          tag: 'sha-4d8e686',
+          url: 'https://ghcr.io/v2/scaffoldly/scratch/manifests/sha-4d8e686',
+        },
+        collected: {
+          index: JSON.parse(readFileSync(`${__dirname}/scratch:sha-4d8e686.index.json`, 'utf-8')) as External['Index'],
+          images: JSON.parse(
+            readFileSync(`${__dirname}/scratch:sha-4d8e686.images.json`, 'utf-8')
+          ) as ImageManifest['images'],
         },
       },
     ];
@@ -348,7 +346,7 @@ describe('transfers', () => {
 
     describe('aws', () => {
       tests.forEach(({ normalized, uploaded }) => {
-        aws(`should transfer ${normalized.image}`, async () => {
+        aws(`should transfer ${normalized.name}`, async () => {
           const result = await lastValueFrom(
             of(normalized).pipe(
               Transfer.collect(logger, rowdy.http),

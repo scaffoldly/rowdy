@@ -38,41 +38,6 @@
   {
     "manifest": {
       "annotations": {
-        "com.docker.official-images.bashbrew.arch": "riscv64",
-        "vnd.docker.reference.digest": "sha256:754d01ad9a026a181f93900baff61941d5a90d1916a047f2bcdfe6cfba07c0a5",
-        "vnd.docker.reference.type": "attestation-manifest"
-      },
-      "digest": "sha256:d8b13c2b5f5dbe01129312fdb57b70bea737ce02b6bb21bee9f388c66666a254",
-      "mediaType": "application/vnd.oci.image.manifest.v1+json",
-      "platform": {
-        "architecture": "unknown",
-        "os": "unknown"
-      },
-      "size": 562
-    },
-    "image": {
-      "schemaVersion": 2,
-      "mediaType": "application/vnd.oci.image.manifest.v1+json",
-      "config": {
-        "mediaType": "application/vnd.oci.image.config.v1+json",
-        "digest": "sha256:ae5abc725ed95926e2a20319ce3534f7cb6f9dc21fd6d295f1ea4549f6564fda",
-        "size": 167
-      },
-      "layers": [
-        {
-          "mediaType": "application/vnd.in-toto+json",
-          "digest": "sha256:7bae66667b7b05f43acd806d2488878773ca10f1fa2b2e295c67569ef92f900e",
-          "size": 1931899,
-          "annotations": {
-            "in-toto.io/predicate-type": "https://spdx.dev/Document"
-          }
-        }
-      ]
-    }
-  },
-  {
-    "manifest": {
-      "annotations": {
         "com.docker.official-images.bashbrew.arch": "ppc64le",
         "vnd.docker.reference.digest": "sha256:063d9d6a632f2bd248b81bcc9ec06e1073b1adf7de993d9ac31dab5e364d3582",
         "vnd.docker.reference.type": "attestation-manifest"
@@ -109,35 +74,33 @@
     "manifest": {
       "annotations": {
         "com.docker.official-images.bashbrew.arch": "arm64v8",
-        "org.opencontainers.image.base.name": "scratch",
-        "org.opencontainers.image.created": "2025-10-01T00:00:00Z",
-        "org.opencontainers.image.revision": "720df02de2a670250e237af7ca8a267bf4c2365c",
-        "org.opencontainers.image.source": "https://git.launchpad.net/cloud-images/+oci/ubuntu-base",
-        "org.opencontainers.image.url": "https://hub.docker.com/_/ubuntu",
-        "org.opencontainers.image.version": "24.04"
+        "vnd.docker.reference.digest": "sha256:3372ac029cdf2ade8c2f8373590af8ca6422e84b99bf62c60e8df2e3fa5ee7e7",
+        "vnd.docker.reference.type": "attestation-manifest"
       },
-      "digest": "sha256:3372ac029cdf2ade8c2f8373590af8ca6422e84b99bf62c60e8df2e3fa5ee7e7",
+      "digest": "sha256:7593ee2f112f25688cac8232b924608dea196121ebb491e5920650d45ea933b0",
       "mediaType": "application/vnd.oci.image.manifest.v1+json",
       "platform": {
-        "architecture": "arm64",
-        "os": "linux",
-        "variant": "v8"
+        "architecture": "unknown",
+        "os": "unknown"
       },
-      "size": 424
+      "size": 562
     },
     "image": {
       "schemaVersion": 2,
       "mediaType": "application/vnd.oci.image.manifest.v1+json",
       "config": {
         "mediaType": "application/vnd.oci.image.config.v1+json",
-        "size": 2314,
-        "digest": "sha256:e149199029d15548c4f6d2666e88879360381a2be8a1b747412e3fe91fb1d19d"
+        "digest": "sha256:6c6c88baf206d4cc59be6f6718e922fb25b986830bc36b0b699e2299020f8f10",
+        "size": 167
       },
       "layers": [
         {
-          "mediaType": "application/vnd.oci.image.layer.v1.tar+gzip",
-          "size": 28861712,
-          "digest": "sha256:b8a35db46e38ce87d4e743e1265ff436ed36e01d23246b24a1cbbeaae18ec432"
+          "mediaType": "application/vnd.in-toto+json",
+          "digest": "sha256:f083401df72b3a565a0863d6b77b25bd0b6e64e17e689b530fd1f15055ef0c7b",
+          "size": 1939111,
+          "annotations": {
+            "in-toto.io/predicate-type": "https://spdx.dev/Document"
+          }
         }
       ]
     }
@@ -145,18 +108,18 @@
   {
     "manifest": {
       "annotations": {
-        "com.docker.official-images.bashbrew.arch": "ppc64le",
+        "com.docker.official-images.bashbrew.arch": "s390x",
         "org.opencontainers.image.base.name": "scratch",
         "org.opencontainers.image.created": "2025-10-01T00:00:00Z",
-        "org.opencontainers.image.revision": "98861af7f2b9964f9f6f9ebf375d4c61fbe6dfe5",
+        "org.opencontainers.image.revision": "ab94972ffb404f99fb8029018750490472afa023",
         "org.opencontainers.image.source": "https://git.launchpad.net/cloud-images/+oci/ubuntu-base",
         "org.opencontainers.image.url": "https://hub.docker.com/_/ubuntu",
         "org.opencontainers.image.version": "24.04"
       },
-      "digest": "sha256:063d9d6a632f2bd248b81bcc9ec06e1073b1adf7de993d9ac31dab5e364d3582",
+      "digest": "sha256:b5f6e36f1ab500cbe168708acdb1a658e3e30d47508b645b081ca95f0464ee68",
       "mediaType": "application/vnd.oci.image.manifest.v1+json",
       "platform": {
-        "architecture": "ppc64le",
+        "architecture": "s390x",
         "os": "linux"
       },
       "size": 424
@@ -166,14 +129,119 @@
       "mediaType": "application/vnd.oci.image.manifest.v1+json",
       "config": {
         "mediaType": "application/vnd.oci.image.config.v1+json",
-        "size": 2299,
-        "digest": "sha256:7bcf37e8ebffb1b727d122f48aed67b0c36c6ec2ea720a6ada3ebfc61b43497e"
+        "size": 2295,
+        "digest": "sha256:bec01dfa80e941897d62ca44df1d8b2bde550f5cc4efdfa308170d51e44b1e61"
       },
       "layers": [
         {
           "mediaType": "application/vnd.oci.image.layer.v1.tar+gzip",
-          "size": 34303525,
-          "digest": "sha256:199e3830c89a37cc6980743d7c9e0e355251d050c55eb838183c9cf64fac375b"
+          "size": 29906151,
+          "digest": "sha256:67735b72a65d308a2c2c9505d0d6e8419b7f2654a16cbd56963d88e01202d507"
+        }
+      ]
+    }
+  },
+  {
+    "manifest": {
+      "annotations": {
+        "com.docker.official-images.bashbrew.arch": "arm32v7",
+        "vnd.docker.reference.digest": "sha256:254ac4961ea10df8ceb1301f46d213f26d397fbd17f190b797d221f79dd7ab83",
+        "vnd.docker.reference.type": "attestation-manifest"
+      },
+      "digest": "sha256:cde13c4702611cf67ad18294d7a85d83175a1df055c716db714734d64b080885",
+      "mediaType": "application/vnd.oci.image.manifest.v1+json",
+      "platform": {
+        "architecture": "unknown",
+        "os": "unknown"
+      },
+      "size": 562
+    },
+    "image": {
+      "schemaVersion": 2,
+      "mediaType": "application/vnd.oci.image.manifest.v1+json",
+      "config": {
+        "mediaType": "application/vnd.oci.image.config.v1+json",
+        "digest": "sha256:d2c6794a73446c2c200bc221c928576fdf5749d32c7065dfb58fa63e9613810f",
+        "size": 167
+      },
+      "layers": [
+        {
+          "mediaType": "application/vnd.in-toto+json",
+          "digest": "sha256:5f8acbb3bc13c395a998825f929d1be67ccbbc4782d2b8506b822539a77b6372",
+          "size": 1940323,
+          "annotations": {
+            "in-toto.io/predicate-type": "https://spdx.dev/Document"
+          }
+        }
+      ]
+    }
+  },
+  {
+    "manifest": {
+      "annotations": {
+        "com.docker.official-images.bashbrew.arch": "riscv64",
+        "vnd.docker.reference.digest": "sha256:754d01ad9a026a181f93900baff61941d5a90d1916a047f2bcdfe6cfba07c0a5",
+        "vnd.docker.reference.type": "attestation-manifest"
+      },
+      "digest": "sha256:d8b13c2b5f5dbe01129312fdb57b70bea737ce02b6bb21bee9f388c66666a254",
+      "mediaType": "application/vnd.oci.image.manifest.v1+json",
+      "platform": {
+        "architecture": "unknown",
+        "os": "unknown"
+      },
+      "size": 562
+    },
+    "image": {
+      "schemaVersion": 2,
+      "mediaType": "application/vnd.oci.image.manifest.v1+json",
+      "config": {
+        "mediaType": "application/vnd.oci.image.config.v1+json",
+        "digest": "sha256:ae5abc725ed95926e2a20319ce3534f7cb6f9dc21fd6d295f1ea4549f6564fda",
+        "size": 167
+      },
+      "layers": [
+        {
+          "mediaType": "application/vnd.in-toto+json",
+          "digest": "sha256:7bae66667b7b05f43acd806d2488878773ca10f1fa2b2e295c67569ef92f900e",
+          "size": 1931899,
+          "annotations": {
+            "in-toto.io/predicate-type": "https://spdx.dev/Document"
+          }
+        }
+      ]
+    }
+  },
+  {
+    "manifest": {
+      "annotations": {
+        "com.docker.official-images.bashbrew.arch": "amd64",
+        "vnd.docker.reference.digest": "sha256:d22e4fb389065efa4a61bb36416768698ef6d955fe8a7e0cdb3cd6de80fa7eec",
+        "vnd.docker.reference.type": "attestation-manifest"
+      },
+      "digest": "sha256:ceb72b44d89ee266fa1249ab5bc801165fea91d8555b648cb8a9f8fe8fbd2901",
+      "mediaType": "application/vnd.oci.image.manifest.v1+json",
+      "platform": {
+        "architecture": "unknown",
+        "os": "unknown"
+      },
+      "size": 562
+    },
+    "image": {
+      "schemaVersion": 2,
+      "mediaType": "application/vnd.oci.image.manifest.v1+json",
+      "config": {
+        "mediaType": "application/vnd.oci.image.config.v1+json",
+        "digest": "sha256:206b60b2588d4a4f16e933f112a1895644a9d63355ce129aeb3d8eb55acba2db",
+        "size": 167
+      },
+      "layers": [
+        {
+          "mediaType": "application/vnd.in-toto+json",
+          "digest": "sha256:ba223669755123cecd0bc56e1d52fca1436cf70df4b22d34ba5b4ece9f391de7",
+          "size": 1938106,
+          "annotations": {
+            "in-toto.io/predicate-type": "https://spdx.dev/Document"
+          }
         }
       ]
     }
@@ -217,69 +285,35 @@
   {
     "manifest": {
       "annotations": {
-        "com.docker.official-images.bashbrew.arch": "amd64",
-        "vnd.docker.reference.digest": "sha256:d22e4fb389065efa4a61bb36416768698ef6d955fe8a7e0cdb3cd6de80fa7eec",
-        "vnd.docker.reference.type": "attestation-manifest"
+        "com.docker.official-images.bashbrew.arch": "ppc64le",
+        "org.opencontainers.image.base.name": "scratch",
+        "org.opencontainers.image.created": "2025-10-01T00:00:00Z",
+        "org.opencontainers.image.revision": "98861af7f2b9964f9f6f9ebf375d4c61fbe6dfe5",
+        "org.opencontainers.image.source": "https://git.launchpad.net/cloud-images/+oci/ubuntu-base",
+        "org.opencontainers.image.url": "https://hub.docker.com/_/ubuntu",
+        "org.opencontainers.image.version": "24.04"
       },
-      "digest": "sha256:ceb72b44d89ee266fa1249ab5bc801165fea91d8555b648cb8a9f8fe8fbd2901",
+      "digest": "sha256:063d9d6a632f2bd248b81bcc9ec06e1073b1adf7de993d9ac31dab5e364d3582",
       "mediaType": "application/vnd.oci.image.manifest.v1+json",
       "platform": {
-        "architecture": "unknown",
-        "os": "unknown"
+        "architecture": "ppc64le",
+        "os": "linux"
       },
-      "size": 562
+      "size": 424
     },
     "image": {
       "schemaVersion": 2,
       "mediaType": "application/vnd.oci.image.manifest.v1+json",
       "config": {
         "mediaType": "application/vnd.oci.image.config.v1+json",
-        "digest": "sha256:206b60b2588d4a4f16e933f112a1895644a9d63355ce129aeb3d8eb55acba2db",
-        "size": 167
+        "size": 2299,
+        "digest": "sha256:7bcf37e8ebffb1b727d122f48aed67b0c36c6ec2ea720a6ada3ebfc61b43497e"
       },
       "layers": [
         {
-          "mediaType": "application/vnd.in-toto+json",
-          "digest": "sha256:ba223669755123cecd0bc56e1d52fca1436cf70df4b22d34ba5b4ece9f391de7",
-          "size": 1938106,
-          "annotations": {
-            "in-toto.io/predicate-type": "https://spdx.dev/Document"
-          }
-        }
-      ]
-    }
-  },
-  {
-    "manifest": {
-      "annotations": {
-        "com.docker.official-images.bashbrew.arch": "arm32v7",
-        "vnd.docker.reference.digest": "sha256:254ac4961ea10df8ceb1301f46d213f26d397fbd17f190b797d221f79dd7ab83",
-        "vnd.docker.reference.type": "attestation-manifest"
-      },
-      "digest": "sha256:cde13c4702611cf67ad18294d7a85d83175a1df055c716db714734d64b080885",
-      "mediaType": "application/vnd.oci.image.manifest.v1+json",
-      "platform": {
-        "architecture": "unknown",
-        "os": "unknown"
-      },
-      "size": 562
-    },
-    "image": {
-      "schemaVersion": 2,
-      "mediaType": "application/vnd.oci.image.manifest.v1+json",
-      "config": {
-        "mediaType": "application/vnd.oci.image.config.v1+json",
-        "digest": "sha256:d2c6794a73446c2c200bc221c928576fdf5749d32c7065dfb58fa63e9613810f",
-        "size": 167
-      },
-      "layers": [
-        {
-          "mediaType": "application/vnd.in-toto+json",
-          "digest": "sha256:5f8acbb3bc13c395a998825f929d1be67ccbbc4782d2b8506b822539a77b6372",
-          "size": 1940323,
-          "annotations": {
-            "in-toto.io/predicate-type": "https://spdx.dev/Document"
-          }
+          "mediaType": "application/vnd.oci.image.layer.v1.tar+gzip",
+          "size": 34303525,
+          "digest": "sha256:199e3830c89a37cc6980743d7c9e0e355251d050c55eb838183c9cf64fac375b"
         }
       ]
     }
@@ -324,41 +358,6 @@
   {
     "manifest": {
       "annotations": {
-        "com.docker.official-images.bashbrew.arch": "arm64v8",
-        "vnd.docker.reference.digest": "sha256:3372ac029cdf2ade8c2f8373590af8ca6422e84b99bf62c60e8df2e3fa5ee7e7",
-        "vnd.docker.reference.type": "attestation-manifest"
-      },
-      "digest": "sha256:7593ee2f112f25688cac8232b924608dea196121ebb491e5920650d45ea933b0",
-      "mediaType": "application/vnd.oci.image.manifest.v1+json",
-      "platform": {
-        "architecture": "unknown",
-        "os": "unknown"
-      },
-      "size": 562
-    },
-    "image": {
-      "schemaVersion": 2,
-      "mediaType": "application/vnd.oci.image.manifest.v1+json",
-      "config": {
-        "mediaType": "application/vnd.oci.image.config.v1+json",
-        "digest": "sha256:6c6c88baf206d4cc59be6f6718e922fb25b986830bc36b0b699e2299020f8f10",
-        "size": 167
-      },
-      "layers": [
-        {
-          "mediaType": "application/vnd.in-toto+json",
-          "digest": "sha256:f083401df72b3a565a0863d6b77b25bd0b6e64e17e689b530fd1f15055ef0c7b",
-          "size": 1939111,
-          "annotations": {
-            "in-toto.io/predicate-type": "https://spdx.dev/Document"
-          }
-        }
-      ]
-    }
-  },
-  {
-    "manifest": {
-      "annotations": {
         "com.docker.official-images.bashbrew.arch": "s390x",
         "vnd.docker.reference.digest": "sha256:b5f6e36f1ab500cbe168708acdb1a658e3e30d47508b645b081ca95f0464ee68",
         "vnd.docker.reference.type": "attestation-manifest"
@@ -394,19 +393,20 @@
   {
     "manifest": {
       "annotations": {
-        "com.docker.official-images.bashbrew.arch": "s390x",
+        "com.docker.official-images.bashbrew.arch": "arm64v8",
         "org.opencontainers.image.base.name": "scratch",
         "org.opencontainers.image.created": "2025-10-01T00:00:00Z",
-        "org.opencontainers.image.revision": "ab94972ffb404f99fb8029018750490472afa023",
+        "org.opencontainers.image.revision": "720df02de2a670250e237af7ca8a267bf4c2365c",
         "org.opencontainers.image.source": "https://git.launchpad.net/cloud-images/+oci/ubuntu-base",
         "org.opencontainers.image.url": "https://hub.docker.com/_/ubuntu",
         "org.opencontainers.image.version": "24.04"
       },
-      "digest": "sha256:b5f6e36f1ab500cbe168708acdb1a658e3e30d47508b645b081ca95f0464ee68",
+      "digest": "sha256:3372ac029cdf2ade8c2f8373590af8ca6422e84b99bf62c60e8df2e3fa5ee7e7",
       "mediaType": "application/vnd.oci.image.manifest.v1+json",
       "platform": {
-        "architecture": "s390x",
-        "os": "linux"
+        "architecture": "arm64",
+        "os": "linux",
+        "variant": "v8"
       },
       "size": 424
     },
@@ -415,14 +415,14 @@
       "mediaType": "application/vnd.oci.image.manifest.v1+json",
       "config": {
         "mediaType": "application/vnd.oci.image.config.v1+json",
-        "size": 2295,
-        "digest": "sha256:bec01dfa80e941897d62ca44df1d8b2bde550f5cc4efdfa308170d51e44b1e61"
+        "size": 2314,
+        "digest": "sha256:e149199029d15548c4f6d2666e88879360381a2be8a1b747412e3fe91fb1d19d"
       },
       "layers": [
         {
           "mediaType": "application/vnd.oci.image.layer.v1.tar+gzip",
-          "size": 29906151,
-          "digest": "sha256:67735b72a65d308a2c2c9505d0d6e8419b7f2654a16cbd56963d88e01202d507"
+          "size": 28861712,
+          "digest": "sha256:b8a35db46e38ce87d4e743e1265ff436ed36e01d23246b24a1cbbeaae18ec432"
         }
       ]
     }

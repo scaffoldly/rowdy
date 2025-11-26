@@ -1,10 +1,8 @@
-import axios, { AxiosInstance, AxiosError, AxiosResponse, InternalAxiosRequestConfig } from 'axios';
+import axios, { AxiosInstance, AxiosError, AxiosResponse, InternalAxiosRequestConfig, AxiosHeaders } from 'axios';
 import { parse } from 'auth-header';
 import { Logger } from '../log';
 import { HttpHeaders } from '../proxy/http';
 import { headers as awsHeaders } from '../aws/headers';
-
-const AUTH_CACHE: Record<string, { headers: HttpHeaders; expires: Date }> = {};
 
 const headers = async (
   log: Logger,
@@ -47,29 +45,7 @@ type Authenticator = {
 };
 
 export function authenticator(axios: AxiosInstance, log: Logger): Authenticator {
-  const key = (url?: string | undefined): string => {
-    if (!url) return '';
-    // eslint-disable-next-line no-restricted-globals
-    const { origin, pathname } = new URL(url);
-    return `${origin}${pathname.split('/').slice(0, -1).join('/')}`;
-  };
-
   const preRequest = async (config: AxiosConfig): Promise<AxiosConfig> => {
-    if (config.headers.Authorization) return config;
-    if (config._isRetry) return config;
-
-    const existing = AUTH_CACHE[key(config.url)];
-    if (!existing) return config;
-
-    const expires = existing.expires;
-    if (new Date() >= expires) {
-      delete AUTH_CACHE[key(config.url)];
-      return config;
-    }
-
-    config.headers = config.headers || {};
-    Object.assign(config.headers, existing.headers.intoAxios());
-
     return config;
   };
 
@@ -89,7 +65,6 @@ export function authenticator(axios: AxiosInstance, log: Logger): Authenticator 
       url: request?.url,
       method: request?.method,
       isRetry: request?._isRetry,
-      cached: Object.keys(AUTH_CACHE),
       requestHeaders: JSON.stringify(request?.headers),
       responseHeaders: JSON.stringify(response?.headers),
     });
@@ -108,34 +83,26 @@ export function authenticator(axios: AxiosInstance, log: Logger): Authenticator 
     }
 
     const { scheme, params } = parse(wwwAuth);
-    let existing = AUTH_CACHE[key(request.url)];
 
-    if (!existing || new Date() >= existing.expires) {
-      delete AUTH_CACHE[key(request.url)];
-      const { realm, service, scope } = params;
+    const { realm, service, scope } = params;
 
-      log.debug(`Handling ${scheme} authentication challenge...`, { realm, service, scope });
+    log.debug(`Handling ${scheme} authentication challenge...`, { realm, service, scope });
 
-      if (!realm || Array.isArray(realm) || !service || Array.isArray(service) || (!!scope && Array.isArray(scope))) {
-        throw new AxiosError('Invalid WWW-Authenticate header');
-      }
-
-      // eslint-disable-next-line no-restricted-globals
-      const url = new URL(realm);
-
-      url.searchParams.append('service', service);
-      if (scope) {
-        url.searchParams.append('scope', scope);
-      }
-
-      existing = AUTH_CACHE[key(request.url)] = {
-        headers: await headers(log, scheme, url, service, authorization),
-        expires: new Date(Date.now() + 5 * 60 * 1000), // Cache for 5 minutes
-      };
+    if (!realm || Array.isArray(realm) || !service || Array.isArray(service) || (!!scope && Array.isArray(scope))) {
+      throw new AxiosError('Invalid WWW-Authenticate header');
     }
 
-    request.headers = request.headers || {};
-    Object.assign(request.headers, existing.headers.intoAxios());
+    // eslint-disable-next-line no-restricted-globals
+    const url = new URL(realm);
+
+    url.searchParams.append('service', service);
+    if (scope) {
+      url.searchParams.append('scope', scope);
+    }
+
+    const updated = await headers(log, scheme, url, service, authorization);
+
+    request.headers = new AxiosHeaders(request.headers).concat(updated.intoAxios());
     return axios(request);
   };
 

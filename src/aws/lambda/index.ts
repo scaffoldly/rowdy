@@ -8,6 +8,7 @@ import {
   DeleteRoleCommand,
   PutRolePolicyCommand,
   DeleteRolePolicyCommand,
+  UpdateAssumeRolePolicyCommand,
 } from '@aws-sdk/client-iam';
 import {
   CreateFunctionCommand,
@@ -364,12 +365,13 @@ export class LambdaFunction implements Logger {
     tags: Observable<MetadataBearer>[];
     deletes: Observable<MetadataBearer>[];
   } {
-    const _generateRoleName = (image: Image) => `${image.namespace}+${image.name}@rowdy.run`;
+    const _generateRoleName = (image: Image, name?: string) =>
+      name ? `${image.namespace}+${image.name}@${name}.rowdy.run` : `${image.namespace}+${image.name}@rowdy.run`;
 
     const creates: Observable<MetadataBearer>[] = [
-      this.Image.pipe(take(1)).pipe(
-        map(({ normalized }) => ({
-          RoleName: _generateRoleName(normalized),
+      combineLatest([this.Image.pipe(take(1)), this.Name.pipe(take(1))]).pipe(
+        map(([{ normalized }, name]) => ({
+          RoleName: _generateRoleName(normalized, name),
           Description: `Execution role to run ${normalized.namespace}/${normalized.name} in AWS Lambda`,
           Qualifier: this.type === 'Sandbox' ? '$LATEST' : normalized.tag || normalized.digest,
         })),
@@ -378,6 +380,14 @@ export class LambdaFunction implements Logger {
             () =>
               this.iam
                 .send(new UpdateRoleCommand({ RoleName, Description }))
+                .then(() =>
+                  this.iam.send(
+                    new UpdateAssumeRolePolicyCommand({
+                      RoleName,
+                      PolicyDocument: JSON.stringify(this.AssumeRolePolicyDocument),
+                    })
+                  )
+                )
                 .then(() => this.iam.send(new GetRoleCommand({ RoleName }))),
             () =>
               this.iam.send(
@@ -462,6 +472,7 @@ export class LambdaFunction implements Logger {
           this.Qualifier.next(undefined);
           this.AliasArn.next(undefined);
           this.FunctionUrl.next(undefined);
+          this.FunctionVersion.next(undefined);
         })
       ),
       this.RoleName.pipe(take(1)).pipe(

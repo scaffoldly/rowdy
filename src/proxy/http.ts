@@ -171,7 +171,7 @@ export class HttpHeaders implements ILoggable {
     return headers;
   }
 
-  override(key: string, value?: string | string[] | undefined): this {
+  override(key: string, value?: string | string[] | undefined | null): this {
     if (!value) {
       delete this.headers[key.toLowerCase()];
       return this;
@@ -179,6 +179,12 @@ export class HttpHeaders implements ILoggable {
     key = key.toLowerCase();
     this.headers[key] = value;
     return this;
+  }
+
+  with(key: string, value: string | string[] | undefined | null): HttpHeaders {
+    const instance = HttpHeaders.from(this.headers);
+    instance.override(key, value);
+    return instance;
   }
 
   repr(): string {

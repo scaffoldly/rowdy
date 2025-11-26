@@ -36,11 +36,9 @@ describe('aws lambda', () => {
           expect(fn.State).toBeDefined();
           expect(fn.State.RoleName).toBe('scaffoldly+rowdy@rowdy.run');
           expect(fn.State.RoleArn).toMatch(/^arn:aws:iam::[0-9]{12}:role\/scaffoldly\+rowdy@rowdy\.run$/);
-          expect(fn.State.RoleId).toMatch(/^[A-Z0-9]{21}$/);
+          expect(fn.State.RoleId).toMatch(/^ARO[A-Z0-9]{18}$/);
           expect(fn.State.Qualifier).toBe('$LATEST');
-          expect(fn.State.FunctionArn).toMatch(
-            /^arn:aws:lambda:[a-z0-9-]+:[0-9]{12}:function:scaffoldly-rowdy-[a-f0-9]{4}$/
-          );
+          expect(fn.State.FunctionArn).toMatch(/^arn:aws:lambda:[a-z0-9-]+:[0-9]{12}:function:ARO[A-Z0-9]{18}$/);
           expect(fn.State.ImageUri).toMatch(
             /^[0-9]{12}\.dkr\.ecr\.[a-z0-9-]+\.amazonaws\.com\/scaffoldly\/rowdy@sha256:[a-f0-9]{64}$/
           );
@@ -89,16 +87,14 @@ describe('aws lambda', () => {
           expect(fn.State).toBeDefined();
           expect(fn.State.RoleName).toBe('library+ubuntu@rowdy.run');
           expect(fn.State.RoleArn).toMatch(/^arn:aws:iam::[0-9]{12}:role\/library\+ubuntu@rowdy\.run$/);
-          expect(fn.State.RoleId).toMatch(/^[A-Z0-9]{21}$/);
+          expect(fn.State.RoleId).toMatch(/^ARO[A-Z0-9]{18}$/);
           expect(fn.State.Qualifier).toBe('noble-20251001');
-          expect(fn.State.FunctionArn).toMatch(
-            /^arn:aws:lambda:[a-z0-9-]+:[0-9]{12}:function:library-ubuntu-[a-f0-9]{4}$/
-          );
+          expect(fn.State.FunctionArn).toMatch(/^arn:aws:lambda:[a-z0-9-]+:[0-9]{12}:function:ARO[A-Z0-9]{18}$/);
           expect(fn.State.ImageUri).toMatch(
             /^[0-9]{12}\.dkr\.ecr\.[a-z0-9-]+\.amazonaws\.com\/library\/ubuntu@sha256:[a-f0-9]{64}$/
           );
           expect(fn.State.AliasArn).toMatch(
-            /^arn:aws:lambda:[a-z0-9-]+:[0-9]{12}:function:library-ubuntu-[a-f0-9]{4}:noble-20251001$/
+            /^arn:aws:lambda:[a-z0-9-]+:[0-9]{12}:function:ARO[A-Z0-9]{18}:noble-20251001$/
           );
           expect(fn.State.FunctionUrl).toMatch(/^https:\/\/[a-z0-9-]+\.lambda-url\.[a-z0-9-]+\.on\.aws\/$/);
           expect(fn.State.FunctionVersion).not.toBe('$LATEST');
@@ -162,7 +158,7 @@ describe('aws lambda', () => {
 
           // Status
           expect(fn.Status.Configuration?.MemorySize).toBe(256);
-          expect(fn.Status.Configuration?.ImageConfigResponse?.ImageConfig?.EntryPoint).toEqual(['rowdy']);
+          expect(fn.Status.Configuration?.ImageConfigResponse?.ImageConfig?.EntryPoint).toEqual(['rowdy', '--']);
           expect(fn.Status.Configuration?.ImageConfigResponse?.ImageConfig?.Command).toEqual([
             'python3',
             '-m',
