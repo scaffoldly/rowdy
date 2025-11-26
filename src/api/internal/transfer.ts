@@ -75,6 +75,7 @@ type DockerConfig = {
 };
 
 export class Transfer implements ILoggable {
+  private static _DOCKER_CONFIG?: DockerConfig;
   private static _CONCURRENCY = {
     MIN: 1,
     MAX: 10,
@@ -91,11 +92,15 @@ export class Transfer implements ILoggable {
   }
 
   static get DOCKER_CONFIG(): DockerConfig {
-    try {
-      return JSON.parse(readFileSync(join(homedir(), '.docker', 'config.json'), 'utf-8'));
-    } catch (e) {
-      return {};
+    if (Transfer._DOCKER_CONFIG) {
+      return Transfer._DOCKER_CONFIG;
     }
+    try {
+      Transfer._DOCKER_CONFIG = JSON.parse(readFileSync(join(homedir(), '.docker', 'config.json'), 'utf-8'));
+    } catch {
+      Transfer._DOCKER_CONFIG = {};
+    }
+    return Transfer.DOCKER_CONFIG;
   }
 
   private _uploads: Upload[][] = [];
