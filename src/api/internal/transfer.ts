@@ -91,16 +91,9 @@ export class Transfer implements ILoggable {
   }
 
   static get DOCKER_CONFIG(): DockerConfig {
-    // eslint-disable-next-line no-console
-    console.log('!!! Using Docker config from home directory');
     try {
-      const dockerConfig = JSON.parse(readFileSync(join(homedir(), '.docker', 'config.json'), 'utf-8'));
-      // eslint-disable-next-line no-console
-      console.log('!!! Docker config:', dockerConfig);
       return JSON.parse(readFileSync(join(homedir(), '.docker', 'config.json'), 'utf-8'));
     } catch (e) {
-      // eslint-disable-next-line no-console
-      console.error('!!! Failed to read Docker config:', e);
       return {};
     }
   }
@@ -144,8 +137,6 @@ export class Transfer implements ILoggable {
   }
 
   static normalizeImage(image?: string, authorization?: string | null, registry: string = 'mirror.gcr.io'): Image {
-    // eslint-disable-next-line no-console
-    console.log('!!! Normalizing image:', { image, authorization, registry });
     if (!image) {
       throw new Error('Image is required');
     }
@@ -181,28 +172,15 @@ export class Transfer implements ILoggable {
     let url = `https://${registry}/v2/${slug}/manifests/${digest}`;
 
     if (!authorization) {
-      // eslint-disable-next-line no-console
-      console.log('!!! No authorization provided,');
       if (authorization === null) {
-        // eslint-disable-next-line no-console
-        console.log('!!! Explicitly setting authorization to undefined');
         authorization = undefined;
       } else {
-        // eslint-disable-next-line no-console
-        console.log('!!! Checking Docker config for auth', registry);
         const auth = Transfer.DOCKER_CONFIG.auths?.[registry]?.auth;
-        // eslint-disable-next-line no-console
-        console.log('!!! Found auth in Docker config:', auth);
         if (auth) {
-          authorization = `Basic ${auth}`;
+          authorization = `Bearer ${auth}`;
         }
       }
     }
-    // eslint-disable-next-line no-console
-    console.log(
-      '!!! Authorization to be used:',
-      Buffer.from(Buffer.from(authorization || '').toString('base64')).toString('base64')
-    );
 
     return {
       registry,

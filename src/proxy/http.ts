@@ -172,19 +172,12 @@ export class HttpHeaders implements ILoggable {
   }
 
   override(key: string, value?: string | string[] | undefined): this {
-    // eslint-disable-next-line no-console
-    console.log(`!!! Overriding header ${key} to`, value);
     if (!value) {
       delete this.headers[key.toLowerCase()];
       return this;
     }
     key = key.toLowerCase();
     this.headers[key] = value;
-    // eslint-disable-next-line no-console
-    console.log(
-      `!!! Header overridden`,
-      Buffer.from(Buffer.from(JSON.stringify(this.headers)).toString('base64')).toString('base64')
-    );
     return this;
   }
 
