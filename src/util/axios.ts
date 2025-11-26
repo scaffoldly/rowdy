@@ -81,11 +81,17 @@ export function authenticator(axios: AxiosInstance, log: Logger): Authenticator 
   };
 
   const responseError = async (error: AxiosError): Promise<AxiosResponse | never> => {
+    log.debug(`Intercepting HTTP ${error.status}: ${error.message}`, {
+      url: error.config?.url,
+      method: error.config?.method,
+      headers: JSON.stringify(error.config?.headers),
+    });
+
     const response = error.response;
     if (!response) throw error;
 
     const request = response.config as AxiosConfig;
-    const authorization = request.headers?.Authorization as string | undefined;
+    const authorization = request.headers?.get('authorization') as string | undefined;
 
     // Bail if we've already retried
     if (request._isRetry) throw error;
