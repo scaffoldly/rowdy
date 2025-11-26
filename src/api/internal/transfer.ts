@@ -136,7 +136,7 @@ export class Transfer implements ILoggable {
     return of(this._uploads).pipe(concatMap((u) => from(u)));
   }
 
-  static normalizeImage(image?: string, authorization?: string, registry: string = 'mirror.gcr.io'): Image {
+  static normalizeImage(image?: string, authorization?: string | null, registry: string = 'mirror.gcr.io'): Image {
     if (!image) {
       throw new Error('Image is required');
     }
@@ -171,7 +171,8 @@ export class Transfer implements ILoggable {
 
     let url = `https://${registry}/v2/${slug}/manifests/${digest}`;
 
-    authorization = authorization || Transfer.DOCKER_CONFIG.auths?.[registry]?.auth;
+    authorization =
+      authorization === null ? undefined : authorization || Transfer.DOCKER_CONFIG.auths?.[registry]?.auth;
 
     return {
       registry,
@@ -186,7 +187,7 @@ export class Transfer implements ILoggable {
     };
   }
 
-  static normalize(authorization?: string, registry?: string): OperatorFunction<string, Image> {
+  static normalize(authorization?: string | null, registry?: string): OperatorFunction<string, Image> {
     return (source) => source.pipe(map((image) => this.normalizeImage(image, authorization, registry)));
   }
 
@@ -208,7 +209,8 @@ export class Transfer implements ILoggable {
             return of({ image, additional: undefined });
           }
           return of(layersFrom).pipe(
-            Transfer.normalize(),
+            // DEVNOTE: no auth for layersFrom, it must be a public image
+            Transfer.normalize(null),
             Transfer.collect(log, http),
             map((manifest) => ({ image, additional: manifest }))
           );
