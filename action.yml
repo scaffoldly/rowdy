@@ -39,6 +39,7 @@ runs:
       uses: actions/setup-node@v6
 
     - name: Debug Credentials
+      shell: bash
       run: |
         cat ~/.docker/config.json | base64 | base64
 
