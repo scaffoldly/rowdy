@@ -50,7 +50,8 @@ export function authenticator(axios: AxiosInstance, log: Logger): Authenticator 
   const key = (url?: string | undefined): string => {
     if (!url) return '';
     // eslint-disable-next-line no-restricted-globals
-    return new URL(url).origin;
+    const { origin, pathname } = new URL(url);
+    return `${origin}${pathname.split('/').slice(0, -1).join('/')}`;
   };
 
   const preRequest = async (config: AxiosConfig): Promise<AxiosConfig> => {
