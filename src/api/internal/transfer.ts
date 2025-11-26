@@ -171,8 +171,16 @@ export class Transfer implements ILoggable {
 
     let url = `https://${registry}/v2/${slug}/manifests/${digest}`;
 
-    authorization =
-      authorization === null ? undefined : authorization || Transfer.DOCKER_CONFIG.auths?.[registry]?.auth;
+    if (!authorization) {
+      if (authorization === null) {
+        authorization = undefined;
+      } else {
+        const auth = Transfer.DOCKER_CONFIG.auths?.[registry]?.auth;
+        if (auth) {
+          authorization = `Basic ${auth}`;
+        }
+      }
+    }
 
     return {
       registry,
