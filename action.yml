@@ -40,9 +40,9 @@ runs:
 
     - name: Deploy with Rowdy
       shell: bash
-      run: |
+      run: >
         npx @scaffoldly/rowdy@beta 
-        ${{ inputs.cloud }} 
-        ${{ inputs.compute }} 
-        create 
-        ${{ inputs.image }}
+          ${{ inputs.cloud }} 
+          ${{ inputs.compute }} 
+          create 
+          ${{ inputs.image }}
