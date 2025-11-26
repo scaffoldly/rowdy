@@ -320,6 +320,7 @@ export class Environment implements ILoggable {
     }
 
     log.info(`${packageJson.name}@${packageJson.version} has started.`);
+    log.debug(`Arguments parsed`, { parsed: JSON.stringify(parsed), env: JSON.stringify(process.env) });
 
     if (isatty(process.stdout.fd)) {
       log.info('Press Ctrl+C to exit.');
