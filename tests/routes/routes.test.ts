@@ -58,6 +58,14 @@ describe('routes', () => {
       expect(routes.intoURI('/unknown?foo=bar#baz')!.toString()).toBe('http://localhost:8080/api/unknown?foo=bar#baz');
     });
   });
+
+  describe('from url', () => {
+    it('should create from relative path', () => {
+      const path = `${__dirname}/routes.yaml`;
+      const routes = Routes.fromURL(path);
+      expect(routes.intoURI('/foo')!.toString()).toBe('http://localhost:3000/foo');
+    });
+  });
 });
 
 describe('uri', () => {

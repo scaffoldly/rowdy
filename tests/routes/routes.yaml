@@ -1,0 +1,6 @@
+---
+apiVersion: rowdy.run/v1alpha1
+kind: Routes
+spec:
+  default: 'http://localhost:3000/'
+  paths: {}

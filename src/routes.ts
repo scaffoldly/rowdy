@@ -3,7 +3,7 @@ import { match as pathMatch, compile as pathCompile, pathToRegexp } from 'path-t
 import { decode, labelToName } from 'whatwg-encoding';
 import { ILoggable, log } from './log';
 import { CheckResult, cloudCheck, httpCheck, httpsCheck, rowdyCheck } from './util/checks';
-import { readFileSync } from 'fs';
+import { existsSync, readFileSync } from 'fs';
 import * as YAML from 'yaml';
 import {
   catchError,
@@ -23,7 +23,7 @@ import {
 import { ABORT } from '.';
 import { Rowdy } from './api';
 import { ApiVersion, ApiSchema } from './api/types';
-import { sep } from 'path';
+import { join } from 'path';
 
 export type RoutePaths = { [key: string]: string | undefined };
 export type RoutesSpec = { paths?: RoutePaths; default?: string };
@@ -243,9 +243,25 @@ export class Routes implements IRoutes, ILoggable {
       return Routes.fromDataURL(url);
     }
 
-    if (url.startsWith('file:') || url.startsWith('.') || url.startsWith(sep)) {
-      const path = url.replace(/^file:\/\//, '');
-      return Routes.fromPath(path);
+    try {
+      if (url.startsWith('file:')) {
+        const path = url.replace(/^file:\/\//, '');
+        return Routes.fromPath(path);
+      }
+
+      if (existsSync(url)) {
+        return Routes.fromPath(url);
+      }
+
+      if (existsSync(join(__dirname, url))) {
+        return Routes.fromPath(join(__dirname, url));
+      }
+
+      if (existsSync(join(process.cwd(), url))) {
+        return Routes.fromPath(join(process.cwd(), url));
+      }
+    } catch (e) {
+      log.warn(`Failed to access Routes URL: ${e instanceof Error ? e.message : String(e)}`, { url });
     }
 
     log.warn(`Unsupported Routes URL, defaulting to empty routes`, { url });
@@ -347,6 +363,11 @@ export class Routes implements IRoutes, ILoggable {
     if (!target.endsWith('/')) {
       target = `${target}/`;
     }
+
+    this.rules
+      .filter((r) => r.matches?.filter((m) => m.path?.value === '{/*path}'))
+      .forEach((r) => (r.backendRefs = []));
+
     return this.withPath('{/*path}', `${target}*path`);
   }
 
@@ -496,6 +517,17 @@ export class Routes implements IRoutes, ILoggable {
     uri.hash = hash;
 
     return uri;
+  }
+
+  merge(other: Routes): this {
+    other.rules.forEach((rule) => {
+      rule.backendRefs?.forEach((ref) => {
+        rule.matches?.forEach((match) => {
+          this.withMatch(match, ref);
+        });
+      });
+    });
+    return this;
   }
 
   async health(): Promise<Health> {

@@ -260,8 +260,10 @@ export class LambdaFunction implements Logger {
   }
 
   withRoutes(routes: Routes): this {
-    this.Routes.next(routes);
-    return this.withEnvironment('ROWDY_ROUTES', routes.intoDataURL());
+    const existing = this.Routes.getValue();
+    existing.merge(routes);
+    this.Routes.next(existing);
+    return this.withEnvironment('ROWDY_ROUTES', existing.intoDataURL());
   }
 
   withCRI(): this {
