@@ -48,10 +48,11 @@ import {
   tap,
   toArray,
 } from 'rxjs';
-import { ANNOTATIONS, TAGS } from './config';
+import { TAGS } from './config';
 import promiseRetry from 'promise-retry';
 import { inspect } from 'util';
 import { Routes, Rowdy } from '../..';
+import { TPulledImage } from '../../api/types';
 
 export const isSubset = (subset: Record<string, string>, superset: Record<string, string>): boolean => {
   for (const key of Object.keys(subset)) {
@@ -101,7 +102,9 @@ const waitForSuccess = (lambda: LambdaClient) => (res: GetFunctionConfigurationC
     );
   });
 
-const pullImage = (lambda: LambdaFunction): OperatorFunction<{ requested: string; normalized: Image }, string> => {
+const pullImage = (
+  lambda: LambdaFunction
+): OperatorFunction<{ requested: string; normalized: Image }, TPulledImage> => {
   return (source) =>
     source.pipe(
       switchMap(({ requested }) => {
@@ -110,15 +113,13 @@ const pullImage = (lambda: LambdaFunction): OperatorFunction<{ requested: string
           image: {
             $typeName: 'runtime.v1.ImageSpec',
             image: requested,
-            annotations: lambda.isSandbox()
-              ? {}
-              : { [`${ANNOTATIONS.ROWDY_IMAGE_LAYERS_FROM}`]: 'ghcr.io/scaffoldly/rowdy:beta' },
+            annotations: {},
             runtimeHandler: '',
             userSpecifiedImage: '',
           },
         });
       }),
-      map(({ imageRef }) => imageRef)
+      map(({ imageRef }) => lambda.imageService.pulledImage(imageRef)!)
     );
 };
 
@@ -142,6 +143,7 @@ export class LambdaFunction implements Logger {
   );
   private EntryPoint = new BehaviorSubject<string[]>(['rowdy']);
   private Command = new BehaviorSubject<string[]>([]);
+  private WorkingDirectory = new BehaviorSubject<string | undefined>('/');
   private Routes = new BehaviorSubject<Routes>(Routes.empty());
   private RoleStatements = new BehaviorSubject<Statement[]>([]);
 
@@ -422,15 +424,15 @@ export class LambdaFunction implements Logger {
         Name: this.Name.pipe(take(1)),
         RoleArn: this.RoleArn.pipe(take(1)),
         RoleId: this.RoleId.pipe(take(1)),
-        ImageUri: this.Image.pipe(take(1), pullImage(this)),
+        PulledImage: this.Image.pipe(take(1), pullImage(this)),
       }).pipe(
-        map(({ Name, RoleArn, RoleId, ImageUri }) => ({
+        map(({ Name, RoleArn, RoleId, PulledImage }) => ({
           FunctionName: Name || RoleId,
-          Description: `A function to run the ${ImageUri} container in AWS Lambda`,
+          Description: `A function to run the ${PulledImage.Image} container in AWS Lambda`,
           Role: RoleArn,
-          ImageUri,
+          PulledImage,
         })),
-        switchMap(({ FunctionName, Role, ImageUri }) =>
+        switchMap(({ FunctionName, Role, PulledImage }) =>
           _create(
             () => this.lambda.send(new GetFunctionCommand({ FunctionName })),
             () =>
@@ -440,7 +442,7 @@ export class LambdaFunction implements Logger {
                     new CreateFunctionCommand({
                       FunctionName,
                       Role,
-                      Code: { ImageUri },
+                      Code: { ImageUri: PulledImage.ImageUri },
                       PackageType: 'Image',
                       // TODO: Support for platform annotation
                       Architectures: ['x86_64'],
@@ -454,7 +456,14 @@ export class LambdaFunction implements Logger {
             (fn) => {
               this.Configuration.next(fn.Configuration);
               this.FunctionArn.next(fn.Configuration!.FunctionArn?.replace(`:${fn.Configuration!.Version}`, ''));
-              this.ImageUri.next(ImageUri);
+              this.ImageUri.next(PulledImage.ImageUri);
+              this.WorkingDirectory.next(PulledImage.WorkDir);
+              if (!this.Command.getValue().length) {
+                // TODO: probably need to handle various Entrypoint styles
+                // E.g. ENTRYPOINT ["foo", "bar"] vs ENTRYPOINT foo bar and CMD in the same style
+                const command = [...(PulledImage.Entrypoint || []), ...(PulledImage.Command || [])];
+                this.Command.next(command);
+              }
             }
           )
         )
@@ -538,106 +547,111 @@ export class LambdaFunction implements Logger {
         ImageUri: this.ImageUri.pipe(take(1)),
         EntryPoint: this.EntryPoint.pipe(take(1)),
         Command: this.Command.pipe(take(1)),
+        WorkingDirectory: this.WorkingDirectory.pipe(take(1)),
       }).pipe(
-        switchMap(({ FunctionArn, Qualifier, MemorySize, Environment, ImageUri, EntryPoint, Command }) =>
-          from(
-            this.lambda
-              .send(new GetFunctionCommand({ FunctionName: FunctionArn, Qualifier }))
-              .catch(() => this.lambda.send(new GetFunctionCommand({ FunctionName: FunctionArn })))
-          ).pipe(
-            map((Function) => ({
-              Function,
-              MemorySize,
-              Environment,
-              ImageUri,
-              Qualifier,
-              EntryPoint: [...EntryPoint, '--'],
-              Command,
-            }))
-          )
+        switchMap(
+          ({ FunctionArn, Qualifier, MemorySize, Environment, ImageUri, EntryPoint, Command, WorkingDirectory }) =>
+            from(
+              this.lambda
+                .send(new GetFunctionCommand({ FunctionName: FunctionArn, Qualifier }))
+                .catch(() => this.lambda.send(new GetFunctionCommand({ FunctionName: FunctionArn })))
+            ).pipe(
+              map((Function) => ({
+                Function,
+                MemorySize,
+                Environment,
+                ImageUri,
+                Qualifier,
+                EntryPoint: [...EntryPoint, '--'],
+                Command,
+                WorkingDirectory,
+              }))
+            )
         ),
-        switchMap(({ Function, MemorySize, Environment, ImageUri, Qualifier, EntryPoint, Command }) => {
-          const { Code = {} } = Function;
-          let { Configuration = {} } = Function;
-          const { FunctionName } = Configuration;
+        switchMap(
+          ({ Function, MemorySize, Environment, ImageUri, Qualifier, EntryPoint, Command, WorkingDirectory }) => {
+            const { Code = {} } = Function;
+            let { Configuration = {} } = Function;
+            const { FunctionName } = Configuration;
 
-          if (!FunctionName || !Qualifier) {
-            // Maybe just return EMPTY
-            throw new Error('FunctionName or Qualifier is undefined');
-          }
+            if (!FunctionName || !Qualifier) {
+              // Maybe just return EMPTY
+              throw new Error('FunctionName or Qualifier is undefined');
+            }
 
-          const update: { code: boolean; config: boolean } = {
-            code: Code?.ImageUri !== ImageUri,
-            config:
-              !isEqual(Configuration.Version, '$LATEST') || // An Alias was never created for the Qualifier
-              !isEqual(Configuration.ImageConfigResponse?.ImageConfig?.EntryPoint, EntryPoint) ||
-              !isEqual(Configuration.ImageConfigResponse?.ImageConfig?.Command, Command) ||
-              !isEqual(Configuration.MemorySize, MemorySize) ||
-              !isSubset(Environment, Configuration.Environment?.Variables || {}),
-          };
-
-          let deploy: Promise<FunctionConfiguration> = Promise.resolve(Configuration);
-
-          if (update.config) {
-            delete Configuration.RevisionId;
-            Configuration.MemorySize = MemorySize;
-            Configuration.Environment = {
-              Variables: { ...Configuration.Environment?.Variables, ...Environment },
+            const update: { code: boolean; config: boolean } = {
+              code: Code?.ImageUri !== ImageUri,
+              config:
+                !isEqual(Configuration.Version, '$LATEST') || // An Alias was never created for the Qualifier
+                !isEqual(Configuration.ImageConfigResponse?.ImageConfig?.EntryPoint, EntryPoint) ||
+                !isEqual(Configuration.ImageConfigResponse?.ImageConfig?.Command, Command) ||
+                !isEqual(Configuration.MemorySize, MemorySize) ||
+                !isSubset(Environment, Configuration.Environment?.Variables || {}),
             };
 
-            deploy = deploy.then(() =>
-              this.lambda
-                .send(
-                  new UpdateFunctionConfigurationCommand({
-                    ...Configuration,
-                    FunctionName,
-                    ImageConfig: {
-                      EntryPoint,
-                      Command,
-                      WorkingDirectory: '/', // TODO: infer from image
-                    },
-                    Layers: [],
-                  })
+            let deploy: Promise<FunctionConfiguration> = Promise.resolve(Configuration);
+
+            if (update.config) {
+              delete Configuration.RevisionId;
+              Configuration.MemorySize = MemorySize;
+              Configuration.Environment = {
+                Variables: { ...Configuration.Environment?.Variables, ...Environment },
+              };
+
+              deploy = deploy.then(() =>
+                this.lambda
+                  .send(
+                    new UpdateFunctionConfigurationCommand({
+                      ...Configuration,
+                      FunctionName,
+                      ImageConfig: {
+                        EntryPoint,
+                        Command,
+                        WorkingDirectory,
+                      },
+                      Layers: [],
+                    })
+                  )
+                  .then(waitForSuccess(this.lambda))
+                  .then((Configuration) =>
+                    update.code
+                      ? Promise.resolve(Configuration)
+                      : this.lambda.send(
+                          new PublishVersionCommand({
+                            FunctionName,
+                            RevisionId: Configuration.RevisionId,
+                          })
+                        )
+                  )
+                  .then(waitForSuccess(this.lambda))
+              );
+            }
+
+            if (update.code) {
+              deploy = deploy
+                .then(() =>
+                  this.lambda.send(
+                    new UpdateFunctionCodeCommand({
+                      FunctionName,
+                      ImageUri,
+                      Publish: true,
+                    })
+                  )
                 )
-                .then(waitForSuccess(this.lambda))
-                .then((Configuration) =>
-                  update.code
-                    ? Promise.resolve(Configuration)
-                    : this.lambda.send(
-                        new PublishVersionCommand({
-                          FunctionName,
-                          RevisionId: Configuration.RevisionId,
-                        })
-                      )
-                )
-                .then(waitForSuccess(this.lambda))
+                .then(waitForSuccess(this.lambda));
+            }
+
+            return from(deploy).pipe(
+              switchMap(({ FunctionArn }) =>
+                this.lambda.send(new GetFunctionConfigurationCommand({ FunctionName: FunctionArn }))
+              ),
+              tap((Configuration) => {
+                this.Configuration.next(Configuration);
+                this.FunctionVersion.next(Configuration.Version);
+              })
             );
           }
-
-          if (update.code) {
-            deploy = deploy
-              .then(() =>
-                this.lambda.send(
-                  new UpdateFunctionCodeCommand({
-                    FunctionName,
-                    ImageUri,
-                    Publish: true,
-                  })
-                )
-              )
-              .then(waitForSuccess(this.lambda));
-          }
-
-          return from(deploy).pipe(
-            switchMap(({ FunctionArn }) =>
-              this.lambda.send(new GetFunctionConfigurationCommand({ FunctionName: FunctionArn }))
-            ),
-            tap((Configuration) => {
-              this.Configuration.next(Configuration);
-              this.FunctionVersion.next(Configuration.Version);
-            })
-          );
-        })
+        )
       ),
       // Function Alias
       combineLatest([

@@ -45,7 +45,7 @@ describe('api', () => {
           aws(
             `should pull ${image} on ${platform || 'default'} platform`,
             async () => {
-              const { image: pulledImage, imageRef: pulledImageRef } = await lastValueFrom(
+              const { Image: pulledImage, ImageUri: pulledImageRef } = await lastValueFrom(
                 rowdy.images.pullImage(image, { platform })
               );
               expect(pulledImage).toEqual(image);
@@ -57,7 +57,7 @@ describe('api', () => {
       });
 
       aws('should inject layers', async () => {
-        const { image: pulledImage, imageRef: pulledImageRef } = await lastValueFrom(
+        const { Image: pulledImage, ImageUri: pulledImageRef } = await lastValueFrom(
           rowdy.images.pullImage('busybox', { layersFrom: 'ghcr.io/scaffoldly/rowdy:beta' })
         );
         console.log('Pulled Image Ref:', pulledImageRef);

@@ -39,8 +39,11 @@ export interface IRegistryApi {
 }
 
 export type TPulledImage = {
-  image: string;
-  imageRef: string;
+  Image: string;
+  ImageUri: string;
+  Command?: string[];
+  Entrypoint?: string[];
+  WorkDir?: string;
 };
 
 export type TRegistry = {

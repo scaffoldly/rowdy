@@ -31,7 +31,15 @@ export class ImageApi implements IImageApi {
           Transfer.upload(this.log, this.http),
           Transfer.denormalize(opts?.platform)
         )
-        .pipe(map((imageRef) => ({ image, imageRef })))
+        .pipe(
+          map(({ imageRef, command, entrypoint, workdir }) => ({
+            Image: image,
+            ImageUri: imageRef,
+            Command: command,
+            Entrypoint: entrypoint,
+            WorkDir: workdir,
+          }))
+        )
     );
   }
 }

@@ -177,7 +177,7 @@ export class Environment implements ILoggable {
                         array: true,
                       }),
                   handler: (argv) => {
-                    this.log.debug(`Creating AWS Lambda function`, { argv: JSON.stringify(argv) });
+                    // TODO: Fix logging ability in these early handlers
                     let lambda = new LambdaFunction(
                       'Container',
                       new LambdaImageService(this).withLayersFrom('ghcr.io/scaffoldly/rowdy:beta')
@@ -200,7 +200,6 @@ export class Environment implements ILoggable {
                     }
                     if (argv.routes) {
                       const routes = Routes.fromURL(argv.routes);
-                      this.log.debug(`Adding routes to Lambda function`, routes);
                       lambda = lambda.withRoutes(routes);
                     }
 

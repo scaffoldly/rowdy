@@ -4,13 +4,14 @@ import { Logger } from '../../log';
 import { lastValueFrom } from 'rxjs';
 import { Rowdy } from '../../api';
 import { Environment } from '../../environment';
-import { PullImageOptions } from '../../api/types';
+import { PullImageOptions, TPulledImage } from '../../api/types';
 
 // eslint-disable-next-line @typescript-eslint/no-empty-object-type
 interface ILambdaImageService extends Partial<ServiceImpl<typeof CRI.ImageService>> {}
 
 export class LambdaImageService implements ILambdaImageService {
   private _layersFrom?: string;
+  private _pulledImages: Map<string, TPulledImage> = new Map();
 
   constructor(private environment: Environment) {}
 
@@ -27,6 +28,16 @@ export class LambdaImageService implements ILambdaImageService {
     return this;
   }
 
+  private intercept(image: TPulledImage): TPulledImage {
+    this._pulledImages.set(image.ImageUri, image);
+    this._pulledImages.set(image.Image, image);
+    return image;
+  }
+
+  pulledImage(imageUri: string): TPulledImage | undefined {
+    return this._pulledImages.get(imageUri);
+  }
+
   pullImage = async (req: CRI.PullImageRequest): Promise<CRI.PullImageResponse> => {
     // TODO: Support for platform annotation
     let opts: PullImageOptions = {};
@@ -38,10 +49,11 @@ export class LambdaImageService implements ILambdaImageService {
       opts.layersFrom = this._layersFrom;
     }
 
-    const { imageRef } = await lastValueFrom(this.images.pullImage(req.image.image, opts));
+    const { ImageUri } = this.intercept(await lastValueFrom(this.images.pullImage(req.image.image, opts)));
+
     return {
       $typeName: 'runtime.v1.PullImageResponse',
-      imageRef,
+      imageRef: ImageUri,
     };
   };
 

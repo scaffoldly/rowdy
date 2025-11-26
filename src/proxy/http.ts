@@ -171,12 +171,24 @@ export class HttpHeaders implements ILoggable {
     return headers;
   }
 
-  override(key: string, value?: string | string[] | undefined | null): this {
+  override(key: string, value?: string | string[] | number | boolean | undefined | null | AxiosHeaders): this {
     if (!value) {
       delete this.headers[key.toLowerCase()];
       return this;
     }
     key = key.toLowerCase();
+    if (typeof value === 'number') {
+      this.headers[key] = value.toString();
+      return this;
+    }
+    if (typeof value === 'boolean') {
+      this.headers[key] = value ? 'true' : 'false';
+      return this;
+    }
+    if (value instanceof AxiosHeaders) {
+      this.headers[key] = Array.isArray(value) ? value.map(String) : String(value);
+      return this;
+    }
     this.headers[key] = value;
     return this;
   }

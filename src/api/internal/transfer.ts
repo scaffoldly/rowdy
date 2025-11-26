@@ -46,8 +46,16 @@ export type External = {
     config: External['Ref'];
     layers: External['Ref'][];
   }>;
-  Config: External['Ref'];
-  Layer: External['Ref'];
+  Config: Partial<{
+    architecture: string;
+    os: string;
+    config: Partial<{
+      Env: string[];
+      Cmd: string[];
+      Entrypoint: string[];
+      WorkingDir: string;
+    }>;
+  }>;
 };
 
 export type Image = {
@@ -60,6 +68,13 @@ export type Image = {
   tags: string[];
   url: string;
   authorization?: string | undefined;
+};
+
+export type DenormalizedImage = {
+  imageRef: string;
+  command?: string[];
+  entrypoint?: string[];
+  workdir?: string;
 };
 
 export type ImageManifest = Image & {
@@ -229,21 +244,18 @@ export class Transfer implements ILoggable {
           );
         }),
         switchMap(({ image, additional }) => {
-          headers.override('authorization', image.authorization);
+          // TODO: Fetch tags from Registry and infer tags[]
+          // Ref: https://distribution.github.io/distribution/spec/api/
           return from(
             http
               .get<External['Index']>(image.url, {
-                headers: headers.intoAxios(),
+                headers: headers.override('authorization', image.authorization).intoAxios(),
               })
               .then((response) => {
-                const authorization = response.config?.headers?.['Authorization'] as string | undefined;
-                if (authorization && headers.get('authorization') !== authorization) {
-                  log.debug(`Updating authorization header from response`, {
-                    previous: headers.get('authorization'),
-                    new: authorization,
-                  });
-                  headers.override('authorization', authorization);
-                }
+                headers.override(
+                  'authorization',
+                  response.config?.headers?.get('authorization') || headers.get('authorization')
+                );
                 return response;
               })
           ).pipe(
@@ -371,7 +383,7 @@ export class Transfer implements ILoggable {
               transfer.manifest.images
                 .map((img) => img.image.config)
                 .filter((c): c is Required<External['Ref']> => !!c && !!c.digest && !!c.mediaType)
-                .map((ref) => new Upload(transfer, 'blob', ref))
+                .map((ref) => new Upload(transfer, 'config', ref))
             )
             .with(
               transfer.manifest.images
@@ -463,7 +475,9 @@ export class Transfer implements ILoggable {
   }
 
   // TODO: Support for platform annotation
-  static denormalize(platform: PullImageOptions['platform'] = 'linux/amd64'): OperatorFunction<TransferStatus, string> {
+  static denormalize(
+    platform: PullImageOptions['platform'] = 'linux/amd64'
+  ): OperatorFunction<TransferStatus, DenormalizedImage> {
     return (source) =>
       source.pipe(
         map((status) => {
@@ -477,7 +491,12 @@ export class Transfer implements ILoggable {
             throw new Error(`Unable to find image for platform: ${platform}`);
           }
 
-          return status.imageRef(digest);
+          return {
+            imageRef: status.imageRef(digest),
+            command: status.command(digest),
+            entrypoint: status.entrypoint(digest),
+            workdir: status.workdir(digest),
+          };
         })
       );
   }
@@ -509,6 +528,18 @@ export class TransferStatus implements ILoggable {
   withStatus(status: UploadStatus): this {
     this._statuses.push(status);
     return this;
+  }
+
+  command(digest?: string): string[] | undefined {
+    return this._statuses.find((s) => s.digest === digest)?.command;
+  }
+
+  entrypoint(digest?: string): string[] | undefined {
+    return this._statuses.find((s) => s.digest === digest)?.entrypoint;
+  }
+
+  workdir(digest?: string): string | undefined {
+    return this._statuses.find((s) => s.digest === digest)?.workdir;
   }
 
   get index(): External['Index'] {
@@ -560,7 +591,7 @@ export class Upload implements ILoggable {
 
   constructor(
     public readonly transfer: Transfer,
-    public readonly type: 'blob' | 'manifest',
+    public readonly type: 'blob' | 'config' | 'manifest',
     public readonly ref: External['Ref'],
     public readonly content?: Readable
   ) {
@@ -599,7 +630,7 @@ export class Upload implements ILoggable {
 
   get fromUrl(): string {
     const { url } = this._from || this.transfer.manifest;
-    if (this.type === 'blob') {
+    if (this.type !== 'manifest') {
       return url.split('/').slice(0, -2).join('/') + `/blobs/${this.ref.digest}`;
     }
     return url.split('/').slice(0, -2).join('/') + `/manifests/${this.ref.digest}`;
@@ -620,7 +651,7 @@ export class Upload implements ILoggable {
   get toUrl(): string {
     // eslint-disable-next-line no-restricted-globals
     const url = new URL(this.verifyUrl);
-    if (this.type === 'blob') {
+    if (this.type !== 'manifest') {
       url.pathname = url.pathname.replace(/blobs\/.*/, 'blobs/uploads/');
     }
     return url.toString();
@@ -690,7 +721,7 @@ export class Upload implements ILoggable {
       }
 
       let { data: download } =
-        this.type === 'blob'
+        this.type !== 'manifest'
           ? await promiseRetry(() =>
               this.http.get<Readable>(fromUrl, {
                 responseType: 'stream',
@@ -702,7 +733,16 @@ export class Upload implements ILoggable {
             )
           : { data: this.content };
 
-      if (this.type === 'blob') {
+      if (this.type === 'config') {
+        // Intercept configs and extract entrypoint/cmd/workdir
+        const chunks: Buffer[] = [];
+        download?.on('data', (chunk) => {
+          chunks.push(chunk);
+        });
+        download?.on('end', () => status.withConfig(Buffer.concat(chunks), this.mediaType));
+      }
+
+      if (this.type !== 'manifest') {
         await promiseRetry(() => {
           return status.intercept(
             this.http.patch(toUrl, download, {
@@ -740,6 +780,9 @@ class UploadStatus implements ILoggable {
   private verified: boolean = false;
   private _codes: number[] = [];
   private _reasons: string[] = [];
+  private _command?: string[];
+  private _entrypoint?: string[];
+  private _workdir?: string;
 
   constructor(private upload: Upload) {}
 
@@ -772,6 +815,60 @@ class UploadStatus implements ILoggable {
 
   get reasons(): string[] {
     return this._reasons;
+  }
+
+  get command(): string[] | undefined {
+    return this._command;
+  }
+
+  get entrypoint(): string[] | undefined {
+    return this._entrypoint;
+  }
+
+  get workdir(): string | undefined {
+    return this._workdir;
+  }
+
+  withConfig(config: Buffer, mediaType: string): this {
+    try {
+      if (
+        mediaType !== 'application/vnd.oci.image.config.v1+json' &&
+        mediaType !== 'application/vnd.docker.container.image.v1+json'
+      ) {
+        throw new Error(`Unsupported config media type: ${mediaType}`);
+      }
+      const parsed = JSON.parse(config.toString('utf-8')) as External['Config'];
+      return this.withCommand(parsed?.config?.Cmd)
+        .withEntrypoint(parsed?.config?.Entrypoint)
+        .withWorkdir(parsed?.config?.WorkingDir);
+    } catch (err) {
+      this.log.warn(`Unable to parse image config: ${err}`);
+    }
+    return this;
+  }
+
+  private withCommand(command?: string[]): this {
+    if (!command || !command.length) {
+      return this;
+    }
+    this._command = command;
+    return this;
+  }
+
+  private withEntrypoint(entrypoint?: string[]): this {
+    if (!entrypoint || !entrypoint.length) {
+      return this;
+    }
+    this._entrypoint = entrypoint;
+    return this;
+  }
+
+  private withWorkdir(workdir?: string): this {
+    if (!workdir) {
+      return this;
+    }
+    this._workdir = workdir;
+    return this;
   }
 
   async intercept<T>(response: Promise<AxiosResponse<T>>): Promise<Response<T>> {
