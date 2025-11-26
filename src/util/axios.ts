@@ -85,6 +85,7 @@ export function authenticator(axios: AxiosInstance, log: Logger): Authenticator 
     if (!response) throw error;
 
     const request = response.config as AxiosConfig;
+    const authorization = request.headers?.Authorization as string | undefined;
 
     // Bail if we've already retried
     if (request._isRetry) throw error;
@@ -117,7 +118,7 @@ export function authenticator(axios: AxiosInstance, log: Logger): Authenticator 
       }
 
       existing = AUTH_CACHE[key(request.url)] = {
-        headers: await headers(log, scheme, url, service),
+        headers: await headers(log, scheme, url, service, authorization),
         expires: new Date(Date.now() + 5 * 60 * 1000), // Cache for 5 minutes
       };
     }
