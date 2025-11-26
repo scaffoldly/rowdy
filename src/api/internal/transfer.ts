@@ -57,7 +57,7 @@ export type Image = {
   name: string;
   image: string;
   digest: string;
-  tag: string | null;
+  tags: string[];
   url: string;
   authorization?: string | undefined;
 };
@@ -195,7 +195,7 @@ export class Transfer implements ILoggable {
       namespace,
       image,
       digest,
-      tag,
+      tags: tag ? [tag] : [`untagged-${digest.replace('sha256:', '').slice(0, 8)}`],
       url,
       authorization,
     };
@@ -396,20 +396,21 @@ export class Transfer implements ILoggable {
                 );
               })
             )
-            .with([
-              new Upload(
-                transfer,
-                'manifest',
-                {
-                  digest: transfer.manifest.tag
-                    ? transfer.manifest.tag
-                    : `untagged-${transfer.manifest.digest.replace('sha256:', '').slice(0, 12)}`,
-                  mediaType: transfer.manifest.index.mediaType!,
-                  size: 0,
-                },
-                Readable.from(JSON.stringify(transfer.index))
-              ),
-            ])
+            .with(
+              transfer.manifest.tags.map(
+                (tag) =>
+                  new Upload(
+                    transfer,
+                    'manifest',
+                    {
+                      digest: tag,
+                      mediaType: transfer.manifest.index.mediaType!,
+                      size: 0,
+                    },
+                    Readable.from(JSON.stringify(transfer.index))
+                  )
+              )
+            )
         )
       );
   }

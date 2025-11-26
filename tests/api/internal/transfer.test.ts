@@ -20,7 +20,7 @@ describe('transfers', () => {
           namespace: 'library',
           name: 'ubuntu',
           digest: 'latest',
-          tag: 'latest',
+          tags: ['latest'],
           url: 'https://mirror.gcr.io/v2/library/ubuntu/manifests/latest',
         },
       },
@@ -33,7 +33,7 @@ describe('transfers', () => {
           namespace: 'library',
           name: 'ubuntu',
           digest: 'sha256:4cb780d50443fc4463f1f9360c03ca46512e4fdd8fd97c5ce7e69c8758924575',
-          tag: null,
+          tags: ['untagged-4cb780d5'],
           url: 'https://mirror.gcr.io/v2/library/ubuntu/manifests/sha256:4cb780d50443fc4463f1f9360c03ca46512e4fdd8fd97c5ce7e69c8758924575',
         },
       },
@@ -46,7 +46,7 @@ describe('transfers', () => {
           namespace: 'library',
           name: 'ubuntu',
           digest: 'latest',
-          tag: 'latest',
+          tags: ['latest'],
           url: 'https://mirror.gcr.io/v2/library/ubuntu/manifests/latest',
         },
       },
@@ -59,7 +59,7 @@ describe('transfers', () => {
           namespace: 'library',
           name: 'ubuntu',
           digest: 'latest',
-          tag: 'latest',
+          tags: ['latest'],
           url: 'https://mirror.gcr.io/v2/library/ubuntu/manifests/latest',
         },
       },
@@ -72,7 +72,7 @@ describe('transfers', () => {
           namespace: 'library',
           name: 'ubuntu',
           digest: 'latest',
-          tag: 'latest',
+          tags: ['latest'],
           url: 'https://mirror.gcr.io/v2/library/ubuntu/manifests/latest',
         },
       },
@@ -85,7 +85,7 @@ describe('transfers', () => {
           namespace: 'library',
           name: 'ubuntu',
           digest: 'sha256:4cb780d50443fc4463f1f9360c03ca46512e4fdd8fd97c5ce7e69c8758924575',
-          tag: null,
+          tags: ['untagged-4cb780d5'],
           url: 'https://mirror.gcr.io/v2/library/ubuntu/manifests/sha256:4cb780d50443fc4463f1f9360c03ca46512e4fdd8fd97c5ce7e69c8758924575',
         },
       },
@@ -98,7 +98,7 @@ describe('transfers', () => {
           namespace: 'library',
           name: 'ubuntu',
           digest: 'latest',
-          tag: 'latest',
+          tags: ['latest'],
           url: 'https://registry-1.docker.io/v2/library/ubuntu/manifests/latest',
         },
       },
@@ -113,7 +113,7 @@ describe('transfers', () => {
           namespace: 'library',
           name: 'ubuntu',
           digest: 'sha256:4cb780d50443fc4463f1f9360c03ca46512e4fdd8fd97c5ce7e69c8758924575',
-          tag: null,
+          tags: ['untagged-4cb780d5'],
           url: 'https://registry-1.docker.io/v2/library/ubuntu/manifests/sha256:4cb780d50443fc4463f1f9360c03ca46512e4fdd8fd97c5ce7e69c8758924575',
         },
       },
@@ -126,7 +126,7 @@ describe('transfers', () => {
           namespace: 'ubuntu',
           name: 'ubuntu',
           digest: 'latest',
-          tag: 'latest',
+          tags: ['latest'],
           url: 'https://public.ecr.aws/v2/ubuntu/ubuntu/manifests/latest',
         },
       },
@@ -139,7 +139,7 @@ describe('transfers', () => {
           namespace: 'library',
           name: 'ubuntu',
           digest: 'latest',
-          tag: 'latest',
+          tags: ['latest'],
           url: 'https://public.ecr.aws/v2/docker/library/ubuntu/manifests/latest',
         },
       },
@@ -152,7 +152,7 @@ describe('transfers', () => {
           namespace: 'library',
           name: 'ubuntu',
           digest: 'noble-20251001',
-          tag: 'noble-20251001',
+          tags: ['noble-20251001'],
           url: 'https://mirror.gcr.io/v2/library/ubuntu/manifests/noble-20251001',
         },
       },
@@ -176,7 +176,7 @@ describe('transfers', () => {
           namespace: 'library',
           name: 'ubuntu',
           digest: 'noble-20251001',
-          tag: 'noble-20251001',
+          tags: ['noble-20251001'],
           url: 'https://mirror.gcr.io/v2/library/ubuntu/manifests/noble-20251001',
         },
         collected: {
@@ -186,6 +186,7 @@ describe('transfers', () => {
           images: JSON.parse(
             readFileSync(`${__dirname}/ubuntu:noble-20251001.images.json`, 'utf-8')
           ) as ImageManifest['images'],
+          tags: ['noble-20251001'],
         },
       },
       {
@@ -196,7 +197,7 @@ describe('transfers', () => {
           namespace: 'library',
           name: 'alpine',
           digest: '20250108',
-          tag: '20250108',
+          tags: ['20250108'],
           url: 'https://mirror.gcr.io/v2/library/alpine/manifests/20250108',
         },
         collected: {
@@ -204,6 +205,7 @@ describe('transfers', () => {
           images: JSON.parse(
             readFileSync(`${__dirname}/alpine:20250108.images.json`, 'utf-8')
           ) as ImageManifest['images'],
+          tags: ['20250108'],
         },
       },
       {
@@ -214,7 +216,7 @@ describe('transfers', () => {
           namespace: 'scaffoldly',
           name: 'scratch',
           digest: 'sha-4d8e686',
-          tag: 'sha-4d8e686',
+          tags: ['sha-4d8e686'],
           url: 'https://ghcr.io/v2/scaffoldly/scratch/manifests/sha-4d8e686',
         },
         collected: {
@@ -222,6 +224,7 @@ describe('transfers', () => {
           images: JSON.parse(
             readFileSync(`${__dirname}/scratch:sha-4d8e686.images.json`, 'utf-8')
           ) as ImageManifest['images'],
+          tags: ['sha-4d8e686'],
         },
       },
     ];
@@ -258,7 +261,7 @@ describe('transfers', () => {
           namespace: 'library',
           name: 'ubuntu',
           digest: 'noble-20251001',
-          tag: 'noble-20251001',
+          tags: ['noble-20251001'],
           url: 'https://mirror.gcr.io/v2/library/ubuntu/manifests/noble-20251001',
         },
       },
@@ -315,7 +318,7 @@ describe('transfers', () => {
           expect(uploads[3]?.[0]?.fromUrl).toBe(normalized.url);
           expect(uploads[3]?.[0]?.toUrl).toMatch(
             RegExp(
-              `^https://[0-9]{12}\\.dkr\\.ecr\\.[a-z0-9-]+\\.amazonaws\\.com/v2/${normalized.namespace}/${normalized.name}/manifests/${normalized.tag}$`
+              `^https://[0-9]{12}\\.dkr\\.ecr\\.[a-z0-9-]+\\.amazonaws\\.com/v2/${normalized.namespace}/${normalized.name}/manifests/${normalized.tags[0]}$`
             )
           );
         });
@@ -334,7 +337,7 @@ describe('transfers', () => {
           namespace: 'library',
           name: 'alpine',
           digest: 'latest',
-          tag: 'latest',
+          tags: ['latest'],
           url: 'https://mirror.gcr.io/v2/library/alpine/manifests/latest',
         },
         uploaded: {

@@ -371,7 +371,7 @@ export class LambdaFunction implements Logger {
       if (this.type === 'Sandbox') {
         return '$LATEST';
       }
-      let qualifier = image.tag || image.digest;
+      let qualifier = image.tags[0] || image.digest;
       if (qualifier.startsWith('sha256:')) {
         qualifier = `sha256-${qualifier.split('sha256:')[1]?.substring(0, 12)}`;
       }
