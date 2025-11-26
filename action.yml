@@ -44,5 +44,5 @@ runs:
         npx @scaffoldly/rowdy@beta create
         ${{ inputs.cloud }} ${{ inputs.compute }} ${{ inputs.image }}
       env:
-        ROWDY_DEBUG: ${{ env.RUNNER_DEBUG == '1' }}
-        ROWDY_TRACE: ${{ env.RUNNER_DEBUG == '1' }}
+        ROWDY_DEBUG: "true"
+        ROWDY_TRACE: "true"
