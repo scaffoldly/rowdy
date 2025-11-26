@@ -190,7 +190,7 @@ export class Environment implements ILoggable {
                       lambda = lambda.withEnvironment('ROWDY_TRACE', 'true');
                     }
                     if (argv.command) {
-                      lambda = lambda.withCommand(argv.command.join(' '));
+                      lambda = lambda.withCommand(argv.command);
                     }
                     if (argv.name) {
                       lambda = lambda.withName(argv.name);

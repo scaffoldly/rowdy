@@ -142,8 +142,8 @@ export class LambdaFunction implements Logger {
     Object.entries(TAGS).reduce((acc, [, v]) => ({ ...acc, [v]: '' }), {})
   );
   private EntryPoint = new BehaviorSubject<string[]>(['rowdy']);
-  private Command = new BehaviorSubject<string[]>([]);
-  private WorkingDirectory = new BehaviorSubject<string | undefined>('/');
+  private Command = new BehaviorSubject<string[] | undefined>(undefined);
+  private WorkingDirectory = new BehaviorSubject<string | undefined>(undefined);
   private Routes = new BehaviorSubject<Routes>(Routes.empty());
   private RoleStatements = new BehaviorSubject<Statement[]>([]);
 
@@ -242,15 +242,14 @@ export class LambdaFunction implements Logger {
     return this;
   }
 
-  withCommand(command: string | string[]): this {
+  withCommand(command: string[] | string): this {
     if (typeof command === 'string') {
-      // TODO: use a proper shell parser
-      this.Command.next(command.split(' '));
+      command = command.split(' ').filter((s) => s.length);
+    }
+    if (!command.length) {
       return this;
     }
-    const commands = this.Command.getValue();
-    commands.push(...command);
-    this.Command.next(commands);
+    this.Command.next(command);
     return this;
   }
 
@@ -425,14 +424,16 @@ export class LambdaFunction implements Logger {
         RoleArn: this.RoleArn.pipe(take(1)),
         RoleId: this.RoleId.pipe(take(1)),
         PulledImage: this.Image.pipe(take(1), pullImage(this)),
+        Command: this.Command.pipe(take(1)),
       }).pipe(
-        map(({ Name, RoleArn, RoleId, PulledImage }) => ({
+        map(({ Name, RoleArn, RoleId, PulledImage, Command }) => ({
           FunctionName: Name || RoleId,
           Description: `A function to run the ${PulledImage.Image} container in AWS Lambda`,
           Role: RoleArn,
           PulledImage,
+          Command,
         })),
-        switchMap(({ FunctionName, Role, PulledImage }) =>
+        switchMap(({ FunctionName, Role, PulledImage, Command }) =>
           _create(
             () => this.lambda.send(new GetFunctionCommand({ FunctionName })),
             () =>
@@ -458,12 +459,7 @@ export class LambdaFunction implements Logger {
               this.FunctionArn.next(fn.Configuration!.FunctionArn?.replace(`:${fn.Configuration!.Version}`, ''));
               this.ImageUri.next(PulledImage.ImageUri);
               this.WorkingDirectory.next(PulledImage.WorkDir);
-              if (!this.Command.getValue().length) {
-                // TODO: probably need to handle various Entrypoint styles
-                // E.g. ENTRYPOINT ["foo", "bar"] vs ENTRYPOINT foo bar and CMD in the same style
-                const command = [...(PulledImage.Entrypoint || []), ...(PulledImage.Command || [])];
-                this.Command.next(command);
-              }
+              this.Command.next(Command || [...(PulledImage.Entrypoint || []), ...(PulledImage.Command || [])]);
             }
           )
         )
@@ -585,6 +581,7 @@ export class LambdaFunction implements Logger {
                 !isEqual(Configuration.Version, '$LATEST') || // An Alias was never created for the Qualifier
                 !isEqual(Configuration.ImageConfigResponse?.ImageConfig?.EntryPoint, EntryPoint) ||
                 !isEqual(Configuration.ImageConfigResponse?.ImageConfig?.Command, Command) ||
+                !isEqual(Configuration.ImageConfigResponse?.ImageConfig?.WorkingDirectory, WorkingDirectory) ||
                 !isEqual(Configuration.MemorySize, MemorySize) ||
                 !isSubset(Environment, Configuration.Environment?.Variables || {}),
             };

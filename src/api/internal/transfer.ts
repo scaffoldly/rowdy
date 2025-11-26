@@ -490,6 +490,7 @@ export class Transfer implements ILoggable {
 
           return {
             imageRef: status.imageRef(digest),
+            // TODO: search by os/arch
             command: status.command,
             entrypoint: status.entrypoint,
             workdir: status.workdir,
