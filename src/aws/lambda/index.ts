@@ -369,12 +369,12 @@ export class LambdaFunction implements Logger {
     deletes: Observable<MetadataBearer>[];
   } {
     const _functionName = (roleId: string, name?: string) => {
-      const _sanitize = (s: string) => s.replace(/[^a-zA-Z0-9_-]/g, '_');
+      const _sanitize = (s: string) => s.replace(/[^a-zA-Z0-9_]/g, '_');
       return _sanitize(name || roleId);
     };
 
     const _roleName = (image: Image, name?: string) => {
-      const _sanitize = (s: string) => s.replace(/[^+=,.@_-]/g, '.');
+      const _sanitize = (s: string) => s.replace(/[^a-zA-Z0-9.]/g, '.');
       return name
         ? `${image.namespace}+${image.name}@${_sanitize(name)}.rowdy.run`
         : `${image.namespace}+${image.name}@rowdy.run`;
