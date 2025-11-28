@@ -368,8 +368,11 @@ export class LambdaFunction implements Logger {
     tags: Observable<MetadataBearer>[];
     deletes: Observable<MetadataBearer>[];
   } {
+    const _sanitizeName = (s: string) => s.replace(/[^+=,.@_-]/g, '.');
     const _generateRoleName = (image: Image, name?: string) =>
-      name ? `${image.namespace}+${image.name}@${name}.rowdy.run` : `${image.namespace}+${image.name}@rowdy.run`;
+      name
+        ? `${image.namespace}+${image.name}@${_sanitizeName(name)}.rowdy.run`
+        : `${image.namespace}+${image.name}@rowdy.run`;
     const _generateQualifier = (image: Image) => {
       if (this.type === 'Sandbox') {
         return '$LATEST';

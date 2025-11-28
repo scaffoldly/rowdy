@@ -206,8 +206,6 @@ export class Environment implements ILoggable {
                     // TODO: URL True/False
                     // TODO: Enable CRI
                     // TODO: Stdin/Stdout/Stderr
-                    // TODO: Infer entrypoint from image
-                    // TODO: Infer command from image
 
                     this._subscriptions.push(
                       lambda.observe(this.abort.signal).subscribe({
