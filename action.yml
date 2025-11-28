@@ -6,28 +6,28 @@ branding:
   color: gray-dark
 inputs:
   name:
-    description: The name of the application. (Default: a random name)
+    description: "The name of the application. (Default: a random name)"
     required: false
     default: ""
   cloud:
-    description: The cloud provider to deploy to (aws, gcp, azure, or digitalocean)
+    description: "The cloud provider to deploy to (aws, gcp, azure, or digitalocean)"
     required: true
   compute:
-    description: The compute type to deploy to (lambda, ecs, app-engine, azure-functions, or app-platform)
+    description: "The compute type to deploy to (lambda, ecs, app-engine, azure-functions, or app-platform)"
     required: true
   image:
-    description: The Docker image to deploy (e.g. ghcr.io/owner/repo@sha256:...)
+    description: "The Docker image to deploy (e.g. ghcr.io/owner/repo@sha256:...)"
     required: true
   command:
-    description: Override the ENTRYPOINT/CMD in the Docker image. Default (ENTRYPOINT+CMD defined in the image)
+    description: "Override the ENTRYPOINT/CMD in the Docker image. (Default: ENTRYPOINT+CMD defined in the image"
     required: false
     default: ""
   memory:
-    description: Amount of memory to allocate to the deployed container in megbytes. (Default: 256)
+    description: "Amount of memory to allocate to the deployed container in megbytes. (Default: 256)"
     required: false
     default: "256"
   routes:
-    description: Path to the routes configuration file.
+    description: "Path to the routes configuration file."
     required: false
     default: ""
 outputs:
@@ -55,6 +55,6 @@ runs:
       env:
         ROWDY_DEBUG: "true"
         ROWDY_TRACE: "true"
-        ROWDY_NAME: ${{ inputs.name }}
-        ROWDY_ROUTES: ${{ inputs.routes }}
-        ROWDY_MEMORY: ${{ inputs.memory }}
+        ROWDY_NAME: "${{ inputs.name }}"
+        ROWDY_ROUTES: "${{ inputs.routes }}"
+        ROWDY_MEMORY: "${{ inputs.memory }}"
