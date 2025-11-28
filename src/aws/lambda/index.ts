@@ -9,7 +9,6 @@ import {
   PutRolePolicyCommand,
   DeleteRolePolicyCommand,
   UpdateAssumeRolePolicyCommand,
-  Role,
 } from '@aws-sdk/client-iam';
 import {
   CreateFunctionCommand,
