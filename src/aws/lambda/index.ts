@@ -9,6 +9,7 @@ import {
   PutRolePolicyCommand,
   DeleteRolePolicyCommand,
   UpdateAssumeRolePolicyCommand,
+  Role,
 } from '@aws-sdk/client-iam';
 import {
   CreateFunctionCommand,
@@ -368,12 +369,19 @@ export class LambdaFunction implements Logger {
     tags: Observable<MetadataBearer>[];
     deletes: Observable<MetadataBearer>[];
   } {
-    const _sanitizeName = (s: string) => s.replace(/[^+=,.@_-]/g, '.');
-    const _generateRoleName = (image: Image, name?: string) =>
-      name
-        ? `${image.namespace}+${image.name}@${_sanitizeName(name)}.rowdy.run`
+    const _functionName = (roleId: string, name?: string) => {
+      const _sanitize = (s: string) => s.replace(/[^a-zA-Z0-9_-]/g, '_');
+      return _sanitize(name || roleId);
+    };
+
+    const _roleName = (image: Image, name?: string) => {
+      const _sanitize = (s: string) => s.replace(/[^+=,.@_-]/g, '.');
+      return name
+        ? `${image.namespace}+${image.name}@${_sanitize(name)}.rowdy.run`
         : `${image.namespace}+${image.name}@rowdy.run`;
-    const _generateQualifier = (image: Image) => {
+    };
+
+    const _qualifier = (image: Image) => {
       if (this.type === 'Sandbox') {
         return '$LATEST';
       }
@@ -387,9 +395,9 @@ export class LambdaFunction implements Logger {
     const creates: Observable<MetadataBearer>[] = [
       combineLatest([this.Image.pipe(take(1)), this.Name.pipe(take(1))]).pipe(
         map(([{ normalized: Image }, Name]) => ({
-          RoleName: _generateRoleName(Image, Name),
+          RoleName: _roleName(Image, Name),
           Description: `Execution role to run ${Image.namespace}/${Image.name} in AWS Lambda`,
-          Qualifier: _generateQualifier(Image),
+          Qualifier: _qualifier(Image),
         })),
         switchMap(({ RoleName, Description, Qualifier }) =>
           _create(
@@ -430,7 +438,7 @@ export class LambdaFunction implements Logger {
         Command: this.Command.pipe(take(1)),
       }).pipe(
         map(({ Name, RoleArn, RoleId, PulledImage, Command }) => ({
-          FunctionName: Name || RoleId,
+          FunctionName: _functionName(RoleId!, Name),
           Description: `A function to run the ${PulledImage.Image} container in AWS Lambda`,
           Role: RoleArn,
           PulledImage,
