@@ -287,9 +287,7 @@ export class Routes implements IRoutes, ILoggable {
           throw new Error(`Unsupported routes kind: ${routes.kind}`);
         }
 
-        return Routes.default()
-          .withPaths(routes.spec?.paths || {})
-          .withDefault(routes.spec?.default || '');
+        return new Routes().withPaths(routes.spec?.paths || {}).withDefault(routes.spec?.default || '');
       }
 
       if (path.endsWith('.yaml') || path.endsWith('.yml')) {
@@ -304,9 +302,7 @@ export class Routes implements IRoutes, ILoggable {
           throw new Error(`Unsupported routes kind: ${routes.kind}`);
         }
 
-        return Routes.default()
-          .withPaths(routes.spec?.paths || {})
-          .withDefault(routes.spec?.default || '');
+        return new Routes().withPaths(routes.spec?.paths || {}).withDefault(routes.spec?.default || '');
       }
 
       throw new Error(`Unsupported routes file type: ${path}`);

@@ -1,4 +1,6 @@
 import { Routes, URI } from '@scaffoldly/rowdy';
+import { writeFileSync } from 'fs';
+import { tmpdir } from 'os';
 
 // TODO
 // expect(routes.intoURI('/')!.toString()).toBe('file:///var/www/html/');
@@ -64,6 +66,40 @@ describe('routes', () => {
       const path = `${__dirname}/routes.yaml`;
       const routes = Routes.fromURL(path);
       expect(routes.intoURI('/foo')!.toString()).toBe('http://localhost:3000/foo');
+    });
+  });
+
+  describe('kubernetes-dashboard', () => {
+    it('should route kubernetes-dashboard', () => {
+      const file = `${tmpdir()}/routes-${Date.now()}.yaml`;
+      writeFileSync(
+        file,
+        `
+apiVersion: rowdy.run/v1alpha1
+kind: Routes
+spec:
+  default: "http://localhost:8020/"
+  paths:
+    "/api/v1/login": "http://localhost:8000/api/v1/login"
+    "/api/v1/csrftoken/login": "http://localhost:8000/api/v1/csrftoken/login"
+    "/api/v1/me": "http://localhost:8000/api/v1/me"
+    "/api{/*path}": "http://localhost:8010/api/*path"
+`
+      );
+      const routes = Routes.fromPath(file);
+
+      expect(routes.intoURI('/api/v1/login')!.toString()).toBe('http://localhost:8000/api/v1/login');
+      expect(routes.intoURI('/api/v1/csrftoken/login')!.toString()).toBe(
+        'http://localhost:8000/api/v1/csrftoken/login'
+      );
+      expect(routes.intoURI('/api/v1/me')!.toString()).toBe('http://localhost:8000/api/v1/me');
+      expect(routes.intoURI('/en.main.143734868f788885.js')!.toString()).toBe(
+        'http://localhost:8020/en.main.143734868f788885.js'
+      );
+      expect(routes.intoURI('/api/v1/namespace')!.toString()).toBe('http://localhost:8010/api/v1/namespace');
+      expect(routes.intoURI('/api/v1/node?itemsPerPage=10&page=1&sortBy=d,creationTimestamp')!.toString()).toBe(
+        'http://localhost:8010/api/v1/node?itemsPerPage=10&page=1&sortBy=d,creationTimestamp'
+      );
     });
   });
 });
