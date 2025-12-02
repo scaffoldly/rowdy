@@ -412,7 +412,7 @@ class LocalHttpResponse extends HttpResponse {
               responseType: 'stream',
               method: proxy.method,
               url: uri.toString(),
-              headers: this.headers.proxy().intoAxios(),
+              headers: proxy.headers.intoAxios(),
               data: proxy.body,
               httpsAgent: proxy.httpsAgent,
               timeout: 0,
