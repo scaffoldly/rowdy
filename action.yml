@@ -26,6 +26,10 @@ inputs:
     description: "Amount of memory to allocate to the deployed container in megbytes. (Default: 256)"
     required: false
     default: "256"
+  cri:
+    description: "Enable the Container Runtime Interface (CRI)"
+    required: false
+    default: "false"
   routes:
     description: "Path to the routes configuration file."
     required: false
@@ -56,5 +60,6 @@ runs:
         ROWDY_DEBUG: "true"
         ROWDY_TRACE: "true"
         ROWDY_NAME: "${{ inputs.name }}"
-        ROWDY_ROUTES: "${{ inputs.routes }}"
         ROWDY_MEMORY: "${{ inputs.memory }}"
+        ROWDY_CRI: "${{ inputs.cri }}"
+        ROWDY_ROUTES: "${{ inputs.routes }}"
