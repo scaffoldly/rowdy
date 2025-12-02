@@ -149,6 +149,12 @@ export class Environment implements ILoggable {
               type: 'number',
               group: 'Runtime:',
             })
+            .option('cri', {
+              type: 'boolean',
+              description: 'Enable the CRI service',
+              default: false,
+              group: 'Runtime:',
+            })
             .option('routes', {
               type: 'string',
               description: 'Route definitions (file:// or data:)',
@@ -198,13 +204,15 @@ export class Environment implements ILoggable {
                     if (argv.memory) {
                       lambda = lambda.withMemory(argv.memory);
                     }
+                    if (argv.cri) {
+                      lambda = lambda.withCRI();
+                    }
                     if (argv.routes) {
                       const routes = Routes.fromURL(argv.routes);
                       lambda = lambda.withRoutes(routes);
                     }
 
                     // TODO: URL True/False
-                    // TODO: Enable CRI
                     // TODO: Stdin/Stdout/Stderr
 
                     this._subscriptions.push(
