@@ -190,11 +190,12 @@ export class GrpcRouter {
 
     const start = (): Promise<{ router: GrpcRouter; transport: Transport; name: string }> => {
       return new Promise((resolve, reject) => {
-        server.listen({ host: '::', port: port ? port : undefined }, () => {
+        server.listen({ port: port ? port : undefined }, () => {
           const address = server.address();
           if (!address || typeof address === 'string') {
             return reject(new Error('Failed to start server'));
           }
+          log(`[GRPCRouter][server] Server started`, address);
 
           const transport = createGrpcWebTransport({
             baseUrl: `http://localhost:${address.port}`,
