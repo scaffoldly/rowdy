@@ -51,7 +51,7 @@ import {
 import { TAGS } from './config';
 import promiseRetry from 'promise-retry';
 import { inspect } from 'util';
-import { Routes, Rowdy } from '../..';
+import { Routes } from '../..';
 import { TPulledImage } from '../../api/types';
 
 export const isSubset = (subset: Record<string, string>, superset: Record<string, string>): boolean => {
@@ -268,23 +268,21 @@ export class LambdaFunction implements Logger {
   }
 
   withCRI(): this {
-    return this.withKeepAlive()
-      .withRoute(Rowdy.PATHS.CRI, Rowdy.TARGETS.CRI)
-      .withRoleStatement({
-        Effect: 'Allow',
-        Resource: '*',
-        Action: [
-          'ecr:*',
-          'lambda:*',
-          'iam:CreateRole',
-          'iam:GetRole',
-          'iam:GetRolePolicy',
-          'iam:PassRole',
-          'iam:PutRolePolicy',
-          'iam:UpdateAssumeRolePolicy',
-        ],
-        // TODO: Restrict to resources tagged by Rowdy
-      });
+    return this.withServe().withRoleStatement({
+      Effect: 'Allow',
+      Resource: '*',
+      Action: [
+        'ecr:*',
+        'lambda:*',
+        'iam:CreateRole',
+        'iam:GetRole',
+        'iam:GetRolePolicy',
+        'iam:PassRole',
+        'iam:PutRolePolicy',
+        'iam:UpdateAssumeRolePolicy',
+      ],
+      // TODO: Restrict to resources tagged by Rowdy
+    });
   }
 
   private withRoleStatement(statement: Statement): this {
@@ -294,13 +292,13 @@ export class LambdaFunction implements Logger {
     return this;
   }
 
-  private withKeepAlive(): this {
+  private withServe(): this {
     const entryPoint = this.EntryPoint.getValue();
-    if (!entryPoint.includes('--keep-alive')) {
-      entryPoint.push('--keep-alive');
+    if (!entryPoint.includes('serve')) {
+      entryPoint.push('serve');
     }
     this.EntryPoint.next(entryPoint);
-    return this;
+    return this.withEnvironment('ROWDY_GRPC_URL', `http://localhost:7939`);
   }
 
   private withState<K extends keyof LambdaFunction['State']>(key: K, value?: LambdaFunction['State'][K]): this {

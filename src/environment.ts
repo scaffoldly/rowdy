@@ -26,8 +26,6 @@ type Args = yargs.ArgumentsCamelCase<
     registry: string | undefined;
   } & {
     port: number | undefined;
-  } & {
-    'keep-alive': boolean;
   }
 >;
 
@@ -38,8 +36,6 @@ const entrypoint = <T>(
     routes: string | undefined;
   } & {
     registry: string | undefined;
-  } & {
-    'keep-alive': boolean;
   }
 > => {
   const modified = argv
@@ -54,15 +50,7 @@ const entrypoint = <T>(
       description: 'Image registry to use for pushing and serving images.',
       global: false,
       group: 'Entrypoint:',
-    })
-    .option('keep-alive', {
-      type: 'boolean',
-      default: false,
-      description: 'Keep the process alive after command completion.',
-      global: false,
-      group: 'Entrypoint:',
     });
-
   return modified;
 };
 
@@ -79,7 +67,6 @@ export class Environment implements ILoggable {
   private _rowdy: Rowdy;
   private _port?: number;
   private _registry: string | undefined;
-  private _keepAlive: boolean = false;
 
   constructor(public readonly log: Logger) {
     this.signal.addEventListener('abort', () => {
@@ -348,9 +335,6 @@ export class Environment implements ILoggable {
     if (argv.routes) {
       this._routes = Routes.fromURL(argv.routes);
     }
-    if (argv['keep-alive']) {
-      this._keepAlive = argv['keep-alive'];
-    }
   }
 
   get name(): string {
@@ -383,10 +367,6 @@ export class Environment implements ILoggable {
 
   get debug(): boolean {
     return this.log.isDebugging;
-  }
-
-  private get keepAlive(): boolean {
-    return this._keepAlive;
   }
 
   public init(): this {
@@ -428,10 +408,10 @@ export class Environment implements ILoggable {
               response.subscribe({
                 complete: () => {
                   log.info(`'${response.bin}' completed`, { response });
-                  if (!this.keepAlive) {
+                  if (this._port) {
+                    // TODO: Clean up CTRL+C
                     return;
                   }
-                  // TODO: Clean up CTRL+C
                   response.fds.end();
                   this.abort.abort('Command complete');
                 },
