@@ -82,7 +82,6 @@ export class Environment implements ILoggable {
       .scriptName(this.bin!)
       .env(this.bin!.toUpperCase())
       .version(packageJson.version)
-      .strict()
       .option('debug', {
         type: 'boolean',
         default: false,
