@@ -67,7 +67,7 @@ import {
 } from 'rxjs';
 import promiseRetry from 'promise-retry';
 import { inspect } from 'util';
-import { Routes } from '../..';
+import { Environment, Routes } from '../..';
 import { TPulledImage } from '../../api/types';
 
 const TAG_KEY_REGEX = /^(?!aws:)[A-Za-z0-9 _.:\-=+@]{1,128}$/;
@@ -283,7 +283,7 @@ export class LambdaFunction implements Logger {
         expand((page) =>
           page.NextMarker ? from(lambda.send(new ListFunctionsCommand({ ...input, Marker: page.NextMarker }))) : EMPTY
         ),
-        mergeMap((page) => page.Functions ?? []) // emits Role objects individually
+        mergeMap((page) => page.Functions ?? [], Environment.CONCURRENCY) // emits Role objects individually
       );
 
     const aliases$ =
@@ -293,16 +293,17 @@ export class LambdaFunction implements Logger {
           expand((page) =>
             page.NextMarker ? from(lambda.send(new ListAliasesCommand({ ...input, Marker: page.NextMarker }))) : EMPTY
           ),
-          mergeMap((page) => page.Aliases ?? []) // emits Alias objects individually
+          mergeMap((page) => page.Aliases ?? [], Environment.CONCURRENCY) // emits Alias objects individually
         );
 
-    // TODO: MergeMap Concurrency
     return functions$().pipe(
       filter((fn) => fn.PackageType === 'Image'),
-      mergeMap((Function) =>
-        from(lambda.send(new ListTagsCommand({ Resource: Function.FunctionArn }))).pipe(
-          map(({ Tags }) => ({ Function, Tags }))
-        )
+      mergeMap(
+        (Function) =>
+          from(lambda.send(new ListTagsCommand({ Resource: Function.FunctionArn }))).pipe(
+            map(({ Tags }) => ({ Function, Tags }))
+          ),
+        Environment.CONCURRENCY
       ),
       filter(({ Tags }) => isSubset(tags, Tags || {})),
       mergeMap(({ Function }) => {
@@ -310,9 +311,12 @@ export class LambdaFunction implements Logger {
           return new LambdaFunction('Sandbox', imageService).withArn(Function.FunctionArn!);
         }
         return aliases$(Function.FunctionName!)().pipe(
-          mergeMap((Alias) => new LambdaFunction('Container', imageService).withArn(Alias.AliasArn!))
+          mergeMap(
+            (Alias) => new LambdaFunction('Container', imageService).withArn(Alias.AliasArn!),
+            Environment.CONCURRENCY
+          )
         );
-      })
+      }, Environment.CONCURRENCY)
     );
   }
 

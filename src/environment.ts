@@ -13,6 +13,7 @@ import { isatty } from 'tty';
 import { LambdaFunction } from './aws/lambda/index';
 import { LambdaImageService } from './aws/lambda/image';
 import { inspect } from 'util';
+import { cpus } from 'os';
 
 export type Secrets = Record<string, string>;
 type Args = yargs.ArgumentsCamelCase<
@@ -55,6 +56,24 @@ const entrypoint = <T>(
 };
 
 export class Environment implements ILoggable {
+  private static _CONCURRENCY = {
+    MIN: 1,
+    MAX: 10,
+    CURRENT: 0,
+  };
+
+  static get CONCURRENCY(): number {
+    if (Environment._CONCURRENCY.CURRENT === 0) {
+      const num = cpus()?.length || Environment._CONCURRENCY.MIN;
+      // Use all of the possible CPUs, up to MAX
+      Environment._CONCURRENCY.CURRENT = Math.min(
+        Math.max(Environment._CONCURRENCY.MIN, num),
+        Environment._CONCURRENCY.MAX
+      );
+    }
+    return Environment._CONCURRENCY.CURRENT;
+  }
+
   public abort: AbortController = ABORT;
   public readonly signal: AbortSignal = this.abort.signal;
   public readonly bin = Object.keys(packageJson.bin)[0];
@@ -428,11 +447,11 @@ export class Environment implements ILoggable {
     return race(this._pipelines.map((p) => p.into())).pipe(
       takeUntil(fromEvent(this.signal, 'abort')),
       tap((request) => log.info('Request', { request, routes: this.routes })),
-      mergeMap((request) => request.into()),
+      mergeMap((request) => request.into(), Environment.CONCURRENCY),
       tap((proxy) => log.debug('Proxy', { proxy })),
-      mergeMap((proxy) => proxy.into()),
+      mergeMap((proxy) => proxy.into(), Environment.CONCURRENCY),
       tap((response) => log.debug('Respond', { response })),
-      mergeMap((response) => response.into()),
+      mergeMap((response) => response.into(), Environment.CONCURRENCY),
       tap((result) => log.info('Result', { result })),
       repeat()
     );

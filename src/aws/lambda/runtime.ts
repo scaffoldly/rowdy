@@ -71,7 +71,7 @@ export class LambdaRuntimeService implements ILambdaRuntimeService {
 
     const containers: CRI.Container[] = await lastValueFrom(
       from(functions).pipe(
-        mergeAll(), // TODO Concurrency
+        mergeAll(Environment.CONCURRENCY),
         catchError((err) => {
           if (err.name === 'ResourceNotFoundException') {
             return [];

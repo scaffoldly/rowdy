@@ -21,11 +21,12 @@ import { createHash } from 'crypto';
 import { ILoggable, Logger } from '../../log';
 import { AxiosInstance, AxiosResponse, isAxiosError } from 'axios';
 import { PullImageOptions, TRegistry } from '../types';
-import { cpus, homedir } from 'os';
+import { homedir } from 'os';
 import { Readable } from 'stream';
 import promiseRetry from 'promise-retry';
 import { readFileSync } from 'fs';
 import { join } from 'path';
+import { Environment } from '../..';
 
 export type External = {
   Ref: Partial<{
@@ -88,20 +89,6 @@ type DockerConfig = {
 
 export class Transfer implements ILoggable {
   private static _DOCKER_CONFIG?: DockerConfig;
-  private static _CONCURRENCY = {
-    MIN: 1,
-    MAX: 10,
-    CURRENT: 0,
-  };
-
-  static get CONCURRENCY(): number {
-    if (Transfer._CONCURRENCY.CURRENT === 0) {
-      const num = cpus()?.length || Transfer._CONCURRENCY.MIN;
-      // Use all of the possible CPUs, up to MAX
-      Transfer._CONCURRENCY.CURRENT = Math.min(Math.max(Transfer._CONCURRENCY.MIN, num), Transfer._CONCURRENCY.MAX);
-    }
-    return Transfer._CONCURRENCY.CURRENT;
-  }
 
   static get DOCKER_CONFIG(): DockerConfig {
     if (Transfer._DOCKER_CONFIG) {
@@ -335,7 +322,7 @@ export class Transfer implements ILoggable {
                           };
                         })
                       ),
-                    Transfer.CONCURRENCY
+                    Environment.CONCURRENCY
                   ),
                   toArray()
                 )
@@ -455,7 +442,7 @@ export class Transfer implements ILoggable {
               latest = transfer;
             }),
             concatMap((transfer) => from(transfer.uploads)),
-            concatMap((uploads) => Upload.observe(uploads, Transfer.CONCURRENCY)),
+            concatMap((uploads) => Upload.observe(uploads)),
             reduce((acc, cur) => {
               cur.finalize();
               return acc.withStatus(cur);
@@ -669,8 +656,8 @@ export class Upload implements ILoggable {
     return this.ref.mediaType;
   }
 
-  static observe(uplods: Upload[], concurrency: number, _verify?: boolean): Observable<UploadStatus> {
-    return from(uplods).pipe(mergeMap((upload) => upload.upload(), concurrency));
+  static observe(uplods: Upload[], _verify?: boolean): Observable<UploadStatus> {
+    return from(uplods).pipe(mergeMap((upload) => upload.upload(), Environment.CONCURRENCY));
   }
 
   private upload(): Observable<UploadStatus> {
