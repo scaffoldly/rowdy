@@ -495,11 +495,14 @@ export class LambdaFunction implements Logger {
         'ecr:*',
         'lambda:*',
         'iam:CreateRole',
+        'iam:DeleteRole',
+        'iam:DeleteRolePolicy',
         'iam:GetRole',
         'iam:GetRolePolicy',
         'iam:PassRole',
         'iam:PutRolePolicy',
         'iam:UpdateAssumeRolePolicy',
+        'iam:UpdateRole',
       ],
       // TODO: Restrict to resources tagged by Rowdy
     });
