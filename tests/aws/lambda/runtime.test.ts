@@ -27,7 +27,7 @@ describe('aws lambda runtime', () => {
           TEST_ENV: 'hello world',
         };
         const labels = {
-          'test-label': 'hello-world',
+          'random-id': crypto.randomUUID(),
         };
         const workingDir = '/tmp';
 
@@ -89,7 +89,7 @@ describe('aws lambda runtime', () => {
         const { containerId } = await runtimeService.createContainer(create);
         expect(containerId).toMatch(RegExp(`^arn:aws:lambda:[a-z0-9-]+:[0-9]{12}:function:${name}:${tag}$`));
 
-        const list: CRI.ListContainersRequest = {
+        const listById: CRI.ListContainersRequest = {
           $typeName: 'runtime.v1.ListContainersRequest',
           filter: {
             $typeName: 'runtime.v1.ContainerFilter',
@@ -99,8 +99,18 @@ describe('aws lambda runtime', () => {
           },
         };
 
+        const listByLabels: CRI.ListContainersRequest = {
+          $typeName: 'runtime.v1.ListContainersRequest',
+          filter: {
+            $typeName: 'runtime.v1.ContainerFilter',
+            podSandboxId: '', // todo: implement
+            id: '',
+            labelSelector: labels,
+          },
+        };
+
         // Initial assertion
-        const { containers } = await runtimeService.listContainers(list);
+        const { containers } = await runtimeService.listContainers(listById);
         expect(containers.length).toBe(1);
         expect(containers[0]!.id).toBe(containerId);
         expect(containers[0]!.imageRef).toMatch(
@@ -116,28 +126,36 @@ describe('aws lambda runtime', () => {
         expect(containers[0]!.annotations['com.amazonaws.lambda.ImageConfigResponse']).toBe(
           `{"ImageConfig":{"Command":["${command}","${args.join('","')}"],"EntryPoint":["rowdy","--"]}}`
         );
-        expect(containers[0]!.labels['test-label']).toEqual(labels['test-label']);
+        expect(containers[0]!.labels['random-id']).toEqual(labels['random-id']);
         expect(containers[0]!.labels['run.rowdy.user.agent']).toBeDefined();
         expect(containers[0]!.labels['run.rowdy.image.name']).toBe(imageName);
         expect(containers[0]!.labels['run.rowdy.image.digest']).toBeUndefined();
         expect(containers[0]!.labels['run.rowdy.image.namespace']).toBe('library');
         expect(containers[0]!.labels['run.rowdy.image.registry']).toBe('mirror.gcr.io');
 
+        // List by labels
+        expect(await runtimeService.listContainers(listByLabels).then(({ containers }) => containers)).toEqual(
+          containers
+        );
+
         // Idempotent create
         expect(
           await runtimeService
             .createContainer(create)
-            .then(() => runtimeService.listContainers(list))
+            .then(() => runtimeService.listContainers(listById))
             .then(({ containers }) => containers)
         ).toEqual(containers);
-
-        console.log('!!! containers', containers);
 
         // TODO Invoke URL
 
         await runtimeService.removeContainer({ $typeName: 'runtime.v1.RemoveContainerRequest', containerId });
 
-        expect(await runtimeService.listContainers(list)).toEqual({
+        expect(await runtimeService.listContainers(listById)).toEqual({
+          $typeName: 'runtime.v1.ListContainersResponse',
+          containers: [],
+        });
+
+        expect(await runtimeService.listContainers(listByLabels)).toEqual({
           $typeName: 'runtime.v1.ListContainersResponse',
           containers: [],
         });

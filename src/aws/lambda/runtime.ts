@@ -63,8 +63,10 @@ export class LambdaRuntimeService implements ILambdaRuntimeService {
 
     if (req.filter?.id) {
       functions.push(new LambdaFunction('Container', this.image).withArn(req.filter.id));
-    } else {
-      // TODO: search
+    }
+
+    if (Object.keys(req.filter?.labelSelector || {}).length) {
+      functions.push(LambdaFunction.fromTags('Container', req.filter!.labelSelector!, this.image));
     }
 
     const containers: CRI.Container[] = await lastValueFrom(

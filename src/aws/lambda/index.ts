@@ -32,6 +32,11 @@ import {
   GetFunctionUrlConfigCommand,
   GetFunctionResponse,
   PublishVersionCommand,
+  ListFunctionsCommandInput,
+  ListFunctionsCommand,
+  ListTagsCommand,
+  ListAliasesCommandInput,
+  ListAliasesCommand,
 } from '@aws-sdk/client-lambda';
 import { PolicyDocument, Statement } from 'aws-lambda';
 import { LambdaImageService } from './image';
@@ -41,11 +46,15 @@ import {
   combineLatest,
   concat,
   defer,
+  EMPTY,
+  expand,
+  filter,
   forkJoin,
   from,
   fromEvent,
   map,
   merge,
+  mergeMap,
   Observable,
   OperatorFunction,
   ReplaySubject,
@@ -163,6 +172,8 @@ export class LambdaFunction implements Logger {
   private MemorySize = new BehaviorSubject(128);
   private Environment = new BehaviorSubject<Record<string, string>>({});
   private Tags = new BehaviorSubject<Record<string, string>>({
+    'run.rowdy': 'aws',
+    'run.rowdy.aws': 'lambda',
     'run.rowdy.user.agent': this.userAgent,
   });
   private EntryPoint = new BehaviorSubject<string[]>(['rowdy']);
@@ -255,6 +266,54 @@ export class LambdaFunction implements Logger {
 
   get signal(): AbortSignal {
     return this.imageService.signal;
+  }
+
+  static fromTags(
+    type: LambdaFunction['type'],
+    tags: Record<string, string>,
+    imageService: LambdaImageService
+  ): Observable<LambdaFunction> {
+    // Returns all the lambda functions found that match the given tags in an observable stream
+    // TODO: Paginate through all functions, filtering by tags
+    const lambda = new LambdaClient({});
+    tags['run.rowdy.user.agent'] = imageService.userAgent;
+
+    const functions$ = (input: ListFunctionsCommandInput = {}) =>
+      defer(() => lambda.send(new ListFunctionsCommand(input))).pipe(
+        expand((page) =>
+          page.NextMarker ? from(lambda.send(new ListFunctionsCommand({ ...input, Marker: page.NextMarker }))) : EMPTY
+        ),
+        mergeMap((page) => page.Functions ?? []) // emits Role objects individually
+      );
+
+    const aliases$ =
+      (FunctionName: string) =>
+      (input: ListAliasesCommandInput = { FunctionName }) =>
+        defer(() => lambda.send(new ListAliasesCommand(input))).pipe(
+          expand((page) =>
+            page.NextMarker ? from(lambda.send(new ListAliasesCommand({ ...input, Marker: page.NextMarker }))) : EMPTY
+          ),
+          mergeMap((page) => page.Aliases ?? []) // emits Alias objects individually
+        );
+
+    // TODO: MergeMap Concurrency
+    return functions$().pipe(
+      filter((fn) => fn.PackageType === 'Image'),
+      mergeMap((Function) =>
+        from(lambda.send(new ListTagsCommand({ Resource: Function.FunctionArn }))).pipe(
+          map(({ Tags }) => ({ Function, Tags }))
+        )
+      ),
+      filter(({ Tags }) => isSubset(tags, Tags || {})),
+      mergeMap(({ Function }) => {
+        if (type === 'Sandbox') {
+          return new LambdaFunction('Sandbox', imageService).withArn(Function.FunctionArn!);
+        }
+        return aliases$(Function.FunctionName!)().pipe(
+          mergeMap((Alias) => new LambdaFunction('Container', imageService).withArn(Alias.AliasArn!))
+        );
+      })
+    );
   }
 
   withArn(arn: string): Observable<this> {
