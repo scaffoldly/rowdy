@@ -19,13 +19,23 @@ export class LambdaImageService implements ILambdaImageService {
     return this.environment.log;
   }
 
+  get signal(): AbortSignal {
+    return this.environment.signal;
+  }
+
+  get userAgent(): string {
+    return `${this.environment.name}@${this.environment.version}`;
+  }
+
   get images(): Rowdy['images'] {
     return this.environment.rowdy.images;
   }
 
-  withLayersFrom(layersFrom: string): this {
-    this._layersFrom = layersFrom;
-    return this;
+  withLayersFrom(layersFrom: string): LambdaImageService {
+    // Create a new instance to avoid mutating existing ones
+    const service = new LambdaImageService(this.environment);
+    service._layersFrom = layersFrom;
+    return service;
   }
 
   private intercept(image: TPulledImage): TPulledImage {

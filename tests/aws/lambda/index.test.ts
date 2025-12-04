@@ -1,7 +1,5 @@
 import { Logger, Environment } from '@scaffoldly/rowdy';
-// import { LambdaRuntimeService } from '../../src/aws/lambda/runtime';
 import { LambdaImageService } from '../../../src/aws/lambda/image';
-// import { ANNOTATIONS, ConfigFactory, LABELS } from '../../src/aws/lambda/config';
 import { LambdaFunction } from '../../../src/aws/lambda/index';
 import { inspect } from 'util';
 import { lastValueFrom } from 'rxjs';

@@ -202,7 +202,7 @@ export class Environment implements ILoggable {
                     // TODO: Stdin/Stdout/Stderr
 
                     this._subscriptions.push(
-                      lambda.observe(this.abort.signal).subscribe({
+                      lambda.observe().subscribe({
                         next: (fn) => this.log.info(`State Updated: ${inspect(fn.State)}`),
                         complete: () => this.log.info('Lambda Function Installation Complete'),
                       })

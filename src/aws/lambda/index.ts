@@ -9,6 +9,7 @@ import {
   PutRolePolicyCommand,
   DeleteRolePolicyCommand,
   UpdateAssumeRolePolicyCommand,
+  GetRolePolicyCommand,
 } from '@aws-sdk/client-iam';
 import {
   CreateFunctionCommand,
@@ -20,7 +21,6 @@ import {
   DeleteFunctionCommand,
   UpdateFunctionConfigurationCommand,
   UpdateFunctionCodeCommand,
-  PublishVersionCommand,
   UpdateAliasCommand,
   CreateAliasCommand,
   UpdateFunctionUrlConfigCommand,
@@ -28,6 +28,10 @@ import {
   AddPermissionCommand,
   GetPolicyCommand,
   FunctionConfiguration,
+  DeleteAliasCommand,
+  GetFunctionUrlConfigCommand,
+  GetFunctionResponse,
+  PublishVersionCommand,
 } from '@aws-sdk/client-lambda';
 import { PolicyDocument, Statement } from 'aws-lambda';
 import { LambdaImageService } from './image';
@@ -37,24 +41,44 @@ import {
   combineLatest,
   concat,
   defer,
+  forkJoin,
   from,
+  fromEvent,
   map,
+  merge,
   Observable,
   OperatorFunction,
   ReplaySubject,
   retry,
   switchMap,
   take,
+  takeUntil,
   tap,
   toArray,
 } from 'rxjs';
-import { TAGS } from './config';
 import promiseRetry from 'promise-retry';
 import { inspect } from 'util';
 import { Routes } from '../..';
 import { TPulledImage } from '../../api/types';
 
-export const isSubset = (subset: Record<string, string>, superset: Record<string, string>): boolean => {
+const TAG_KEY_REGEX = /^(?!aws:)[A-Za-z0-9 _.:\-=+@]{1,128}$/;
+const TAG_VALUE_REGEX = /^[A-Za-z0-9 _.:\-=+@]{0,256}$/;
+
+export const tagify = (prefix: string, map?: object) =>
+  Object.entries(JSON.parse(JSON.stringify(map || {}))).reduce(
+    (annotations, [key, value]) => {
+      if (!value) return annotations;
+      if (typeof value === 'object') {
+        annotations[`${prefix}.${key}`] = JSON.stringify(value);
+        return annotations;
+      }
+      annotations[`${prefix}.${key}`] = String(value);
+      return annotations;
+    },
+    {} as Record<string, string>
+  );
+
+const isSubset = (subset: Record<string, string>, superset: Record<string, string>): boolean => {
   for (const key of Object.keys(subset)) {
     if (superset[key] !== subset[key]) {
       return false;
@@ -138,9 +162,9 @@ export class LambdaFunction implements Logger {
   });
   private MemorySize = new BehaviorSubject(128);
   private Environment = new BehaviorSubject<Record<string, string>>({});
-  private Tags = new BehaviorSubject<Record<string, string>>(
-    Object.entries(TAGS).reduce((acc, [, v]) => ({ ...acc, [v]: '' }), {})
-  );
+  private Tags = new BehaviorSubject<Record<string, string>>({
+    'run.rowdy.user.agent': this.userAgent,
+  });
   private EntryPoint = new BehaviorSubject<string[]>(['rowdy']);
   private Command = new BehaviorSubject<string[] | undefined>(undefined);
   private WorkingDirectory = new BehaviorSubject<string | undefined>(undefined);
@@ -158,7 +182,7 @@ export class LambdaFunction implements Logger {
   private AliasArn = new ReplaySubject<string | undefined>(1);
   private FunctionUrl = new ReplaySubject<string | undefined>(1);
   // Status Properties
-  private Configuration = new ReplaySubject<FunctionConfiguration | undefined>(1);
+  private Configuration = new ReplaySubject<GetFunctionResponse['Configuration'] | undefined>(1);
 
   public readonly State: {
     RoleArn?: string;
@@ -172,27 +196,45 @@ export class LambdaFunction implements Logger {
     FunctionUrl?: string;
   } = {};
 
-  public readonly Status: {
-    Configuration?: FunctionConfiguration;
-  } = {};
+  private _status: GetFunctionResponse = {};
+  get Status(): GetFunctionResponse {
+    return { ...this._status };
+  }
 
   constructor(
     _type: LambdaFunction['type'],
     public readonly imageService: LambdaImageService
   ) {
     this.type = _type;
-    // State:
-    this.RoleArn.subscribe((v) => this.withState('RoleArn', v));
-    this.RoleId.subscribe((v) => this.withState('RoleId', v));
-    this.RoleName.subscribe((v) => this.withState('RoleName', v));
-    this.Qualifier.subscribe((v) => this.withState('Qualifier', v));
-    this.FunctionArn.subscribe((v) => this.withState('FunctionArn', v));
-    this.ImageUri.subscribe((v) => this.withState('ImageUri', v));
-    this.FunctionVersion.subscribe((v) => this.withState('FunctionVersion', v));
-    this.AliasArn.subscribe((v) => this.withState('AliasArn', v));
-    this.FunctionUrl.subscribe((v) => this.withState('FunctionUrl', v));
-    // Status:
-    this.Configuration.subscribe((v) => this.withStatus('Configuration', v));
+
+    forkJoin({
+      RoleArn: this.RoleArn,
+      RoleId: this.RoleId,
+      RoleName: this.RoleName,
+      Qualifier: this.Qualifier,
+      FunctionArn: this.FunctionArn,
+      ImageUri: this.ImageUri,
+      FunctionVersion: this.FunctionVersion,
+      AliasArn: this.AliasArn,
+      FunctionUrl: this.FunctionUrl,
+      Configuration: this.Configuration,
+      Tags: this.Tags,
+    });
+
+    merge(
+      this.RoleArn.pipe(map((v) => ['RoleArn', v] as const)),
+      this.RoleId.pipe(map((v) => ['RoleId', v] as const)),
+      this.RoleName.pipe(map((v) => ['RoleName', v] as const)),
+      this.Qualifier.pipe(map((v) => ['Qualifier', v] as const)),
+      this.FunctionArn.pipe(map((v) => ['FunctionArn', v] as const)),
+      this.ImageUri.pipe(map((v) => ['ImageUri', v] as const)),
+      this.FunctionVersion.pipe(map((v) => ['FunctionVersion', v] as const)),
+      this.AliasArn.pipe(map((v) => ['AliasArn', v] as const)),
+      this.FunctionUrl.pipe(map((v) => ['FunctionUrl', v] as const))
+    )
+      .pipe(tap(([key, value]) => this.withState(key, value)))
+      .pipe(takeUntil(fromEvent(this.signal, 'abort')))
+      .subscribe();
   }
 
   isSandbox(): boolean {
@@ -203,8 +245,99 @@ export class LambdaFunction implements Logger {
     return this.deleting;
   }
 
+  get userAgent(): string {
+    return this.imageService.userAgent;
+  }
+
   get log(): Logger {
     return this.imageService.log;
+  }
+
+  get signal(): AbortSignal {
+    return this.imageService.signal;
+  }
+
+  withArn(arn: string): Observable<this> {
+    if (this.isSandbox()) {
+      this.Qualifier.next(undefined);
+      this.FunctionArn.next(arn);
+    } else {
+      const parts = arn.split(':');
+      this.Qualifier.next(parts.pop());
+      this.FunctionArn.next(parts.join(':'));
+      this.AliasArn.next(arn);
+      // TODO: $LATEST is being emitted incorrectly here
+    }
+
+    return combineLatest([this.FunctionArn.pipe(take(1)), this.Qualifier.pipe(take(1))])
+      .pipe(takeUntil(fromEvent(this.signal, 'abort')))
+      .pipe(
+        switchMap(([FunctionArn, Qualifier]) =>
+          from(this.lambda.send(new GetFunctionCommand({ FunctionName: FunctionArn! }))).pipe(
+            map(({ Tags }) => ({ FunctionArn, Qualifier, Tags }))
+          )
+        ),
+        switchMap(({ FunctionArn, Qualifier, Tags }) =>
+          from(this.lambda.send(new GetFunctionCommand({ FunctionName: FunctionArn!, Qualifier }))).pipe(
+            map(({ Configuration, Code }) => ({ Configuration, Code, Tags }))
+          )
+        ),
+        switchMap(({ Configuration, Code, Tags }) =>
+          from(this.iam.send(new GetRoleCommand({ RoleName: Configuration!.Role!.split('/').pop()! }))).pipe(
+            map(({ Role }) => ({ Configuration, Code, Tags, Role }))
+          )
+        ),
+        switchMap(({ Configuration, Code, Tags, Role }) =>
+          from(this.iam.send(new GetRolePolicyCommand({ RoleName: Role?.RoleName, PolicyName: 'RowdyPolicy' }))).pipe(
+            map((Policy) => ({ Configuration, Code, Tags, Role, Policy }))
+          )
+        ),
+        switchMap(({ Configuration, Code, Tags, Role, Policy }) =>
+          from(this.lambda.send(new GetFunctionUrlConfigCommand({ FunctionName: Configuration?.FunctionArn }))).pipe(
+            map((FunctionUrl) => ({ Configuration, Code, Tags, Role, Policy, FunctionUrl }))
+          )
+        ),
+        tap(({ Configuration, Code, Tags, Role, Policy, FunctionUrl }) => {
+          // Reactive Properties
+          if (Configuration?.FunctionName) this.Name.next(Configuration?.FunctionName);
+          if (Code?.ImageUri) {
+            this.Image.next({
+              requested: Code?.ImageUri,
+              normalized: Transfer.normalizeImage(Code?.ImageUri || ''),
+            });
+          }
+          if (Configuration?.MemorySize) this.MemorySize.next(Configuration?.MemorySize);
+          if (Configuration?.Environment?.Variables) this.Environment.next(Configuration?.Environment?.Variables);
+          if (Tags) this.Tags.next(Tags);
+          if (Configuration?.ImageConfigResponse?.ImageConfig?.EntryPoint)
+            this.EntryPoint.next(Configuration?.ImageConfigResponse?.ImageConfig?.EntryPoint);
+          if (Configuration?.ImageConfigResponse?.ImageConfig?.Command)
+            this.Command.next(Configuration?.ImageConfigResponse?.ImageConfig?.Command);
+          if (Configuration?.ImageConfigResponse?.ImageConfig?.WorkingDirectory)
+            this.WorkingDirectory.next(Configuration?.ImageConfigResponse?.ImageConfig?.WorkingDirectory);
+          if (Configuration?.Environment?.Variables?.ROWDY_ROUTES)
+            this.Routes.next(Routes.fromDataURL(Configuration.Environment.Variables.ROWDY_ROUTES));
+          if (Policy?.PolicyDocument) {
+            const policy = JSON.parse(decodeURIComponent(Policy.PolicyDocument));
+            const statements = policy.Statement as Statement[];
+            this.RoleStatements.next(statements);
+          }
+
+          // Resource Properties
+          if (Role?.RoleName) this.RoleName.next(Role.RoleName);
+          if (Role?.Arn) this.RoleArn.next(Role.Arn);
+          if (Role?.RoleId) this.RoleId.next(Role.RoleId);
+          if (Code?.ImageUri) this.ImageUri.next(Code.ImageUri);
+          if (Configuration?.Version !== '$LATEST') this.FunctionVersion.next(Configuration?.Version);
+          if (FunctionUrl.FunctionUrl) this.FunctionUrl.next(FunctionUrl.FunctionUrl);
+
+          this._status = {
+            Configuration,
+            Tags,
+          };
+        })
+      )
+      .pipe(map(() => this));
   }
 
   withName(name: string): this {
@@ -213,11 +346,18 @@ export class LambdaFunction implements Logger {
   }
 
   withImage(image: string): this {
+    const normalized = Transfer.normalizeImage(image);
     this.Image.next({
       requested: image,
       normalized: Transfer.normalizeImage(image),
     });
-    return this;
+    return Object.entries(
+      tagify('run.rowdy.image', {
+        name: normalized.name,
+        namespace: normalized.namespace,
+        registry: normalized.registry,
+      })
+    ).reduce((fn, [key, value]) => fn.withTag(key, value), this);
   }
 
   withMemory(memory: number): this {
@@ -236,20 +376,37 @@ export class LambdaFunction implements Logger {
   }
 
   withTag(key: string, value: string): this {
+    if (!TAG_KEY_REGEX.test(key) || !TAG_VALUE_REGEX.test(value)) {
+      // Skip if key/value is not lambda compliant
+      return this;
+    }
+
     const tags = this.Tags.getValue();
-    tags[key] = value;
+
+    if (!value) delete tags[key];
+    if (value) tags[key] = value;
+
     this.Tags.next(tags);
     return this;
   }
 
   withCommand(command: string[] | string): this {
     if (typeof command === 'string') {
-      command = command.split(' ').filter((s) => s.length);
+      // TODO: parsing library
+      command = command
+        .trim()
+        .split(' ')
+        .filter((s) => s.length);
     }
     if (!command.length) {
       return this;
     }
     this.Command.next(command);
+    return this;
+  }
+
+  withWorkingDirectory(workingDir: string): this {
+    this.WorkingDirectory.next(workingDir);
     return this;
   }
 
@@ -302,24 +459,20 @@ export class LambdaFunction implements Logger {
   }
 
   private withState<K extends keyof LambdaFunction['State']>(key: K, value?: LambdaFunction['State'][K]): this {
-    if (value) this.State[key] = value;
+    if (value) {
+      this.State[key] = value;
+    }
     if (!value) delete this.State[key];
     return this;
   }
 
-  private withStatus<K extends keyof LambdaFunction['Status']>(key: K, value?: LambdaFunction['Status'][K]): this {
-    if (value) this.Status[key] = value;
-    if (!value) delete this.Status[key];
-    return this;
-  }
-
-  observe(signal?: AbortSignal): Observable<this> {
+  observe(): Observable<this> {
     return new Observable<this>((subscriber) => {
       this.deleting = false;
-      signal?.addEventListener('abort', () => subscriber.error(new Error(`Observation aborted: ${signal.reason}`)));
       const { creates, updates, tags } = this.prepare();
       const subscription = combineLatest(creates)
         .pipe(
+          takeUntil(fromEvent(this.signal, 'abort')),
           tap(() => subscriber.next(this)),
           switchMap(() =>
             concat(...updates, ...tags).pipe(
@@ -329,7 +482,6 @@ export class LambdaFunction implements Logger {
           )
         )
         .pipe(map(() => this))
-        .pipe(tap(() => subscriber.complete()))
         .subscribe(subscriber);
       return () => {
         subscription.unsubscribe();
@@ -340,16 +492,12 @@ export class LambdaFunction implements Logger {
   delete(): Observable<this> {
     return new Observable<this>((subscriber) => {
       this.deleting = true;
-      const { creates, deletes } = this.prepare();
-      const subscription = combineLatest(creates)
+      const { deletes } = this.prepare();
+      const subscription = combineLatest(deletes)
         .pipe(
+          takeUntil(fromEvent(this.signal, 'abort')),
           tap(() => subscriber.next(this)),
-          switchMap(() =>
-            concat(...deletes).pipe(
-              tap(() => subscriber.next(this)),
-              toArray()
-            )
-          )
+          toArray()
         )
         .pipe(map(() => this))
         .subscribe(subscriber);
@@ -367,19 +515,19 @@ export class LambdaFunction implements Logger {
     deletes: Observable<MetadataBearer>[];
   } {
     const _functionName = (roleId: string, name?: string) => {
-      const _sanitize = (s: string) => s.replace(/[^a-zA-Z0-9_]/g, '_');
+      const _sanitize = (s: string) => s.replace(/[^a-zA-Z0-9_-]/g, '_');
       return _sanitize(name || roleId);
     };
 
     const _roleName = (image: Image, name?: string) => {
-      const _sanitize = (s: string) => s.replace(/[^a-zA-Z0-9.]/g, '.');
+      const _sanitize = (s: string) => s.replace(/[^a-zA-Z0-9._-]/g, '.');
       return name
         ? `${image.namespace}+${image.name}@${_sanitize(name)}.rowdy.run`
         : `${image.namespace}+${image.name}@rowdy.run`;
     };
 
     const _qualifier = (image: Image) => {
-      if (this.type === 'Sandbox') {
+      if (this.isSandbox()) {
         return '$LATEST';
       }
       let qualifier = image.tags[0] || image.digest;
@@ -429,21 +577,26 @@ export class LambdaFunction implements Logger {
       ),
       combineLatest({
         Name: this.Name.pipe(take(1)),
+        Qualifier: this.Qualifier.pipe(take(1)),
         RoleArn: this.RoleArn.pipe(take(1)),
         RoleId: this.RoleId.pipe(take(1)),
         PulledImage: this.Image.pipe(take(1), pullImage(this)),
         Command: this.Command.pipe(take(1)),
       }).pipe(
-        map(({ Name, RoleArn, RoleId, PulledImage, Command }) => ({
+        map(({ Name, Qualifier, RoleArn, RoleId, PulledImage, Command }) => ({
           FunctionName: _functionName(RoleId!, Name),
+          Qualifier,
           Description: `A function to run the ${PulledImage.Image} container in AWS Lambda`,
           Role: RoleArn,
           PulledImage,
           Command,
         })),
-        switchMap(({ FunctionName, Role, PulledImage, Command }) =>
+        switchMap(({ FunctionName, Qualifier, Role, PulledImage, Command }) =>
           _create(
-            () => this.lambda.send(new GetFunctionCommand({ FunctionName })),
+            () =>
+              this.lambda
+                .send(new GetFunctionCommand({ FunctionName, Qualifier }))
+                .catch(() => this.lambda.send(new GetFunctionCommand({ FunctionName }))),
             () =>
               promiseRetry((retry) =>
                 this.lambda
@@ -463,18 +616,23 @@ export class LambdaFunction implements Logger {
                   .catch(retry)
               ),
             (fn) => {
-              this.Configuration.next(fn.Configuration);
-              this.FunctionArn.next(fn.Configuration!.FunctionArn?.replace(`:${fn.Configuration!.Version}`, ''));
+              this.FunctionArn.next(
+                fn
+                  .Configuration!.FunctionArn!.replace(`:${fn.Configuration!.Version}`, '')
+                  .replace(`:${Qualifier}`, '')
+                  .replace(`:$LATEST`, '')
+              );
               this.ImageUri.next(PulledImage.ImageUri);
               this.WorkingDirectory.next(PulledImage.WorkDir);
               this.Command.next(Command || [...(PulledImage.Entrypoint || []), ...(PulledImage.Command || [])]);
+              this._status.Configuration = fn.Configuration;
             }
           )
         )
       ),
     ];
 
-    const tags: Observable<MetadataBearer>[] = [
+    const tags = [
       combineLatest([this.RoleName.pipe(take(1)), this.Tags.pipe(take(1))]).pipe(
         switchMap(([RoleName, Tags]) =>
           this.iam.send(
@@ -483,39 +641,68 @@ export class LambdaFunction implements Logger {
         )
       ),
       combineLatest([this.FunctionArn.pipe(take(1)), this.Tags.pipe(take(1))]).pipe(
-        switchMap(([Resource, Tags]) => this.lambda.send(new TagResourceCommand({ Resource, Tags })))
+        switchMap(([Resource, Tags]) =>
+          from(this.lambda.send(new TagResourceCommand({ Resource, Tags }))).pipe(
+            switchMap(() => this.lambda.send(new GetFunctionCommand({ FunctionName: Resource })))
+          )
+        ),
+        tap(({ Tags }) => (this._status.Tags = Tags))
       ),
     ];
 
-    const deletes = [
-      this.FunctionArn.pipe(take(1)).pipe(
-        switchMap((FunctionName) => this.lambda.send(new DeleteFunctionCommand({ FunctionName }))),
-        tap(() => {
-          this.Configuration.next(undefined);
-          this.FunctionArn.next(undefined);
-          this.ImageUri.next(undefined);
-          this.Qualifier.next(undefined);
-          this.AliasArn.next(undefined);
-          this.FunctionUrl.next(undefined);
-          this.FunctionVersion.next(undefined);
-        })
-      ),
-      this.RoleName.pipe(take(1)).pipe(
-        switchMap((RoleName) =>
-          this.iam
-            .send(new DeleteRolePolicyCommand({ RoleName, PolicyName: 'RowdyPolicy' }))
-            .catch(() => this.iam.send(new GetRoleCommand({ RoleName })))
-        )
-      ),
-      this.RoleName.pipe(take(1)).pipe(
-        switchMap((RoleName) => this.iam.send(new DeleteRoleCommand({ RoleName }))),
-        tap(() => {
-          this.RoleArn.next(undefined);
-          this.RoleId.next(undefined);
-          this.RoleName.next(undefined);
-        })
-      ),
-    ];
+    const deletes = this.isSandbox()
+      ? [
+          // Full delete for sandboxes
+          this.FunctionArn.pipe(take(1)).pipe(
+            switchMap((FunctionName) =>
+              this.lambda.send(new GetFunctionConfigurationCommand({ FunctionName })).then((Configuration) => {
+                this.RoleName.next(Configuration.Role!.split('/').pop()!);
+                return Configuration;
+              })
+            ),
+            switchMap(({ FunctionName }) => this.lambda.send(new DeleteFunctionCommand({ FunctionName }))),
+            tap(() => {
+              this.FunctionArn.next(undefined);
+              this.ImageUri.next(undefined);
+              this.Qualifier.next(undefined);
+              this.AliasArn.next(undefined);
+              this.FunctionUrl.next(undefined);
+              this.FunctionVersion.next(undefined);
+            })
+          ),
+          this.RoleName.pipe(take(1)).pipe(
+            switchMap((RoleName) =>
+              this.iam
+                .send(new DeleteRolePolicyCommand({ RoleName, PolicyName: 'RowdyPolicy' }))
+                .catch(() => this.iam.send(new GetRoleCommand({ RoleName })))
+            )
+          ),
+          this.RoleName.pipe(take(1)).pipe(
+            switchMap((RoleName) => this.iam.send(new DeleteRoleCommand({ RoleName }))),
+            tap(() => {
+              this.RoleArn.next(undefined);
+              this.RoleId.next(undefined);
+              this.RoleName.next(undefined);
+            })
+          ),
+        ]
+      : [
+          // Partial delete for containers
+          this.AliasArn.pipe(take(1)).pipe(
+            map((aliasArn) => {
+              const parts = aliasArn?.split(':') || [];
+              const alias = parts.pop();
+              const functionName = parts.join(':');
+              return { FunctionName: functionName, Name: alias! };
+            }),
+            switchMap(({ FunctionName, Name }) => this.lambda.send(new DeleteAliasCommand({ FunctionName, Name }))),
+            tap(() => {
+              this.Qualifier.next(undefined);
+              this.AliasArn.next(undefined);
+              this.FunctionUrl.next(undefined);
+            })
+          ),
+        ];
 
     if (this.isSandbox() || this.isDeleting()) {
       return { creates, updates: [], tags, deletes };
@@ -557,7 +744,7 @@ export class LambdaFunction implements Logger {
           ({ FunctionArn, Qualifier, MemorySize, Environment, ImageUri, EntryPoint, Command, WorkingDirectory }) =>
             from(
               this.lambda
-                .send(new GetFunctionCommand({ FunctionName: FunctionArn, Qualifier }))
+                .send(new GetFunctionCommand({ FunctionName: FunctionArn, Qualifier: Qualifier }))
                 .catch(() => this.lambda.send(new GetFunctionCommand({ FunctionName: FunctionArn })))
             ).pipe(
               map((Function) => ({
@@ -565,98 +752,98 @@ export class LambdaFunction implements Logger {
                 MemorySize,
                 Environment,
                 ImageUri,
-                Qualifier,
-                EntryPoint: [...EntryPoint, '--'],
+                EntryPoint: [...EntryPoint, '--'], // TODO: add the "--" before this
                 Command,
                 WorkingDirectory,
               }))
             )
         ),
-        switchMap(
-          ({ Function, MemorySize, Environment, ImageUri, Qualifier, EntryPoint, Command, WorkingDirectory }) => {
-            const { Code = {} } = Function;
-            let { Configuration = {} } = Function;
-            const { FunctionName } = Configuration;
+        switchMap(({ Function, MemorySize, Environment, ImageUri, EntryPoint, Command, WorkingDirectory }) => {
+          const { Code = {} } = Function;
+          let { Configuration = {} } = Function;
+          const { FunctionName } = Configuration;
+          let { Version } = Configuration;
 
-            if (!FunctionName || !Qualifier) {
-              // Maybe just return EMPTY
-              throw new Error('FunctionName or Qualifier is undefined');
-            }
+          const update: { code: boolean; config: boolean } = {
+            code: !isEqual(Code?.ImageUri, ImageUri),
+            config:
+              Version === '$LATEST' ||
+              !isEqual(Configuration.ImageConfigResponse?.ImageConfig?.EntryPoint, EntryPoint) ||
+              !isEqual(Configuration.ImageConfigResponse?.ImageConfig?.Command, Command) ||
+              !isEqual(Configuration.ImageConfigResponse?.ImageConfig?.WorkingDirectory, WorkingDirectory) ||
+              !isEqual(Configuration.MemorySize, MemorySize) ||
+              !isSubset(Environment, Configuration.Environment?.Variables || {}),
+          };
 
-            const update: { code: boolean; config: boolean } = {
-              code: Code?.ImageUri !== ImageUri,
-              config:
-                !isEqual(Configuration.Version, '$LATEST') || // An Alias was never created for the Qualifier
-                !isEqual(Configuration.ImageConfigResponse?.ImageConfig?.EntryPoint, EntryPoint) ||
-                !isEqual(Configuration.ImageConfigResponse?.ImageConfig?.Command, Command) ||
-                !isEqual(Configuration.ImageConfigResponse?.ImageConfig?.WorkingDirectory, WorkingDirectory) ||
-                !isEqual(Configuration.MemorySize, MemorySize) ||
-                !isSubset(Environment, Configuration.Environment?.Variables || {}),
+          let deploy: Promise<FunctionConfiguration> = Promise.resolve(Configuration);
+
+          if (update.config) {
+            delete Configuration.RevisionId;
+            Configuration.MemorySize = MemorySize;
+            Configuration.Environment = {
+              Variables: { ...Configuration.Environment?.Variables, ...Environment },
             };
 
-            let deploy: Promise<FunctionConfiguration> = Promise.resolve(Configuration);
-
-            if (update.config) {
-              delete Configuration.RevisionId;
-              Configuration.MemorySize = MemorySize;
-              Configuration.Environment = {
-                Variables: { ...Configuration.Environment?.Variables, ...Environment },
-              };
-
-              deploy = deploy.then(() =>
-                this.lambda
-                  .send(
-                    new UpdateFunctionConfigurationCommand({
-                      ...Configuration,
-                      FunctionName,
-                      ImageConfig: {
-                        EntryPoint,
-                        Command,
-                        WorkingDirectory,
-                      },
-                      Layers: [],
-                    })
-                  )
-                  .then(waitForSuccess(this.lambda))
-                  .then((Configuration) =>
-                    update.code
-                      ? Promise.resolve(Configuration)
-                      : this.lambda.send(
-                          new PublishVersionCommand({
-                            FunctionName,
-                            RevisionId: Configuration.RevisionId,
-                          })
-                        )
-                  )
-                  .then(waitForSuccess(this.lambda))
-              );
-            }
-
-            if (update.code) {
-              deploy = deploy
-                .then(() =>
-                  this.lambda.send(
-                    new UpdateFunctionCodeCommand({
-                      FunctionName,
-                      ImageUri,
-                      Publish: true,
-                    })
-                  )
+            deploy = deploy.then(() =>
+              this.lambda
+                .send(
+                  new UpdateFunctionConfigurationCommand({
+                    ...Configuration,
+                    FunctionName,
+                    ImageConfig: {
+                      EntryPoint,
+                      Command,
+                      WorkingDirectory,
+                    },
+                    Layers: [],
+                  })
                 )
-                .then(waitForSuccess(this.lambda));
-            }
-
-            return from(deploy).pipe(
-              switchMap(({ FunctionArn }) =>
-                this.lambda.send(new GetFunctionConfigurationCommand({ FunctionName: FunctionArn }))
-              ),
-              tap((Configuration) => {
-                this.Configuration.next(Configuration);
-                this.FunctionVersion.next(Configuration.Version);
-              })
+                .then(waitForSuccess(this.lambda))
             );
           }
-        )
+
+          if (update.code) {
+            deploy = deploy
+              .then(() =>
+                this.lambda.send(
+                  new UpdateFunctionCodeCommand({
+                    FunctionName,
+                    ImageUri,
+                    Publish: false,
+                  })
+                )
+              )
+              .then(waitForSuccess(this.lambda));
+          }
+
+          if (update.code || update.config) {
+            deploy = deploy
+              .then(({ RevisionId }) =>
+                this.lambda.send(
+                  new PublishVersionCommand({
+                    FunctionName,
+                    RevisionId,
+                    CodeSha256: ImageUri?.split('@sha256:').pop(),
+                  })
+                )
+              )
+              .then((published) => {
+                Version = published.Version;
+                return published;
+              })
+              .then(waitForSuccess(this.lambda));
+          }
+
+          return from(deploy).pipe(
+            switchMap(() =>
+              this.lambda.send(new GetFunctionConfigurationCommand({ FunctionName, Qualifier: Version }))
+            ),
+            tap((Configuration) => {
+              this._status.Configuration = Configuration;
+              this.FunctionVersion.next(Configuration.Version);
+            })
+          );
+        })
       ),
       // Function Alias
       combineLatest([
