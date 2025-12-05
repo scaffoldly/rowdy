@@ -11,6 +11,7 @@ interface ILambdaImageService extends Partial<ServiceImpl<typeof CRI.ImageServic
 
 export class LambdaImageService implements ILambdaImageService {
   private _layersFrom?: string;
+  private _authorization?: string;
   private _pulledImages: Map<string, TPulledImage> = new Map();
 
   constructor(private environment: Environment) {}
@@ -35,6 +36,14 @@ export class LambdaImageService implements ILambdaImageService {
     // Create a new instance to avoid mutating existing ones
     const service = new LambdaImageService(this.environment);
     service._layersFrom = layersFrom;
+    service._authorization = this._authorization;
+    return service;
+  }
+
+  withAuthorization(authorization?: string): LambdaImageService {
+    const service = new LambdaImageService(this.environment);
+    service._layersFrom = this._layersFrom;
+    service._authorization = authorization;
     return service;
   }
 
@@ -57,6 +66,11 @@ export class LambdaImageService implements ILambdaImageService {
 
     if (this._layersFrom) {
       opts.layersFrom = this._layersFrom;
+    }
+
+    // TODO: consider req.auth
+    if (this._authorization) {
+      opts.authorization = this._authorization;
     }
 
     const { ImageUri } = this.intercept(await lastValueFrom(this.images.pullImage(req.image.image, opts)));

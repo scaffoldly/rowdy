@@ -5,6 +5,7 @@ import { LambdaImageService } from './image';
 import { Logger } from '../..';
 import { LambdaFunction, tagify } from '.';
 import { catchError, from, lastValueFrom, map, mergeAll, Observable, throwError, toArray } from 'rxjs';
+import { Annotations } from './metadata';
 
 // eslint-disable-next-line @typescript-eslint/no-empty-object-type
 interface ILambdaRuntimeService extends Partial<ServiceImpl<typeof CRI.RuntimeService>> {}
@@ -12,7 +13,7 @@ interface ILambdaRuntimeService extends Partial<ServiceImpl<typeof CRI.RuntimeSe
 export class LambdaRuntimeService implements ILambdaRuntimeService {
   constructor(
     private environment: Environment,
-    private image: LambdaImageService
+    private imageService: LambdaImageService
   ) {}
 
   get log(): Logger {
@@ -27,7 +28,13 @@ export class LambdaRuntimeService implements ILambdaRuntimeService {
     // TODO: runtimeHandler -> withLayersFrom
     // TODO: log path -> CloudWatch log group/stream
     // TODO: stdin -> SNS
-    let lambda = new LambdaFunction('Container', this.image.withLayersFrom('ghcr.io/scaffoldly/rowdy:beta'));
+
+    let lambda = new LambdaFunction(
+      'Container',
+      this.imageService
+        .withLayersFrom('ghcr.io/scaffoldly/rowdy:beta')
+        .withAuthorization(req.config?.image?.annotations?.[Annotations.Images.ImageAuth])
+    );
     const name = req.config?.metadata?.name;
     const image = req.config?.image?.image;
     const memory = req?.config?.linux?.resources?.memoryLimitInBytes;
@@ -61,12 +68,14 @@ export class LambdaRuntimeService implements ILambdaRuntimeService {
   listContainers = async (req: CRI.ListContainersRequest): Promise<CRI.ListContainersResponse> => {
     const functions: Observable<LambdaFunction>[] = [];
 
+    // TODO: prevent image pulls
+
     if (req.filter?.id) {
-      functions.push(new LambdaFunction('Container', this.image).withArn(req.filter.id));
+      functions.push(new LambdaFunction('Container', this.imageService).withArn(req.filter.id));
     }
 
     if (Object.keys(req.filter?.labelSelector || {}).length) {
-      functions.push(LambdaFunction.fromTags('Container', req.filter!.labelSelector!, this.image));
+      functions.push(LambdaFunction.fromTags('Container', req.filter!.labelSelector!, this.imageService));
     }
 
     const containers: CRI.Container[] = await lastValueFrom(
@@ -113,7 +122,7 @@ export class LambdaRuntimeService implements ILambdaRuntimeService {
   };
 
   removeContainer = async (req: CRI.RemoveContainerRequest): Promise<CRI.RemoveContainerResponse> => {
-    let lambda = await lastValueFrom(new LambdaFunction('Container', this.image).withArn(req.containerId));
+    let lambda = await lastValueFrom(new LambdaFunction('Container', this.imageService).withArn(req.containerId));
     await lastValueFrom(lambda.delete());
 
     return {
