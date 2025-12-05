@@ -487,6 +487,16 @@ export class LambdaFunction implements Logger {
     return this.withEnvironment('ROWDY_ROUTES', existing.intoDataURL());
   }
 
+  withSecrets(secrets: unknown): this {
+    if (!secrets || typeof secrets !== 'string') {
+      this.log.warn('Unknown secrets format, skipping', { type: typeof secrets });
+      return this;
+    }
+    return Object.entries(JSON.parse(secrets))
+      .filter(([key]) => key !== 'github_token') // DEVNOTE: Excluding "github_token" added by default in GH Actions
+      .reduce((fn, [key, value]) => fn.withEnvironment(key, String(value)), this);
+  }
+
   withCRI(): this {
     return this.withServe().withRoleStatement({
       Effect: 'Allow',

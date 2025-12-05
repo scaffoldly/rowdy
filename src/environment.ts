@@ -222,8 +222,7 @@ export class Environment implements ILoggable {
                       lambda = lambda.withRoutes(routes);
                     }
                     if (argv.secrets) {
-                      // eslint-disable-next-line no-console
-                      console.log('!!! Secrets !!!', argv.secrets);
+                      lambda = lambda.withSecrets(argv.secrets);
                     }
 
                     // TODO: URL True/False
