@@ -165,6 +165,11 @@ export class Environment implements ILoggable {
               description: 'Route definitions (file:// or data:)',
               group: 'Runtime:',
             })
+            .option('secrets', {
+              type: 'string',
+              description: 'Secrets (alpha feature)',
+              group: 'Runtime:',
+            })
             .demandCommand(1, 'Please specify a subcommand')
             .command({
               command: 'aws',
@@ -215,6 +220,10 @@ export class Environment implements ILoggable {
                     if (argv.routes) {
                       const routes = Routes.fromURL(argv.routes);
                       lambda = lambda.withRoutes(routes);
+                    }
+                    if (argv.secrets) {
+                      // eslint-disable-next-line no-console
+                      console.log('!!! Secrets !!!', argv.secrets);
                     }
 
                     // TODO: URL True/False
