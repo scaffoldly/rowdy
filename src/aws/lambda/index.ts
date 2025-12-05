@@ -659,16 +659,18 @@ export class LambdaFunction implements Logger {
         RoleId: this.RoleId.pipe(take(1)),
         PulledImage: this.Image.pipe(take(1), pullImage(this)),
         Command: this.Command.pipe(take(1)),
+        WorkingDirectory: this.WorkingDirectory.pipe(take(1)),
       }).pipe(
-        map(({ Name, Qualifier, RoleArn, RoleId, PulledImage, Command }) => ({
+        map(({ Name, Qualifier, RoleArn, RoleId, PulledImage, Command, WorkingDirectory }) => ({
           FunctionName: _functionName(RoleId!, Name),
           Qualifier,
           Description: `A function to run the ${PulledImage.Image} container in AWS Lambda`,
           Role: RoleArn,
           PulledImage,
           Command,
+          WorkingDirectory,
         })),
-        switchMap(({ FunctionName, Qualifier, Role, PulledImage, Command }) =>
+        switchMap(({ FunctionName, Qualifier, Role, PulledImage, Command, WorkingDirectory }) =>
           _create(
             () =>
               this.lambda
@@ -696,7 +698,7 @@ export class LambdaFunction implements Logger {
               this._status.Configuration = fn.Configuration;
               this.FunctionArn.next(fn.Configuration?.FunctionArn?.replace(/(function:[^:]+):.+$/, '$1'));
               this.ImageUri.next(PulledImage.ImageUri);
-              this.WorkingDirectory.next(PulledImage.WorkDir);
+              this.WorkingDirectory.next(WorkingDirectory || PulledImage.WorkDir);
               this.Command.next(Command || [...(PulledImage.Entrypoint || []), ...(PulledImage.Command || [])]);
               Object.entries(PulledImage.Environment || {}).forEach(([key, value]) => this.withEnvironment(key, value));
             }
