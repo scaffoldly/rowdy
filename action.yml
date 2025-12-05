@@ -34,6 +34,10 @@ inputs:
     description: "Path to the routes configuration file."
     required: false
     default: ""
+  secrets:
+    description: "Secrets (alpha feature)."
+    required: false
+    default: ""
 outputs:
   url:
     description: The URL of the deployed application.
@@ -63,3 +67,4 @@ runs:
         ROWDY_MEMORY: "${{ inputs.memory }}"
         ROWDY_CRI: "${{ inputs.cri }}"
         ROWDY_ROUTES: "${{ inputs.routes }}"
+        ROWDY_SECRETS: "${{ inputs.secrets }}"
