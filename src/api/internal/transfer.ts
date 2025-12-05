@@ -49,6 +49,7 @@ export type External = {
   }>;
   Config: Partial<{
     config: Partial<{
+      Env: string[];
       Cmd: string[];
       Entrypoint: string[];
       WorkingDir: string;
@@ -70,6 +71,7 @@ export type Image = {
 
 export type DenormalizedImage = {
   imageRef: string;
+  environment?: Record<string, string>;
   command?: string[];
   entrypoint?: string[];
   workdir?: string;
@@ -478,6 +480,7 @@ export class Transfer implements ILoggable {
           return {
             imageRef: status.imageRef(digest),
             // TODO: search by os/arch
+            environment: status.environment,
             command: status.command,
             entrypoint: status.entrypoint,
             workdir: status.workdir,
@@ -513,6 +516,20 @@ export class TransferStatus implements ILoggable {
   withStatus(status: UploadStatus): this {
     this._statuses.push(status);
     return this;
+  }
+
+  get environment(): Record<string, string> | undefined {
+    return this._statuses
+      .find((s) => s.config !== undefined)
+      ?.config!.config?.Env?.reduce(
+        (acc, cur) => {
+          const [key, ...rest] = cur.split('=');
+          if (!key) return acc;
+          acc[key] = rest.join('=');
+          return acc;
+        },
+        {} as Record<string, string>
+      );
   }
 
   get command(): string[] | undefined {

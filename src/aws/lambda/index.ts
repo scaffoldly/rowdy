@@ -693,11 +693,12 @@ export class LambdaFunction implements Logger {
                   .catch(retry)
               ),
             (fn) => {
+              this._status.Configuration = fn.Configuration;
               this.FunctionArn.next(fn.Configuration?.FunctionArn?.replace(/(function:[^:]+):.+$/, '$1'));
               this.ImageUri.next(PulledImage.ImageUri);
               this.WorkingDirectory.next(PulledImage.WorkDir);
               this.Command.next(Command || [...(PulledImage.Entrypoint || []), ...(PulledImage.Command || [])]);
-              this._status.Configuration = fn.Configuration;
+              Object.entries(PulledImage.Environment || {}).forEach(([key, value]) => this.withEnvironment(key, value));
             }
           )
         )

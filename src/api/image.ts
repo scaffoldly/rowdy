@@ -32,12 +32,13 @@ export class ImageApi implements IImageApi {
           Transfer.denormalize(opts?.platform)
         )
         .pipe(
-          map(({ imageRef, command, entrypoint, workdir }) => ({
+          map(({ imageRef, command, entrypoint, workdir, environment }) => ({
             Image: image,
             ImageUri: imageRef,
             Command: command,
             Entrypoint: entrypoint,
             WorkDir: workdir,
+            Environment: environment,
           }))
         )
     );

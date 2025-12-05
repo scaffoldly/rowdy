@@ -43,6 +43,7 @@ export type TPulledImage = {
   ImageUri: string;
   Command?: string[];
   Entrypoint?: string[];
+  Environment?: Record<string, string>;
   WorkDir?: string;
 };
 
