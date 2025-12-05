@@ -511,6 +511,7 @@ export class LambdaFunction implements Logger {
         'iam:GetRolePolicy',
         'iam:PassRole',
         'iam:PutRolePolicy',
+        'iam:TagRole',
         'iam:UpdateAssumeRolePolicy',
         'iam:UpdateRole',
       ],
