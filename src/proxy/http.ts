@@ -76,9 +76,8 @@ export class HttpHeaders implements ILoggable {
 
     delete instance.headers['set-cookie']; // cookies are handled separately
 
-    if (this.headers['host']) {
-      this.headers['x-forwarded-host'] = this.headers['host'];
-      delete instance.headers['host'];
+    if (this.headers['x-forwarded-host']) {
+      this.headers['host'] = this.headers['x-forwarded-host'];
     }
 
     if (this.headers['connection']) {
@@ -402,7 +401,11 @@ class LocalHttpResponse extends HttpResponse {
       return NEVER;
     }
 
-    log.debug('Local Http Proxy', { method: proxy.method, uri: Logger.asPrimitive(proxy.uri) });
+    log.debug('Local Http Proxy', {
+      method: proxy.method,
+      uri: Logger.asPrimitive(proxy.uri),
+      headers: JSON.stringify(proxy.headers.intoAxios()),
+    });
 
     return proxy.uri.await().pipe(
       switchMap((uri) => {
