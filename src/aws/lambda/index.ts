@@ -604,6 +604,7 @@ export class LambdaFunction implements Logger {
     };
 
     const _qualifier = (image: Image) => {
+      const _sanitize = (s: string) => s.replace(/[^a-zA-Z0-9_-]/g, '_');
       if (this.isSandbox()) {
         return '$LATEST';
       }
@@ -611,7 +612,7 @@ export class LambdaFunction implements Logger {
       if (qualifier.startsWith('sha256:')) {
         qualifier = `sha256-${qualifier.split('sha256:')[1]?.substring(0, 12)}`;
       }
-      return qualifier;
+      return _sanitize(qualifier);
     };
 
     const creates: Observable<MetadataBearer>[] = [
