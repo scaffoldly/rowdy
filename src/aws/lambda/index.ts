@@ -536,6 +536,7 @@ export class LambdaFunction implements Logger {
   }
 
   private withState<K extends keyof LambdaFunction['State']>(key: K, value?: LambdaFunction['State'][K]): this {
+    this.log.debug('State Updated', { key, value });
     if (value) {
       this.State[key] = value;
     }
