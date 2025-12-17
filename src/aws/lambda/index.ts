@@ -431,9 +431,11 @@ export class LambdaFunction implements Logger {
     return this;
   }
 
-  withEnvironment(key: string, value: string): this {
+  withEnvironment(key: string, value: string, overwrite = true): this {
     const env = this.Environment.getValue();
-    env[key] = value;
+    if (overwrite || !(key in env)) {
+      env[key] = value;
+    }
     this.Environment.next(env);
     return this;
   }
@@ -702,7 +704,9 @@ export class LambdaFunction implements Logger {
               this.ImageUri.next(PulledImage.ImageUri);
               this.WorkingDirectory.next(WorkingDirectory || PulledImage.WorkDir);
               this.Command.next(Command || [...(PulledImage.Entrypoint || []), ...(PulledImage.Command || [])]);
-              Object.entries(PulledImage.Environment || {}).forEach(([key, value]) => this.withEnvironment(key, value));
+              Object.entries(PulledImage.Environment || {}).forEach(
+                ([key, value]) => this.withEnvironment(key, value, false) // Don't overwrite existing env vars
+              );
             }
           )
         )
