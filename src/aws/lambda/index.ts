@@ -171,11 +171,7 @@ export class LambdaFunction implements Logger {
   });
   private MemorySize = new BehaviorSubject(128);
   private Environment = new BehaviorSubject<Record<string, string>>({});
-  private Tags = new BehaviorSubject<Record<string, string>>({
-    'run.rowdy': 'aws',
-    'run.rowdy.aws': 'lambda',
-    'run.rowdy.user.agent': this.userAgent,
-  });
+  private Tags = new BehaviorSubject<Record<string, string>>({});
   private EntryPoint = new BehaviorSubject<string[]>(['rowdy']);
   private Command = new BehaviorSubject<string[] | undefined>(undefined);
   private WorkingDirectory = new BehaviorSubject<string | undefined>(undefined);
@@ -217,6 +213,9 @@ export class LambdaFunction implements Logger {
     public readonly imageService: LambdaImageService
   ) {
     this.type = _type;
+    this.withTag('run.rowdy', 'aws');
+    this.withTag('run.rowdy.aws', 'lambda');
+    this.withTag('run.rowdy.user.agent', this.userAgent);
 
     forkJoin({
       RoleArn: this.RoleArn,
@@ -432,24 +431,36 @@ export class LambdaFunction implements Logger {
   }
 
   withEnvironment(key: string, value: string, overwrite = true): this {
+    key = key
+      .replace(/[^a-zA-Z0-9_]/g, '_')
+      .replace(/^([0-9])/, '_$1') // avoid leading digit
+      .replace(/_+/g, '_') // collapse runs
+      .replace(/^_+|_+$/g, '') // trim underscores
+      .toUpperCase();
+
     const env = this.Environment.getValue();
-    if (overwrite || !(key in env)) {
-      env[key] = value;
+
+    if (key && (overwrite || !(key in env))) {
+      if (!value) delete env[key];
+      if (value) env[key] = value;
     }
+
     this.Environment.next(env);
     return this;
   }
 
-  withTag(key: string, value: string): this {
-    if (!TAG_KEY_REGEX.test(key) || !TAG_VALUE_REGEX.test(value)) {
-      // Skip if key/value is not lambda compliant
-      return this;
-    }
-
+  withTag(key: string, value?: string): this {
     const tags = this.Tags.getValue();
 
-    if (!value) delete tags[key];
-    if (value) tags[key] = value;
+    if (!value || !TAG_VALUE_REGEX.test(value) || !TAG_KEY_REGEX.test(key)) {
+      delete tags[key];
+      this.withEnvironment(key, '');
+    }
+
+    if (value) {
+      tags[key] = value;
+      this.withEnvironment(key, value);
+    }
 
     this.Tags.next(tags);
     return this;
@@ -620,6 +631,9 @@ export class LambdaFunction implements Logger {
 
     const creates: Observable<MetadataBearer>[] = [
       combineLatest([this.Image.pipe(take(1)), this.Name.pipe(take(1))]).pipe(
+        tap(([_, Name]) => {
+          this.withTag('run.rowdy.name', Name);
+        }),
         map(([{ normalized: Image }, Name]) => ({
           RoleName: _roleName(Image, Name),
           Description: `Execution role to run ${Image.namespace}/${Image.name} in AWS Lambda`,
