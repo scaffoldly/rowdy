@@ -461,9 +461,7 @@ export class LambdaFunction implements Logger {
     if (!value || !TAG_VALUE_REGEX.test(value) || !TAG_KEY_REGEX.test(key)) {
       delete tags[key];
       this.withEnvironment(key, '');
-    }
-
-    if (value) {
+    } else {
       tags[key] = value;
       this.withEnvironment(key, value);
     }
