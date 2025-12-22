@@ -72,6 +72,7 @@ import { TPulledImage } from '../../api/types';
 
 const TAG_KEY_REGEX = /^(?!aws:)[A-Za-z0-9 _.:\-=+@]{1,128}$/;
 const TAG_VALUE_REGEX = /^[A-Za-z0-9 _.:\-=+@]{0,256}$/;
+const ENV_VALUE_REGEX = /^[\p{L}\p{Z}\p{N}_.:/=+\-@]*$/u;
 
 export const tagify = (prefix: string, map?: object) =>
   Object.entries(JSON.parse(JSON.stringify(map || {}))).reduce(
@@ -439,6 +440,11 @@ export class LambdaFunction implements Logger {
       .toUpperCase();
 
     const env = this.Environment.getValue();
+
+    if (!ENV_VALUE_REGEX.test(value)) {
+      this.Environment.next(env);
+      return this;
+    }
 
     if (key && (overwrite || !(key in env))) {
       if (!value) delete env[key];
