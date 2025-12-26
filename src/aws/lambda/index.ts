@@ -432,6 +432,8 @@ export class LambdaFunction implements Logger {
   }
 
   withEnvironment(key: string, value: string, overwrite = true): this {
+    this.log.debug(`withEnvironment(key=${key}, value=${value}, overwrite=${overwrite})`);
+
     key = key
       .replace(/[^a-zA-Z0-9_]/g, '_')
       .replace(/^([0-9])/, '_$1') // avoid leading digit
