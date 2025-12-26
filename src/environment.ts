@@ -14,6 +14,7 @@ import { LambdaFunction } from './aws/lambda/index';
 import { LambdaImageService } from './aws/lambda/image';
 import { inspect } from 'util';
 import { cpus } from 'os';
+import { log as consoleLog } from 'console';
 
 export type Secrets = Record<string, string>;
 type Args = yargs.ArgumentsCamelCase<
@@ -218,7 +219,9 @@ export class Environment implements ILoggable {
                       lambda = lambda.withCRI();
                     }
                     if (argv.routes) {
+                      consoleLog('!!! setting routes', argv.routes);
                       const routes = Routes.fromURL(argv.routes);
+                      consoleLog('!!! parsed routes', routes.repr());
                       lambda = lambda.withRoutes(routes);
                     }
                     if (argv.secrets) {
