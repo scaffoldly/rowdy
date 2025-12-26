@@ -41,11 +41,11 @@ export class Logger {
   constructor() {}
 
   get isDebugging(): boolean {
-    return this._debug;
+    return process.env.ROWDY_DEBUG === 'true' || this._debug;
   }
 
   get isTracing(): boolean {
-    return this._trace;
+    return process.env.ROWDY_TRACE === 'true' || this._trace;
   }
 
   withDebugging(): this {
