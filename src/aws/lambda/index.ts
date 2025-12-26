@@ -493,6 +493,7 @@ export class LambdaFunction implements Logger {
   }
 
   withRoute(path: string, target: string): this {
+    this.log.debug(`withRoute(path=${path}, target=${target})`);
     const routes = this.Routes.getValue();
     routes.withPath(path, target);
     this.Routes.next(routes);
@@ -500,6 +501,7 @@ export class LambdaFunction implements Logger {
   }
 
   withRoutes(routes: Routes): this {
+    this.log.debug(`withRoutes(routes=${routes.repr()})`);
     const existing = this.Routes.getValue();
     existing.merge(routes);
     this.Routes.next(existing);
