@@ -8,7 +8,6 @@ import { URI } from '../routes';
 import { APIGatewayProxyEventV2 } from 'aws-lambda';
 import { Rowdy } from '../api';
 import packageJson from '../../package.json';
-import { Environment } from '../environment';
 
 export type Prelude = { statusCode: number; headers: Headers; cookies: string[] };
 
@@ -31,7 +30,7 @@ export abstract class HttpProxy<P extends Pipeline> extends Proxy<P, HttpRespons
     super(pipeline, request);
   }
 
-  get environment(): Environment {
+  get environment() {
     return this.pipeline.environment;
   }
 
@@ -210,7 +209,7 @@ export abstract class HttpResponse implements ILoggable {
   private _data: Readable;
 
   constructor(
-    protected environment: Environment,
+    protected environment: Pipeline['environment'],
     status: number,
     headers: HttpHeaders,
     cookies: string[],
@@ -289,7 +288,7 @@ export abstract class HttpResponse implements ILoggable {
 }
 
 class RowdyHttpResponse extends HttpResponse {
-  constructor(environment: Environment) {
+  constructor(environment: Pipeline['environment']) {
     super(
       environment,
       404,
@@ -406,7 +405,7 @@ class RowdyHttpResponse extends HttpResponse {
 }
 
 class LocalHttpResponse extends HttpResponse {
-  constructor(environment: Environment) {
+  constructor(environment: Pipeline['environment']) {
     super(environment, 404, HttpHeaders.from({}), [], Readable.from(''));
   }
 

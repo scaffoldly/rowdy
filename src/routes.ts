@@ -20,7 +20,7 @@ import {
   tap,
   timer,
 } from 'rxjs';
-import { ABORT } from '.';
+import { ABORT } from './abort';
 import { Rowdy } from './api';
 import { ApiVersion, ApiSchema } from './api/types';
 import { join } from 'path';

@@ -3,8 +3,9 @@
 import { firstValueFrom, fromEvent, merge, take, takeUntil, tap } from 'rxjs';
 import { Environment } from './environment';
 import { log } from './log';
+import { ABORT } from './abort';
 
-export const ABORT = new AbortController();
+export { ABORT };
 
 async function main(): Promise<void> {
   const stop$ = merge(
