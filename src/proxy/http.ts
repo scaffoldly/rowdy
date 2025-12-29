@@ -321,7 +321,12 @@ class RowdyHttpResponse extends HttpResponse {
       return NEVER;
     }
 
-    log.debug('Rowdy Proxy', { method: proxy.method, uri: Logger.asPrimitive(proxy.uri) });
+    log.debug('Rowdy Proxy', {
+      method: proxy.method,
+      host: proxy.uri.host,
+      port: proxy.uri.port,
+      uri: Logger.asPrimitive(proxy.uri),
+    });
 
     if (proxy.uri.host === Rowdy.ERROR) {
       const reason = proxy.uri.error || 'Unknown error';
