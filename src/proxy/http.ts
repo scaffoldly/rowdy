@@ -446,7 +446,7 @@ class LocalHttpResponse extends HttpResponse {
         const headers = proxy.headers.intoAxios();
 
         if (uri.host !== 'localhost' && uri.host !== '127.0.0.1' && uri.host !== '[::1]') {
-          headers.set('referer', headers.get('host') || '');
+          headers.set('origin', proxy.source.uri.origin);
           headers.set('host', uri.host);
         }
 
