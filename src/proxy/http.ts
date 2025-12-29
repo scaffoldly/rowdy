@@ -98,6 +98,13 @@ export class HttpHeaders implements ILoggable {
     delete instance.headers['transfer-encoding'];
     delete instance.headers['upgrade'];
 
+    // scrub keys that start with x-amz- or x-amzn-
+    for (let key of Object.keys(instance.headers)) {
+      if (key.startsWith('x-amz-') || key.startsWith('x-amzn-')) {
+        delete instance.headers[key];
+      }
+    }
+
     // TODO: add x-forwarded-for
     // TODO: add via
 
@@ -501,7 +508,7 @@ class LocalHttpResponse extends HttpResponse {
               headers: JSON.stringify(response.headers),
             });
             return this.withStatus(response.status)
-              .withHeaders(HttpHeaders.fromAxios(response.headers))
+              .withHeaders(HttpHeaders.fromAxios(response.headers).proxy())
               .withCookies(
                 response.headers['set-cookie']
                   ? Array.isArray(response.headers['set-cookie'])
