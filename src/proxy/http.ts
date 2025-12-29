@@ -441,21 +441,26 @@ class LocalHttpResponse extends HttpResponse {
       return NEVER;
     }
 
-    log.debug('Local Http Proxy', {
-      method: proxy.method,
-      uri: Logger.asPrimitive(proxy.uri),
-      headers: JSON.stringify(proxy.headers.intoAxios()),
-    });
-
     return proxy.uri.await().pipe(
       switchMap((uri) => {
+        const headers = proxy.headers.intoAxios();
+        if (uri.host !== 'localhost' && uri.host !== '127.0.0.1' && uri.host !== '[::1]') {
+          headers.set('host', uri.host);
+        }
+
+        log.debug('Local Http Proxy', {
+          method: proxy.method,
+          uri,
+          headers: JSON.stringify(headers),
+        });
+
         return from(
           axios
             .request<Readable>({
               responseType: 'stream',
               method: proxy.method,
               url: uri.toString(),
-              headers: proxy.headers.intoAxios(),
+              headers,
               data: proxy.body,
               httpsAgent: proxy.httpsAgent,
               timeout: 0,
