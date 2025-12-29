@@ -413,6 +413,7 @@ class RowdyHttpResponse extends HttpResponse {
         this.withStatus(307)
           .withHeader('location', uri.toString())
           .withHeader('content-type', 'text/plain; charset=utf-8')
+          .withHeader('referrer-policy', 'origin')
           .withData(Readable.from('Redirecting...'))
       );
     }
