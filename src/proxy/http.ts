@@ -324,6 +324,7 @@ class RowdyHttpResponse extends HttpResponse {
     log.debug('Rowdy Proxy', {
       method: proxy.method,
       host: proxy.uri.host,
+      hostname: proxy.uri.hostname,
       port: proxy.uri.port,
       uri: Logger.asPrimitive(proxy.uri),
     });
@@ -362,25 +363,6 @@ class RowdyHttpResponse extends HttpResponse {
       );
     }
 
-    if (proxy.uri.host === Rowdy.HTTP && Number.isInteger(proxy.uri.port)) {
-      let response = this.withHeader('x-error', proxy.uri.error).withStatus(Number(proxy.uri.port));
-      if (proxy.uri.port === '307') {
-        const location = proxy.uri.searchParams.get('location');
-        if (location) {
-          let uri = URI.from(location);
-          const include = proxy.uri.searchParams.getAll('include');
-          if (include.includes('searchParams')) {
-            uri = uri.withSearch(proxy.source.uri.searchParams);
-          }
-          response = response
-            .withHeader('location', uri.toString())
-            .withHeader('content-type', 'text/plain; charset=utf-8')
-            .withData(Readable.from('Redirecting...'));
-        }
-      }
-      return of(response);
-    }
-
     if (proxy.uri.host === Rowdy.VERSION) {
       return this.rowdy.version(proxy).pipe(
         map(({ version, status }) => {
@@ -399,6 +381,26 @@ class RowdyHttpResponse extends HttpResponse {
             .withHeaders(HttpHeaders.fromHeaders(header || new Headers()));
         })
       );
+    }
+
+    if (proxy.uri.hostname === Rowdy.HTTP && Number.isInteger(proxy.uri.port)) {
+      let response = this.withHeader('x-error', proxy.uri.error).withStatus(Number(proxy.uri.port));
+
+      if (proxy.uri.port === '307') {
+        const location = proxy.uri.searchParams.get('location');
+        if (location) {
+          let uri = URI.from(location);
+          const include = proxy.uri.searchParams.getAll('include');
+          if (include.includes('searchParams')) {
+            uri = uri.withSearch(proxy.source.uri.searchParams);
+          }
+          response = response
+            .withHeader('location', uri.toString())
+            .withHeader('content-type', 'text/plain; charset=utf-8')
+            .withData(Readable.from('Redirecting...'));
+        }
+      }
+      return of(response);
     }
 
     return of(this);
