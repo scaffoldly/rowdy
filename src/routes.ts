@@ -509,7 +509,13 @@ export class Routes implements IRoutes, ILoggable {
     if (!uri) {
       uri = URI.fromError(new Error(`Not Found: ${path}`), 404);
     }
-    uri.search = search;
+
+    // Merge search parameters: preserve existing params from target URI and append incoming params
+    if (search) {
+      const incomingParams = new URLSearchParams(search);
+      uri.withSearch(incomingParams);
+    }
+
     uri.hash = hash;
 
     return uri;

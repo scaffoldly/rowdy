@@ -2,7 +2,8 @@
   "permissions": {
     "allow": [
       "Bash(npm test)",
-      "WebSearch"
+      "WebSearch",
+      "Bash(yarn test:*)"
     ],
     "deny": [],
     "ask": []

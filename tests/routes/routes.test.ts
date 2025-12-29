@@ -31,6 +31,16 @@ describe('routes', () => {
     });
   });
 
+  describe('preservation', () => {
+    it('should preserve query and fragment', () => {
+      const routes = Routes.empty()
+        .withPath('/foo', 'http://example.com/foo')
+        .withPath('/bar', 'http://example.com/bar?extra=param');
+      expect(routes.intoURI('/foo?bing=bong#baz')!.toString()).toBe('http://example.com/foo?bing=bong#baz');
+      expect(routes.intoURI('/bar?bing=bong#baz')!.toString()).toBe('http://example.com/bar?extra=param&bing=bong#baz');
+    });
+  });
+
   describe('path chaining', () => {
     const data = Routes.empty()
       .withPath('/github', 'https://www.githubstatus.com/api/v2/status.json')
@@ -98,7 +108,7 @@ spec:
       );
       expect(routes.intoURI('/api/v1/namespace')!.toString()).toBe('http://localhost:8010/api/v1/namespace');
       expect(routes.intoURI('/api/v1/node?itemsPerPage=10&page=1&sortBy=d,creationTimestamp')!.toString()).toBe(
-        'http://localhost:8010/api/v1/node?itemsPerPage=10&page=1&sortBy=d,creationTimestamp'
+        'http://localhost:8010/api/v1/node?itemsPerPage=10&page=1&sortBy=d%2CcreationTimestamp'
       );
     });
   });
