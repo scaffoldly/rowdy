@@ -326,6 +326,7 @@ class RowdyHttpResponse extends HttpResponse {
       host: proxy.uri.host,
       hostname: proxy.uri.hostname,
       port: proxy.uri.port,
+      searchParams: JSON.stringify(Object.fromEntries(proxy.uri.searchParams)),
       uri: Logger.asPrimitive(proxy.uri),
     });
 
@@ -383,24 +384,41 @@ class RowdyHttpResponse extends HttpResponse {
       );
     }
 
-    if (proxy.uri.hostname === Rowdy.HTTP && Number.isInteger(proxy.uri.port)) {
-      let response = this.withHeader('x-error', proxy.uri.error).withStatus(Number(proxy.uri.port));
+    if (
+      proxy.method === 'GET' &&
+      proxy.uri.hostname === Rowdy.HTTP &&
+      proxy.uri.port === '307' &&
+      proxy.uri.searchParams.has('location')
+    ) {
+      const location = proxy.uri.searchParams.get('location') as string;
+      const include = proxy.uri.searchParams.getAll('include');
+      const source = proxy.source;
 
-      if (proxy.uri.port === '307') {
-        const location = proxy.uri.searchParams.get('location');
-        if (location) {
-          let uri = URI.from(location);
-          const include = proxy.uri.searchParams.getAll('include');
-          if (include.includes('searchParams')) {
-            uri = uri.withSearch(proxy.source.uri.searchParams);
-          }
-          response = response
-            .withHeader('location', uri.toString())
-            .withHeader('content-type', 'text/plain; charset=utf-8')
-            .withData(Readable.from('Redirecting...'));
-        }
+      log.debug('Rowdy HTTP 307 Redirect', {
+        location,
+        include,
+        source: JSON.stringify(source),
+      });
+
+      let uri = URI.from(location);
+      if (include.includes('searchParams')) {
+        uri = uri.withSearch(source.uri.searchParams);
       }
-      return of(response);
+
+      log.debug('Rowdy HTTP 307 Redirecting to', {
+        uri: uri.toString(),
+      });
+
+      return of(
+        this.withStatus(307)
+          .withHeader('location', uri.toString())
+          .withHeader('content-type', 'text/plain; charset=utf-8')
+          .withData(Readable.from('Redirecting...'))
+      );
+    }
+
+    if (proxy.uri.hostname === Rowdy.HTTP && Number.isInteger(proxy.uri.port)) {
+      return of(this.withHeader('x-error', proxy.uri.error).withStatus(Number(proxy.uri.port)));
     }
 
     return of(this);
