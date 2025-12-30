@@ -452,11 +452,6 @@ class LocalHttpResponse extends HttpResponse {
       switchMap((uri) => {
         const headers = proxy.headers.intoAxios();
 
-        if (uri.host !== 'localhost' && uri.host !== '127.0.0.1' && uri.host !== '[::1]') {
-          headers.set('referer', proxy.source.uri.origin);
-          headers.set('host', uri.host);
-        }
-
         log.debug('Local Http Proxy', {
           method: proxy.method,
           uri,
