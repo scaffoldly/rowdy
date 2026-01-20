@@ -1,6 +1,19 @@
 import yargs from 'yargs';
 import { hideBin } from 'yargs/helpers';
-import { fromEvent, map, mergeMap, Observable, of, race, repeat, Subscription, switchMap, takeUntil, tap } from 'rxjs';
+import {
+  fromEvent,
+  map,
+  mergeMap,
+  Observable,
+  of,
+  race,
+  repeat,
+  ReplaySubject,
+  Subscription,
+  switchMap,
+  takeUntil,
+  tap,
+} from 'rxjs';
 import { Routes } from './routes';
 import { ILoggable, log, Logger, Trace } from './log';
 import { ShellProxy, ShellRequest } from './proxy/shell';
@@ -15,6 +28,7 @@ import { LambdaImageService } from './aws/lambda/image';
 import { inspect } from 'util';
 import { cpus } from 'os';
 import { log as consoleLog } from 'console';
+import { internalIpV4Sync } from 'internal-ip';
 
 export type Secrets = Record<string, string>;
 type Args = yargs.ArgumentsCamelCase<
@@ -56,6 +70,11 @@ const entrypoint = <T>(
   return modified;
 };
 
+export type ProcessEnv = Record<
+  'ROWDY_HOST' | 'ROWDY_HOSTNAME' | 'ROWDY_PROTO' | 'ROWDY_PRIVATE_IPV4',
+  string | undefined
+>;
+
 export class Environment implements ILoggable {
   private static _CONCURRENCY = {
     MIN: 1,
@@ -83,7 +102,7 @@ export class Environment implements ILoggable {
   private _subscriptions: Subscription[] = [];
   private _routes: Routes;
   private _command?: string[] | undefined;
-  private _env = process.env;
+  private _envVars = new ReplaySubject<{ name: keyof ProcessEnv; value: ProcessEnv[keyof ProcessEnv] }>();
   private _rowdy: Rowdy;
   private _port?: number;
   private _registry: string | undefined;
@@ -96,6 +115,10 @@ export class Environment implements ILoggable {
     });
     this._rowdy = new Rowdy(this.log, this.signal);
     this._routes = Routes.default();
+    this.withEnv('ROWDY_HOST', 'localhost')
+      .withEnv('ROWDY_HOSTNAME', 'localhost')
+      .withEnv('ROWDY_PROTO', 'http')
+      .withEnv('ROWDY_PRIVATE_IPV4', internalIpV4Sync());
 
     const parsed = yargs(hideBin(process.argv))
       .parserConfiguration({ 'populate--': true, 'boolean-negation': true })
@@ -390,10 +413,6 @@ export class Environment implements ILoggable {
     return this._command;
   }
 
-  get env(): Record<string, string | undefined> {
-    return this._env;
-  }
-
   get debug(): boolean {
     return this.log.isDebugging;
   }
@@ -458,7 +477,7 @@ export class Environment implements ILoggable {
     return race(this._pipelines.map((p) => p.into())).pipe(
       takeUntil(fromEvent(this.signal, 'abort')),
       tap((request) => log.info('Request', { request, routes: this.routes })),
-      mergeMap((request) => request.into(), Environment.CONCURRENCY),
+      mergeMap((request) => request.into().pipe(tap(() => this._envVars.complete())), Environment.CONCURRENCY),
       tap((proxy) => log.debug('Proxy', { proxy })),
       mergeMap((proxy) => proxy.into(), Environment.CONCURRENCY),
       tap((response) => log.debug('Respond', { response })),
@@ -468,12 +487,34 @@ export class Environment implements ILoggable {
     );
   }
 
-  protected withSecrets(secrets: Secrets): this {
-    this._env = { ...this._env, ...secrets };
+  repr(): string {
+    return `Environment(routes=${Logger.asPrimitive(this._routes)})`;
+  }
+
+  withEnv(name: keyof ProcessEnv, value: ProcessEnv[keyof ProcessEnv]): this {
+    this.log.debug(`Received environment variable`, { name, value });
+    this._envVars.next({ name, value });
     return this;
   }
 
-  repr(): string {
-    return `Environment(routes=${Logger.asPrimitive(this._routes)})`;
+  get Env(): Observable<ProcessEnv> {
+    return new Observable<ProcessEnv>((subscriber) => {
+      const env: ProcessEnv = { ...process.env } as ProcessEnv;
+      const subscription = this._envVars.subscribe({
+        next: ({ name, value }) => {
+          env[name] = value;
+        },
+        error: (err) => subscriber.error(err),
+        complete: () => {
+          this.log.debug(`Environment variables finalized`, { env: JSON.stringify(env) });
+          subscriber.next({ ...env });
+          subscriber.complete();
+        },
+      });
+
+      return () => {
+        subscription.unsubscribe();
+      };
+    });
   }
 }

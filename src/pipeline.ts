@@ -15,10 +15,6 @@ export abstract class Pipeline implements ILoggable {
     return this.environment.log;
   }
 
-  get env(): Record<string, string | undefined> {
-    return this.environment.env;
-  }
-
   get signal(): AbortSignal {
     return this.environment.signal;
   }

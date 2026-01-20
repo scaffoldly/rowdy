@@ -121,9 +121,18 @@ export class LambdaRequest extends Request<LambdaPipeline> {
       const { body, headers, requestContext, isBase64Encoded, rawPath, rawQueryString } = data;
       const { method } = requestContext.http;
 
+      const host = headers['Host'] || headers['host'] || 'localhost';
+      const hostname = headers['X-Forwarded-Host'] || headers['x-forwarded-host'] || host;
+      const proto = headers['X-Forwarded-Proto'] || headers['x-forwarded-proto'] || 'https';
+
+      this.pipeline.environment
+        .withEnv('ROWDY_HOST', host)
+        .withEnv('ROWDY_HOSTNAME', hostname)
+        .withEnv('ROWDY_PROTO', proto);
+
       const source: Source = {
         method,
-        uri: URI.from(`https://${headers['host']}${rawPath}${rawQueryString ? `?${rawQueryString}` : ''}`),
+        uri: URI.from(`${proto}://${hostname}${rawPath}${rawQueryString ? `?${rawQueryString}` : ''}`),
         headers,
       };
 

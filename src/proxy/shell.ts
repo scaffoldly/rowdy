@@ -1,4 +1,4 @@
-import { EMPTY, from, map, Observable, of, Subject, switchMap } from 'rxjs';
+import { EMPTY, from, map, Observable, of, Subject, switchMap, take } from 'rxjs';
 import { FileDescriptors, Pipeline, Proxy, Request, Response } from '../pipeline';
 import { PassThrough, Writable } from 'stream';
 import { ILoggable, log, Logger, Trace } from '../log';
@@ -47,57 +47,62 @@ export class ShellProxy<P extends Pipeline> extends Proxy<P, ShellResponse> {
       return EMPTY;
     }
 
-    const options: Options = {
-      stdin: 'pipe',
-      stdout: 'pipe',
-      stderr: 'pipe',
-      env: this.pipeline.env,
-      signal: this.signal,
-      detached: this._background,
-    };
+    return this.pipeline.environment.Env.pipe(
+      take(1),
+      switchMap((env) => {
+        const options: Options = {
+          stdin: 'pipe',
+          stdout: 'pipe',
+          stderr: 'pipe',
+          env,
+          signal: this.signal,
+          detached: this._background,
+        };
 
-    let response = new ShellResponse(bin, this._request.fds);
+        const response = new ShellResponse(bin, this._request.fds);
 
-    log.debug(`Executing command`, { bin, args, background: this._background });
+        log.debug(`Executing command`, { bin, args, background: this._background });
 
-    return of(execa(bin, args, options)).pipe(
-      switchMap((proc) => {
-        log.debug(`${bin} started`, { bin, pid: proc.pid });
-        proc.stdout?.pipe(this.request.stdout);
-        proc.stderr?.pipe(this.request.stderr);
-        this.request.stdin.pipe(proc.stdin!);
+        return of(execa(bin, args, options)).pipe(
+          switchMap((proc) => {
+            log.debug(`${bin} started`, { bin, pid: proc.pid });
+            proc.stdout?.pipe(this.request.stdout);
+            proc.stderr?.pipe(this.request.stderr);
+            this.request.stdin.pipe(proc.stdin!);
 
-        if (this._background) {
-          proc.on('error', (error) => {
-            log.error(`${bin} error`, { bin, error });
-            response.error(error);
-          });
-          proc.on('exit', (code) => {
-            log.debug(`${bin} exited`, { bin, code });
-            response.next({ code: code ?? 0 });
+            if (this._background) {
+              proc.on('error', (error) => {
+                log.error(`${bin} error`, { bin, error });
+                response.error(error);
+              });
+              proc.on('exit', (code) => {
+                log.debug(`${bin} exited`, { bin, code });
+                response.next({ code: code ?? 0 });
+                response.complete();
+              });
+              proc.unref();
+            }
+
+            return from(proc);
+          }),
+          map((result) => {
+            if (typeof result === 'string' || result instanceof Uint8Array) {
+              log.error(`Unexpected result type: ${result}`);
+              response.next({ code: -1 });
+              response.complete();
+              return response;
+            }
+
+            if (this._background) {
+              // Already handled in the proc.on('exit') handler above
+              return response;
+            }
+
+            response.next({ code: result.exitCode });
             response.complete();
-          });
-          proc.unref();
-        }
-
-        return from(proc);
-      }),
-      map((result) => {
-        if (typeof result === 'string' || result instanceof Uint8Array) {
-          log.error(`Unexpected result type: ${result}`);
-          response.next({ code: -1 });
-          response.complete();
-          return response;
-        }
-
-        if (this._background) {
-          // Already handled in the proc.on('exit') handler above
-          return response;
-        }
-
-        response.next({ code: result.exitCode });
-        response.complete();
-        return response;
+            return response;
+          })
+        );
       })
     );
   }
