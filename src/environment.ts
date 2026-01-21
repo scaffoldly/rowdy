@@ -71,7 +71,7 @@ const entrypoint = <T>(
 };
 
 export type ProcessEnv = Record<
-  'ROWDY_HOST' | 'ROWDY_HOSTNAME' | 'ROWDY_PROTO' | 'ROWDY_PRIVATE_IPV4',
+  'HTTP_HOST' | 'HTTP_HOSTNAME' | 'HTTP_PROTO' | 'HTTP_UA' | 'NET_PRIVATE_IPV4',
   string | undefined
 >;
 
@@ -115,10 +115,11 @@ export class Environment implements ILoggable {
     });
     this._rowdy = new Rowdy(this.log, this.signal);
     this._routes = Routes.default();
-    this.withEnv('ROWDY_HOST', 'localhost')
-      .withEnv('ROWDY_HOSTNAME', 'localhost')
-      .withEnv('ROWDY_PROTO', 'http')
-      .withEnv('ROWDY_PRIVATE_IPV4', internalIpV4Sync());
+    this.withEnv('HTTP_HOST', 'localhost')
+      .withEnv('HTTP_HOSTNAME', 'localhost')
+      .withEnv('HTTP_PROTO', 'http')
+      .withEnv('HTTP_UA', `${packageJson.name}/${packageJson.version}`)
+      .withEnv('NET_PRIVATE_IPV4', internalIpV4Sync());
 
     const parsed = yargs(hideBin(process.argv))
       .parserConfiguration({ 'populate--': true, 'boolean-negation': true })
@@ -395,6 +396,10 @@ export class Environment implements ILoggable {
 
   get version(): string {
     return packageJson.version;
+  }
+
+  get userAgent(): string {
+    return `${this.name}/${this.version}`;
   }
 
   get rowdy(): Rowdy {
