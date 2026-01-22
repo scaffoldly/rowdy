@@ -73,6 +73,7 @@ export class LambdaPipeline extends Pipeline {
       return axios.get<string>(url, { responseType: 'text', signal: this.signal, timeout: 0 });
     }).pipe(
       map(({ data, headers }) => {
+        log.debug(`Received invocation`, { headers: JSON.stringify(headers), data });
         this._requestId = headers['lambda-runtime-aws-request-id'];
         return new LambdaRequest(this, data).withDeadline(headers['lambda-runtime-deadline-ms']);
       })
