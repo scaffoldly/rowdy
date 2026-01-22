@@ -280,15 +280,17 @@ export class LambdaResponse extends Response<LambdaPipeline> {
       result.complete();
     });
 
-    req.on('response', (response) => {
+    req.on('response', (res) => {
       log.debug(`LambdaResponse HTTP Response Received`, {
         requestId: this.pipeline.requestId,
         chunks: this.chunks,
         bytes: this.bytes,
-        statusCode: response.statusCode,
-        statusMessage: response.statusMessage,
-        headers: JSON.stringify(response.headers),
+        statusCode: res.statusCode,
+        statusMessage: res.statusMessage,
+        headers: JSON.stringify(res.headers),
       });
+      // Consume the response body to allow the socket to close properly
+      res.resume();
     });
 
     req.on('information', (info) => {

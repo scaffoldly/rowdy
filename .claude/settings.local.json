@@ -3,7 +3,8 @@
     "allow": [
       "Bash(npm test)",
       "WebSearch",
-      "Bash(yarn test:*)"
+      "Bash(yarn test:*)",
+      "Bash(aws logs filter-log-events:*)"
     ],
     "deny": [],
     "ask": []
