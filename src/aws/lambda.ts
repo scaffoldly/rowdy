@@ -1,4 +1,4 @@
-import { defer, from, map, NEVER, Observable, of, race, switchMap, tap } from 'rxjs';
+import { AsyncSubject, defer, map, NEVER, Observable, of, race, switchMap, tap } from 'rxjs';
 import { Proxy, Pipeline, Request, Response, Result, Chunk } from '../pipeline';
 import { Environment } from '../environment';
 import axios from 'axios';
@@ -6,10 +6,10 @@ import { log, Trace } from '../log';
 import { APIGatewayProxyEventV2 } from 'aws-lambda';
 import { HttpProxy, HttpHeaders, HttpResponse, Source } from '../proxy/http';
 import { ShellResponse } from '../proxy/shell';
-import { PassThrough } from 'stream';
 import { URI } from '../routes';
 import { CRI, GrpcRouter, RuntimeService } from '@scaffoldly/rowdy-grpc';
 import { LambdaCri } from './lambda/cri';
+import http from 'http';
 
 type FunctionUrlEvent = APIGatewayProxyEventV2;
 
@@ -211,7 +211,96 @@ export class LambdaResponse extends Response<LambdaPipeline> {
 
   @Trace
   override into(): Observable<Result<LambdaPipeline>> {
-    const data = new PassThrough();
+    const result = new AsyncSubject<Result<LambdaPipeline>>();
+
+    // eslint-disable-next-line no-restricted-globals
+    const url = new URL(
+      `http://${this.pipeline.runtimeApi}/2018-06-01/runtime/invocation/${this.pipeline.requestId}/response`
+    );
+
+    const req = http.request({
+      method: 'POST',
+      hostname: url.hostname,
+      port: url.port,
+      path: url.pathname,
+      headers: {
+        'Content-Type': 'application/vnd.awslambda.http-integration-response',
+        'Lambda-Runtime-Function-Response-Mode': 'streaming',
+        'Transfer-Encoding': 'chunked',
+        Trailer: ['Lambda-Runtime-Function-Error-Type', 'Lambda-Runtime-Function-Error-Body'],
+      },
+      signal: this.signal,
+    });
+
+    req.on('finish', () => {
+      log.debug(`LambdaResponse HTTP Request Finished`, {
+        requestId: this.pipeline.requestId,
+        chunks: this.chunks,
+        bytes: this.bytes,
+      });
+      result.next(new Result(this.pipeline, this.request, true, this.bytes));
+    });
+
+    req.on('close', () => {
+      log.debug(`LambdaResponse HTTP Request Closed`, {
+        requestId: this.pipeline.requestId,
+        chunks: this.chunks,
+        bytes: this.bytes,
+      });
+      result.complete();
+    });
+
+    req.on('error', (error) => {
+      log.warn(`LambdaResponse HTTP Request Error`, {
+        error: JSON.stringify(error),
+        chunks: this.chunks,
+        bytes: this.bytes,
+      });
+      result.next(new Result(this.pipeline, this.request, false, this.bytes));
+      result.complete();
+    });
+
+    req.on('abort', () => {
+      log.warn(`LambdaResponse HTTP Request Aborted`, {
+        requestId: this.pipeline.requestId,
+        chunks: this.chunks,
+        bytes: this.bytes,
+      });
+      result.next(new Result(this.pipeline, this.request, false, this.bytes));
+      result.complete();
+    });
+
+    req.on('timeout', () => {
+      log.warn(`LambdaResponse HTTP Request Timed Out`, {
+        requestId: this.pipeline.requestId,
+        chunks: this.chunks,
+        bytes: this.bytes,
+      });
+      result.next(new Result(this.pipeline, this.request, false, this.bytes));
+      result.complete();
+    });
+
+    req.on('response', (response) => {
+      log.debug(`LambdaResponse HTTP Response Received`, {
+        requestId: this.pipeline.requestId,
+        chunks: this.chunks,
+        bytes: this.bytes,
+        statusCode: response.statusCode,
+        statusMessage: response.statusMessage,
+        headers: JSON.stringify(response.headers),
+      });
+    });
+
+    req.on('information', (info) => {
+      log.debug(`LambdaResponse HTTP Informational Response Received`, {
+        requestId: this.pipeline.requestId,
+        chunks: this.chunks,
+        bytes: this.bytes,
+        statusCode: info.statusCode,
+        statusMessage: info.statusMessage,
+        headers: JSON.stringify(info.headers),
+      });
+    });
 
     const subscription = this.subscribe({
       next: (chunk) => {
@@ -221,50 +310,25 @@ export class LambdaResponse extends Response<LambdaPipeline> {
           return;
         }
         this.chunks += 1;
-        data.write(chunk.data);
+        req.write(chunk.data);
       },
       error: (error) => {
         log.warn(`LambdaResponse Error`, { error, isAxiosError: axios.isAxiosError(error) });
-        data.write(`0\r\n`);
-        data.write(`Lambda-Runtime-Function-Error-Type: Runtime.Error\r\n`);
-        data.write(`Lambda-Runtime-Function-Error-Body: ${Buffer.from(error.message).toString('base64')}\r\n`);
-        data.write(`\r\n`);
-        data.end();
+        if (!this.bytes) req.write('\r\n\r\n'); // empty body
+        req.addTrailers({
+          'Lambda-Runtime-Function-Error-Type': 'Runtime.Error',
+          'Lambda-Runtime-Function-Error-Body': Buffer.from(error.message).toString('base64'),
+        });
+        req.end();
       },
       complete: () => {
         log.debug(`LambdaResponse Complete`, { chunks: this.chunks, responseBytes: this.bytes });
-        if (!this.bytes) data.write('\r\n\r\n'); // empty body
-        data.end();
+        if (!this.bytes) req.write('\r\n\r\n'); // empty body
+        req.end();
       },
     });
 
-    return from(
-      axios
-        .post(
-          `http://${this.pipeline.runtimeApi}/2018-06-01/runtime/invocation/${this.pipeline.requestId}/response`,
-          data,
-          {
-            headers: {
-              'Content-Type': 'application/vnd.awslambda.http-integration-response',
-              'Lambda-Runtime-Function-Response-Mode': 'streaming',
-              'Transfer-Encoding': 'chunked',
-              Trailer: ['Lambda-Runtime-Function-Error-Type', 'Lambda-Runtime-Function-Error-Body'],
-            },
-            maxBodyLength: 20 * 1024 * 1024,
-            timeout: 0,
-            signal: this.signal,
-            onUploadProgress: (event) => {
-              log.debug(`Upload Progess`, { bytes: event.bytes, loaded: event.loaded, total: event.total });
-            },
-          }
-        )
-        .then(() => new Result(this.pipeline, this.request, true, this.bytes))
-        .catch((error) => {
-          log.warn(`LambdaResponse.into() Axios Error`, { error, isAxiosError: axios.isAxiosError(error) });
-          throw error; // TODO: return result
-          // return new Result(this.pipeline, false, this.bytes);
-        })
-    ).pipe(tap(() => subscription.unsubscribe()));
+    return result.asObservable().pipe(tap(() => subscription.unsubscribe()));
   }
 
   override repr(): string {
