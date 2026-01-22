@@ -64,8 +64,39 @@ export class FileDescriptors {
 export abstract class Request<P extends Pipeline> implements ILoggable {
   public readonly createdAt = performance.now();
   public readonly fds = new FileDescriptors();
+  private _deadline?: Date;
 
   constructor(protected readonly pipeline: P) {}
+
+  public withDeadline(deadlineMs: number | string): this {
+    deadlineMs = Number(deadlineMs);
+    this._deadline = new Date(Date.now() + deadlineMs);
+    return this;
+  }
+
+  public onDeadline(callback?: () => void): { cancel: (callback?: () => void) => void } {
+    if (!this._deadline) {
+      return { cancel: () => {} };
+    }
+
+    const delay = Date.now() - this._deadline.getTime();
+
+    if (delay <= 0) {
+      callback?.();
+      return { cancel: () => {} };
+    }
+
+    const timeoutId = setTimeout(() => {
+      callback?.();
+    }, delay);
+
+    return {
+      cancel: (cb?: () => void) => {
+        clearTimeout(timeoutId);
+        cb?.();
+      },
+    };
+  }
 
   get signal(): AbortSignal {
     return this.pipeline.signal;

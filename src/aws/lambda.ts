@@ -74,7 +74,7 @@ export class LambdaPipeline extends Pipeline {
     }).pipe(
       map(({ data, headers }) => {
         this._requestId = headers['lambda-runtime-aws-request-id'];
-        return new LambdaRequest(this, data);
+        return new LambdaRequest(this, data).withDeadline(headers['lambda-runtime-deadline-ms']);
       })
     );
   }
@@ -185,11 +185,18 @@ export class LambdaHttpProxy extends HttpProxy<LambdaPipeline> {
     return this.invoke().pipe(
       map((http) => {
         const response = new LambdaResponse(this.pipeline, this.request);
+        const { cancel: cancelDeadline } = this.request.onDeadline(() => {
+          log.warn('LambdaHttpProxy Request Deadline Reached', { requestId: this.pipeline.requestId });
+          response.error(new Error('Request deadline reached'));
+          http.data.destroy(new Error('Request deadline reached'));
+        });
         // Set to 0 bytes as the prelude is not counted
         response.next(new Chunk(JSON.stringify(http.prelude()), 0));
         response.next(new Chunk(Buffer.alloc(8), 0));
         http.data.on('data', (chunk: Buffer) => response.next(new Chunk(chunk, chunk.length)));
-        http.data.on('end', () => response.complete());
+        http.data.on('end', () => cancelDeadline(() => response.complete()));
+        http.data.on('close', () => cancelDeadline(() => response.complete()));
+        http.data.on('error', (error: Error) => cancelDeadline(() => response.error(error)));
         return response;
       })
     );
@@ -199,6 +206,28 @@ export class LambdaHttpProxy extends HttpProxy<LambdaPipeline> {
 export class LambdaResponse extends Response<LambdaPipeline> {
   private chunks: number = 0;
   private bytes: number = 0;
+
+  private writeChunk(stream: PassThrough, data: Buffer | string): void {
+    const buffer = Buffer.isBuffer(data) ? data : Buffer.from(data);
+    if (buffer.length === 0) return;
+    stream.write(`${buffer.length.toString(16)}\r\n`);
+    stream.write(buffer);
+    stream.write('\r\n');
+  }
+
+  private writeTrailers(stream: PassThrough, trailers?: { errorType?: string; errorBody?: string }): void {
+    // Write terminating chunk
+    stream.write('0\r\n');
+    // Write trailer headers if present
+    if (trailers?.errorType) {
+      stream.write(`Lambda-Runtime-Function-Error-Type: ${trailers.errorType}\r\n`);
+    }
+    if (trailers?.errorBody) {
+      stream.write(`Lambda-Runtime-Function-Error-Body: ${Buffer.from(trailers.errorBody).toString('base64')}\r\n`);
+    }
+    // Final CRLF to end trailers section
+    stream.write('\r\n');
+  }
 
   @Trace
   override into(): Observable<Result<LambdaPipeline>> {
@@ -212,11 +241,19 @@ export class LambdaResponse extends Response<LambdaPipeline> {
           return;
         }
         this.chunks += 1;
-        data.write(chunk.data);
+        this.writeChunk(data, chunk.data);
+      },
+      error: (error) => {
+        log.warn(`LambdaResponse Error`, { error, isAxiosError: axios.isAxiosError(error) });
+        this.writeTrailers(data, {
+          errorType: 'Runtime.Error',
+          errorBody: error instanceof Error ? error.message : String(error),
+        });
+        data.end();
       },
       complete: () => {
         log.debug(`LambdaResponse Complete`, { chunks: this.chunks, responseBytes: this.bytes });
-        if (!this.bytes) data.write('\r\n\r\n'); // empty body
+        this.writeTrailers(data);
         data.end();
       },
     });
@@ -230,10 +267,10 @@ export class LambdaResponse extends Response<LambdaPipeline> {
             headers: {
               'Content-Type': 'application/vnd.awslambda.http-integration-response',
               'Lambda-Runtime-Function-Response-Mode': 'streaming',
-              'Transfer-Encoding': 'chunked',
-              Trailer: ['Lambda-Runtime-Function-Error-Type', 'Lambda-Runtime-Function-Error-Body'],
+              Trailer: 'Lambda-Runtime-Function-Error-Type, Lambda-Runtime-Function-Error-Body',
             },
             maxBodyLength: 20 * 1024 * 1024,
+            maxContentLength: Infinity,
             timeout: 0,
             signal: this.signal,
             onUploadProgress: (event) => {
