@@ -1,6 +1,9 @@
 import yargs from 'yargs';
 import { hideBin } from 'yargs/helpers';
 import {
+  catchError,
+  defer,
+  EMPTY,
   fromEvent,
   map,
   mergeMap,
@@ -13,6 +16,7 @@ import {
   switchMap,
   takeUntil,
   tap,
+  timer,
 } from 'rxjs';
 import { Routes } from './routes';
 import { ILoggable, log, Logger, Trace } from './log';
@@ -479,7 +483,20 @@ export class Environment implements ILoggable {
 
   @Trace
   public poll(): Observable<Result<Pipeline>> {
-    return race(this._pipelines.map((p) => p.into())).pipe(
+    let delay = 0;
+
+    const pipeline = defer(() =>
+      race(this._pipelines.map((p) => p.into())).pipe(
+        tap(() => (delay = 0)),
+        catchError((err) => {
+          delay = delay ? Math.min(delay * 2, 1000) : 100;
+          log.warn('Pipeline error, skipping to repeat', { error: `${err}`, delay });
+          return EMPTY;
+        })
+      )
+    );
+
+    return pipeline.pipe(
       takeUntil(fromEvent(this.signal, 'abort')),
       tap((request) => log.info('Request', { request, routes: this.routes })),
       mergeMap((request) => request.into().pipe(tap(() => this._envVars.complete())), Environment.CONCURRENCY),
@@ -488,7 +505,7 @@ export class Environment implements ILoggable {
       tap((response) => log.debug('Respond', { response })),
       mergeMap((response) => response.into(), Environment.CONCURRENCY),
       tap((result) => log.info('Result', { result })),
-      repeat()
+      repeat({ delay: () => timer(delay) })
     );
   }
 
