@@ -68,9 +68,8 @@ export abstract class Request<P extends Pipeline> implements ILoggable {
 
   constructor(protected readonly pipeline: P) {}
 
-  public withDeadline(deadlineMs: number | string): this {
-    deadlineMs = Number(deadlineMs);
-    this._deadline = new Date(Date.now() + deadlineMs);
+  public withDeadline(at: Date): this {
+    this._deadline = at;
     return this;
   }
 
@@ -79,7 +78,7 @@ export abstract class Request<P extends Pipeline> implements ILoggable {
       return { cancel: () => {} };
     }
 
-    const delay = Date.now() - this._deadline.getTime();
+    const delay = this._deadline.getTime() - Date.now();
 
     if (delay <= 0) {
       callback?.();
