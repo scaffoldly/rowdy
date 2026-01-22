@@ -73,9 +73,10 @@ export class LambdaPipeline extends Pipeline {
       return axios.get<string>(url, { responseType: 'text', signal: this.signal, timeout: 0 });
     }).pipe(
       map(({ data, headers }) => {
-        log.debug(`Received invocation`, { headers: JSON.stringify(headers), data });
         this._requestId = headers['lambda-runtime-aws-request-id'];
-        return new LambdaRequest(this, data).withDeadline(new Date(Number(headers['lambda-runtime-deadline-ms'])));
+        const deadline = headers['lambda-runtime-deadline-ms'];
+        log.debug(`Received invocation`, { requestId: this._requestId, deadline });
+        return new LambdaRequest(this, data).withDeadline(new Date(Number(deadline)));
       })
     );
   }
@@ -208,28 +209,6 @@ export class LambdaResponse extends Response<LambdaPipeline> {
   private chunks: number = 0;
   private bytes: number = 0;
 
-  private writeChunk(stream: PassThrough, data: Buffer | string): void {
-    const buffer = Buffer.isBuffer(data) ? data : Buffer.from(data);
-    if (buffer.length === 0) return;
-    stream.write(`${buffer.length.toString(16)}\r\n`);
-    stream.write(buffer);
-    stream.write('\r\n');
-  }
-
-  private writeTrailers(stream: PassThrough, trailers?: { errorType?: string; errorBody?: string }): void {
-    // Write terminating chunk
-    stream.write('0\r\n');
-    // Write trailer headers if present
-    if (trailers?.errorType) {
-      stream.write(`Lambda-Runtime-Function-Error-Type: ${trailers.errorType}\r\n`);
-    }
-    if (trailers?.errorBody) {
-      stream.write(`Lambda-Runtime-Function-Error-Body: ${Buffer.from(trailers.errorBody).toString('base64')}\r\n`);
-    }
-    // Final CRLF to end trailers section
-    stream.write('\r\n');
-  }
-
   @Trace
   override into(): Observable<Result<LambdaPipeline>> {
     const data = new PassThrough();
@@ -242,19 +221,19 @@ export class LambdaResponse extends Response<LambdaPipeline> {
           return;
         }
         this.chunks += 1;
-        this.writeChunk(data, chunk.data);
+        data.write(chunk.data);
       },
       error: (error) => {
         log.warn(`LambdaResponse Error`, { error, isAxiosError: axios.isAxiosError(error) });
-        this.writeTrailers(data, {
-          errorType: 'Runtime.Error',
-          errorBody: error instanceof Error ? error.message : String(error),
-        });
+        data.write(`0\r\n`);
+        data.write(`Lambda-Runtime-Function-Error-Type: Runtime.Error\r\n`);
+        data.write(`Lambda-Runtime-Function-Error-Body: ${Buffer.from(error.message).toString('base64')}\r\n`);
+        data.write(`\r\n`);
         data.end();
       },
       complete: () => {
         log.debug(`LambdaResponse Complete`, { chunks: this.chunks, responseBytes: this.bytes });
-        this.writeTrailers(data);
+        if (!this.bytes) data.write('\r\n\r\n'); // empty body
         data.end();
       },
     });
@@ -268,10 +247,10 @@ export class LambdaResponse extends Response<LambdaPipeline> {
             headers: {
               'Content-Type': 'application/vnd.awslambda.http-integration-response',
               'Lambda-Runtime-Function-Response-Mode': 'streaming',
-              Trailer: 'Lambda-Runtime-Function-Error-Type, Lambda-Runtime-Function-Error-Body',
+              'Transfer-Encoding': 'chunked',
+              Trailer: ['Lambda-Runtime-Function-Error-Type', 'Lambda-Runtime-Function-Error-Body'],
             },
             maxBodyLength: 20 * 1024 * 1024,
-            maxContentLength: Infinity,
             timeout: 0,
             signal: this.signal,
             onUploadProgress: (event) => {
