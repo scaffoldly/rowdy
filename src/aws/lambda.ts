@@ -1,4 +1,4 @@
-import { AsyncSubject, catchError, defer, map, NEVER, Observable, of, race, switchMap, tap } from 'rxjs';
+import { AsyncSubject, defer, map, NEVER, Observable, of, race, switchMap, tap } from 'rxjs';
 import { Proxy, Pipeline, Request, Response, Result, Chunk } from '../pipeline';
 import { Environment } from '../environment';
 import axios from 'axios';
