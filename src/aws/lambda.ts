@@ -315,10 +315,10 @@ export class LambdaResponse extends Response<LambdaPipeline> {
         req.write(chunk.data);
       },
       error: (error) => {
-        log.warn(`LambdaResponse Error`, { error, isAxiosError: axios.isAxiosError(error) });
+        log.warn(`LambdaResponse Error`, { error, chunks: this.chunks, responseBytes: this.bytes });
         if (!this.bytes) req.write('\r\n\r\n'); // empty body
         req.addTrailers({
-          'Lambda-Runtime-Function-Error-Type': 'Runtime.Error',
+          'Lambda-Runtime-Function-Error-Type': `Runtime.${error.name}`,
           'Lambda-Runtime-Function-Error-Body': Buffer.from(error.message).toString('base64'),
         });
         req.end();

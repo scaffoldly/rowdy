@@ -4,7 +4,9 @@
       "Bash(npm test)",
       "WebSearch",
       "Bash(yarn test:*)",
-      "Bash(aws logs filter-log-events:*)"
+      "Bash(aws logs filter-log-events:*)",
+      "Bash(aws logs:*)",
+      "Bash(curl:*)"
     ],
     "deny": [],
     "ask": []
