@@ -75,7 +75,7 @@ export class LambdaPipeline extends Pipeline {
       map(({ data, headers }) => {
         this._requestId = headers['lambda-runtime-aws-request-id'];
         const deadline = headers['lambda-runtime-deadline-ms'];
-        log.debug(`Received invocation`, { requestId: this._requestId, deadline });
+        log.debug(`Received invocation`, { requestId: this._requestId, deadline, data });
         return new LambdaRequest(this, data).withDeadline(new Date(Number(deadline)));
       })
     );
