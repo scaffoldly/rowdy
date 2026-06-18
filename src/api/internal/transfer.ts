@@ -54,6 +54,10 @@ export type External = {
       Entrypoint: string[];
       WorkingDir: string;
     }>;
+    architecture: string;
+    os: string;
+    rootfs: Partial<{ type: string; diff_ids: string[] }>;
+    history: Record<string, unknown>[];
   }>;
 };
 
@@ -79,7 +83,10 @@ export type DenormalizedImage = {
 
 export type ImageManifest = Image & {
   index: External['Index'];
-  images: { manifest: External['Manifest']; image: External['Image'] }[];
+  // `config` holds the re-serialized image config bytes when layers have been injected: the app
+  // config's rootfs.diff_ids/history are rewritten so the manifest stays valid and must be pushed
+  // in place of the original config blob.
+  images: { manifest: External['Manifest']; image: External['Image']; config?: Buffer }[];
   headers: HttpHeaders;
 };
 
@@ -245,31 +252,57 @@ export class Transfer implements ILoggable {
                 return response;
               })
           ).pipe(
-            map(({ headers, data }) => {
+            switchMap(async (response) => {
+              const responseHeaders = response.headers;
+              const data = response.data as External['Index'] & External['Image'];
+
               if (data.schemaVersion !== 2) {
                 throw new Error(`Unsupported schemaVersion on index: ${data.schemaVersion}`);
               }
 
+              const digest = responseHeaders['docker-content-digest'];
+              if (!digest) {
+                throw new Error(`No docker-content-digest header found on response for ${image.url}`);
+              }
+
+              let index: External['Index'];
               if (
-                data.mediaType !== 'application/vnd.oci.image.index.v1+json' &&
-                data.mediaType !== 'application/vnd.docker.distribution.manifest.list.v2+json'
+                data.mediaType === 'application/vnd.oci.image.index.v1+json' ||
+                data.mediaType === 'application/vnd.docker.distribution.manifest.list.v2+json'
               ) {
+                index = data;
+              } else if (
+                data.mediaType === 'application/vnd.oci.image.manifest.v1+json' ||
+                data.mediaType === 'application/vnd.docker.distribution.manifest.v2+json'
+              ) {
+                // A bare image manifest (e.g. a single-platform build pushed without buildx
+                // attestations) has no index wrapper. Treat it as a one-entry index so the rest of
+                // the pipeline stays platform-agnostic. The platform comes from the image config.
+                const platform = await Transfer.fetchPlatform(http, image.url, data, headers);
+                index = {
+                  schemaVersion: 2,
+                  mediaType: 'application/vnd.oci.image.index.v1+json',
+                  manifests: [
+                    {
+                      mediaType: data.mediaType,
+                      digest,
+                      size: Number(responseHeaders['content-length']) || JSON.stringify(data).length,
+                      platform,
+                    },
+                  ],
+                };
+              } else {
                 throw new Error(`Unsupported mediaType on index: ${data.mediaType}`);
               }
 
               if (additional) {
                 // Drop attestation manifests, since we're fundamentally altering the image with new layers
-                data.manifests = data.manifests?.filter((m) => m.platform?.architecture !== 'unknown');
-              }
-
-              const digest = headers['docker-content-digest'];
-              if (!digest) {
-                throw new Error(`No docker-content-digest header found on response for ${image.url}`);
+                index.manifests = index.manifests?.filter((m) => m.platform?.architecture !== 'unknown');
               }
 
               return {
                 digest,
-                index: data,
+                index,
                 additional,
               };
             }),
@@ -287,7 +320,7 @@ export class Transfer implements ILoggable {
                   mergeMap(
                     ({ manifest, url }) =>
                       from(http.get<External['Image']>(url, { headers: headers.intoAxios() })).pipe(
-                        map(({ data }) => {
+                        switchMap(async ({ data }) => {
                           if (data.schemaVersion !== 2) {
                             throw new Error(`Unsupported schemaVersion on manifest: ${data.schemaVersion}`);
                           }
@@ -305,23 +338,69 @@ export class Transfer implements ILoggable {
                               m.platform?.os === manifest.platform?.os
                           );
 
-                          if (match) {
-                            data.layers = data.layers || [];
-                            data.layers.push(
-                              ...(
-                                additional?.images?.find((img) => img.manifest.digest === match.digest)?.image.layers ||
-                                []
-                              ).map((l) => ({
-                                ...l,
-                                annotations: { ...l.annotations, 'run.rowdy.index.url': additional!.url },
-                              }))
+                          if (!match) {
+                            return { manifest, image: data, config: undefined };
+                          }
+
+                          const runtime = additional?.images?.find((img) => img.manifest.digest === match.digest);
+
+                          data.layers = data.layers || [];
+                          data.layers.push(
+                            ...(runtime?.image.layers || []).map((l) => ({
+                              ...l,
+                              annotations: { ...l.annotations, 'run.rowdy.index.url': additional!.url },
+                            }))
+                          );
+
+                          // The injected layers must also be reflected in the image config's
+                          // rootfs.diff_ids (the uncompressed layer digests, only available from the
+                          // runtime image's config) or the image is invalid: len(layers) != len(diff_ids)
+                          // and the registry/runtime drops the app layer (issue #5).
+                          if (!data.config?.digest || !data.config?.mediaType) {
+                            throw new Error(
+                              `App image manifest ${manifest.digest} has no config; cannot inject layers`
+                            );
+                          }
+                          if (!runtime?.image.config?.digest || !runtime.image.config.mediaType) {
+                            throw new Error(`Runtime image ${match.digest} has no config; cannot inject layers`);
+                          }
+
+                          const appCfgUrl = `${image.url.split('/').slice(0, -2).join('/')}/blobs/${data.config.digest}`;
+                          const rtCfgUrl = `${additional!.url.split('/').slice(0, -2).join('/')}/blobs/${runtime.image.config.digest}`;
+
+                          const [appCfg, rtCfg] = await Promise.all([
+                            http
+                              .get<External['Config']>(appCfgUrl, {
+                                headers: headers.with('accept', data.config.mediaType).intoAxios(),
+                              })
+                              .then((r) => r.data),
+                            http
+                              .get<External['Config']>(rtCfgUrl, {
+                                headers: additional!.headers.with('accept', runtime.image.config.mediaType).intoAxios(),
+                              })
+                              .then((r) => r.data),
+                          ]);
+
+                          appCfg.rootfs = appCfg.rootfs || { type: 'layers', diff_ids: [] };
+                          appCfg.rootfs.diff_ids = [
+                            ...(appCfg.rootfs.diff_ids || []),
+                            ...(rtCfg.rootfs?.diff_ids || []),
+                          ];
+                          if (rtCfg.history?.length) {
+                            appCfg.history = [...(appCfg.history || []), ...rtCfg.history];
+                          }
+
+                          const config = Buffer.from(JSON.stringify(appCfg));
+                          const configDigest = `sha256:${createHash('sha256').update(config).digest('hex')}`;
+                          data.config = { mediaType: data.config.mediaType, digest: configDigest, size: config.length };
+
+                          if (data.layers.length !== appCfg.rootfs.diff_ids.length) {
+                            throw new Error(
+                              `layer/diffID mismatch after injection: ${data.layers.length} != ${appCfg.rootfs.diff_ids.length}`
                             );
                           }
 
-                          return {
-                            manifest: manifest,
-                            image: data,
-                          };
+                          return { manifest, image: data, config };
                         })
                       ),
                     Environment.CONCURRENCY
@@ -348,6 +427,27 @@ export class Transfer implements ILoggable {
     };
   }
 
+  // Reads architecture/os from a bare image manifest's config blob, so a single image manifest
+  // (no index wrapper) can be represented as a one-entry index.
+  private static async fetchPlatform(
+    http: AxiosInstance,
+    manifestUrl: string,
+    image: External['Image'],
+    headers: HttpHeaders
+  ): Promise<{ architecture: string; os: string }> {
+    if (!image.config?.digest || !image.config?.mediaType) {
+      throw new Error(`Bare image manifest has no config; cannot determine platform`);
+    }
+    const configUrl = `${manifestUrl.split('/').slice(0, -2).join('/')}/blobs/${image.config.digest}`;
+    const { data } = await http.get<External['Config']>(configUrl, {
+      headers: headers.with('accept', image.config.mediaType).intoAxios(),
+    });
+    if (!data.architecture || !data.os) {
+      throw new Error(`Bare image config is missing architecture/os`);
+    }
+    return { architecture: data.architecture, os: data.os };
+  }
+
   static prepare(
     log: Logger,
     http: AxiosInstance,
@@ -367,9 +467,13 @@ export class Transfer implements ILoggable {
           transfer
             .with(
               transfer.manifest.images
-                .map((img) => img.image.config)
-                .filter((c): c is Required<External['Ref']> => !!c && !!c.digest && !!c.mediaType)
-                .map((ref) => new Upload(transfer, 'config', ref))
+                .filter(
+                  (img): img is { manifest: External['Manifest']; image: External['Image']; config?: Buffer } =>
+                    !!img.image.config && !!img.image.config.digest && !!img.image.config.mediaType
+                )
+                // When `config` is set the original config blob was rewritten (layers injected); push
+                // those bytes instead of streaming the now-stale original from the source registry.
+                .map((img) => new Upload(transfer, 'config', img.image.config as Required<External['Ref']>, img.config))
             )
             .with(
               transfer.manifest.images
@@ -595,7 +699,7 @@ export class Upload implements ILoggable {
     public readonly transfer: Transfer,
     public readonly type: 'blob' | 'config' | 'manifest',
     public readonly ref: External['Ref'],
-    public readonly content?: Readable
+    public readonly content?: Readable | Buffer
   ) {
     this.bytes = {
       received: 0,
@@ -724,26 +828,35 @@ export class Upload implements ILoggable {
         toUrl = location;
       }
 
-      let { data: download } =
-        this.type !== 'manifest'
-          ? await promiseRetry(() =>
-              this.http.get<Readable>(fromUrl, {
-                responseType: 'stream',
-                maxBodyLength: Infinity,
-                maxContentLength: Infinity,
-                headers: this.transfer.fromHeaders.with('accept', this.mediaType).intoAxios(),
-                onDownloadProgress: (e) => (this.bytes.received += e.bytes),
-              })
-            )
-          : { data: this.content };
+      let download: Readable | Buffer | undefined;
+      if (this.content) {
+        // Pre-supplied content: manifests, or a config blob rewritten to add the injected layers'
+        // diff_ids. Upload it directly instead of streaming the stale original from the source.
+        if (this.type === 'config' && Buffer.isBuffer(this.content)) {
+          status.withConfig(this.content, this.mediaType);
+        }
+        download = this.content;
+      } else if (this.type !== 'manifest') {
+        download = (
+          await promiseRetry(() =>
+            this.http.get<Readable>(fromUrl, {
+              responseType: 'stream',
+              maxBodyLength: Infinity,
+              maxContentLength: Infinity,
+              headers: this.transfer.fromHeaders.with('accept', this.mediaType).intoAxios(),
+              onDownloadProgress: (e) => (this.bytes.received += e.bytes),
+            })
+          )
+        ).data;
 
-      if (this.type === 'config') {
-        // Intercept configs and extract entrypoint/cmd/workdir
-        const chunks: Buffer[] = [];
-        download?.on('data', (chunk) => {
-          chunks.push(chunk);
-        });
-        download?.on('end', () => status.withConfig(Buffer.concat(chunks), this.mediaType));
+        if (this.type === 'config' && download instanceof Readable) {
+          // Intercept configs and extract entrypoint/cmd/workdir
+          const chunks: Buffer[] = [];
+          download.on('data', (chunk) => {
+            chunks.push(chunk);
+          });
+          download.on('end', () => status.withConfig(Buffer.concat(chunks), this.mediaType));
+        }
       }
 
       if (this.type !== 'manifest') {
