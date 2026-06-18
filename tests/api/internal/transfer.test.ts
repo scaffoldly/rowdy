@@ -3,6 +3,7 @@ import { Transfer, External, ImageManifest } from '../../../src/api/internal/tra
 import { Logger, Rowdy } from '@scaffoldly/rowdy';
 // eslint-disable-next-line @typescript-eslint/no-unused-vars
 import { readFileSync, writeFileSync } from 'fs';
+import { createHash } from 'crypto';
 
 describe('transfers', () => {
   const logger = new Logger();
@@ -228,6 +229,29 @@ describe('transfers', () => {
         },
       },
     ];
+
+    it('should keep layers and config rootfs.diff_ids aligned when injecting layersFrom (issue #5)', async () => {
+      const result = await lastValueFrom(
+        of('mirror.gcr.io/library/busybox:latest').pipe(
+          Transfer.normalize(),
+          Transfer.collect(logger, rowdy.http, 'ghcr.io/scaffoldly/rowdy:beta')
+        )
+      );
+
+      // At least one platform must have had layers injected
+      const injected = result.images.filter((img) => !!img.config);
+      expect(injected.length).toBeGreaterThan(0);
+
+      for (const img of injected) {
+        const config = JSON.parse(img.config!.toString('utf-8')) as External['Config'];
+        // The rewritten config blob's digest/size must match what the manifest points at
+        const digest = `sha256:${createHash('sha256').update(img.config!).digest('hex')}`;
+        expect(img.image.config!.digest).toBe(digest);
+        expect(img.image.config!.size).toBe(img.config!.length);
+        // The core invariant: one diff_id per manifest layer
+        expect(img.image.layers!.length).toBe(config.rootfs!.diff_ids!.length);
+      }
+    }, 60000);
 
     tests.forEach(({ normalized, collected }) => {
       it(`should collect manifests for ${normalized.image}`, async () => {
