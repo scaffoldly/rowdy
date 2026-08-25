@@ -33,6 +33,7 @@ import { inspect } from 'util';
 import { cpus } from 'os';
 import { log as consoleLog } from 'console';
 import { internalIpV4Sync } from 'internal-ip';
+import { writeGithubOutput } from './util/github';
 
 export type Secrets = Record<string, string>;
 type Args = yargs.ArgumentsCamelCase<
@@ -262,7 +263,10 @@ export class Environment implements ILoggable {
                     this._subscriptions.push(
                       lambda.observe().subscribe({
                         next: (fn) => this.log.info(`State Updated: ${inspect(fn.State)}`),
-                        complete: () => this.log.info('Lambda Function Installation Complete'),
+                        complete: () => {
+                          this.log.info('Lambda Function Installation Complete');
+                          writeGithubOutput('url', lambda.State.FunctionUrl);
+                        },
                       })
                     );
                   },
