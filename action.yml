@@ -41,6 +41,7 @@ inputs:
 outputs:
   url:
     description: The URL of the deployed application.
+    value: ${{ steps.deploy.outputs.url }}
 runs:
   using: "composite"
   steps:
@@ -55,6 +56,7 @@ runs:
       uses: actions/setup-node@v6
 
     - name: Deploy with Rowdy
+      id: deploy
       shell: bash
       run: >
         npx @scaffoldly/rowdy@beta create
