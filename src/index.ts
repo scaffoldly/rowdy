@@ -38,6 +38,6 @@ if (require.main === module) {
 }
 
 export { Environment };
-export { Routes, URI } from './routes';
+export { Crontab, Routes, URI } from './routes';
 export { Logger } from './log';
 export { Rowdy } from './api';

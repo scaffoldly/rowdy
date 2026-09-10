@@ -62,7 +62,7 @@ const entrypoint = <T>(
   const modified = argv
     .option('routes', {
       type: 'string',
-      description: 'Path or URL to routing rules (file:// or data:).',
+      description: 'Path to, or inline YAML/JSON of, a Routes manifest (also accepts file:// and data:).',
       global: false,
       group: 'Entrypoint:',
     })
@@ -192,7 +192,7 @@ export class Environment implements ILoggable {
             })
             .option('routes', {
               type: 'string',
-              description: 'Route definitions (file:// or data:)',
+              description: 'Path to, or inline YAML/JSON of, a Routes manifest (also accepts file:// and data:)',
               group: 'Runtime:',
             })
             .option('secrets', {
