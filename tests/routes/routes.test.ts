@@ -1,4 +1,4 @@
-import { Routes, URI } from '@scaffoldly/rowdy';
+import { Crontab, Routes, URI } from '@scaffoldly/rowdy';
 import { writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 
@@ -110,6 +110,163 @@ spec:
       expect(routes.intoURI('/api/v1/node?itemsPerPage=10&page=1&sortBy=d,creationTimestamp')!.toString()).toBe(
         'http://localhost:8010/api/v1/node?itemsPerPage=10&page=1&sortBy=d%2CcreationTimestamp'
       );
+    });
+  });
+});
+
+describe('inline', () => {
+  const yaml = `apiVersion: rowdy.run/v1alpha1
+kind: Routes
+spec:
+  default: "http://localhost:3000/"
+  paths:
+    "/foo": "http://localhost:8080/foo"
+`;
+
+  const json = JSON.stringify({
+    apiVersion: 'rowdy.run/v1alpha1',
+    kind: 'Routes',
+    spec: {
+      default: 'http://localhost:3000/',
+      paths: { '/foo': 'http://localhost:8080/foo' },
+    },
+  });
+
+  it('should create from inline yaml', () => {
+    const routes = Routes.fromURL(yaml);
+    expect(routes.intoURI('/foo')!.toString()).toBe('http://localhost:8080/foo');
+    expect(routes.intoURI('/bar')!.toString()).toBe('http://localhost:3000/bar');
+  });
+
+  it('should create from inline json', () => {
+    const routes = Routes.fromURL(json);
+    expect(routes.intoURI('/foo')!.toString()).toBe('http://localhost:8080/foo');
+    expect(routes.intoURI('/bar')!.toString()).toBe('http://localhost:3000/bar');
+  });
+
+  it('should throw when an inline manifest is unparseable', () => {
+    expect(() => Routes.fromURL('apiVersion: rowdy.run/v1alpha1\nkind: Routes\nspec: [')).toThrow();
+  });
+
+  it('should throw when an inline manifest fails validation', () => {
+    expect(() => Routes.fromURL('apiVersion: rowdy.run/v2\nkind: Routes\n')).toThrow(
+      'Unsupported routes version: rowdy.run/v2'
+    );
+    expect(() => Routes.fromURL('apiVersion: rowdy.run/v1alpha1\nkind: Ingress\n')).toThrow(
+      'Unsupported routes kind: Ingress'
+    );
+  });
+
+  it('should still default on an unsupported url', () => {
+    const routes = Routes.fromURL('not-a-manifest');
+    expect(routes.intoURI('/foo')!.toString()).toBe('rowdy://http:404/foo');
+  });
+});
+
+describe('crontab', () => {
+  it('should survive a data url round trip', () => {
+    const line = '*/15 * * * * POST https://localhost:3000/tunnel/gc';
+    const routes = Routes.fromURL(`apiVersion: rowdy.run/v1alpha1
+kind: Routes
+spec:
+  default: "http://localhost:3000/"
+  crontab:
+    - "${line}"
+`);
+    expect(routes.crontab).toEqual([line]);
+
+    const round = Routes.fromDataURL(routes.intoDataURL());
+    expect(round.crontab).toEqual([line]);
+    expect(round.intoURI('/foo')!.toString()).toBe('http://localhost:3000/foo');
+  });
+
+  it('should omit an empty crontab from the data url', () => {
+    const routes = Routes.empty().withDefault('http://localhost:3000/');
+    expect(routes.crontab).toEqual([]);
+    expect(Routes.fromDataURL(routes.intoDataURL()).crontab).toEqual([]);
+  });
+
+  it('should merge crontab lines without duplicating', () => {
+    const a = Routes.empty().withCrontab(['0 * * * * https://localhost:3000/a']);
+    const b = Routes.empty().withCrontab(['0 * * * * https://localhost:3000/a', '0 * * * * https://localhost:3000/b']);
+    expect(a.merge(b).crontab).toEqual(['0 * * * * https://localhost:3000/a', '0 * * * * https://localhost:3000/b']);
+  });
+
+  describe('parse', () => {
+    it('should default the method to GET', () => {
+      const cron = Crontab.parse('*/15 * * * * https://localhost:3000/tunnel/gc');
+      expect(cron.schedule).toBe('*/15 * * * *');
+      expect(cron.method).toBe('GET');
+      expect(cron.uri).toBe('https://localhost:3000/tunnel/gc');
+    });
+
+    it('should accept an explicit method', () => {
+      const cron = Crontab.parse('*/15 * * * * POST https://localhost:3000/tunnel/gc');
+      expect(cron.schedule).toBe('*/15 * * * *');
+      expect(cron.method).toBe('POST');
+      expect(cron.uri).toBe('https://localhost:3000/tunnel/gc');
+    });
+
+    it('should accept a rowdy uri', () => {
+      const cron = Crontab.parse('0 3 * * * rowdy://http:200/');
+      expect(cron.method).toBe('GET');
+      expect(cron.uri).toBe('rowdy://http:200/');
+    });
+
+    it('should pass cron() and rate() through verbatim', () => {
+      expect(Crontab.parse('cron(0 10 * * ? *) POST https://localhost:3000/gc').schedule).toBe('cron(0 10 * * ? *)');
+      expect(Crontab.parse('cron(0 10 * * ? *) POST https://localhost:3000/gc').expression).toBe('cron(0 10 * * ? *)');
+      expect(Crontab.parse('rate(5 minutes) https://localhost:3000/gc').schedule).toBe('rate(5 minutes)');
+      expect(Crontab.parse('rate(5 minutes) https://localhost:3000/gc').expression).toBe('rate(5 minutes)');
+    });
+
+    it('should build the cron event', () => {
+      const line = '*/15 * * * * POST https://localhost:3000/tunnel/gc';
+      expect(Crontab.parse(line).intoSchema()).toEqual({
+        apiVersion: 'rowdy.run/v1alpha1',
+        kind: 'Cron',
+        spec: { line },
+        status: undefined,
+      });
+    });
+
+    it('should reject invalid lines', () => {
+      expect(() => Crontab.parse('')).toThrow();
+      expect(() => Crontab.parse('* * * * https://localhost:3000/gc')).toThrow('expected 5 schedule fields and a URI');
+      expect(() => Crontab.parse('60 * * * * https://localhost:3000/gc')).toThrow("Invalid crontab minute '60'");
+      expect(() => Crontab.parse('* 24 * * * https://localhost:3000/gc')).toThrow("Invalid crontab hour '24'");
+      expect(() => Crontab.parse('* * 0 * * https://localhost:3000/gc')).toThrow("Invalid crontab day-of-month '0'");
+      expect(() => Crontab.parse('* * * 13 * https://localhost:3000/gc')).toThrow("Invalid crontab month '13'");
+      expect(() => Crontab.parse('* * * * 8 https://localhost:3000/gc')).toThrow("Invalid crontab day-of-week '8'");
+      expect(() => Crontab.parse('*/0 * * * * https://localhost:3000/gc')).toThrow("Invalid crontab minute '*/0'");
+      expect(() => Crontab.parse('0 3 * * *')).toThrow('expected 5 schedule fields and a URI');
+      expect(() => Crontab.parse('0 3 * * * GET https://a/ https://b/')).toThrow('expected a single URI');
+      expect(() => Crontab.parse('0 3 * * * ftp://localhost/gc')).toThrow('expected http://, https://, or rowdy://');
+    });
+  });
+
+  describe('eventbridge expression', () => {
+    const expression = (line: string): string => Crontab.parse(`${line} https://localhost:3000/gc`).expression;
+
+    it('should translate the schedule', () => {
+      expect(expression('*/15 * * * *')).toBe('cron(*/15 * * * ? *)');
+      expect(expression('0 3 * * 1')).toBe('cron(0 3 ? * 2 *)');
+      expect(expression('0 3 1 * *')).toBe('cron(0 3 1 * ? *)');
+      expect(expression('0 3 * * MON')).toBe('cron(0 3 ? * MON *)');
+    });
+
+    it('should reject a schedule with both a day-of-month and a day-of-week', () => {
+      expect(() => expression('0 3 1 * 1')).toThrow('EventBridge cannot express both a day-of-month and a day-of-week');
+    });
+
+    it('should renumber day-of-week in lists, ranges and steps', () => {
+      expect(expression('0 3 * * 0')).toBe('cron(0 3 ? * 1 *)');
+      expect(expression('0 3 * * 7')).toBe('cron(0 3 ? * 1 *)');
+      expect(expression('0 3 * * 6')).toBe('cron(0 3 ? * 7 *)');
+      expect(expression('0 3 * * 1-5')).toBe('cron(0 3 ? * 2-6 *)');
+      expect(expression('0 3 * * 0,6')).toBe('cron(0 3 ? * 1,7 *)');
+      expect(expression('0 3 * * 1-5/2')).toBe('cron(0 3 ? * 2-6/2 *)');
+      expect(expression('0 3 * * MON-FRI')).toBe('cron(0 3 ? * MON-FRI *)');
     });
   });
 });

@@ -26,7 +26,7 @@ import { ApiVersion, ApiSchema } from './api/types';
 import { join } from 'path';
 
 export type RoutePaths = { [key: string]: string | undefined };
-export type RoutesSpec = { paths?: RoutePaths; default?: string };
+export type RoutesSpec = { paths?: RoutePaths; default?: string; crontab?: string[] };
 
 export type RoutesSchema = ApiSchema<RoutesSpec, undefined>;
 
@@ -211,11 +211,194 @@ export class URI extends URL implements ILoggable {
   }
 }
 
+// The payload a scheduled invocation carries, as EventBridge Scheduler Target.Input.
+export type CronSpec = { line: string };
+export type CronSchema = ApiSchema<CronSpec, undefined>;
+
+export type CrontabMethod = 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE' | 'HEAD' | 'OPTIONS';
+
+const CRONTAB_METHODS: CrontabMethod[] = ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD', 'OPTIONS'];
+
+const CRONTAB_MONTHS = ['JAN', 'FEB', 'MAR', 'APR', 'MAY', 'JUN', 'JUL', 'AUG', 'SEP', 'OCT', 'NOV', 'DEC'];
+const CRONTAB_DAYS = ['SUN', 'MON', 'TUE', 'WED', 'THU', 'FRI', 'SAT'];
+
+type CrontabField = {
+  name: string;
+  min: number;
+  max: number;
+  names?: string[];
+};
+
+const CRONTAB_FIELDS: CrontabField[] = [
+  { name: 'minute', min: 0, max: 59 },
+  { name: 'hour', min: 0, max: 23 },
+  { name: 'day-of-month', min: 1, max: 31 },
+  { name: 'month', min: 1, max: 12, names: CRONTAB_MONTHS },
+  { name: 'day-of-week', min: 0, max: 7, names: CRONTAB_DAYS },
+];
+
+// A single value within a crontab field: a number, or a name such as MON or JAN.
+const isValue = (value: string, field: CrontabField): boolean => {
+  if (field.names?.includes(value.toUpperCase())) {
+    return true;
+  }
+  if (!/^\d+$/.test(value)) {
+    return false;
+  }
+  const num = Number(value);
+  return num >= field.min && num <= field.max;
+};
+
+// A crontab field is a comma-separated list of `*`, `value`, or `value-value`, each optionally `/step`.
+const isField = (value: string, field: CrontabField): boolean =>
+  value.split(',').every((item) => {
+    if (!item.length) {
+      return false;
+    }
+
+    const [range, step, ...rest] = item.split('/');
+
+    if (rest.length || step !== undefined) {
+      if (!step || !/^\d+$/.test(step) || Number(step) < 1) {
+        return false;
+      }
+    }
+
+    if (range === '*') {
+      return true;
+    }
+
+    if (!range) {
+      return false;
+    }
+
+    const bounds = range.split('-');
+    if (bounds.length > 2) {
+      return false;
+    }
+
+    return bounds.every((bound) => isValue(bound, field));
+  });
+
+// EventBridge numbers day-of-week 1-7 (SUN=1); crontab numbers it 0-6 (SUN=0), with 7 also SUN.
+const shiftDayOfWeek = (value: string): string =>
+  value
+    .split(',')
+    .map((item) => {
+      const [range = '', step] = item.split('/');
+      const shifted = range
+        .split('-')
+        .map((bound) => (/^\d+$/.test(bound) ? String(Number(bound) === 7 ? 1 : Number(bound) + 1) : bound))
+        .join('-');
+      return step === undefined ? shifted : `${shifted}/${step}`;
+    })
+    .join(',');
+
+export class Crontab {
+  private constructor(
+    public readonly line: string,
+    public readonly schedule: string,
+    public readonly method: CrontabMethod,
+    public readonly uri: string
+  ) {}
+
+  static parse(line: string): Crontab {
+    const original = line;
+    line = line.trim();
+
+    if (!line.length) {
+      throw new Error(`Invalid crontab line: '${original}'`);
+    }
+
+    let schedule: string;
+    let rest: string[];
+
+    const passthrough = /^(cron|rate)\(([^)]*)\)\s*(.*)$/.exec(line);
+    if (passthrough) {
+      schedule = `${passthrough[1]}(${passthrough[2]})`;
+      rest = (passthrough[3] || '').split(/\s+/).filter((token) => token.length);
+    } else {
+      const tokens = line.split(/\s+/).filter((token) => token.length);
+      const fields = tokens.slice(0, CRONTAB_FIELDS.length);
+
+      if (tokens.length <= CRONTAB_FIELDS.length) {
+        throw new Error(`Invalid crontab line, expected 5 schedule fields and a URI: '${original}'`);
+      }
+
+      CRONTAB_FIELDS.forEach((field, ix) => {
+        if (!isField(fields[ix]!, field)) {
+          throw new Error(`Invalid crontab ${field.name} '${fields[ix]}': '${original}'`);
+        }
+      });
+
+      schedule = fields.join(' ');
+      rest = tokens.slice(CRONTAB_FIELDS.length);
+    }
+
+    let method: CrontabMethod = 'GET';
+    if (rest.length > 1 && CRONTAB_METHODS.includes(rest[0] as CrontabMethod)) {
+      method = rest.shift() as CrontabMethod;
+    }
+
+    if (rest.length !== 1) {
+      throw new Error(`Invalid crontab line, expected a single URI: '${original}'`);
+    }
+
+    const uri = rest[0]!;
+    const parsed = URI.from(uri);
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:' && parsed.protocol !== 'rowdy:') {
+      throw new Error(`Invalid crontab URI '${uri}', expected http://, https://, or rowdy://: '${original}'`);
+    }
+
+    return new Crontab(line, schedule, method, uri);
+  }
+
+  // The EventBridge Scheduler ScheduleExpression for this line.
+  get expression(): string {
+    if (this.schedule.startsWith('cron(') || this.schedule.startsWith('rate(')) {
+      return this.schedule;
+    }
+
+    const [minute, hour, dom, month, dow] = this.schedule.split(' ') as [string, string, string, string, string];
+
+    if (dow === '*') {
+      return `cron(${minute} ${hour} ${dom} ${month} ? *)`;
+    }
+
+    if (dom === '*') {
+      return `cron(${minute} ${hour} ? ${month} ${shiftDayOfWeek(dow)} *)`;
+    }
+
+    throw new Error(
+      `Invalid crontab schedule '${this.schedule}': EventBridge cannot express both a day-of-month and a day-of-week: '${this.line}'`
+    );
+  }
+
+  get uriRef(): URI {
+    return URI.from(this.uri);
+  }
+
+  // The event this schedule delivers to the function.
+  intoSchema(): CronSchema {
+    return {
+      apiVersion: 'rowdy.run/v1alpha1',
+      kind: 'Cron',
+      spec: { line: this.line },
+      status: undefined,
+    };
+  }
+
+  repr(): string {
+    return `Crontab(schedule=${this.schedule}, method=${this.method}, uri=${this.uri})`;
+  }
+}
+
 export type Health = { [origin: string]: URIHealth };
 
 export class Routes implements IRoutes, ILoggable {
   readonly version: ApiVersion = 'rowdy.run/v1alpha1';
   readonly rules: Array<RouteRule> = [];
+  readonly crontab: Array<string> = [];
 
   private constructor() {}
 
@@ -264,9 +447,43 @@ export class Routes implements IRoutes, ILoggable {
       log.warn(`Failed to access Routes URL: ${e instanceof Error ? e.message : String(e)}`, { url });
     }
 
+    if (Routes.isInline(url)) {
+      // DEVNOTE: An inline manifest cannot be a path, so a parse or validation failure is a real
+      // error rather than a missing file. Throw instead of silently falling back to defaults.
+      log.debug(`Loading routes from an inline manifest`, { url });
+      return Routes.fromSchema(YAML.parse(url)); // YAML is a superset of JSON
+    }
+
     log.warn(`Unsupported Routes URL, defaulting to empty routes`, { url });
 
     return Routes.default();
+  }
+
+  private static isInline(input: string): boolean {
+    const trimmed = input.trim();
+    return (
+      trimmed.includes('\n') ||
+      trimmed.startsWith('{') ||
+      trimmed.startsWith('---') ||
+      trimmed.startsWith('apiVersion:')
+    );
+  }
+
+  static fromSchema(schema: unknown): Routes {
+    const routes = (schema || {}) as Partial<RoutesSchema>;
+
+    if (routes.apiVersion !== 'rowdy.run/v1alpha1') {
+      throw new Error(`Unsupported routes version: ${routes.apiVersion}`);
+    }
+
+    if (routes.kind !== 'Routes') {
+      throw new Error(`Unsupported routes kind: ${routes.kind}`);
+    }
+
+    return new Routes()
+      .withPaths(routes.spec?.paths || {})
+      .withDefault(routes.spec?.default || '')
+      .withCrontab(routes.spec?.crontab || []);
   }
 
   static fromPath(path: string): Routes {
@@ -276,33 +493,11 @@ export class Routes implements IRoutes, ILoggable {
       log.debug(`Loaded routes from path`, { path, content });
 
       if (path.endsWith('.json')) {
-        const routes: Partial<RoutesSchema> = JSON.parse(content);
-        log.debug(`Parsed routes from JSON`, { path, routes: JSON.stringify(routes) });
-
-        if (routes.apiVersion !== 'rowdy.run/v1alpha1') {
-          throw new Error(`Unsupported routes version: ${routes.apiVersion}`);
-        }
-
-        if (routes.kind !== 'Routes') {
-          throw new Error(`Unsupported routes kind: ${routes.kind}`);
-        }
-
-        return new Routes().withPaths(routes.spec?.paths || {}).withDefault(routes.spec?.default || '');
+        return Routes.fromSchema(JSON.parse(content));
       }
 
       if (path.endsWith('.yaml') || path.endsWith('.yml')) {
-        const routes: Partial<RoutesSchema> = YAML.parse(content);
-        log.debug(`Parsed routes from YAML`, { path, routes: JSON.stringify(routes) });
-
-        if (routes.apiVersion !== 'rowdy.run/v1alpha1') {
-          throw new Error(`Unsupported routes version: ${routes.apiVersion}`);
-        }
-
-        if (routes.kind !== 'Routes') {
-          throw new Error(`Unsupported routes kind: ${routes.kind}`);
-        }
-
-        return new Routes().withPaths(routes.spec?.paths || {}).withDefault(routes.spec?.default || '');
+        return Routes.fromSchema(YAML.parse(content));
       }
 
       throw new Error(`Unsupported routes file type: ${path}`);
@@ -331,16 +526,7 @@ export class Routes implements IRoutes, ILoggable {
 
       const decoded = decode(data.body, encoding);
       if (data.mimeType.essence === 'application/json') {
-        const routes: RoutesSchema = JSON.parse(decoded);
-        if (routes.apiVersion !== 'rowdy.run/v1alpha1') {
-          throw new Error(`Unsupported routes version: ${routes.apiVersion}`);
-        }
-
-        if (routes.kind !== 'Routes') {
-          throw new Error(`Unsupported routes kind: ${routes.kind}`);
-        }
-
-        return new Routes().withPaths(routes.spec?.paths || {}).withDefault(routes.spec?.default || '');
+        return Routes.fromSchema(JSON.parse(decoded));
       }
 
       throw new Error(`Invalid MIME type ${data.mimeType.essence}`);
@@ -365,6 +551,17 @@ export class Routes implements IRoutes, ILoggable {
       existing.backendRefs = [];
     }
     return this.withPath('{/*path}', `${target}*path`);
+  }
+
+  withCrontab(lines: Array<string>): this {
+    lines.forEach((line) => {
+      line = line.trim();
+      if (!line.length || this.crontab.includes(line)) {
+        return;
+      }
+      this.crontab.push(line);
+    });
+    return this;
   }
 
   withPaths(paths: RoutePaths): this {
@@ -407,6 +604,7 @@ export class Routes implements IRoutes, ILoggable {
       spec: {
         paths: this.intoPaths(),
         default: this.intoDefault(),
+        crontab: this.crontab.length ? this.crontab : undefined,
       },
       status: undefined,
     };
@@ -440,6 +638,10 @@ export class Routes implements IRoutes, ILoggable {
 
       return paths;
     }, {});
+  }
+
+  intoCrontab(): Array<Crontab> {
+    return this.crontab.map((line) => Crontab.parse(line));
   }
 
   intoURI(path: string): URI {
@@ -522,6 +724,7 @@ export class Routes implements IRoutes, ILoggable {
   }
 
   merge(other: Routes): this {
+    this.withCrontab(other.crontab);
     other.rules.forEach((rule) => {
       rule.backendRefs?.forEach((ref) => {
         rule.matches?.forEach((match) => {
@@ -550,6 +753,6 @@ export class Routes implements IRoutes, ILoggable {
   }
 
   repr(): string {
-    return `Routes(version=${this.version}, rules=${JSON.stringify(this.rules)})`;
+    return `Routes(version=${this.version}, rules=${JSON.stringify(this.rules)}, crontab=${JSON.stringify(this.crontab)})`;
   }
 }

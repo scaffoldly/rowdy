@@ -6,9 +6,10 @@ import { log, Trace } from '../log';
 import { APIGatewayProxyEventV2 } from 'aws-lambda';
 import { HttpProxy, HttpHeaders, HttpResponse, Source } from '../proxy/http';
 import { ShellResponse } from '../proxy/shell';
-import { URI } from '../routes';
+import { Crontab, CronSchema, URI } from '../routes';
 import { CRI, GrpcRouter, RuntimeService } from '@scaffoldly/rowdy-grpc';
 import { LambdaCri } from './lambda/cri';
+import { Rowdy } from '../api';
 import http from 'http';
 
 type FunctionUrlEvent = APIGatewayProxyEventV2;
@@ -22,6 +23,15 @@ const isFunctionUrlEvent = (data: unknown): data is FunctionUrlEvent => {
   return (
     event.version === '2.0' && event.routeKey === '$default' && !!event.requestContext && !!event.requestContext.http
   );
+};
+
+const isCronEvent = (data: unknown): data is CronSchema => {
+  if (typeof data !== 'object' || data === null) {
+    return false;
+  }
+
+  const event = data as Partial<CronSchema>;
+  return event.apiVersion === 'rowdy.run/v1alpha1' && event.kind === 'Cron' && typeof event.spec?.line === 'string';
 };
 
 export class LambdaPipeline extends Pipeline {
@@ -123,6 +133,14 @@ export class LambdaRequest extends Request<LambdaPipeline> {
       const { body, headers, requestContext, isBase64Encoded, rawPath, rawQueryString } = data;
       const { method } = requestContext.http;
 
+      // DEVNOTE: X-Rowdy-Cron is rowdy's own signal that a request came from one of its schedules.
+      // Strip any inbound value so a caller cannot forge it through the Function URL.
+      for (const key of Object.keys(headers)) {
+        if (key.toLowerCase() === Rowdy.HEADERS.CRON) {
+          delete headers[key];
+        }
+      }
+
       const host = headers['Host'] || headers['host'] || 'localhost';
       const hostname = headers['X-Forwarded-Host'] || headers['x-forwarded-host'] || host;
       const proto = headers['X-Forwarded-Proto'] || headers['x-forwarded-proto'] || 'https';
@@ -167,8 +185,78 @@ export class LambdaRequest extends Request<LambdaPipeline> {
       );
     }
 
+    if (isCronEvent(data)) {
+      return this.intoCron(data);
+    }
+
     log.warn('Unsupported HTTP Event', { data: this.data });
     return NEVER;
+  }
+
+  protected intoCron(event: CronSchema): Observable<Proxy<LambdaPipeline, HttpResponse>> {
+    const line = event.spec?.line || '';
+
+    const source: Source = {
+      method: 'GET',
+      uri: URI.from(`rowdy://${Rowdy.CRON}/`),
+      headers: {},
+    };
+
+    const fail = (message: string): Observable<Proxy<LambdaPipeline, HttpResponse>> => {
+      log.warn(message, { line });
+      return of(
+        new LambdaCronProxy(
+          this.pipeline,
+          this,
+          'GET',
+          URI.fromError(new Error(message), 500),
+          HttpHeaders.from({}),
+          Buffer.alloc(0),
+          source
+        )
+      );
+    };
+
+    let cron: Crontab;
+    try {
+      cron = Crontab.parse(line);
+    } catch (error) {
+      return fail(`Unparseable Cron Event: ${error instanceof Error ? error.message : String(error)}`);
+    }
+
+    // DEVNOTE: Only ever run what this deployment's own manifest declares, so a schedule that
+    // reconciliation missed is harmless.
+    if (!this.pipeline.routes.crontab.includes(cron.line)) {
+      return fail(`Unknown Cron Event, not declared in spec.crontab`);
+    }
+
+    const uri = cron.uriRef;
+    const userAgent = `${this.pipeline.environment.userAgent} (cron)`;
+
+    this.pipeline.environment
+      .withEnv('HTTP_HOST', uri.host)
+      .withEnv('HTTP_HOSTNAME', uri.hostname)
+      .withEnv('HTTP_PROTO', uri.protocol.replace(':', ''))
+      .withEnv(
+        'HTTP_UA',
+        `${userAgent} (${this.pipeline.environment.name} v${this.pipeline.environment.version} ${this.pipeline.name})`
+      );
+
+    return of(
+      new LambdaCronProxy(
+        this.pipeline,
+        this,
+        cron.method,
+        uri,
+        HttpHeaders.from({
+          Host: uri.host,
+          'User-Agent': userAgent,
+          [Rowdy.HEADERS.CRON]: cron.line,
+        }),
+        Buffer.alloc(0),
+        { method: cron.method, uri, headers: {} }
+      )
+    );
   }
 
   @Trace
@@ -198,6 +286,41 @@ export class LambdaHttpProxy extends HttpProxy<LambdaPipeline> {
         http.data.on('data', (chunk: Buffer) => response.next(new Chunk(chunk, chunk.length)));
         http.data.on('end', () => cancelDeadline(() => response.complete()));
         http.data.on('close', () => cancelDeadline(() => response.complete()));
+        http.data.on('error', (error: Error) => cancelDeadline(() => response.error(error)));
+        return response;
+      })
+    );
+  }
+}
+
+export class LambdaCronProxy extends LambdaHttpProxy {
+  @Trace
+  override into(): Observable<Response<LambdaPipeline>> {
+    return this.invoke().pipe(
+      map((http) => {
+        const response = new LambdaResponse(this.pipeline, this.request);
+        const { cancel: cancelDeadline } = this.request.onDeadline(() => {
+          log.warn('LambdaCronProxy Request Deadline Reached', { requestId: this.pipeline.requestId });
+          response.error(new Error('Request deadline reached'));
+          http.data.destroy(new Error('Request deadline reached'));
+        });
+        // Set to 0 bytes as the prelude is not counted
+        response.next(new Chunk(JSON.stringify(http.prelude()), 0));
+        response.next(new Chunk(Buffer.alloc(8), 0));
+        http.data.on('data', (chunk: Buffer) => response.next(new Chunk(chunk, chunk.length)));
+        // DEVNOTE: EventBridge Scheduler ignores the response payload, so a failed cron request is
+        // only visible if the invocation itself fails. Erroring here marks it as a Lambda error.
+        const settle = (): void =>
+          cancelDeadline(() => {
+            if (http.status >= 400) {
+              log.warn('LambdaCronProxy Request Failed', { status: http.status, uri: this.uri.toString() });
+              response.error(new Error(`Cron request to ${this.uri.toString()} failed with status ${http.status}`));
+              return;
+            }
+            response.complete();
+          });
+        http.data.on('end', settle);
+        http.data.on('close', settle);
         http.data.on('error', (error: Error) => cancelDeadline(() => response.error(error)));
         return response;
       })

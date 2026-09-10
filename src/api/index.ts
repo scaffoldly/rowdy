@@ -21,6 +21,14 @@ export class Rowdy implements IApi {
   static readonly ROUTES = 'routes';
   static readonly VERSION = 'version';
 
+  static readonly CRON = 'cron';
+
+  static readonly HEADERS = {
+    // DEVNOTE: A trusted signal. Rowdy strips any inbound value, so its presence proves the
+    // request originated from one of this deployment's own schedules.
+    CRON: 'x-rowdy-cron',
+  };
+
   static readonly PREFIXES = {
     CRI: `/${Rowdy.SLUG}/${Rowdy.CRI}`,
   };

@@ -38,7 +38,20 @@ import {
   ListAliasesCommandInput,
   ListAliasesCommand,
 } from '@aws-sdk/client-lambda';
+import {
+  SchedulerClient,
+  CreateScheduleGroupCommand,
+  DeleteScheduleGroupCommand,
+  ListSchedulesCommand,
+  ListSchedulesCommandInput,
+  CreateScheduleCommand,
+  UpdateScheduleCommand,
+  DeleteScheduleCommand,
+  FlexibleTimeWindowMode,
+  ScheduleState,
+} from '@aws-sdk/client-scheduler';
 import { PolicyDocument, Statement } from 'aws-lambda';
+import { createHash } from 'crypto';
 import { LambdaImageService } from './image';
 import { Image, Transfer } from '../../api/internal/transfer';
 import {
@@ -68,6 +81,7 @@ import {
 import promiseRetry from 'promise-retry';
 import { inspect } from 'util';
 import { Environment, Routes } from '../..';
+import { Crontab } from '../../routes';
 import { TPulledImage } from '../../api/types';
 
 const TAG_KEY_REGEX = /^(?!aws:)[A-Za-z0-9 _.:\-=+@]{1,128}$/;
@@ -86,6 +100,12 @@ export const tagify = (prefix: string, map?: object) =>
     },
     {} as Record<string, string>
   );
+
+// DEVNOTE: Content-addressed, so an edited line becomes a new schedule and the old one is
+// reconciled away. Schedule names are limited to 64 characters.
+const scheduleName = (line: string): string => createHash('sha256').update(line).digest('hex').slice(0, 16);
+
+const isNotFound = (error: unknown): boolean => (error as { name?: string })?.name === 'ResourceNotFoundException';
 
 const isSubset = (subset: Record<string, string>, superset: Record<string, string>): boolean => {
   for (const key of Object.keys(subset)) {
@@ -159,6 +179,7 @@ const pullImage = (
 export class LambdaFunction implements Logger {
   private iam = new IAMClient({ logger: this });
   private lambda = new LambdaClient({ logger: this });
+  private scheduler = new SchedulerClient({ logger: this });
 
   private type: 'Sandbox' | 'Container';
   private deleting: boolean = false;
@@ -519,6 +540,7 @@ export class LambdaFunction implements Logger {
       Action: [
         'ecr:*',
         'lambda:*',
+        'scheduler:*',
         'iam:CreateRole',
         'iam:DeleteRole',
         'iam:DeleteRolePolicy',
@@ -557,6 +579,102 @@ export class LambdaFunction implements Logger {
     }
     if (!value) delete this.State[key];
     return this;
+  }
+
+  // DEVNOTE: Throws on an unparseable line, which fails the deploy rather than silently dropping
+  // a schedule.
+  private get Crontab(): Crontab[] {
+    return this.Routes.getValue().intoCrontab();
+  }
+
+  // One schedule group per function, named after it. Both are limited to 64 characters over the
+  // same charset, so the function name is always a legal group name.
+  private groupName(FunctionArn: string): string {
+    return FunctionArn.split(':').pop()!;
+  }
+
+  private schedules(GroupName: string): Observable<{ Name?: string }> {
+    const input: ListSchedulesCommandInput = { GroupName };
+    return defer(() => this.scheduler.send(new ListSchedulesCommand(input))).pipe(
+      expand((page) =>
+        page.NextToken
+          ? from(this.scheduler.send(new ListSchedulesCommand({ ...input, NextToken: page.NextToken })))
+          : EMPTY
+      ),
+      mergeMap((page) => page.Schedules ?? [], Environment.CONCURRENCY)
+    );
+  }
+
+  private reconcileSchedules(
+    FunctionArn: string,
+    AliasArn: string,
+    RoleArn: string,
+    Tags: Record<string, string>
+  ): Observable<MetadataBearer> {
+    const GroupName = this.groupName(FunctionArn);
+    const crontab = this.Crontab;
+
+    if (!crontab.length) {
+      // Deleting the group deletes the schedules within it.
+      return from(
+        this.scheduler.send(new DeleteScheduleGroupCommand({ Name: GroupName })).catch((error) => {
+          if (isNotFound(error)) return { $metadata: {} };
+          throw error;
+        })
+      );
+    }
+
+    const desired = crontab.map((cron) => ({ cron, Name: scheduleName(cron.line) }));
+
+    const upsert = (Name: string, cron: Crontab): Promise<MetadataBearer> => {
+      const input = {
+        Name,
+        GroupName,
+        Description: cron.line,
+        ScheduleExpression: cron.expression,
+        ScheduleExpressionTimezone: 'UTC',
+        FlexibleTimeWindow: { Mode: FlexibleTimeWindowMode.OFF },
+        State: ScheduleState.ENABLED,
+        Target: {
+          // DEVNOTE: The alias ARN, so a new deploy is picked up without touching the schedule.
+          Arn: AliasArn,
+          RoleArn,
+          Input: JSON.stringify(cron.intoSchema()),
+          // DEVNOTE: Scheduler retries for up to 24 hours by default, which is wrong for a
+          // recurring job. The next tick is the retry.
+          RetryPolicy: { MaximumRetryAttempts: 0 },
+        },
+      };
+
+      return this.scheduler.send(new UpdateScheduleCommand(input)).catch((error) => {
+        if (isNotFound(error)) return this.scheduler.send(new CreateScheduleCommand(input));
+        throw error;
+      });
+    };
+
+    return from(
+      this.scheduler
+        .send(
+          new CreateScheduleGroupCommand({
+            Name: GroupName,
+            Tags: Object.entries(Tags).map(([Key, Value]) => ({ Key, Value })),
+          })
+        )
+        .catch((error) => {
+          if ((error as { name?: string })?.name === 'ConflictException') return { $metadata: {} };
+          throw error;
+        })
+    ).pipe(
+      switchMap(() => this.schedules(GroupName).pipe(toArray())),
+      switchMap((existing) =>
+        concat(
+          ...existing
+            .filter(({ Name }) => !!Name && !desired.some((d) => d.Name === Name))
+            .map(({ Name }) => from(this.scheduler.send(new DeleteScheduleCommand({ GroupName, Name })))),
+          ...desired.map(({ Name, cron }) => from(upsert(Name, cron)))
+        )
+      )
+    );
   }
 
   observe(): Observable<this> {
@@ -607,6 +725,12 @@ export class LambdaFunction implements Logger {
     tags: Observable<MetadataBearer>[];
     deletes: Observable<MetadataBearer>[];
   } {
+    // DEVNOTE: Parse and translate every crontab line up front, so a typo, or a schedule that
+    // EventBridge cannot express, fails the deploy with the line quoted rather than silently
+    // dropping the schedule.
+    const crontab = this.Crontab.map((cron) => cron.expression);
+    this.log.debug(`prepare(crontab=${crontab.length})`);
+
     const _functionName = (roleId: string, name?: string) => {
       const _sanitize = (s: string) => s.replace(/[^a-zA-Z0-9_-]/g, '_');
       return _sanitize(name || roleId);
@@ -747,6 +871,16 @@ export class LambdaFunction implements Logger {
       ),
     ];
 
+    // DEVNOTE: Only containers reconcile schedules, so only they can have a group to clean up.
+    const deleteScheduleGroup = this.FunctionArn.pipe(take(1)).pipe(
+      switchMap((FunctionArn) =>
+        this.scheduler.send(new DeleteScheduleGroupCommand({ Name: this.groupName(FunctionArn!) })).catch((error) => {
+          if (isNotFound(error)) return { $metadata: {} };
+          throw error;
+        })
+      )
+    );
+
     const deletes = this.isSandbox()
       ? [
           // Full delete for sandboxes
@@ -784,6 +918,7 @@ export class LambdaFunction implements Logger {
           ),
         ]
       : [
+          deleteScheduleGroup,
           // Partial delete for containers
           this.AliasArn.pipe(take(1)).pipe(
             map((aliasArn) => {
@@ -810,6 +945,10 @@ export class LambdaFunction implements Logger {
       combineLatest({
         RoleName: this.RoleName.pipe(take(1)),
         RoleStatements: this.RoleStatements.pipe(take(1)),
+        // DEVNOTE: Unused here, but RolePolicyDocument reads them off State to scope the
+        // scheduler's invoke permission, so the policy cannot be written before they exist.
+        FunctionArn: this.FunctionArn.pipe(take(1)),
+        Qualifier: this.Qualifier.pipe(take(1)),
       }).pipe(
         map(({ RoleName, RoleStatements }) => {
           const RolePolicyDocument = this.RolePolicyDocument;
@@ -1064,6 +1203,17 @@ export class LambdaFunction implements Logger {
             )
         )
       ),
+      // EventBridge Schedules
+      combineLatest({
+        FunctionArn: this.FunctionArn.pipe(take(1)),
+        AliasArn: this.AliasArn.pipe(take(1)),
+        RoleArn: this.RoleArn.pipe(take(1)),
+        Tags: this.Tags.pipe(take(1)),
+      }).pipe(
+        switchMap(({ FunctionArn, AliasArn, RoleArn, Tags }) =>
+          this.reconcileSchedules(FunctionArn!, AliasArn!, RoleArn!, Tags)
+        )
+      ),
     ];
 
     return { creates, updates, tags, deletes };
@@ -1116,6 +1266,18 @@ export class LambdaFunction implements Logger {
         },
       ],
     };
+
+    if (this.Crontab.length) {
+      // DEVNOTE: Schedules invoke the function with the function's own execution role.
+      document.Statement.push({
+        Effect: 'Allow',
+        Principal: {
+          Service: 'scheduler.amazonaws.com',
+        },
+        Action: 'sts:AssumeRole',
+      });
+    }
+
     return document;
   }
 
@@ -1144,6 +1306,18 @@ export class LambdaFunction implements Logger {
         },
       ],
     };
+
+    const { FunctionArn, Qualifier } = this.State;
+
+    if (this.Crontab.length && FunctionArn) {
+      // DEVNOTE: What a schedule's Target.RoleArn uses to invoke this function.
+      document.Statement.push({
+        Effect: 'Allow',
+        Action: 'lambda:InvokeFunction',
+        Resource: Qualifier ? [FunctionArn, `${FunctionArn}:${Qualifier}`] : [FunctionArn],
+      });
+    }
+
     return document;
   }
 }
