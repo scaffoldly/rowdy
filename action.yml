@@ -31,7 +31,7 @@ inputs:
     required: false
     default: "false"
   routes:
-    description: "Path to the routes configuration file."
+    description: "Path to, or inline YAML/JSON of, a Routes manifest."
     required: false
     default: ""
   secrets:
