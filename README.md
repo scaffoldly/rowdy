@@ -13,7 +13,7 @@ job requires `id-token: write` and an `AWS_ROLE_ARN` in its environment:
 ```yaml
 permissions:
   id-token: write
-  packages: write
+  packages: write # for the docker/build-push-action step that usually precedes the deploy
 
 env:
   AWS_ROLE_ARN: ${{ vars.AWS_ROLE_ARN }}
@@ -50,7 +50,7 @@ the environment if set and `us-east-1` otherwise.
 | `cloud`   | yes      |                          | Cloud provider. `aws` today.                                                                                                                                    |
 | `compute` | yes      |                          | Compute type. `lambda` today.                                                                                                                                   |
 | `image`   | yes      |                          | Container image to deploy, such as `ghcr.io/owner/repo@sha256:…`.                                                                                               |
-| `name`    | no       | random                   | Application name. Becomes the function name, sanitized.                                                                                                         |
+| `name`    | no       | the execution role's id  | Application name. Becomes the function name, sanitized.                                                                                                         |
 | `command` | no       | image `ENTRYPOINT`+`CMD` | Override the command the container runs.                                                                                                                        |
 | `memory`  | no       | `256`                    | Memory for the container, in megabytes.                                                                                                                         |
 | `cri`     | no       | `false`                  | Enable the Container Runtime Interface.                                                                                                                         |
@@ -167,6 +167,7 @@ A later step hands `steps.rowdy.outputs.url` to a Cloudflare Worker as its origi
 How the app trusts the scheduled request, from
 [`src/lib/auth.ts`](https://github.com/tunnel-pizza/tunnel.pizza/blob/402e678/src/lib/auth.ts#L65-L75):
 
+<!-- prettier-ignore -->
 ```ts
 /**
  * Rowdy sets X-Rowdy-Cron on requests it originates from a spec.crontab
@@ -177,7 +178,7 @@ How the app trusts the scheduled request, from
  * from one of this deployment's own schedules.
  */
 export function fromRowdyCron(headers: Headers): boolean {
-  return headers.has('x-rowdy-cron');
+  return headers.has("x-rowdy-cron");
 }
 ```
 
@@ -214,12 +215,13 @@ The schedule is visible with the AWS CLI, and a forged header proves the strip:
 ```sh
 aws scheduler list-schedules --group-name <function-name>
 
-curl -si -X POST -H 'x-rowdy-cron: forged' https://<your-app>/tunnel/gc   # 401
+curl -si -X POST -H 'x-rowdy-cron: forged' https://<your-app>/<your-cron-path>
 ```
 
-If the endpoint answers `401` with the header exactly as it does without, the header never reached
-the app. The function's logs show the same thing from the inside: `Received invocation` lists the
-inbound headers, and `Local Http Proxy` lists what was forwarded.
+The expected answer is whatever the endpoint returns to an unauthenticated caller. If it answers
+the same with the header as without, the header never reached the app. The function's logs show
+the same thing from the inside, at debug level, which the Action enables by default:
+`Received invocation` lists the inbound headers, and `Local Http Proxy` lists what was forwarded.
 
 For tunnel.pizza, the app's own status feed was the final check: managed tunnels went 14 to 8 at
 the first tick, with no other sweep running.

@@ -42,7 +42,8 @@
     "lint:fix": "eslint . --fix",
     "jest": "NODE_OPTIONS='--experimental-vm-modules --trace-warnings' jest",
     "test": "yarn jest -- --testTimeout=30000 --verbose",
-    "rowdy": "tsx src/index.ts"
+    "rowdy": "tsx src/index.ts",
+    "claude:aws:creds": "saml-to assume tunnel.pizza --headless"
   },
   "prettier": {
     "semi": true,
