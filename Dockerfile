@@ -6,7 +6,8 @@ WORKDIR /work
 COPY package.json /work/package.json
 COPY yarn.lock /work/yarn.lock
 
-RUN yarn install --frozen-lockfile
+RUN --mount=type=cache,id=yarn,target=/usr/local/share/.cache/yarn \
+    yarn install --frozen-lockfile
 
 FROM node:22-alpine AS build
 ENV PKG_CACHE_PATH=/usr/local/share/.cache/pkg

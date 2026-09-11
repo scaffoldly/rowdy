@@ -14,6 +14,14 @@ on:
 
 permissions: write-all
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  # DEVNOTE: Never cancel a run on main out from under a publish.
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+env:
+  GHCR_IMAGE: ghcr.io/${{ github.repository }}
+
 jobs:
   quality-checks:
     runs-on: ubuntu-latest
@@ -69,14 +77,19 @@ jobs:
         with:
           fail_ci_if_error: false
 
-  prerelease:
-    runs-on: ubuntu-latest
+  version:
+    runs-on: ubuntu-24.04
     needs: [quality-checks, unit-tests]
-    name: Pre-release to NPM & GHCR
+    name: Generate Pre-release Version
     if: |
       success() &&
       github.event_name != 'pull_request_target' &&
       !contains(github.event.head_commit.message, '[skip-prerelease]')
+
+    outputs:
+      name: ${{ steps.version.outputs.name }}
+      version: ${{ steps.version.outputs.version }}
+      current: ${{ steps.version.outputs.current }}
 
     steps:
       - name: Checkout code
@@ -86,30 +99,6 @@ jobs:
         uses: actions/setup-node@v6
         with:
           node-version: 22.x
-          cache: 'yarn'
-          registry-url: 'https://registry.npmjs.org'
-
-      - name: Login to DockerHub
-        uses: docker/login-action@v3
-        with:
-          username: ${{ github.repository_owner }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
-
-      - name: Login to GitHub Container Registry
-        uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Install dependencies
-        run: yarn
 
       - name: Generate pre-release version
         id: version
@@ -123,55 +112,187 @@ jobs:
           echo "version=${PRERELEASE_VERSION}" >> $GITHUB_OUTPUT
           echo "current=${CURRENT_VERSION}" >> $GITHUB_OUTPUT
 
+  npm:
+    runs-on: ubuntu-24.04
+    needs: [version]
+    name: Pre-release to NPM
+    if: github.ref == 'refs/heads/main'
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Use Node.js 22.x
+        uses: actions/setup-node@v6
+        with:
+          node-version: 22.x
+          cache: 'yarn'
+          registry-url: 'https://registry.npmjs.org'
+
+      - name: Install dependencies
+        run: yarn
+
+      - name: Update package.json version
+        run: yarn version --new-version ${{ needs.version.outputs.version }} --no-git-tag-version
+
+      - name: Publish pre-release to NPM
+        run: yarn publish --tag beta --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+  image:
+    needs: [version]
+    name: Build Image (${{ matrix.platform }})
+
+    # DEVNOTE: One native runner per platform. Building linux/arm64 through QEMU meant emulating
+    # `yarn install` over the whole AWS SDK tree and then `pkg`, which took well over half an hour.
+    runs-on: ${{ matrix.runner }}
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux/amd64
+            runner: ubuntu-24.04
+          - platform: linux/arm64
+            runner: ubuntu-24.04-arm
+
+    steps:
+      - name: Prepare platform slug
+        id: platform
+        run: echo "slug=${PLATFORM//\//-}" >> $GITHUB_OUTPUT
+        env:
+          PLATFORM: ${{ matrix.platform }}
+
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # DEVNOTE: jq rather than `yarn version`, so the build runners need nothing but Docker.
       - name: Update package.json version
         run: |
-          yarn version --new-version ${{ steps.version.outputs.version }} --no-git-tag-version
+          jq '.version = "${{ needs.version.outputs.version }}"' package.json > package.json.tmp
+          mv package.json.tmp package.json
+
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: docker/metadata-action@v5
+        id: meta
+        with:
+          images: ${{ env.GHCR_IMAGE }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      # DEVNOTE: Each platform pushes an untagged image and reports its digest. The merge job
+      # assembles those digests into the manifest list that carries the tags.
+      - name: Build and push by digest
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: ${{ matrix.platform }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha,scope=${{ steps.platform.outputs.slug }}
+          cache-to: type=gha,mode=max,scope=${{ steps.platform.outputs.slug }}
+          pull: true
+          outputs: type=image,name=${{ env.GHCR_IMAGE }},push-by-digest=true,name-canonical=true,push=true
+
+      - name: Export digest
+        run: |
+          mkdir -p ${{ runner.temp }}/digests
+          digest="${{ steps.build.outputs.digest }}"
+          touch "${{ runner.temp }}/digests/${digest#sha256:}"
+
+      - name: Upload digest
+        uses: actions/upload-artifact@v4
+        with:
+          name: digests-${{ steps.platform.outputs.slug }}
+          path: ${{ runner.temp }}/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  publish-image:
+    runs-on: ubuntu-24.04
+    needs: [version, image]
+    name: Publish Image
+
+    steps:
+      - name: Download digests
+        uses: actions/download-artifact@v4
+        with:
+          path: ${{ runner.temp }}/digests
+          pattern: digests-*
+          merge-multiple: true
+
+      - name: Login to DockerHub
+        if: ${{ github.ref == 'refs/heads/main' }}
+        uses: docker/login-action@v3
+        with:
+          username: ${{ github.repository_owner }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
 
       - uses: docker/metadata-action@v5
         id: meta
         with:
           images: |
-            ghcr.io/${{ github.repository }}
+            ${{ env.GHCR_IMAGE }}
             ${{ github.ref == 'refs/heads/main' && github.repository || '' }}
           tags: |
             type=ref,event=pr
-            type=raw,value=${{ steps.version.outputs.version }}
+            type=raw,value=${{ needs.version.outputs.version }}
             type=raw,value=beta,enable=${{ github.ref == 'refs/heads/main' }}
             type=sha
 
-      - name: Publish pre-release to NPM
-        if: ${{ github.ref == 'refs/heads/main' }}
-        run: yarn publish --tag beta --access public
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+      # DEVNOTE: imagetools copies the GHCR digests into DockerHub when that tag is in the list,
+      # so only the matrix jobs have to push, and only to one registry.
+      - name: Create manifest list and push
+        working-directory: ${{ runner.temp }}/digests
+        run: |
+          ARGS=()
+          while IFS= read -r tag; do ARGS+=(-t "$tag"); done < <(jq -r '.tags[]' <<< "$DOCKER_METADATA_OUTPUT_JSON")
+          for digest in *; do ARGS+=("${GHCR_IMAGE}@sha256:${digest}"); done
+          docker buildx imagetools create "${ARGS[@]}"
 
-      - uses: docker/build-push-action@v6
-        with:
-          context: .
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          platforms: linux/amd64,linux/arm64
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-          pull: true
-          push: true
+      - name: Inspect image
+        run: docker buildx imagetools inspect ${{ env.GHCR_IMAGE }}:${{ needs.version.outputs.version }}
 
+  summary:
+    runs-on: ubuntu-24.04
+    needs: [version, npm, publish-image]
+    name: Pre-release Summary
+    if: ${{ github.ref == 'refs/heads/main' }}
+
+    steps:
       - name: Create pre-release summary
-        if: ${{ github.ref == 'refs/heads/main' }}
         run: |
           echo "## 🚀 Pre-release Published" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "**Package:** ${{ steps.version.outputs.name }}" >> $GITHUB_STEP_SUMMARY
-          echo "**Version:** ${{ steps.version.outputs.version }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Package:** ${{ needs.version.outputs.name }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Version:** ${{ needs.version.outputs.version }}" >> $GITHUB_STEP_SUMMARY
           echo "**Tag:** beta" >> $GITHUB_STEP_SUMMARY
           echo "**Commit:** ${GITHUB_SHA:0:7}" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "### 📦 NPM Package" >> $GITHUB_STEP_SUMMARY
           echo "Install the pre-release version:" >> $GITHUB_STEP_SUMMARY
           echo '```bash' >> $GITHUB_STEP_SUMMARY
-          echo "npm install ${{ steps.version.outputs.name }}@beta" >> $GITHUB_STEP_SUMMARY
+          echo "npm install ${{ needs.version.outputs.name }}@beta" >> $GITHUB_STEP_SUMMARY
           echo "# or specific version:" >> $GITHUB_STEP_SUMMARY
-          echo "npm install ${{ steps.version.outputs.name }}@${{ steps.version.outputs.version }}" >> $GITHUB_STEP_SUMMARY
+          echo "npm install ${{ needs.version.outputs.name }}@${{ needs.version.outputs.version }}" >> $GITHUB_STEP_SUMMARY
           echo '```' >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "### 🐳 Docker Image" >> $GITHUB_STEP_SUMMARY
@@ -179,7 +300,7 @@ jobs:
           echo '```bash' >> $GITHUB_STEP_SUMMARY
           echo "docker pull ghcr.io/${{ github.repository }}:beta" >> $GITHUB_STEP_SUMMARY
           echo "# or specific version:" >> $GITHUB_STEP_SUMMARY
-          echo "docker pull ghcr.io/${{ github.repository }}:${{ steps.version.outputs.version }}" >> $GITHUB_STEP_SUMMARY
+          echo "docker pull ghcr.io/${{ github.repository }}:${{ needs.version.outputs.version }}" >> $GITHUB_STEP_SUMMARY
           echo '```' >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "**Note:** Add \`[skip-prerelease]\` to commit message to skip pre-release publishing." >> $GITHUB_STEP_SUMMARY
