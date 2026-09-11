@@ -17,6 +17,15 @@ spec:
     '/api{/*path}': 'http://localhost:8080/api/*path'
 ```
 
+The `apiVersion` / `kind` / `spec` wrapper is optional. A bare spec is accepted as shorthand for
+the full manifest, which keeps an inline `with.routes` short:
+
+```yaml
+default: 'http://localhost:3000/'
+crontab:
+  - '*/15 * * * * POST http://localhost:3000/tunnel/gc'
+```
+
 A path that turns out not to exist falls back to the default routes. An inline manifest that fails
 to parse or validate throws, since it cannot be a missing file.
 

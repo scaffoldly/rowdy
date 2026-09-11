@@ -465,12 +465,29 @@ export class Routes implements IRoutes, ILoggable {
       trimmed.includes('\n') ||
       trimmed.startsWith('{') ||
       trimmed.startsWith('---') ||
-      trimmed.startsWith('apiVersion:')
+      trimmed.startsWith('apiVersion:') ||
+      Routes.SPEC_KEYS.some((key) => trimmed.startsWith(`${key}:`))
     );
   }
 
+  private static readonly SPEC_KEYS: Array<keyof RoutesSpec> = ['default', 'paths', 'crontab'];
+
+  // A document with no apiVersion / kind / spec, but at least one spec field, is a bare spec.
+  private static isSpec(obj: object): obj is RoutesSpec {
+    if ('apiVersion' in obj || 'kind' in obj || 'spec' in obj) {
+      return false;
+    }
+    return Routes.SPEC_KEYS.some((key) => key in obj);
+  }
+
   static fromSchema(schema: unknown): Routes {
-    const routes = (schema || {}) as Partial<RoutesSchema>;
+    let routes = (schema || {}) as Partial<RoutesSchema>;
+
+    // DEVNOTE: A bare spec is shorthand for the full manifest, so an inline `with.routes` need
+    // not repeat the apiVersion / kind boilerplate. A present-but-wrong apiVersion still throws.
+    if (Routes.isSpec(routes)) {
+      routes = { apiVersion: 'rowdy.run/v1alpha1', kind: 'Routes', spec: routes, status: undefined };
+    }
 
     if (routes.apiVersion !== 'rowdy.run/v1alpha1') {
       throw new Error(`Unsupported routes version: ${routes.apiVersion}`);

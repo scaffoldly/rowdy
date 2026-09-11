@@ -144,6 +144,40 @@ spec:
     expect(routes.intoURI('/bar')!.toString()).toBe('http://localhost:3000/bar');
   });
 
+  it('should accept a bare spec as shorthand', () => {
+    const routes = Routes.fromURL(`default: "http://localhost:3000/"
+crontab:
+  - "*/15 * * * * POST http://localhost:3000/tunnel/gc"
+`);
+    expect(routes.intoURI('/bar')!.toString()).toBe('http://localhost:3000/bar');
+    expect(routes.crontab).toEqual(['*/15 * * * * POST http://localhost:3000/tunnel/gc']);
+  });
+
+  it('should accept a bare spec as json', () => {
+    const routes = Routes.fromURL(JSON.stringify({ paths: { '/foo': 'http://localhost:8080/foo' } }));
+    expect(routes.intoURI('/foo')!.toString()).toBe('http://localhost:8080/foo');
+    expect(routes.intoURI('/bar')!.toString()).toBe('rowdy://http:404/bar');
+  });
+
+  it('should accept a single-line bare spec', () => {
+    const routes = Routes.fromURL('default: http://localhost:3000/');
+    expect(routes.intoURI('/bar')!.toString()).toBe('http://localhost:3000/bar');
+  });
+
+  it('should accept a bare spec from a file', () => {
+    const file = `${tmpdir()}/routes-bare-${Date.now()}.yaml`;
+    writeFileSync(file, 'paths:\n  "/foo": "http://localhost:8080/foo"\n');
+    expect(Routes.fromPath(file).intoURI('/foo')!.toString()).toBe('http://localhost:8080/foo');
+  });
+
+  it('should not treat an empty or unrelated document as a spec', () => {
+    expect(() => Routes.fromSchema({})).toThrow('Unsupported routes version: undefined');
+    expect(() => Routes.fromSchema({ foo: 'bar' })).toThrow('Unsupported routes version: undefined');
+    expect(() => Routes.fromSchema({ apiVersion: 'rowdy.run/v2', default: 'http://localhost/' })).toThrow(
+      'Unsupported routes version: rowdy.run/v2'
+    );
+  });
+
   it('should throw when an inline manifest is unparseable', () => {
     expect(() => Routes.fromURL('apiVersion: rowdy.run/v1alpha1\nkind: Routes\nspec: [')).toThrow();
   });
