@@ -6,7 +6,7 @@ branding:
   color: gray-dark
 inputs:
   name:
-    description: "The name of the application. (Default: a random name)"
+    description: "The name of the application. (Default: the execution role's id)"
     required: false
     default: ""
   cloud:

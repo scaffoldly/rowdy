@@ -12,7 +12,7 @@ an `AWS_ROLE_ARN` in its environment:
 ```yaml
 permissions:
   id-token: write
-  packages: write
+  packages: write # for the docker/build-push-action step that usually precedes the deploy
 
 env:
   AWS_ROLE_ARN: ${{ vars.AWS_ROLE_ARN }}
@@ -49,7 +49,7 @@ the environment if set and `us-east-1` otherwise.
 | `cloud`   | yes      |                          | Cloud provider. `aws` today.                                                                                                                                                                                                     |
 | `compute` | yes      |                          | Compute type. `lambda` today.                                                                                                                                                                                                    |
 | `image`   | yes      |                          | Container image to deploy, such as `ghcr.io/owner/repo@sha256:…`.                                                                                                                                                                |
-| `name`    | no       | random                   | Application name. Becomes the function name, sanitized.                                                                                                                                                                          |
+| `name`    | no       | the execution role's id  | Application name. Becomes the function name, sanitized.                                                                                                                                                                          |
 | `command` | no       | image `ENTRYPOINT`+`CMD` | Override the command the container runs.                                                                                                                                                                                         |
 | `memory`  | no       | `256`                    | Memory for the container, in megabytes.                                                                                                                                                                                          |
 | `cri`     | no       | `false`                  | Enable the Container Runtime Interface.                                                                                                                                                                                          |
@@ -65,9 +65,9 @@ the environment if set and `us-east-1` otherwise.
 A `crontab` list in `routes` runs the container on a schedule. Each line is a POSIX crontab
 schedule, an optional HTTP method, and a URI the request is sent to inside the container. On AWS
 each line becomes an EventBridge Scheduler schedule targeting the function. The request arrives
-with `X-Rowdy-Cron` set to the line that triggered it, and rowdy strips that header from every
-Function URL request, so an app can treat its presence as proof the request came from its own
-schedule. The full grammar, the trust argument, and the deployer permissions are in
+with `X-Rowdy-Cron` set to the line that triggered it. Rowdy strips that header from every
+Function URL request, and a raw invocation needs an in-account IAM principal, so an app can treat
+its presence as proof the request came from its own schedule. The full grammar, the trust argument, and the deployer permissions are in
 [Scheduled requests](https://github.com/scaffoldly/rowdy/blob/main/README.md#scheduled-requests)
 on `main`.
 
@@ -126,8 +126,8 @@ To check a deploy of your own:
 ```sh
 aws scheduler list-schedules --group-name <function-name>
 
-curl -si -X POST -H 'x-rowdy-cron: forged' https://<your-app>/tunnel/gc   # 401
+curl -si -X POST -H 'x-rowdy-cron: forged' https://<your-app>/<your-cron-path>
 ```
 
-If the endpoint answers `401` with the header exactly as it does without, the header never reached
-the app.
+The expected answer is whatever the endpoint returns to an unauthenticated caller. If it answers
+the same with the header as without, the header never reached the app.
