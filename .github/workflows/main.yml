@@ -118,6 +118,12 @@ jobs:
     name: Pre-release to NPM
     if: github.ref == 'refs/heads/main'
 
+    # DEVNOTE: Publishes with npm trusted publishing (OIDC), configured on npmjs.com for this
+    # repository and main.yml. The ID token replaces NPM_TOKEN.
+    permissions:
+      contents: read
+      id-token: write
+
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -135,10 +141,13 @@ jobs:
       - name: Update package.json version
         run: yarn version --new-version ${{ needs.version.outputs.version }} --no-git-tag-version
 
+      # DEVNOTE: Trusted publishing needs npm >= 11.5.1, which Node 22 doesn't ship, and yarn 1
+      # can't exchange the OIDC token at all, so this is npm rather than `yarn publish`.
+      - name: Update npm
+        run: npm install -g npm@latest
+
       - name: Publish pre-release to NPM
-        run: yarn publish --tag beta --access public
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: npm publish --tag beta --access public
 
   image:
     needs: [version]
