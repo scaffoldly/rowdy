@@ -20,7 +20,7 @@
     "@aws-sdk/util-utf8-browser" "^3.0.0"
     tslib "^1.11.1"
 
-"@aws-sdk/client-ecr@^3.891.0":
+"@aws-sdk/client-ecr@^3.1144.0":
   version "3.1144.0"
   resolved "https://registry.yarnpkg.com/@aws-sdk/client-ecr/-/client-ecr-3.1144.0.tgz#62df54c758a8d218bec7d77469e1daf2cfbaccd4"
   integrity sha512-IDi0QjHrolO2g+aA5NawvVjFzta0lwUF6Vas8awrnzJk5EUH0BALJzzGyUpGXRUoGLK5VXsA8YSBKY/4n9RU5w==
@@ -34,7 +34,7 @@
     "@smithy/types" "^4.19.0"
     tslib "^2.6.2"
 
-"@aws-sdk/client-iam@^3.891.0":
+"@aws-sdk/client-iam@^3.1144.0":
   version "3.1144.0"
   resolved "https://registry.yarnpkg.com/@aws-sdk/client-iam/-/client-iam-3.1144.0.tgz#08001edd67eb6daa55355766e2bb887fab40825b"
   integrity sha512-EExWx9Y1M5ZawtrraNni+EAXzuWNxDuULqFnuoKtsBQqLKO1Qlak+tgmnriVtFS5LT7uk4t6nyK4ubXuABFVVg==
@@ -48,7 +48,7 @@
     "@smithy/types" "^4.19.0"
     tslib "^2.6.2"
 
-"@aws-sdk/client-lambda@^3.891.0":
+"@aws-sdk/client-lambda@^3.1144.0":
   version "3.1144.0"
   resolved "https://registry.yarnpkg.com/@aws-sdk/client-lambda/-/client-lambda-3.1144.0.tgz#0e296a297c8c8a1c56e54bd1bc2857e95b88acdc"
   integrity sha512-EgkYatgp/AoQN1OiTzezN+eH5D2X5jrzlhPdOUcAPFj85RIMx9NJkZINKsQjL4lUyq0hkGu0NRt3UlwkoLA2Dg==
@@ -62,7 +62,7 @@
     "@smithy/types" "^4.19.0"
     tslib "^2.6.2"
 
-"@aws-sdk/client-scheduler@^3.891.0":
+"@aws-sdk/client-scheduler@^3.1144.0":
   version "3.1144.0"
   resolved "https://registry.yarnpkg.com/@aws-sdk/client-scheduler/-/client-scheduler-3.1144.0.tgz#687e9773907a44a5ff387a97f5a3764fa2fe26bb"
   integrity sha512-MCHAsNMISYgOC9v44XOILiBQZKc1wEviCQ8my7T5YIh7h2QCoKRhodRRyCOUd4qONCQWi0lmZQF9hNsXl97k9Q==
@@ -76,7 +76,7 @@
     "@smithy/types" "^4.19.0"
     tslib "^2.6.2"
 
-"@aws-sdk/client-secrets-manager@^3.891.0":
+"@aws-sdk/client-secrets-manager@^3.1144.0":
   version "3.1144.0"
   resolved "https://registry.yarnpkg.com/@aws-sdk/client-secrets-manager/-/client-secrets-manager-3.1144.0.tgz#27029240152d419f816c383622a7cac41cd4e479"
   integrity sha512-MaRpfTSKtwhpEd39oiYi5ntCCnXsOlrYsYUspK/3L86+n4aMuSwJ/NbLUXc4XmAoEemG716U4CLU2G1Z86mSxw==
@@ -90,7 +90,7 @@
     "@smithy/types" "^4.19.0"
     tslib "^2.6.2"
 
-"@aws-sdk/client-sts@^3.891.0":
+"@aws-sdk/client-sts@^3.1144.0":
   version "3.1144.0"
   resolved "https://registry.yarnpkg.com/@aws-sdk/client-sts/-/client-sts-3.1144.0.tgz#861f6bd7c93a2c118722a381f1a67cb30cd73171"
   integrity sha512-54Tn8DqDn7rX0ZEQzR8uhBrhlid93OiQgv72L3v1xFwrnsOxISeng3DzP5lngi7kTKHcgi7QAZR5ePgi36vxlw==

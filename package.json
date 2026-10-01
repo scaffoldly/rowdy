@@ -80,12 +80,12 @@
     ]
   },
   "devDependencies": {
-    "@aws-sdk/client-ecr": "^3.891.0",
-    "@aws-sdk/client-iam": "^3.891.0",
-    "@aws-sdk/client-lambda": "^3.891.0",
-    "@aws-sdk/client-scheduler": "^3.891.0",
-    "@aws-sdk/client-secrets-manager": "^3.891.0",
-    "@aws-sdk/client-sts": "^3.891.0",
+    "@aws-sdk/client-ecr": "^3.1144.0",
+    "@aws-sdk/client-iam": "^3.1144.0",
+    "@aws-sdk/client-lambda": "^3.1144.0",
+    "@aws-sdk/client-scheduler": "^3.1144.0",
+    "@aws-sdk/client-secrets-manager": "^3.1144.0",
+    "@aws-sdk/client-sts": "^3.1144.0",
     "@aws-sdk/protocol-http": "^3.374.0",
     "@aws-sdk/signature-v4": "^3.374.0",
     "@bufbuild/protobuf": "^2.10.0",
