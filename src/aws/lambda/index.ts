@@ -51,7 +51,7 @@ import {
   ScheduleState,
 } from '@aws-sdk/client-scheduler';
 import { PolicyDocument, Statement } from 'aws-lambda';
-import { createHash } from 'crypto';
+import { createHash, randomUUID } from 'crypto';
 import { LambdaImageService } from './image';
 import { Image, Transfer } from '../../api/internal/transfer';
 import {
@@ -616,11 +616,15 @@ export class LambdaFunction implements Logger {
 
     if (!crontab.length) {
       // Deleting the group deletes the schedules within it.
+      // DEVNOTE: ClientToken is set explicitly because it is bound to the query string, and
+      // @smithy/core < 3.18.2 skips undefined query members before generating the token.
       return from(
-        this.scheduler.send(new DeleteScheduleGroupCommand({ Name: GroupName })).catch((error) => {
-          if (isNotFound(error)) return { $metadata: {} };
-          throw error;
-        })
+        this.scheduler
+          .send(new DeleteScheduleGroupCommand({ Name: GroupName, ClientToken: randomUUID() }))
+          .catch((error) => {
+            if (isNotFound(error)) return { $metadata: {} };
+            throw error;
+          })
       );
     }
 
@@ -874,10 +878,12 @@ export class LambdaFunction implements Logger {
     // DEVNOTE: Only containers reconcile schedules, so only they can have a group to clean up.
     const deleteScheduleGroup = this.FunctionArn.pipe(take(1)).pipe(
       switchMap((FunctionArn) =>
-        this.scheduler.send(new DeleteScheduleGroupCommand({ Name: this.groupName(FunctionArn!) })).catch((error) => {
-          if (isNotFound(error)) return { $metadata: {} };
-          throw error;
-        })
+        this.scheduler
+          .send(new DeleteScheduleGroupCommand({ Name: this.groupName(FunctionArn!), ClientToken: randomUUID() }))
+          .catch((error) => {
+            if (isNotFound(error)) return { $metadata: {} };
+            throw error;
+          })
       )
     );
 

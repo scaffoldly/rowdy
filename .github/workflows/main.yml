@@ -118,6 +118,12 @@ jobs:
     name: Pre-release to NPM
     if: github.ref == 'refs/heads/main'
 
+    # DEVNOTE: Publishes with npm trusted publishing (OIDC), configured on npmjs.com for this
+    # repository and main.yml. The exchanged OIDC token replaces NPM_TOKEN.
+    permissions:
+      contents: read
+      id-token: write
+
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -135,10 +141,32 @@ jobs:
       - name: Update package.json version
         run: yarn version --new-version ${{ needs.version.outputs.version }} --no-git-tag-version
 
+      - name: Get OIDC token
+        id: identity
+        uses: cnuss/actions-identity@v1
+        with:
+          id-token-audience: npm:registry.npmjs.org
+
+      # DEVNOTE: The OIDC token isn't an npm token. The registry exchanges it for a short-lived
+      # publish token scoped to this package, the same exchange `npm publish` does internally.
+      - name: Exchange OIDC token for npm token
+        id: npm-token
+        shell: bash
+        env:
+          ID_TOKEN: ${{ steps.identity.outputs.id-token }}
+          PACKAGE: ${{ needs.version.outputs.name }}
+        run: |
+          ESCAPED=${PACKAGE//\//%2f}
+          TOKEN=$(curl -sSf -X POST \
+            -H "Authorization: Bearer ${ID_TOKEN}" \
+            "https://registry.npmjs.org/-/npm/v1/oidc/token/exchange/package/${ESCAPED}" | jq -er .token)
+          echo "::add-mask::${TOKEN}"
+          echo "token=${TOKEN}" >> $GITHUB_OUTPUT
+
       - name: Publish pre-release to NPM
         run: yarn publish --tag beta --access public
         env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          NODE_AUTH_TOKEN: ${{ steps.npm-token.outputs.token }}
 
   image:
     needs: [version]
