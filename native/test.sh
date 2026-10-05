@@ -104,4 +104,82 @@ echo "fopen: ok"
 # off switch: without the preload, /vfs does not exist
 env -u LD_PRELOAD sh -c '[ ! -e /vfs ]' || fail "/vfs visible without preload"
 env -u LD_PRELOAD sh -c '[ -d /tmp/vfsstore ]' || fail "backing dir missing"
+
+# supervisor socket tests
+cat > /tmp/server.js <<'SRV'
+const net = require("net");
+const fs = require("fs");
+try { fs.unlinkSync("/tmp/vfs.sock"); } catch(e) {}
+net.createServer(c => {
+  let buf = "";
+  c.on("data", d => {
+    buf += d.toString();
+    let nl;
+    while ((nl = buf.indexOf("\n")) >= 0) {
+      const line = buf.slice(0, nl);
+      buf = buf.slice(nl + 1);
+      const req = JSON.parse(line);
+      const path = req.path || req.from || "";
+      fs.appendFileSync("/tmp/ops.log", req.op + " " + path + "\n");
+      if (path.includes("denied")) {
+        c.write('{"ok":false,"errno":13}\n');
+      } else if (req.op === "flush" && path.includes("flushfail")) {
+        c.write('{"ok":false,"errno":5}\n');
+      } else {
+        c.write('{"ok":true}\n');
+      }
+    }
+  });
+}).listen("/tmp/vfs.sock");
+SRV
+node /tmp/server.js &
+SRVPID=$!
+sleep 0.2
+
+export VFS_SOCKET=/tmp/vfs.sock
+rm -f /tmp/ops.log
+
+if cat /vfs/denied 2>&1 | grep -q "Permission denied"; then
+  :
+else
+  fail "cat /vfs/denied did not fail with Permission denied"
+fi
+
+if node -e "fs.writeFileSync('/vfs/flushfail', 'x')" 2>&1 | grep -q "EIO"; then
+  :
+else
+  fail "flushfail did not throw EIO"
+fi
+
+rm -f /tmp/ops.log
+touch /vfs/tracked
+ls /vfs >/dev/null
+mkdir /vfs/d2
+mv /vfs/tracked /vfs/d2/tracked2
+rm /vfs/d2/tracked2
+rmdir /vfs/d2
+
+LOG=$(cat /tmp/ops.log | tr '\n' ' ')
+case "$LOG" in
+  *"fetch /vfs/tracked open /vfs/tracked flush /vfs/tracked list /vfs mkdir /vfs/d2 rename /vfs/tracked stat /vfs/d2/tracked2 unlink /vfs/d2/tracked2 unlink /vfs/d2 "*)
+    :
+    ;;
+  *)
+    fail "log did not match: $LOG"
+    ;;
+esac
+
+if grep -q "/tmp/notvfs" /tmp/ops.log 2>/dev/null; then
+  fail "logged non-/vfs path"
+fi
+
+kill $SRVPID
+wait $SRVPID 2>/dev/null || true
+
+if ls /vfs 2>/dev/null; then
+  fail "ls /vfs should fail with unreachable socket"
+fi
+
+unset VFS_SOCKET
+
 echo "ALL OK"

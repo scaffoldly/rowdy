@@ -347,6 +347,32 @@ static int flush_fd(int fd, int take) {
 }
 /* ---- open family (variadic mode) ----------------------------------------- */
 
+int open64(const char *path, int flags, ...) {
+    REAL(open64);
+    if (!real_) {
+        // Fallback if no open64 in libc
+        int (*fallback)(const char *, int, ...) = dlsym(RTLD_NEXT, "open");
+        mode_t mode = 0;
+        if (flags & (O_CREAT | O_TMPFILE)) {
+            va_list ap; va_start(ap, flags); mode = va_arg(ap, int); va_end(ap);
+        }
+        XL(path);
+        if (vf_ && pre_open(path, flags) < 0) return -1;
+        int fd = fallback(rp_, flags, mode);
+        if (vf_) return post_open(fd, path, flags);
+        return fd;
+    }
+    mode_t mode = 0;
+    if (flags & (O_CREAT | O_TMPFILE)) {
+        va_list ap; va_start(ap, flags); mode = va_arg(ap, int); va_end(ap);
+    }
+    XL(path);
+    if (vf_ && pre_open(path, flags) < 0) return -1;
+    int fd = real_(rp_, flags, mode);
+    if (vf_) return post_open(fd, path, flags);
+    return fd;
+}
+
 int open(const char *path, int flags, ...) {
     REAL(open);
     mode_t mode = 0;
@@ -356,6 +382,31 @@ int open(const char *path, int flags, ...) {
     XL(path);
     if (vf_ && pre_open(path, flags) < 0) return -1;
     int fd = real_(rp_, flags, mode);
+    if (vf_) return post_open(fd, path, flags);
+    return fd;
+}
+
+int openat64(int dirfd, const char *path, int flags, ...) {
+    REAL(openat64);
+    if (!real_) {
+        int (*fallback)(int, const char *, int, ...) = dlsym(RTLD_NEXT, "openat");
+        mode_t mode = 0;
+        if (flags & (O_CREAT | O_TMPFILE)) {
+            va_list ap; va_start(ap, flags); mode = va_arg(ap, int); va_end(ap);
+        }
+        XL(path);
+        if (vf_ && pre_open(path, flags) < 0) return -1;
+        int fd = fallback(dirfd, rp_, flags, mode);
+        if (vf_) return post_open(fd, path, flags);
+        return fd;
+    }
+    mode_t mode = 0;
+    if (flags & (O_CREAT | O_TMPFILE)) {
+        va_list ap; va_start(ap, flags); mode = va_arg(ap, int); va_end(ap);
+    }
+    XL(path);
+    if (vf_ && pre_open(path, flags) < 0) return -1;
+    int fd = real_(dirfd, rp_, flags, mode);
     if (vf_) return post_open(fd, path, flags);
     return fd;
 }
@@ -502,22 +553,40 @@ int scandir(const char *path, struct dirent ***namelist,
 /* ---- namespace mutation -------------------------------------------------- */
 
 int mkdir(const char *path, mode_t mode) {
-    REAL(mkdir); XL(path); return real_(rp_, mode);
+    REAL(mkdir); XL(path);
+    int r = real_(rp_, mode);
+    if (r == 0 && vf_ && notify("mkdir", path, NULL, 0) < 0) return -1;
+    return r;
 }
 int mkdirat(int dirfd, const char *path, mode_t mode) {
-    REAL(mkdirat); XL(path); return real_(dirfd, rp_, mode);
+    REAL(mkdirat); XL(path);
+    int r = real_(dirfd, rp_, mode);
+    if (r == 0 && vf_ && notify("mkdir", path, NULL, 0) < 0) return -1;
+    return r;
 }
 int rmdir(const char *path) {
-    REAL(rmdir); XL(path); return real_(rp_);
+    REAL(rmdir); XL(path);
+    int r = real_(rp_);
+    if (r == 0 && vf_ && notify("unlink", path, NULL, 0) < 0) return -1;
+    return r;
 }
 int unlink(const char *path) {
-    REAL(unlink); XL(path); return real_(rp_);
+    REAL(unlink); XL(path);
+    int r = real_(rp_);
+    if (r == 0 && vf_ && notify("unlink", path, NULL, 0) < 0) return -1;
+    return r;
 }
 int unlinkat(int dirfd, const char *path, int flags) {
-    REAL(unlinkat); XL(path); return real_(dirfd, rp_, flags);
+    REAL(unlinkat); XL(path);
+    int r = real_(dirfd, rp_, flags);
+    if (r == 0 && vf_ && notify("unlink", path, NULL, 0) < 0) return -1;
+    return r;
 }
 int remove(const char *path) {
-    REAL(remove); XL(path); return real_(rp_);
+    REAL(remove); XL(path);
+    int r = real_(rp_);
+    if (r == 0 && vf_ && notify("unlink", path, NULL, 0) < 0) return -1;
+    return r;
 }
 int mkfifo(const char *path, mode_t mode) {
     REAL(mkfifo); XL(path); return real_(rp_, mode);
@@ -838,6 +907,14 @@ long syscall(long n, ...) {
     }
 
     long r = real_(n, a[0], a[1], a[2], a[3], a[4], a[5]);
+
+#ifdef SYS_close
+    if (n == SYS_close) {
+        int f = flush_fd((int)a[0], 1);
+        if (f < 0) return -1;
+        return r;
+    }
+#endif
 
     if (vf_) {
         switch (n) {

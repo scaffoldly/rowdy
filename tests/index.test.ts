@@ -68,6 +68,7 @@ describe('rowdy-vfs', () => {
       LD_PRELOAD: undefined,
       VFS_PREFIX: undefined,
       VFS_BACKING: undefined,
+      VFS_SOCKET: undefined,
       ...overrides,
     });
 
@@ -108,6 +109,28 @@ describe('rowdy-vfs', () => {
     it('preserves an explicit prefix and backing', () => {
       const e = env({ ROWDY_VFS: 'true', VFS_PREFIX: '/data', VFS_BACKING: '/tmp/data' });
       expect(applyVfs(e, preload)).toEqual({ preload, prefix: '/data', backing: '/tmp/data' });
+    });
+
+    it('sets VFS_SOCKET when socket is provided', () => {
+      const e = env({ ROWDY_VFS: '1' });
+      expect(applyVfs(e, { preload, socket: '/tmp/sock' })).toEqual({
+        preload,
+        prefix: '/vfs',
+        backing: '/tmp/vfsstore',
+        socket: '/tmp/sock',
+      });
+      expect(e.VFS_SOCKET).toBe('/tmp/sock');
+    });
+
+    it('does not touch VFS_SOCKET when omitted', () => {
+      const e = env({ ROWDY_VFS: '1', VFS_SOCKET: '/tmp/other' });
+      expect(applyVfs(e, { preload })).toEqual({
+        preload,
+        prefix: '/vfs',
+        backing: '/tmp/vfsstore',
+        socket: '/tmp/other',
+      });
+      expect(e.VFS_SOCKET).toBe('/tmp/other'); // untouched
     });
   });
 });
