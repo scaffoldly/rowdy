@@ -1,5 +1,5 @@
-import { VfsServer, VfsAdapter, VfsError, errnoOf } from '../src/server';
-import { connect, Socket } from 'net';
+import { VfsServer, VfsAdapter, VfsError } from '../src/server';
+import { connect } from 'net';
 import { mkdtempSync, rmSync, existsSync, writeFileSync } from 'fs';
 import { constants } from 'os';
 import { tmpdir } from 'os';
@@ -56,13 +56,12 @@ describe('VfsServer', () => {
 
   it('connects, writes request lines, asserts replies in order', async () => {
     await server.listen();
-    
+
     // adapter throwing VfsError.code('ENOENT') -> errno 2
     adapter.stat.mockRejectedValueOnce(VfsError.code('ENOENT'));
-    
+
     // a thrown node fs error -> errno 13
-    const eacces = new Error('EACCES');
-    (eacces as any).code = 'EACCES';
+    const eacces = Object.assign(new Error('EACCES'), { code: 'EACCES' });
     adapter.fetch.mockRejectedValueOnce(eacces);
 
     adapter.mkdir.mockResolvedValueOnce(undefined);
@@ -70,14 +69,10 @@ describe('VfsServer', () => {
     const replies = await request([
       '{"op":"stat","path":"/vfs/no"}',
       '{"op":"fetch","path":"/vfs/denied"}',
-      '{"op":"mkdir","path":"/vfs/ok"}'
+      '{"op":"mkdir","path":"/vfs/ok"}',
     ]);
 
-    expect(replies).toEqual([
-      '{"ok":false,"errno":2}',
-      '{"ok":false,"errno":13}',
-      '{"ok":true}'
-    ]);
+    expect(replies).toEqual(['{"ok":false,"errno":2}', '{"ok":false,"errno":13}', '{"ok":true}']);
 
     expect(adapter.stat).toHaveBeenCalledWith('/vfs/no');
     expect(adapter.fetch).toHaveBeenCalledWith('/vfs/denied');
@@ -101,13 +96,15 @@ describe('VfsServer', () => {
     const replies = await new Promise<string[]>((resolve, reject) => {
       const conn = connect(socketPath);
       let buffer = '';
-      conn.on('data', (d) => { buffer += d.toString(); });
+      conn.on('data', (d) => {
+        buffer += d.toString();
+      });
       conn.on('error', reject);
       conn.on('end', () => resolve(buffer.split('\n').filter(Boolean)));
-      
+
       // two requests in one chunk
       conn.write('{"op":"stat","path":"/vfs/1"}\n{"op":"stat","path":"/vfs/2"}\n');
-      
+
       // split across chunks
       conn.write('{"op":"stat",');
       setTimeout(() => {
@@ -116,11 +113,7 @@ describe('VfsServer', () => {
       }, 50);
     });
 
-    expect(replies).toEqual([
-      '{"ok":true}',
-      '{"ok":true}',
-      '{"ok":true}'
-    ]);
+    expect(replies).toEqual(['{"ok":true}', '{"ok":true}', '{"ok":true}']);
     expect(adapter.stat).toHaveBeenCalledTimes(3);
   });
 

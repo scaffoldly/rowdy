@@ -158,6 +158,7 @@ mkdir /vfs/d2
 mv /vfs/tracked /vfs/d2/tracked2
 rm /vfs/d2/tracked2
 rmdir /vfs/d2
+echo x > /tmp/notvfs   # outside the prefix: must not reach the supervisor
 
 LOG=$(cat /tmp/ops.log | tr '\n' ' ')
 case "$LOG" in
@@ -181,5 +182,6 @@ if ls /vfs 2>/dev/null; then
 fi
 
 unset VFS_SOCKET
+echo "socket: ok"
 
 echo "ALL OK"
