@@ -1,5 +1,5 @@
 import { Logger, Environment, Routes } from '@scaffoldly/rowdy';
-import { VFS_PRELOAD, VFS_SOCKET } from '@scaffoldly/rowdy-vfs';
+import { S3Adapter, VFS_BACKING, VFS_PRELOAD, VFS_SOCKET } from '@scaffoldly/rowdy-vfs';
 import { existsSync, mkdtempSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
@@ -81,8 +81,14 @@ describe('environment', () => {
       expect(env.VFS_PREFIX).toBe('/data');
     });
 
-    it('rejects an s3 volume until the adapter exists', async () => {
-      await expect(finalize(withVolumes(['s3://example-bucket:/vfs']))).rejects.toThrow('s3:// is not supported yet');
+    it('mounts an s3 volume through the S3Adapter with the default backing directory', async () => {
+      const environment = withVolumes(['s3://example-bucket/tenant/42:/data']);
+      const env = await finalize(environment);
+      expect(env.VFS_PREFIX).toBe('/data');
+      expect(env.VFS_BACKING).toBe(VFS_BACKING);
+      expect(env.VFS_SOCKET).toBe(VFS_SOCKET);
+      const server = await environment['_vfs'];
+      expect(server?.['adapter']).toBeInstanceOf(S3Adapter);
     });
 
     it('mounts only the first volume for now', async () => {

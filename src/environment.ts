@@ -28,7 +28,16 @@ import packageJson from '../package.json';
 import { ABORT, Rowdy } from '.';
 import { isatty } from 'tty';
 import { LambdaFunction } from './aws/lambda/index';
-import { applyVfs, LocalAdapter, VfsServer, VFS_SOCKET } from '@scaffoldly/rowdy-vfs';
+import {
+  applyVfs,
+  LocalAdapter,
+  S3Adapter,
+  VfsAdapter,
+  VfsServer,
+  VFS_BACKING,
+  VFS_SOCKET,
+} from '@scaffoldly/rowdy-vfs';
+import { Volume } from './routes';
 import { LambdaImageService } from './aws/lambda/image';
 import { inspect } from 'util';
 import { cpus } from 'os';
@@ -534,15 +543,29 @@ export class Environment implements ILoggable {
     return this;
   }
 
+  /** The store behind a volume: a local directory is the whole store; a bucket is synced into it. */
+  private vfsAdapter(volume: Volume, backing: string): VfsAdapter {
+    if (volume.scheme === 's3') {
+      const [bucket, ...rest] = volume.locator.split('/');
+      return new S3Adapter({
+        bucket: bucket!,
+        prefix: rest.join('/') || undefined,
+        mountpoint: volume.mountpoint,
+        backing,
+        log: (message, params) => this.log.debug(`VFS s3 ${message}`, { params: JSON.stringify(params ?? {}) }),
+      });
+    }
+    return new LocalAdapter();
+  }
+
   /**
    * The VFS supervisor the preloaded shim reports to over a unix-domain socket
    * (protocol: @scaffoldly/rowdy-vfs DISCLOSURE). Started once per process on
-   * first use and closed on abort. LocalAdapter until a backing store is
-   * configured, so the backing directory is the whole store.
+   * first use, for the first declared volume, and closed on abort.
    */
-  private vfsServer(): Promise<VfsServer> {
+  private vfsServer(volume: Volume, backing: string): Promise<VfsServer> {
     if (!this._vfs) {
-      const server = new VfsServer(new LocalAdapter(), {
+      const server = new VfsServer(this.vfsAdapter(volume, backing), {
         socket: VFS_SOCKET,
         onRequest: (request, reply) =>
           this.log.debug(`VFS request`, { request: JSON.stringify(request), reply: JSON.stringify(reply) }),
@@ -576,19 +599,19 @@ export class Environment implements ILoggable {
           try {
             const [volume, ...ignored] = this._routes.intoVolumes();
             if (volume) {
-              if (volume.scheme !== 'file') {
-                throw new Error(`Volume '${volume.spec}': ${volume.scheme}:// is not supported yet (see #27)`);
-              }
               if (ignored.length) {
                 this.log.warn(`Only the first volume is mounted for now`, {
                   mounted: volume.spec,
                   ignored: ignored.map((v) => v.spec).join(', '),
                 });
               }
+              // file:// is served straight from its directory; anything else is materialized
+              // into the default backing directory on the function's /tmp.
+              const backing = volume.scheme === 'file' ? volume.locator : VFS_BACKING;
               env.ROWDY_VFS = '1';
               env.VFS_PREFIX = volume.mountpoint;
-              env.VFS_BACKING = volume.locator;
-              const { socket } = await this.vfsServer();
+              env.VFS_BACKING = backing;
+              const { socket } = await this.vfsServer(volume, backing);
               const vfs = applyVfs(env, { socket });
               this.log.debug(`VFS enabled for child`, { volume: volume.spec, ...vfs });
             }

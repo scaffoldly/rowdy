@@ -258,9 +258,13 @@ spec:
 ```
 
 `file://<dir>` backs the mountpoint with a directory on the function's `/tmp` (persists across warm
-invocations of one execution environment). `s3://<bucket>[/<prefix>]` is parsed and validated today
-and mounts in a later release ([#27](https://github.com/scaffoldly/rowdy/issues/27)). One volume is
-mounted for now; extra entries are logged and ignored.
+invocations of one execution environment). `s3://<bucket>[/<prefix>]` backs it with a bucket: objects
+are downloaded into `/tmp/vfsstore` the first time the app opens them, directory listings come from
+the bucket, and files are uploaded when the app closes or fsyncs them. The upload is conditional on
+the object's ETag, so if something else changed the object meanwhile the app's `close()` fails with
+`ESTALE` instead of overwriting it. The deploy grants the execution role `s3:ListBucket` on the
+bucket and `Get`/`Put`/`DeleteObject` on the prefix; the bucket itself must already exist. One
+volume is mounted for now; extra entries are logged and ignored.
 
 Nothing is mounted in the kernel sense. The Lambda sandbox denies every kernel-mediated option
 (`/dev/fuse`, `mount(2)`, namespaces, ptrace, seccomp-notify), so rowdy writes the
