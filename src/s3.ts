@@ -47,12 +47,23 @@ type Entry = {
   size?: number;
   /** false: the local file is a sparse placeholder sized from HEAD/LIST, contents not fetched yet. */
   materialized: boolean;
-  /** Opened for writing and not flushed yet: never overwritten by revalidation. */
-  dirty?: boolean;
   /** When the remote ETag was last compared (ms since epoch). */
   checkedAt?: number;
-  /** Local mtime/size at the last successful upload: an unchanged file is not re-uploaded. */
-  flushed?: { mtimeMs: number; size: number };
+  /**
+   * Local mtime/size the last time local and remote agreed (download, placeholder, upload).
+   * A local file that no longer matches has unflushed edits: revalidation must not overwrite
+   * it, and a flush must upload it. Unset for a brand-new local file.
+   */
+  synced?: { mtimeMs: number; size: number };
+};
+
+const snapshot = (local: string): { mtimeMs: number; size: number } | undefined => {
+  try {
+    const st = statSync(local);
+    return { mtimeMs: st.mtimeMs, size: st.size };
+  } catch {
+    return undefined;
+  }
 };
 
 /** A lease we hold: the lock object's ETag (for a safe release) and its renewal timer. */
@@ -156,7 +167,7 @@ export class S3Adapter implements VfsAdapter {
     if (existsSync(local) && existing?.materialized !== false) {
       return; // real local content (fetched or written here) takes precedence
     }
-    if (existing?.materialized && existing.etag !== etag && !existing.dirty) {
+    if (existing?.materialized && existing.etag !== etag && !this.modified(local, existing)) {
       existing.checkedAt = 0; // the listing says it changed: re-check on next use
     }
     if (existsSync(local) && existing?.materialized) {
@@ -169,7 +180,16 @@ export class S3Adapter implements VfsAdapter {
     } finally {
       await handle.close();
     }
-    this.entries.set(key, { etag, size, materialized: false, checkedAt: Date.now() });
+    this.entries.set(key, { etag, size, materialized: false, checkedAt: Date.now(), synced: snapshot(local) });
+  }
+
+  /** True when the local file has changed since it last agreed with the remote (or never did). */
+  private modified(local: string, entry: Entry): boolean {
+    if (!entry.synced) {
+      return true;
+    }
+    const now = snapshot(local);
+    return !now || now.mtimeMs !== entry.synced.mtimeMs || now.size !== entry.synced.size;
   }
 
   /**
@@ -186,7 +206,13 @@ export class S3Adapter implements VfsAdapter {
     }
     await fs.mkdir(dirname(local), { recursive: true });
     await pipeline(out.Body as Readable, createWriteStream(local, { flags: 'w' }));
-    this.entries.set(key, { etag: out.ETag, size: out.ContentLength, materialized: true, checkedAt: Date.now() });
+    this.entries.set(key, {
+      etag: out.ETag,
+      size: out.ContentLength,
+      materialized: true,
+      checkedAt: Date.now(),
+      synced: snapshot(local),
+    });
     this.log(`fetched`, { key, size: out.ContentLength });
     return { etag: out.ETag, size: out.ContentLength };
   }
@@ -194,19 +220,22 @@ export class S3Adapter implements VfsAdapter {
   /**
    * Re-check a trusted local copy against the bucket, at most once per
    * revalidateMs. Changed: refetch in place (or resize a placeholder). Gone:
-   * drop the local copy so the caller sees ENOENT. Dirty copies are left alone.
-   * Caller holds the key lock.
+   * drop the local copy so the caller sees ENOENT. A local copy with unflushed
+   * edits is left alone. Caller holds the key lock.
    */
   private async recheck(rel: string, key: string, force = false): Promise<void> {
     const entry = this.entries.get(key);
-    if (!entry || entry.dirty) {
+    if (!entry) {
+      return;
+    }
+    const local = this.local(rel);
+    if (this.modified(local, entry)) {
       return;
     }
     const ttl = this.options.revalidateMs ?? 2000;
     if (!force && entry.checkedAt !== undefined && Date.now() - entry.checkedAt < ttl) {
       return;
     }
-    const local = this.local(rel);
     const head = await this.head(key);
     if (!head) {
       await fs.rm(local, { force: true });
@@ -222,7 +251,13 @@ export class S3Adapter implements VfsAdapter {
       await this.download(key, local);
     } else {
       await fs.truncate(local, head.size ?? 0);
-      this.entries.set(key, { etag: head.etag, size: head.size, materialized: false, checkedAt: Date.now() });
+      this.entries.set(key, {
+        etag: head.etag,
+        size: head.size,
+        materialized: false,
+        checkedAt: Date.now(),
+        synced: snapshot(local),
+      });
     }
     this.log(`revalidated`, { key, etag: head.etag });
   }
@@ -360,10 +395,11 @@ export class S3Adapter implements VfsAdapter {
       }
       const entry = this.entries.get(key);
       if (!entry) {
+        // Brand-new local file: no synced snapshot, so revalidation leaves it alone until flushed.
         const head = await this.head(key);
-        this.entries.set(key, { etag: head?.etag, size: head?.size, materialized: true, dirty: true });
+        this.entries.set(key, { etag: head?.etag, size: head?.size, materialized: true });
       } else {
-        this.entries.set(key, { ...entry, materialized: true, dirty: true });
+        this.entries.set(key, { ...entry, materialized: true });
       }
     });
   }
@@ -400,9 +436,9 @@ export class S3Adapter implements VfsAdapter {
       return; // removed before the flush reached us; unlink will follow
     }
     const current = this.entries.get(key);
-    if (current?.flushed && current.flushed.mtimeMs === mtimeMs && current.flushed.size === size) {
-      // Exactly this content is already uploaded (e.g. fsync at commit, then the unlock-time flush).
-      this.entries.set(key, { ...current, dirty: false });
+    if (current?.synced && current.synced.mtimeMs === mtimeMs && current.synced.size === size) {
+      // Local and remote already agree (fetched and untouched, or fsync at commit followed by the
+      // unlock-time flush): nothing to upload.
       return;
     }
     const base = current?.etag;
@@ -422,9 +458,8 @@ export class S3Adapter implements VfsAdapter {
         etag: out.ETag,
         size,
         materialized: true,
-        dirty: false,
         checkedAt: Date.now(),
-        flushed: { mtimeMs, size },
+        synced: { mtimeMs, size },
       });
       this.log(`flushed`, { key, size, base });
     } catch (e) {

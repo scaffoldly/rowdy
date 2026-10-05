@@ -352,6 +352,22 @@ describe('S3Adapter', () => {
       expect(readFileSync(join(backing, 'mine.txt'), 'utf8')).toBe('local edits');
     });
 
+    it('still revalidates a file that is open for writing but untouched (the SQLite case)', async () => {
+      // A database stays open O_RDWR for the life of the process; a transaction on another
+      // instance must still be picked up before the next write here.
+      const a = fresh(0);
+      s3.put('db.sqlite', 'v1');
+      await a.fetch(`${mount}/db.sqlite`);
+      await a.open(`${mount}/db.sqlite`, 2); // long-lived writer handle, nothing written yet
+      s3.put('db.sqlite', 'v2 from another instance');
+      await a.revalidate(`${mount}/db.sqlite`);
+      expect(readFileSync(join(backing, 'db.sqlite'), 'utf8')).toBe('v2 from another instance');
+      // and a flush of the untouched copy uploads nothing
+      s3.calls.length = 0;
+      await a.flush(`${mount}/db.sqlite`);
+      expect(s3.calls).not.toContain('PutObjectCommand');
+    });
+
     it('drops the local copy when the object was deleted remotely', async () => {
       const a = fresh(0);
       s3.put('gone.txt', 'x');
