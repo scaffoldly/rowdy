@@ -105,6 +105,10 @@ jobs:
       github.event_name != 'pull_request_target' &&
       !contains(github.event.head_commit.message, '[skip-prerelease]')
 
+    permissions:
+      contents: read
+      id-token: write
+
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -147,10 +151,20 @@ jobs:
         run: |
           yarn version --new-version ${{ steps.version.outputs.version }} --no-git-tag-version
 
+      # DEVNOTE: The OIDC token isn't an npm token. The registry exchanges it for a short-lived
+      # publish token scoped to this package, the same exchange `npm publish` does internally.
+      # Trusted publishing is configured on npmjs.com for this repository and vfs.yml.
+      - name: Get npm token
+        id: identity
+        uses: cnuss/actions-identity@v1
+        with:
+          id-token-audience: npm:registry.npmjs.org
+          exchange-url: https://registry.npmjs.org/-/npm/v1/oidc/token/exchange/package/@scaffoldly%2frowdy-vfs
+
       - name: Publish pre-release to NPM
         run: yarn publish --tag beta --access public
         env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          NODE_AUTH_TOKEN: ${{ steps.identity.outputs.exchange-token }}
 
       - name: Create pre-release summary
         run: |
