@@ -137,6 +137,6 @@
     "public": true
   },
   "dependencies": {
-    "@scaffoldly/rowdy-vfs": "^0.1.0-beta.20261005162328.6d34f6c"
+    "@scaffoldly/rowdy-vfs": "^0.1.0-beta.20261005181317.a92a2d9"
   }
 }

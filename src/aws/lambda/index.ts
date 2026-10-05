@@ -518,8 +518,28 @@ export class LambdaFunction implements Logger {
   withRoutes(routes: Routes): this {
     this.log.debug(`withRoutes(routes=${routes.repr()})`);
     const existing = this.Routes.getValue();
+    const before = new Set(existing.volumes);
     existing.merge(routes);
     this.Routes.next(existing);
+    // DEVNOTE: An s3:// volume is only usable if the execution role can reach the bucket, so
+    // the grant is derived from the manifest rather than left to the operator. Scoped to the
+    // bucket and, when given, the key prefix.
+    existing
+      .intoVolumes()
+      .filter((volume) => volume.scheme === 's3' && !before.has(volume.spec))
+      .forEach((volume) => {
+        const [bucket, ...prefix] = volume.locator.split('/');
+        const objects = prefix.length ? `${prefix.join('/')}/*` : '*';
+        this.withRoleStatement({
+          Effect: 'Allow',
+          Action: ['s3:ListBucket', 's3:GetBucketLocation'],
+          Resource: `arn:aws:s3:::${bucket}`,
+        }).withRoleStatement({
+          Effect: 'Allow',
+          Action: ['s3:GetObject', 's3:PutObject', 's3:DeleteObject'],
+          Resource: `arn:aws:s3:::${bucket}/${objects}`,
+        });
+      });
     return this.withEnvironment('ROWDY_ROUTES', existing.intoDataURL());
   }
 

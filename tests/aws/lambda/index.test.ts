@@ -327,3 +327,41 @@ describe('aws lambda schedules', () => {
     });
   });
 });
+
+describe('aws lambda volumes', () => {
+  const environment = new Environment(new Logger());
+  const imageService = new LambdaImageService(environment);
+  const statements = (fn: LambdaFunction): Statement[] => fn['RoleStatements'].getValue();
+
+  it('grants the execution role access to each s3 volume and nothing for file volumes', () => {
+    const fn = new LambdaFunction('Container', imageService)
+      .withImage('ubuntu:noble-20251001')
+      .withRoutes(Routes.empty().withVolumes(['file:///tmp/vfsstore:/vfs', 's3://example-bucket:/data']));
+    expect(statements(fn)).toEqual([
+      { Effect: 'Allow', Action: ['s3:ListBucket', 's3:GetBucketLocation'], Resource: 'arn:aws:s3:::example-bucket' },
+      {
+        Effect: 'Allow',
+        Action: ['s3:GetObject', 's3:PutObject', 's3:DeleteObject'],
+        Resource: 'arn:aws:s3:::example-bucket/*',
+      },
+    ]);
+  });
+
+  it('scopes object access to the key prefix', () => {
+    const fn = new LambdaFunction('Container', imageService)
+      .withImage('ubuntu:noble-20251001')
+      .withRoutes(Routes.empty().withVolumes(['s3://example-bucket/tenant/42:/data']));
+    expect(statements(fn).map((s) => (s as { Resource?: string }).Resource)).toEqual([
+      'arn:aws:s3:::example-bucket',
+      'arn:aws:s3:::example-bucket/tenant/42/*',
+    ]);
+  });
+
+  it('does not repeat a grant when the same volume is merged twice', () => {
+    const fn = new LambdaFunction('Container', imageService)
+      .withImage('ubuntu:noble-20251001')
+      .withRoutes(Routes.empty().withVolumes(['s3://example-bucket:/data']))
+      .withRoutes(Routes.empty().withVolumes(['s3://example-bucket:/data']));
+    expect(statements(fn)).toHaveLength(2);
+  });
+});
