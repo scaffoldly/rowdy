@@ -354,7 +354,10 @@ int open(const char *path, int flags, ...) {
         va_list ap; va_start(ap, flags); mode = va_arg(ap, int); va_end(ap);
     }
     XL(path);
-    return real_(rp_, flags, mode);
+    if (vf_ && pre_open(path, flags) < 0) return -1;
+    int fd = real_(rp_, flags, mode);
+    if (vf_) return post_open(fd, path, flags);
+    return fd;
 }
 
 int openat(int dirfd, const char *path, int flags, ...) {
@@ -364,20 +367,49 @@ int openat(int dirfd, const char *path, int flags, ...) {
         va_list ap; va_start(ap, flags); mode = va_arg(ap, int); va_end(ap);
     }
     XL(path);
-    return real_(dirfd, rp_, flags, mode);
+    if (vf_ && pre_open(path, flags) < 0) return -1;
+    int fd = real_(dirfd, rp_, flags, mode);
+    if (vf_) return post_open(fd, path, flags);
+    return fd;
 }
 
 int creat(const char *path, mode_t mode) {
-    REAL(creat); XL(path); return real_(rp_, mode);
+    REAL(creat); XL(path);
+    int flags = O_CREAT | O_WRONLY | O_TRUNC;
+    if (vf_ && pre_open(path, flags) < 0) return -1;
+    int fd = real_(rp_, mode);
+    if (vf_) return post_open(fd, path, flags);
+    return fd;
 }
 
 /* ---- stdio (musl binds fopen->open internally) --------------------------- */
 
+static int mode_to_flags(const char *mode) {
+    int flags = 0;
+    if (strchr(mode, '+')) flags |= O_RDWR;
+    else if (mode[0] == 'r') flags |= O_RDONLY;
+    else if (mode[0] == 'w' || mode[0] == 'a') flags |= O_WRONLY;
+
+    if (mode[0] == 'w') flags |= O_CREAT | O_TRUNC;
+    if (mode[0] == 'a') flags |= O_CREAT | O_APPEND;
+    return flags;
+}
+
 FILE *fopen(const char *path, const char *mode) {
-    REAL(fopen); XL(path); return real_(rp_, mode);
+    REAL(fopen); XL(path);
+    int flags = mode_to_flags(mode);
+    if (vf_ && pre_open(path, flags) < 0) return NULL;
+    FILE *f = real_(rp_, mode);
+    if (f && vf_ && post_open(fileno(f), path, flags) < 0) return NULL;
+    return f;
 }
 FILE *freopen(const char *path, const char *mode, FILE *stream) {
-    REAL(freopen); XL(path); return real_(rp_, mode, stream);
+    REAL(freopen); XL(path);
+    int flags = mode_to_flags(mode);
+    if (vf_ && pre_open(path, flags) < 0) return NULL;
+    FILE *f = real_(rp_, mode, stream);
+    if (f && vf_ && post_open(fileno(f), path, flags) < 0) return NULL;
+    return f;
 }
 
 /* ---- metadata ------------------------------------------------------------ */
@@ -389,22 +421,34 @@ int lstat(const char *path, struct stat *st) {
     REAL(lstat); XL(path);  return real_(rp_, st);
 }
 int fstatat(int dirfd, const char *path, struct stat *st, int flags) {
-    REAL(fstatat); XL(path); return real_(dirfd, rp_, st, flags);
+    REAL(fstatat); XL(path);
+    if (vf_ && notify("stat", path, NULL, 0) < 0) return -1;
+    return real_(dirfd, rp_, st, flags);
 }
 int access(const char *path, int mode) {
-    REAL(access); XL(path); return real_(rp_, mode);
+    REAL(access); XL(path);
+    if (vf_ && notify("stat", path, NULL, 0) < 0) return -1;
+    return real_(rp_, mode);
 }
 int faccessat(int dirfd, const char *path, int mode, int flags) {
-    REAL(faccessat); XL(path); return real_(dirfd, rp_, mode, flags);
+    REAL(faccessat); XL(path);
+    if (vf_ && notify("stat", path, NULL, 0) < 0) return -1;
+    return real_(dirfd, rp_, mode, flags);
 }
 int statx(int dirfd, const char *path, int flags, unsigned mask, struct statx *buf) {
-    REAL(statx); XL(path); return real_(dirfd, rp_, flags, mask, buf);
+    REAL(statx); XL(path);
+    if (vf_ && notify("stat", path, NULL, 0) < 0) return -1;
+    return real_(dirfd, rp_, flags, mask, buf);
 }
 int statfs(const char *path, struct statfs *buf) {
-    REAL(statfs); XL(path); return real_(rp_, buf);
+    REAL(statfs); XL(path);
+    if (vf_ && notify("stat", path, NULL, 0) < 0) return -1;
+    return real_(rp_, buf);
 }
 int statvfs(const char *path, struct statvfs *buf) {
-    REAL(statvfs); XL(path); return real_(rp_, buf);
+    REAL(statvfs); XL(path);
+    if (vf_ && notify("stat", path, NULL, 0) < 0) return -1;
+    return real_(rp_, buf);
 }
 
 /* ---- attribute mutation -------------------------------------------------- */
@@ -425,7 +469,10 @@ int fchownat(int dirfd, const char *path, uid_t uid, gid_t gid, int flags) {
     REAL(fchownat); XL(path); return real_(dirfd, rp_, uid, gid, flags);
 }
 int truncate(const char *path, off_t length) {
-    REAL(truncate); XL(path); return real_(rp_, length);
+    REAL(truncate); XL(path);
+    int r = real_(rp_, length);
+    if (r == 0 && vf_ && notify("flush", path, NULL, 0) < 0) return -1;
+    return r;
 }
 int utimensat(int dirfd, const char *path, const struct timespec times[2], int flags) {
     REAL(utimensat); XL(path); return real_(dirfd, rp_, times, flags);
@@ -440,12 +487,16 @@ int utime(const char *path, const struct utimbuf *times) {
 /* ---- directory listing --------------------------------------------------- */
 
 DIR *opendir(const char *path) {
-    REAL(opendir); XL(path); return real_(rp_);
+    REAL(opendir); XL(path);
+    if (vf_ && notify("list", path, NULL, 0) < 0) return NULL;
+    return real_(rp_);
 }
 int scandir(const char *path, struct dirent ***namelist,
             int (*filter)(const struct dirent *),
             int (*compar)(const struct dirent **, const struct dirent **)) {
-    REAL(scandir); XL(path); return real_(rp_, namelist, filter, compar);
+    REAL(scandir); XL(path);
+    if (vf_ && notify("list", path, NULL, 0) < 0) return -1;
+    return real_(rp_, namelist, filter, compar);
 }
 
 /* ---- namespace mutation -------------------------------------------------- */
@@ -479,22 +530,40 @@ int mknod(const char *path, mode_t mode, dev_t dev) {
  * stored as its backing path so the kernel can follow it; readlink maps it back. */
 
 int rename(const char *from, const char *to) {
-    REAL(rename); XL2(from, to); return real_(ra_, rb_);
+    REAL(rename); XL2(from, to);
+    int r = real_(ra_, rb_);
+    if (r == 0 && (va_ || vb_) && notify("rename", from, to, 0) < 0) return -1;
+    return r;
 }
 int renameat(int fromfd, const char *from, int tofd, const char *to) {
-    REAL(renameat); XL2(from, to); return real_(fromfd, ra_, tofd, rb_);
+    REAL(renameat); XL2(from, to);
+    int r = real_(fromfd, ra_, tofd, rb_);
+    if (r == 0 && (va_ || vb_) && notify("rename", from, to, 0) < 0) return -1;
+    return r;
 }
 int link(const char *from, const char *to) {
-    REAL(link); XL2(from, to); return real_(ra_, rb_);
+    REAL(link); XL2(from, to);
+    int r = real_(ra_, rb_);
+    if (r == 0 && vb_ && notify("flush", to, NULL, 0) < 0) return -1;
+    return r;
 }
 int linkat(int fromfd, const char *from, int tofd, const char *to, int flags) {
-    REAL(linkat); XL2(from, to); return real_(fromfd, ra_, tofd, rb_, flags);
+    REAL(linkat); XL2(from, to);
+    int r = real_(fromfd, ra_, tofd, rb_, flags);
+    if (r == 0 && vb_ && notify("flush", to, NULL, 0) < 0) return -1;
+    return r;
 }
 int symlink(const char *target, const char *linkpath) {
-    REAL(symlink); XL2(target, linkpath); return real_(ra_, rb_);
+    REAL(symlink); XL2(target, linkpath);
+    int r = real_(ra_, rb_);
+    if (r == 0 && vb_ && notify("flush", linkpath, NULL, 0) < 0) return -1;
+    return r;
 }
 int symlinkat(const char *target, int dirfd, const char *linkpath) {
-    REAL(symlinkat); XL2(target, linkpath); return real_(ra_, dirfd, rb_);
+    REAL(symlinkat); XL2(target, linkpath);
+    int r = real_(ra_, dirfd, rb_);
+    if (r == 0 && vb_ && notify("flush", linkpath, NULL, 0) < 0) return -1;
+    return r;
 }
 
 /* ---- temp files: the template is rewritten in place by libc --------------- */
@@ -503,18 +572,22 @@ int mkstemp(char *template) {
     REAL(mkstemp);
     char tb[PATH_MAX];
     const char *rp = xlate(template, tb, sizeof tb);
-    if (rp == template) return real_(template);
-    int fd = real_(tb);
-    if (fd >= 0) memcpy(template + strlen(template) - 6, tb + strlen(tb) - 6, 6);
+    int vf_ = (rp != template);
+    if (vf_ && pre_open(template, O_RDWR | O_CREAT) < 0) return -1;
+    int fd = real_(rp == template ? template : tb);
+    if (fd >= 0 && rp != template) memcpy(template + strlen(template) - 6, tb + strlen(tb) - 6, 6);
+    if (vf_ && fd >= 0) return post_open(fd, template, O_RDWR | O_CREAT);
     return fd;
 }
 char *mkdtemp(char *template) {
     REAL(mkdtemp);
     char tb[PATH_MAX];
     const char *rp = xlate(template, tb, sizeof tb);
+    int vf_ = (rp != template);
     if (rp == template) return real_(template);
     if (!real_(tb)) return NULL;
     memcpy(template + strlen(template) - 6, tb + strlen(tb) - 6, 6);
+    if (vf_ && notify("mkdir", template, NULL, 0) < 0) return NULL;
     return template;
 }
 
@@ -543,6 +616,7 @@ char *getcwd(char *buf, size_t size) {
 
 char *realpath(const char *path, char *resolved) {
     REAL(realpath); XL(path);
+    if (vf_ && notify("stat", path, NULL, 0) < 0) return NULL;
     char tmp[PATH_MAX];
     if (!real_(rp_, tmp)) return NULL;
     unxlate(tmp, sizeof tmp);
@@ -560,6 +634,7 @@ static ssize_t copy_link(const char *tmp, char *buf, size_t bufsz) {
 
 ssize_t readlink(const char *path, char *buf, size_t bufsz) {
     REAL(readlink); XL(path);
+    if (vf_ && notify("stat", path, NULL, 0) < 0) return -1;
     char tmp[PATH_MAX];
     ssize_t n = real_(rp_, tmp, sizeof tmp - 1);
     if (n < 0) return n;
@@ -569,12 +644,67 @@ ssize_t readlink(const char *path, char *buf, size_t bufsz) {
 }
 ssize_t readlinkat(int dirfd, const char *path, char *buf, size_t bufsz) {
     REAL(readlinkat); XL(path);
+    if (vf_ && notify("stat", path, NULL, 0) < 0) return -1;
     char tmp[PATH_MAX];
     ssize_t n = real_(dirfd, rp_, tmp, sizeof tmp - 1);
     if (n < 0) return n;
     tmp[n] = '\0';
     unxlate(tmp, sizeof tmp);
     return copy_link(tmp, buf, bufsz);
+}
+
+
+/* ---- new hooks for fd flushing ------------------------------------------- */
+
+int close(int fd) {
+    if (!real_close_) vfs_init();
+    int r = real_close_(fd);
+    int f = flush_fd(fd, 1);
+    if (f < 0) return -1;
+    return r;
+}
+
+int fsync(int fd) {
+    REAL(fsync);
+    int r = real_(fd);
+    if (r == 0 && flush_fd(fd, 0) < 0) return -1;
+    return r;
+}
+
+int fdatasync(int fd) {
+    REAL(fdatasync);
+    int r = real_(fd);
+    if (r == 0 && flush_fd(fd, 0) < 0) return -1;
+    return r;
+}
+
+int dup(int oldfd) {
+    REAL(dup);
+    int newfd = real_(oldfd);
+    if (newfd >= 0) fd_copy(oldfd, newfd);
+    return newfd;
+}
+
+int dup2(int oldfd, int newfd) {
+    REAL(dup2);
+    int r = real_(oldfd, newfd);
+    if (r >= 0) fd_copy(oldfd, r);
+    return r;
+}
+
+int dup3(int oldfd, int newfd, int flags) {
+    REAL(dup3);
+    int r = real_(oldfd, newfd, flags);
+    if (r >= 0) fd_copy(oldfd, r);
+    return r;
+}
+
+int fclose(FILE *f) {
+    REAL(fclose);
+    int fd = f ? fileno(f) : -1;
+    int r = real_(f);
+    if (fd >= 0 && flush_fd(fd, 1) < 0) return EOF;
+    return r;
 }
 
 /* ---- raw syscall(2) ----------------------------------------------------------
@@ -658,18 +788,107 @@ long syscall(long n, ...) {
     }
 
     char xb[PATH_MAX];
-    if (at >= 0) a[at] = (long)xlate((const char *)a[at], xb, sizeof xb);
-    return real_(n, a[0], a[1], a[2], a[3], a[4], a[5]);
+    const char *orig = NULL;
+    int vf_ = 0;
+    if (at >= 0) {
+        orig = (const char *)a[at];
+        const char *rp = xlate(orig, xb, sizeof xb);
+        vf_ = (rp != orig);
+        if (vf_) {
+            switch (n) {
+#ifdef SYS_statx
+            case SYS_statx:
+#endif
+#ifdef SYS_newfstatat
+            case SYS_newfstatat:
+#endif
+#ifdef SYS_faccessat
+            case SYS_faccessat:
+#endif
+#ifdef SYS_faccessat2
+            case SYS_faccessat2:
+#endif
+#ifdef SYS_readlinkat
+            case SYS_readlinkat:
+#endif
+#ifdef SYS_stat
+            case SYS_stat:
+#endif
+#ifdef SYS_lstat
+            case SYS_lstat:
+#endif
+#ifdef SYS_access
+            case SYS_access:
+#endif
+                if (notify("stat", orig, NULL, 0) < 0) return -1;
+                break;
+#ifdef SYS_openat
+            case SYS_openat:
+                if (pre_open(orig, (int)a[2]) < 0) return -1;
+                break;
+#endif
+#ifdef SYS_open
+            case SYS_open:
+                if (pre_open(orig, (int)a[1]) < 0) return -1;
+                break;
+#endif
+            }
+        }
+        a[at] = (long)rp;
+    }
+
+    long r = real_(n, a[0], a[1], a[2], a[3], a[4], a[5]);
+
+    if (vf_) {
+        switch (n) {
+#ifdef SYS_openat
+        case SYS_openat:
+            if (r >= 0) r = post_open((int)r, orig, (int)a[2]);
+            break;
+#endif
+#ifdef SYS_open
+        case SYS_open:
+            if (r >= 0) r = post_open((int)r, orig, (int)a[1]);
+            break;
+#endif
+#ifdef SYS_mkdirat
+        case SYS_mkdirat:
+#endif
+#ifdef SYS_mkdir
+        case SYS_mkdir:
+#endif
+            if (r == 0 && notify("mkdir", orig, NULL, 0) < 0) return -1;
+            break;
+#ifdef SYS_unlinkat
+        case SYS_unlinkat:
+#endif
+#ifdef SYS_unlink
+        case SYS_unlink:
+#endif
+#ifdef SYS_rmdir
+        case SYS_rmdir:
+#endif
+            if (r == 0 && notify("unlink", orig, NULL, 0) < 0) return -1;
+            break;
+        }
+    }
+    return r;
 }
 
 /* ---- exec: binaries living under /vfs; LD_PRELOAD is inherited via env ---- */
 
 int execve(const char *path, char *const argv[], char *const envp[]) {
-    REAL(execve); XL(path); return real_(rp_, argv, envp);
+    REAL(execve); XL(path);
+    if (vf_ && notify("fetch", path, NULL, 0) < 0) return -1;
+    return real_(rp_, argv, envp);
 }
 int execv(const char *path, char *const argv[]) {
-    REAL(execv); XL(path); return real_(rp_, argv);
+    REAL(execv); XL(path);
+    if (vf_ && notify("fetch", path, NULL, 0) < 0) return -1;
+    return real_(rp_, argv);
 }
 int execvp(const char *file, char *const argv[]) {
-    REAL(execvp); XL(file); return real_(rp_, argv);
+    REAL(execvp); XL(file);
+    if (vf_ && notify("fetch", file, NULL, 0) < 0) return -1;
+    return real_(rp_, argv);
 }
