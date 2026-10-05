@@ -26,7 +26,7 @@ import { ApiVersion, ApiSchema } from './api/types';
 import { join } from 'path';
 
 export type RoutePaths = { [key: string]: string | undefined };
-export type RoutesSpec = { paths?: RoutePaths; default?: string; crontab?: string[] };
+export type RoutesSpec = { paths?: RoutePaths; default?: string; crontab?: string[]; volumes?: string[] };
 
 export type RoutesSchema = ApiSchema<RoutesSpec, undefined>;
 
@@ -395,10 +395,56 @@ export class Crontab {
 
 export type Health = { [origin: string]: URIHealth };
 
+export type VolumeScheme = 'file' | 's3';
+
+/**
+ * One `volumes:` entry: `<scheme>://<locator>:<mountpoint>`. The mountpoint is
+ * the absolute directory the application sees; the locator names what backs it
+ * (`file://<dir>` a local directory, `s3://<bucket>[/<prefix>]` an object store).
+ * Declaring a volume is what turns on the userspace VFS for the container.
+ */
+export class Volume {
+  static readonly SCHEMES: ReadonlyArray<VolumeScheme> = ['file', 's3'];
+  private static readonly PATTERN = /^([a-z][a-z0-9+.-]*):\/\/(.*?):(\/.*)$/;
+
+  private constructor(
+    readonly spec: string,
+    readonly scheme: VolumeScheme,
+    readonly locator: string,
+    readonly mountpoint: string
+  ) {}
+
+  static parse(spec: string): Volume {
+    const original = spec;
+    spec = spec.trim();
+    const match = Volume.PATTERN.exec(spec);
+    if (!match) {
+      throw new Error(`Invalid volume '${original}', expected <scheme>://<locator>:<mountpoint>`);
+    }
+    const [, scheme, locator, mountpoint] = match as unknown as [string, string, string, string];
+    if (!(Volume.SCHEMES as ReadonlyArray<string>).includes(scheme)) {
+      throw new Error(`Invalid volume scheme '${scheme}', expected one of ${Volume.SCHEMES.join(', ')}: '${original}'`);
+    }
+    if (!locator.length) {
+      throw new Error(`Invalid volume '${original}', the locator is empty`);
+    }
+    if (scheme === 'file' && !locator.startsWith('/')) {
+      throw new Error(`Invalid volume '${original}', a file:// locator must be an absolute directory`);
+    }
+    if (mountpoint === '/' || mountpoint.endsWith('/') || mountpoint.includes('//')) {
+      throw new Error(
+        `Invalid volume mountpoint '${mountpoint}', expected an absolute path with no trailing slash: '${original}'`
+      );
+    }
+    return new Volume(spec, scheme as VolumeScheme, locator, mountpoint);
+  }
+}
+
 export class Routes implements IRoutes, ILoggable {
   readonly version: ApiVersion = 'rowdy.run/v1alpha1';
   readonly rules: Array<RouteRule> = [];
   readonly crontab: Array<string> = [];
+  readonly volumes: Array<string> = [];
 
   private constructor() {}
 
@@ -470,7 +516,7 @@ export class Routes implements IRoutes, ILoggable {
     );
   }
 
-  private static readonly SPEC_KEYS: Array<keyof RoutesSpec> = ['default', 'paths', 'crontab'];
+  private static readonly SPEC_KEYS: Array<keyof RoutesSpec> = ['default', 'paths', 'crontab', 'volumes'];
 
   // A document with no apiVersion / kind / spec, but at least one spec field, is a bare spec.
   private static isSpec(obj: object): obj is RoutesSpec {
@@ -500,7 +546,8 @@ export class Routes implements IRoutes, ILoggable {
     return new Routes()
       .withPaths(routes.spec?.paths || {})
       .withDefault(routes.spec?.default || '')
-      .withCrontab(routes.spec?.crontab || []);
+      .withCrontab(routes.spec?.crontab || [])
+      .withVolumes(routes.spec?.volumes || []);
   }
 
   static fromPath(path: string): Routes {
@@ -581,6 +628,19 @@ export class Routes implements IRoutes, ILoggable {
     return this;
   }
 
+  // DEVNOTE: Validated on the way in, so a bad `volumes:` entry fails the deploy or the
+  // container start, not the first file access.
+  withVolumes(specs: Array<string>): this {
+    specs.forEach((spec) => {
+      spec = Volume.parse(spec).spec;
+      if (this.volumes.includes(spec)) {
+        return;
+      }
+      this.volumes.push(spec);
+    });
+    return this;
+  }
+
   withPaths(paths: RoutePaths): this {
     Object.entries(paths).forEach(([path, target]) => {
       if (target) {
@@ -622,6 +682,7 @@ export class Routes implements IRoutes, ILoggable {
         paths: this.intoPaths(),
         default: this.intoDefault(),
         crontab: this.crontab.length ? this.crontab : undefined,
+        volumes: this.volumes.length ? this.volumes : undefined,
       },
       status: undefined,
     };
@@ -659,6 +720,10 @@ export class Routes implements IRoutes, ILoggable {
 
   intoCrontab(): Array<Crontab> {
     return this.crontab.map((line) => Crontab.parse(line));
+  }
+
+  intoVolumes(): Array<Volume> {
+    return this.volumes.map((spec) => Volume.parse(spec));
   }
 
   intoURI(path: string): URI {
@@ -742,6 +807,7 @@ export class Routes implements IRoutes, ILoggable {
 
   merge(other: Routes): this {
     this.withCrontab(other.crontab);
+    this.withVolumes(other.volumes);
     other.rules.forEach((rule) => {
       rule.backendRefs?.forEach((ref) => {
         rule.matches?.forEach((match) => {

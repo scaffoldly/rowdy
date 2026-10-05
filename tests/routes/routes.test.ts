@@ -1,4 +1,4 @@
-import { Crontab, Routes, URI } from '@scaffoldly/rowdy';
+import { Crontab, Routes, URI, Volume } from '@scaffoldly/rowdy';
 import { writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 
@@ -367,6 +367,68 @@ describe('uri', () => {
       expect(URI.from('insecure+localhost').insecure).toBe(true);
       expect(URI.from('insecure+localhost:443').toString()).toBe('https://localhost/');
       expect(URI.from('insecure+localhost:443').insecure).toBe(true);
+    });
+  });
+});
+
+describe('volumes', () => {
+  it('should survive a data url round trip', () => {
+    const routes = Routes.fromURL(`apiVersion: rowdy.run/v1alpha1
+kind: Routes
+spec:
+  default: "http://localhost:3000/"
+  volumes:
+    - "file:///tmp/vfsstore:/vfs"
+`);
+    expect(routes.volumes).toEqual(['file:///tmp/vfsstore:/vfs']);
+
+    const round = Routes.fromDataURL(routes.intoDataURL());
+    expect(round.volumes).toEqual(['file:///tmp/vfsstore:/vfs']);
+    expect(round.intoURI('/foo')!.toString()).toBe('http://localhost:3000/foo');
+  });
+
+  it('should accept a bare spec with only volumes', () => {
+    const routes = Routes.fromURL(`volumes:\n  - "s3://example-bucket:/data"\n`);
+    expect(routes.volumes).toEqual(['s3://example-bucket:/data']);
+  });
+
+  it('should omit empty volumes from the data url', () => {
+    const routes = Routes.empty().withDefault('http://localhost:3000/');
+    expect(routes.volumes).toEqual([]);
+    expect(Routes.fromDataURL(routes.intoDataURL()).volumes).toEqual([]);
+  });
+
+  it('should merge volumes without duplicating', () => {
+    const a = Routes.empty().withVolumes(['file:///tmp/a:/a']);
+    const b = Routes.empty().withVolumes(['file:///tmp/a:/a', 's3://bucket/prefix:/b']);
+    expect(a.merge(b).volumes).toEqual(['file:///tmp/a:/a', 's3://bucket/prefix:/b']);
+  });
+
+  describe('parse', () => {
+    it('should split scheme, locator and mountpoint', () => {
+      const volume = Volume.parse(' s3://example-bucket/some/prefix:/mnt/data ');
+      expect(volume.scheme).toBe('s3');
+      expect(volume.locator).toBe('example-bucket/some/prefix');
+      expect(volume.mountpoint).toBe('/mnt/data');
+      expect(volume.spec).toBe('s3://example-bucket/some/prefix:/mnt/data');
+    });
+
+    it('should keep a file locator absolute', () => {
+      expect(Volume.parse('file:///tmp/vfsstore:/vfs').locator).toBe('/tmp/vfsstore');
+      expect(() => Volume.parse('file://tmp/vfsstore:/vfs')).toThrow('must be an absolute directory');
+    });
+
+    it('should reject malformed entries', () => {
+      expect(() => Volume.parse('s3://example-bucket')).toThrow('expected <scheme>://<locator>:<mountpoint>');
+      expect(() => Volume.parse('s3://example-bucket:vfs')).toThrow('expected <scheme>://<locator>:<mountpoint>');
+      expect(() => Volume.parse('s3://:/vfs')).toThrow('the locator is empty');
+      expect(() => Volume.parse('s3://example-bucket:/')).toThrow('no trailing slash');
+      expect(() => Volume.parse('s3://example-bucket:/vfs/')).toThrow('no trailing slash');
+      expect(() => Volume.parse('ftp://host/dir:/vfs')).toThrow("Invalid volume scheme 'ftp'");
+    });
+
+    it('should reject a bad entry when loading a manifest', () => {
+      expect(() => Routes.fromURL(`volumes:\n  - "nope"\n`)).toThrow("Invalid volume 'nope'");
     });
   });
 });
