@@ -80,6 +80,7 @@ export class S3Adapter implements VfsAdapter {
   constructor(private readonly options: S3AdapterOptions) {
     this.client = options.client ?? new S3Client({});
     this.log = options.log ?? (() => {});
+    this.owner = options.owner ?? randomUUID();
     mkdirSync(options.backing, { recursive: true });
   }
 
@@ -451,7 +452,7 @@ export class S3Adapter implements VfsAdapter {
    * in put() still rejects a stale write. */
 
   private readonly leases = new Map<string, Lease>();
-  private readonly owner = this.options.owner ?? randomUUID();
+  private readonly owner: string;
 
   private lockKey(key: string): string {
     const { prefix } = this.options;
