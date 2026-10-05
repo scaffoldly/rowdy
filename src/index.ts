@@ -24,7 +24,10 @@ export const VFS_PRELOAD = '/tmp/rowdy/vfspreload.so';
 export const VFS_PREFIX = '/vfs';
 export const VFS_BACKING = '/tmp/vfsstore';
 
-export type VfsEnv = Record<'ROWDY_VFS' | 'LD_PRELOAD' | 'VFS_PREFIX' | 'VFS_BACKING', string | undefined>;
+export type VfsEnv = Record<
+  'ROWDY_VFS' | 'LD_PRELOAD' | 'VFS_PREFIX' | 'VFS_BACKING' | 'VFS_SOCKET',
+  string | undefined
+>;
 
 export type VfsConfig = {
   /** Path of the materialized shim, first entry of LD_PRELOAD. */
@@ -33,6 +36,8 @@ export type VfsConfig = {
   prefix: string;
   /** Real directory backing the prefix. */
   backing: string;
+  /** Supervisor socket the shim reports to, if any. */
+  socket?: string;
 };
 
 /** The compiled shim for an architecture (`linux-x64`, `linux-arm64`), or undefined if not built in. */
@@ -69,22 +74,36 @@ export const materialize = (path: string = VFS_PRELOAD, arch: string = process.a
   return path;
 };
 
+export type ApplyVfsOptions = {
+  /** Where to write the shim. Default VFS_PRELOAD. */
+  preload?: string;
+  /** Supervisor socket the shim should talk to (a listening VfsServer). Unset: local overlay only. */
+  socket?: string;
+};
+
 /**
  * Opt-in userspace VFS for a child process environment. When `env.ROWDY_VFS` is
  * set, materialize the shim, prepend it to `env.LD_PRELOAD` (preserving any
- * existing value, never duplicating) and default `VFS_PREFIX`/`VFS_BACKING`.
- * Mutates `env` and returns the resulting config, or undefined when off.
+ * existing value, never duplicating), default `VFS_PREFIX`/`VFS_BACKING`, and
+ * point `VFS_SOCKET` at the supervisor when one is given. Mutates `env` and
+ * returns the resulting config, or undefined when off.
  */
-export const applyVfs = (env: VfsEnv, preloadPath: string = VFS_PRELOAD): VfsConfig | undefined => {
+export const applyVfs = (env: VfsEnv, options: ApplyVfsOptions | string = {}): VfsConfig | undefined => {
   if (!env.ROWDY_VFS) {
     return undefined;
   }
-  const preload = materialize(preloadPath);
+  const opts = typeof options === 'string' ? { preload: options } : options;
+  const preload = materialize(opts.preload ?? VFS_PRELOAD);
   const existing = (env.LD_PRELOAD ?? '').split(':').filter((p) => p && p !== preload);
   env.LD_PRELOAD = [preload, ...existing].join(':');
   env.VFS_PREFIX = env.VFS_PREFIX || VFS_PREFIX;
   env.VFS_BACKING = env.VFS_BACKING || VFS_BACKING;
-  return { preload, prefix: env.VFS_PREFIX, backing: env.VFS_BACKING };
+  if (opts.socket) {
+    env.VFS_SOCKET = opts.socket;
+  }
+  return { preload, prefix: env.VFS_PREFIX, backing: env.VFS_BACKING, socket: env.VFS_SOCKET };
 };
+
+export * from './server';
 
 export { VERSION, NAME, id };

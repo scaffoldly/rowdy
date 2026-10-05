@@ -13,21 +13,31 @@
  * back to the program (getcwd, realpath, readlink) are translated in reverse so
  * the backing directory never leaks into the program's view.
  *
+ * Supervisor socket (VFS_SOCKET): when set, the shim tells the process that
+ * launched it what is about to happen to the virtual tree so that process can
+ * populate the backing directory first (stat/fetch/list) and persist it after
+ * (open/flush/mkdir/unlink/rename). Requests and replies are one JSON object
+ * per line over a unix-domain stream socket; only paths, flags and metadata
+ * cross it, never file contents. See DISCLOSURE for the protocol. With no
+ * VFS_SOCKET the shim is a plain local-directory overlay.
+ *
  * musl note: within libc, one function calling another (fopen->open,
- * scandir->opendir, remove->unlink) binds internally and does NOT route through
- * a preloaded symbol. So we must interpose every PUBLIC entry point the calling
- * program uses directly, not rely on one wrapper covering another. That is
- * exactly what this file does.
+ * scandir->opendir, remove->unlink, fclose->close) binds internally and does
+ * NOT route through a preloaded symbol. So we must interpose every PUBLIC
+ * entry point the calling program uses directly, not rely on one wrapper
+ * covering another. That is exactly what this file does.
  *
  * Scope / ceiling (inherent to the preload model):
  *   - only processes started with this .so in LD_PRELOAD see the VFS;
  *   - only dynamically-linked musl callers that invoke these libc symbols;
  *   - it is not a kernel mountpoint — unrelated processes cannot see /vfs;
- *   - no mmap of virtual files, no nftw/glob/posix_spawn translation (yet).
+ *   - no mmap of virtual files, no nftw/glob/posix_spawn translation (yet);
+ *   - only absolute VFS_PREFIX paths are reported to the supervisor; relative
+ *     paths after chdir() resolve locally.
  *
  * Build:  gcc -shared -fPIC vfspreload.c -o vfspreload.so
  * Run:    LD_PRELOAD=/usr/local/lib/rowdy/vfspreload.so \
- *         VFS_PREFIX=/vfs VFS_BACKING=/tmp/vfsstore <program>
+ *         VFS_PREFIX=/vfs VFS_BACKING=/tmp/vfsstore [VFS_SOCKET=/tmp/rowdy/vfs.sock] <program>
  */
 #define _GNU_SOURCE
 #include <dlfcn.h>
@@ -40,13 +50,16 @@
 #include <fcntl.h>
 #include <unistd.h>
 #include <dirent.h>
+#include <pthread.h>
 #include <utime.h>
+#include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/statfs.h>
 #include <sys/statvfs.h>
 #include <sys/time.h>
 #include <sys/types.h>
 #include <sys/syscall.h>
+#include <sys/un.h>
 
 /* ---- configuration (read once) ------------------------------------------ */
 
@@ -54,6 +67,10 @@ static const char *g_prefix;    /* virtual prefix, e.g. "/vfs"            */
 static size_t      g_prefixlen;
 static const char *g_backing;   /* real backing dir, e.g. "/tmp/vfsstore" */
 static size_t      g_backinglen;
+static const char *g_socket;    /* supervisor socket path, or NULL        */
+
+/* libc entry points the shim itself needs, resolved past our own hooks */
+static int (*real_close_)(int);
 
 static void vfs_init(void) __attribute__((constructor));
 static void vfs_init(void) {
@@ -66,6 +83,11 @@ static void vfs_init(void) {
     const char *b = getenv("VFS_BACKING");
     g_backing = (b && *b) ? b : "/tmp/vfsstore";
     g_backinglen = strlen(g_backing);
+
+    const char *s = getenv("VFS_SOCKET");
+    g_socket = (s && *s) ? s : NULL;
+
+    real_close_ = (int (*)(int))dlsym(RTLD_NEXT, "close");
 
     /* Best-effort create the backing root so the VFS exists on first use. */
     int (*real_mkdir)(const char *, mode_t) = dlsym(RTLD_NEXT, "mkdir");
@@ -116,17 +138,213 @@ static int unxlate(char *buf, size_t bufsz) {
     return 1;
 }
 
-#define XL(p) const char *rp_; char xb_[PATH_MAX]; rp_ = xlate((p), xb_, sizeof xb_)
+/* XL: rp_ is the real path; vf_ is non-zero when p was a virtual path. */
+#define XL(p) \
+    const char *rp_; char xb_[PATH_MAX]; \
+    rp_ = xlate((p), xb_, sizeof xb_); \
+    int vf_ = (rp_ != (p)); (void)vf_
 
 #define XL2(a, b) \
     char ab_[PATH_MAX], bb_[PATH_MAX]; \
     const char *ra_ = xlate((a), ab_, sizeof ab_); \
-    const char *rb_ = xlate((b), bb_, sizeof bb_)
+    const char *rb_ = xlate((b), bb_, sizeof bb_); \
+    int va_ = (ra_ != (a)), vb_ = (rb_ != (b)); (void)va_; (void)vb_
 
 #define REAL(name) \
     static typeof(&name) real_; \
     if (!real_) real_ = (typeof(&name))dlsym(RTLD_NEXT, #name)
 
+/* ---- supervisor IPC ------------------------------------------------------ */
+
+static pthread_mutex_t g_lock = PTHREAD_MUTEX_INITIALIZER;
+static int   g_ipc = -1;    /* connected socket, owned by g_ipc_pid */
+static pid_t g_ipc_pid;
+
+/* Append `s` to `out` as a JSON string body (no quotes), escaping as needed.
+ * Returns the number of bytes written, or -1 if it would not fit. */
+static ssize_t json_escape(const char *s, char *out, size_t cap) {
+    size_t n = 0;
+    for (; *s; s++) {
+        unsigned char c = (unsigned char)*s;
+        const char *esc = NULL;
+        char u[8];
+        switch (c) {
+        case '"':  esc = "\\\""; break;
+        case '\\': esc = "\\\\"; break;
+        case '\n': esc = "\\n"; break;
+        case '\r': esc = "\\r"; break;
+        case '\t': esc = "\\t"; break;
+        default:
+            if (c < 0x20) { snprintf(u, sizeof u, "\\u%04x", c); esc = u; }
+        }
+        size_t len = esc ? strlen(esc) : 1;
+        if (n + len >= cap) return -1;
+        if (esc) memcpy(out + n, esc, len); else out[n] = (char)c;
+        n += len;
+    }
+    if (n >= cap) return -1;
+    out[n] = '\0';
+    return (ssize_t)n;
+}
+
+/* Must be called with g_lock held. Returns the socket fd or -1 with errno. */
+static int ipc_connect(void) {
+    pid_t pid = getpid();
+    if (g_ipc >= 0 && g_ipc_pid == pid) return g_ipc;
+    if (g_ipc >= 0) { real_close_(g_ipc); g_ipc = -1; }   /* inherited across fork */
+
+    struct sockaddr_un addr;
+    if (strlen(g_socket) >= sizeof addr.sun_path) { errno = ENAMETOOLONG; return -1; }
+    int fd = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
+    if (fd < 0) return -1;
+    memset(&addr, 0, sizeof addr);
+    addr.sun_family = AF_UNIX;
+    strcpy(addr.sun_path, g_socket);
+    if (connect(fd, (struct sockaddr *)&addr, sizeof addr) < 0) {
+        int e = errno; real_close_(fd); errno = e; return -1;
+    }
+    g_ipc = fd; g_ipc_pid = pid;
+    return fd;
+}
+
+/* Must be called with g_lock held. */
+static void ipc_drop(void) {
+    if (g_ipc >= 0) real_close_(g_ipc);
+    g_ipc = -1;
+}
+
+/* One round trip: a request line out, a reply line back. 0 when the reply is
+ * {"ok":true}; otherwise -1 with errno taken from the reply ("errno":N) or from
+ * the transport failure. An unreachable supervisor is an error, not a silent
+ * skip: the operator asked for the socket, so losing it must be loud. */
+static int ipc_exchange(const char *req, size_t reqlen) {
+    pthread_mutex_lock(&g_lock);
+    int fd = ipc_connect();
+    if (fd < 0) { int e = errno; pthread_mutex_unlock(&g_lock); errno = e; return -1; }
+
+    size_t off = 0;
+    while (off < reqlen) {
+        ssize_t n = write(fd, req + off, reqlen - off);
+        if (n < 0 && errno == EINTR) continue;
+        if (n <= 0) { ipc_drop(); pthread_mutex_unlock(&g_lock); errno = EIO; return -1; }
+        off += (size_t)n;
+    }
+
+    char reply[512];
+    size_t len = 0;
+    for (;;) {
+        ssize_t n = read(fd, reply + len, sizeof reply - 1 - len);
+        if (n < 0 && errno == EINTR) continue;
+        if (n <= 0) { ipc_drop(); pthread_mutex_unlock(&g_lock); errno = EIO; return -1; }
+        len += (size_t)n;
+        if (memchr(reply, '\n', len)) break;
+        if (len >= sizeof reply - 1) { ipc_drop(); pthread_mutex_unlock(&g_lock); errno = EIO; return -1; }
+    }
+    reply[len] = '\0';
+    pthread_mutex_unlock(&g_lock);
+
+    if (strstr(reply, "\"ok\":true")) return 0;
+    const char *e = strstr(reply, "\"errno\":");
+    errno = e ? atoi(e + 8) : EIO;
+    if (errno <= 0) errno = EIO;
+    return -1;
+}
+
+/* Notify the supervisor about `op` on virtual path `p` (and `p2` for rename).
+ * `flags` are the open(2) flags for "open". No-op (0) without VFS_SOCKET. */
+static int notify(const char *op, const char *p, const char *p2, int flags) {
+    if (!g_socket) return 0;
+    char e1[2 * PATH_MAX], e2[2 * PATH_MAX], req[4 * PATH_MAX + 128];
+    if (json_escape(p, e1, sizeof e1) < 0) { errno = ENAMETOOLONG; return -1; }
+    int n;
+    if (p2) {
+        if (json_escape(p2, e2, sizeof e2) < 0) { errno = ENAMETOOLONG; return -1; }
+        n = snprintf(req, sizeof req, "{\"op\":\"%s\",\"from\":\"%s\",\"to\":\"%s\"}\n", op, e1, e2);
+    } else if (strcmp(op, "open") == 0) {
+        n = snprintf(req, sizeof req, "{\"op\":\"%s\",\"path\":\"%s\",\"flags\":%d}\n", op, e1, flags);
+    } else {
+        n = snprintf(req, sizeof req, "{\"op\":\"%s\",\"path\":\"%s\"}\n", op, e1);
+    }
+    if (n < 0 || (size_t)n >= sizeof req) { errno = ENAMETOOLONG; return -1; }
+    int saved = errno;
+    int r = ipc_exchange(req, (size_t)n);
+    if (r == 0) errno = saved;
+    return r;
+}
+
+/* ---- descriptors opened for writing ---------------------------------------
+ * The supervisor is told "open" when a virtual file is opened writable and
+ * "flush" when the last reference is closed or fsync'd, so it can persist the
+ * backing file. The table maps fd -> virtual path for those descriptors. */
+
+#define FD_MAX 65536
+static char *g_fdpath[FD_MAX];
+
+static void fd_track(int fd, const char *vpath) {
+    if (fd < 0 || fd >= FD_MAX) return;
+    char *copy = strdup(vpath);
+    pthread_mutex_lock(&g_lock);
+    free(g_fdpath[fd]);
+    g_fdpath[fd] = copy;
+    pthread_mutex_unlock(&g_lock);
+}
+
+/* Removes and returns the tracked path (caller frees), or NULL. */
+static char *fd_take(int fd) {
+    if (fd < 0 || fd >= FD_MAX) return NULL;
+    pthread_mutex_lock(&g_lock);
+    char *p = g_fdpath[fd];
+    g_fdpath[fd] = NULL;
+    pthread_mutex_unlock(&g_lock);
+    return p;
+}
+
+/* Copies the tracking of `from` onto `to` (dup family). */
+static void fd_copy(int from, int to) {
+    if (from < 0 || from >= FD_MAX || to < 0 || to >= FD_MAX || from == to) return;
+    pthread_mutex_lock(&g_lock);
+    char *p = g_fdpath[from] ? strdup(g_fdpath[from]) : NULL;
+    free(g_fdpath[to]);
+    g_fdpath[to] = p;
+    pthread_mutex_unlock(&g_lock);
+}
+
+static int is_write(int flags) {
+    return (flags & O_ACCMODE) != O_RDONLY || (flags & (O_CREAT | O_TRUNC));
+}
+
+/* Before opening virtual path `vp`: make sure the backing file is populated.
+ * A missing object is only an error when the caller is not creating. */
+static int pre_open(const char *vp, int flags) {
+    if (flags & O_TRUNC) return 0;
+    if (notify("fetch", vp, NULL, 0) == 0) return 0;
+    if ((flags & O_CREAT) && errno == ENOENT) return 0;
+    return -1;
+}
+
+/* After a successful open of virtual path `vp` as `fd`: register writers. */
+static int post_open(int fd, const char *vp, int flags) {
+    if (fd < 0 || !is_write(flags)) return fd;
+    if (notify("open", vp, NULL, flags) < 0) {
+        int e = errno; real_close_(fd); errno = e; return -1;
+    }
+    fd_track(fd, vp);
+    return fd;
+}
+
+/* On the last close (or an fsync) of a writer: ask the supervisor to persist. */
+static int flush_fd(int fd, int take) {
+    char *vp = take ? fd_take(fd) : NULL;
+    if (!take) {
+        pthread_mutex_lock(&g_lock);
+        vp = (fd >= 0 && fd < FD_MAX && g_fdpath[fd]) ? strdup(g_fdpath[fd]) : NULL;
+        pthread_mutex_unlock(&g_lock);
+    }
+    if (!vp) return 0;
+    int r = notify("flush", vp, NULL, 0);
+    free(vp);
+    return r;
+}
 /* ---- open family (variadic mode) ----------------------------------------- */
 
 int open(const char *path, int flags, ...) {
