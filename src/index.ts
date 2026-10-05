@@ -105,5 +105,6 @@ export const applyVfs = (env: VfsEnv, options: ApplyVfsOptions | string = {}): V
 };
 
 export * from './server';
+export * from './s3';
 
 export { VERSION, NAME, id };

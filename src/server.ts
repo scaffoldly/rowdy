@@ -34,6 +34,29 @@ export interface VfsAdapter {
   rename(from: string, to: string): Promise<void>;
 }
 
+/**
+ * Linux errno values. The shim runs in a Linux (musl) child, so replies must
+ * use Linux numbers even when rowdy itself runs on a macOS laptop in tests,
+ * where os.constants.errno differs (ESTALE is 70 there, 116 on Linux).
+ */
+export const LINUX_ERRNO = {
+  EPERM: 1,
+  ENOENT: 2,
+  EIO: 5,
+  EACCES: 13,
+  EEXIST: 17,
+  EXDEV: 18,
+  ENOTDIR: 20,
+  EISDIR: 21,
+  EINVAL: 22,
+  ENOSPC: 28,
+  ENOSYS: 38,
+  ENOTEMPTY: 39,
+  ESTALE: 116,
+} as const;
+
+export type ErrnoCode = keyof typeof LINUX_ERRNO;
+
 /** An error carrying the errno the shim should surface. */
 export class VfsError extends Error {
   constructor(
@@ -45,21 +68,28 @@ export class VfsError extends Error {
   }
 
   /** From a code name such as "ENOENT". */
-  static code(code: keyof typeof constants.errno, message?: string): VfsError {
-    return new VfsError(constants.errno[code], message ?? code);
+  static code(code: ErrnoCode, message?: string): VfsError {
+    return new VfsError(LINUX_ERRNO[code], message ?? code);
   }
 }
 
 /** The errno to report for any thrown value. */
 export const errnoOf = (e: unknown): number => {
+  if (e instanceof VfsError) {
+    return e.errno;
+  }
   const err = e as { errno?: number; code?: string };
-  if (typeof err?.errno === 'number' && err.errno !== 0) {
-    return Math.abs(err.errno); // node reports negative errnos
+  // Prefer the code name: node's numeric errno is the host's, the name is portable.
+  if (typeof err?.code === 'string' && err.code in LINUX_ERRNO) {
+    return LINUX_ERRNO[err.code as ErrnoCode];
   }
   if (typeof err?.code === 'string' && err.code in constants.errno) {
     return constants.errno[err.code as keyof typeof constants.errno];
   }
-  return constants.errno.EIO;
+  if (typeof err?.errno === 'number' && err.errno !== 0) {
+    return Math.abs(err.errno); // node reports negative errnos
+  }
+  return LINUX_ERRNO.EIO;
 };
 
 /**

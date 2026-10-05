@@ -80,5 +80,36 @@ describing exactly what the shim does, the local supervisor socket it may use, a
 does. Both must stay in every future version. Keep `DISCLOSURE` accurate when the shim's
 capabilities change.
 
-Pluggable backings (`s3://bucket:/path`) are tracked in
+## Supervisor and adapters
+
+With `VFS_SOCKET` set, the shim reports every operation on the mountpoint to a `VfsServer` over a
+unix-domain socket (one JSON object per line, paths and metadata only; the protocol is in
+`DISCLOSURE`). The server dispatches to a `VfsAdapter`:
+
+- `LocalAdapter`: the backing directory is the whole store (no-ops).
+- `S3Adapter({ bucket, prefix?, mountpoint, backing })`: objects are materialized into the backing
+  directory on first open (`fetch`), directory listings create correctly sized placeholders without
+  downloading (`list`), and files are written back on close/fsync (`flush`) with
+  `PutObject If-Match: <etag the copy was based on>` (or `If-None-Match: *` for a new object), so a
+  concurrent writer fails the close with `ESTALE` instead of being overwritten. `unlink` deletes,
+  `rename` copies server-side then deletes (a renamed directory moves every key under it). S3 has
+  no directories: an empty directory exists only locally until something is flushed under it.
+  Credentials come from the default provider chain of the process running the server.
+
+```ts
+import { S3Adapter, VfsServer, VFS_SOCKET, applyVfs } from '@scaffoldly/rowdy-vfs';
+
+const server = await new VfsServer(
+  new S3Adapter({ bucket: 'example-bucket', mountpoint: '/vfs', backing: '/tmp/vfsstore' }),
+  { socket: VFS_SOCKET }
+).listen();
+const env = { ...process.env, ROWDY_VFS: '1', VFS_PREFIX: '/vfs', VFS_BACKING: '/tmp/vfsstore' };
+applyVfs(env, { socket: server.socket });
+```
+
+Ceilings of the S3 adapter: whole-object materialization (an object must fit on the backing disk),
+no eviction yet, last-writer-wins with ETag detection rather than locking, and errno values are
+Linux's regardless of the host.
+
+Declarative `volumes:` in rowdy's Routes manifest drive all of this; see
 [scaffoldly/rowdy#27](https://github.com/scaffoldly/rowdy/issues/27).
