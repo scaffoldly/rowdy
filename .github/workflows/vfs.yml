@@ -1,13 +1,13 @@
-name: CI/CD (@scaffoldly/rowdy-cdk)
+name: CI/CD (@scaffoldly/rowdy-vfs)
 
 on:
   push:
     branches:
-      - cdk
-      - cdk/**
+      - vfs
+      - vfs/**
   pull_request_target:
     branches:
-      - cdk
+      - vfs
   workflow_dispatch: {}
 
 permissions: write-all
@@ -17,6 +17,34 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  native:
+    strategy:
+      matrix:
+        include:
+          - arch: x64
+            runner: ubuntu-24.04
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    name: Native (${{ matrix.arch }})
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+
+      - name: Compile shim
+        run: sh native/build.sh ${{ matrix.arch }}
+
+      - name: Test shim
+        run: sh native/test.sh ${{ matrix.arch }}
+
+      - name: Upload shim
+        uses: actions/upload-artifact@v4
+        with:
+          name: vfspreload-linux-${{ matrix.arch }}
+          path: lib/linux-${{ matrix.arch }}/vfspreload.so
+          if-no-files-found: error
+
   lint:
     runs-on: ubuntu-latest
     name: Lint
@@ -39,6 +67,7 @@ jobs:
       matrix:
         node-version: [22.x, 24.x]
     runs-on: ubuntu-latest
+    needs: [native]
     name: Test
 
     steps:
@@ -51,16 +80,28 @@ jobs:
           node-version: ${{ matrix.node-version }}
           cache: 'yarn'
 
+      - name: Download shims
+        uses: actions/download-artifact@v4
+        with:
+          pattern: vfspreload-linux-*
+          path: lib
+          merge-multiple: false
+
       - name: Test
-        run: yarn && yarn test
+        run: |
+          for arch in x64 arm64; do
+            mkdir -p lib/linux-$arch
+            mv lib/vfspreload-linux-$arch/vfspreload.so lib/linux-$arch/vfspreload.so
+          done
+          yarn && yarn test
 
   build-publish:
     runs-on: ubuntu-latest
-    needs: [lint, test]
+    needs: [native, lint, test]
     name: Build and Publish to NPM
     if: |
       success() &&
-      github.ref == 'refs/heads/cdk' &&
+      github.ref == 'refs/heads/vfs' &&
       github.event_name != 'pull_request_target' &&
       !contains(github.event.head_commit.message, '[skip-prerelease]')
 
@@ -79,8 +120,20 @@ jobs:
           cache: 'yarn'
           registry-url: 'https://registry.npmjs.org'
 
+      - name: Download shims
+        uses: actions/download-artifact@v4
+        with:
+          pattern: vfspreload-linux-*
+          path: lib
+          merge-multiple: false
+
       - name: Build package
-        run: yarn && yarn build
+        run: |
+          for arch in x64 arm64; do
+            mkdir -p lib/linux-$arch
+            mv lib/vfspreload-linux-$arch/vfspreload.so lib/linux-$arch/vfspreload.so
+          done
+          yarn && yarn build
 
       - name: Generate pre-release version
         id: version
@@ -100,13 +153,13 @@ jobs:
 
       # DEVNOTE: The OIDC token isn't an npm token. The registry exchanges it for a short-lived
       # publish token scoped to this package, the same exchange `npm publish` does internally.
-      # Trusted publishing is configured on npmjs.com for this repository and cdk.yml.
+      # Trusted publishing is configured on npmjs.com for this repository and vfs.yml.
       - name: Get npm token
         id: identity
         uses: cnuss/actions-identity@v1
         with:
           id-token-audience: npm:registry.npmjs.org
-          exchange-url: https://registry.npmjs.org/-/npm/v1/oidc/token/exchange/package/@scaffoldly%2frowdy-cdk
+          exchange-url: https://registry.npmjs.org/-/npm/v1/oidc/token/exchange/package/@scaffoldly%2frowdy-vfs
 
       - name: Publish pre-release to NPM
         run: yarn publish --tag beta --access public

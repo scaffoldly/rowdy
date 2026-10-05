@@ -245,6 +245,29 @@ Alongside its existing Lambda, IAM and ECR permissions, the role the deploy assu
 The deployed function is granted `scheduler:*` when the Container Runtime Interface is enabled
 with `--cri`.
 
+## Userspace VFS (experimental)
+
+Setting `ROWDY_VFS=1` on the function gives the app a writable, persistent directory tree at `/vfs`
+(configurable with `VFS_PREFIX`) backed by `/tmp/vfsstore` (`VFS_BACKING`). Nothing is mounted:
+rowdy writes the [`@scaffoldly/rowdy-vfs`](https://github.com/scaffoldly/rowdy/tree/vfs) shim to
+`/tmp/rowdy/vfspreload.so` and prepends it to the app's `LD_PRELOAD`, so the libc path calls the
+app makes (`open`, `stat`, `opendir`, `rename`, `getcwd`, `realpath`, …) are rewritten in-process.
+The Lambda sandbox denies every kernel-mediated option (`/dev/fuse`, `mount(2)`, namespaces,
+ptrace, seccomp-notify), which is why it works this way.
+
+Off by default. Rowdy's own process is never preloaded, and an existing `LD_PRELOAD` is kept.
+
+Limits of the preload model:
+
+- Only dynamically linked musl (alpine) binaries that go through libc see `/vfs`. Static binaries
+  and Go programs that issue raw syscalls do not.
+- `mmap` of a `/vfs` file is not translated; neither are `nftw`, `glob`, or `posix_spawn` paths.
+- It is not a mountpoint, so a process started outside rowdy cannot see it.
+
+Declarative volumes with other backings (`s3://bucket:/path`) are tracked in
+[#27](https://github.com/scaffoldly/rowdy/issues/27).
+
 ## Out of scope
 
-The local runtime (no `AWS_LAMBDA_RUNTIME_API`) ignores `spec.crontab`.
+The local runtime (no `AWS_LAMBDA_RUNTIME_API`) ignores `spec.crontab` and never starts the
+command, so `ROWDY_VFS` only takes effect on a deployed function.
