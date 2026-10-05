@@ -76,7 +76,15 @@ const entrypoint = <T>(
 };
 
 export type ProcessEnv = Record<
-  'HTTP_HOST' | 'HTTP_HOSTNAME' | 'HTTP_PROTO' | 'HTTP_UA' | 'NET_PRIVATE_IPV4',
+  | 'HTTP_HOST'
+  | 'HTTP_HOSTNAME'
+  | 'HTTP_PROTO'
+  | 'HTTP_UA'
+  | 'NET_PRIVATE_IPV4'
+  | 'ROWDY_VFS'
+  | 'LD_PRELOAD'
+  | 'VFS_PREFIX'
+  | 'VFS_BACKING',
   string | undefined
 >;
 
@@ -98,6 +106,9 @@ export class Environment implements ILoggable {
     }
     return Environment._CONCURRENCY.CURRENT;
   }
+
+  // Path of the userspace-VFS preload shim shipped in the rowdy layer.
+  private static readonly VFS_PRELOAD = '/usr/local/lib/rowdy/vfspreload.so';
 
   public abort: AbortController = ABORT;
   public readonly signal: AbortSignal = this.abort.signal;
@@ -523,6 +534,28 @@ export class Environment implements ILoggable {
     return this;
   }
 
+  /**
+   * Opt-in userspace VFS. When ROWDY_VFS is set, prepend the preload shim to the
+   * child's LD_PRELOAD (preserving any existing value) and default the VFS
+   * prefix/backing. Injected into the child env only — rowdy's own process is
+   * untouched. The shim is musl-linked, so it only takes effect in musl (alpine)
+   * child images.
+   */
+  private applyVfs(env: ProcessEnv): void {
+    if (!env.ROWDY_VFS) {
+      return;
+    }
+    const preload = (env.LD_PRELOAD ?? '').split(':').filter((p) => p && p !== Environment.VFS_PRELOAD);
+    env.LD_PRELOAD = [Environment.VFS_PRELOAD, ...preload].join(':');
+    env.VFS_PREFIX = env.VFS_PREFIX || '/vfs';
+    env.VFS_BACKING = env.VFS_BACKING || '/tmp/vfsstore';
+    this.log.debug('VFS preload enabled for child', {
+      LD_PRELOAD: env.LD_PRELOAD,
+      VFS_PREFIX: env.VFS_PREFIX,
+      VFS_BACKING: env.VFS_BACKING,
+    });
+  }
+
   get Env(): Observable<ProcessEnv> {
     return new Observable<ProcessEnv>((subscriber) => {
       const env: ProcessEnv = { ...process.env } as ProcessEnv;
@@ -532,6 +565,7 @@ export class Environment implements ILoggable {
         },
         error: (err) => subscriber.error(err),
         complete: () => {
+          this.applyVfs(env);
           this.log.debug(`Environment variables finalized`, { env: JSON.stringify(env) });
           subscriber.next({ ...env });
           subscriber.complete();
