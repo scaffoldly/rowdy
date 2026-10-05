@@ -397,31 +397,64 @@ export type Health = { [origin: string]: URIHealth };
 
 export type VolumeScheme = 'file' | 's3';
 
+/** Per-volume options, given as a query string on the locator: `s3://bucket?lock=1:/mnt`. */
+export type VolumeOptions = {
+  /** Hold a lease across every open-for-write/close window (plain files). Default false. */
+  lock: boolean;
+};
+
 /**
- * One `volumes:` entry: `<scheme>://<locator>:<mountpoint>`. The mountpoint is
- * the absolute directory the application sees; the locator names what backs it
- * (`file://<dir>` a local directory, `s3://<bucket>[/<prefix>]` an object store).
- * Declaring a volume is what turns on the userspace VFS for the container.
+ * One `volumes:` entry: `<scheme>://<locator>[?options]:<mountpoint>`. The
+ * mountpoint is the absolute directory the application sees; the locator
+ * names what backs it (`file://<dir>` a local directory,
+ * `s3://<bucket>[/<prefix>]` an object store). Declaring a volume is what
+ * turns on the userspace VFS for the container.
  */
 export class Volume {
   static readonly SCHEMES: ReadonlyArray<VolumeScheme> = ['file', 's3'];
-  private static readonly PATTERN = /^([a-z][a-z0-9+.-]*):\/\/(.*?):(\/.*)$/;
+  private static readonly PATTERN = /^([a-z][a-z0-9+.-]*):\/\/([^?:]*?)(?:\?([^:]*))?:(\/.*)$/;
+  private static readonly OPTIONS: ReadonlyArray<keyof VolumeOptions> = ['lock'];
 
   private constructor(
     readonly spec: string,
     readonly scheme: VolumeScheme,
     readonly locator: string,
-    readonly mountpoint: string
+    readonly mountpoint: string,
+    readonly options: VolumeOptions
   ) {}
+
+  private static parseOptions(query: string | undefined, original: string): VolumeOptions {
+    const options: VolumeOptions = { lock: false };
+    if (!query) {
+      return options;
+    }
+    for (const [key, value] of new URLSearchParams(query)) {
+      if (!(Volume.OPTIONS as ReadonlyArray<string>).includes(key)) {
+        throw new Error(`Invalid volume option '${key}', expected one of ${Volume.OPTIONS.join(', ')}: '${original}'`);
+      }
+      if (!['1', 'true', '0', 'false', ''].includes(value)) {
+        throw new Error(`Invalid value '${value}' for volume option '${key}', expected 1|true|0|false: '${original}'`);
+      }
+      options[key as keyof VolumeOptions] = value === '1' || value === 'true' || value === '';
+    }
+    return options;
+  }
 
   static parse(spec: string): Volume {
     const original = spec;
     spec = spec.trim();
     const match = Volume.PATTERN.exec(spec);
     if (!match) {
-      throw new Error(`Invalid volume '${original}', expected <scheme>://<locator>:<mountpoint>`);
+      throw new Error(`Invalid volume '${original}', expected <scheme>://<locator>[?options]:<mountpoint>`);
     }
-    const [, scheme, locator, mountpoint] = match as unknown as [string, string, string, string];
+    const [, scheme, locator, query, mountpoint] = match as unknown as [
+      string,
+      string,
+      string,
+      string | undefined,
+      string,
+    ];
+    const options = Volume.parseOptions(query, original);
     if (!(Volume.SCHEMES as ReadonlyArray<string>).includes(scheme)) {
       throw new Error(`Invalid volume scheme '${scheme}', expected one of ${Volume.SCHEMES.join(', ')}: '${original}'`);
     }
@@ -436,7 +469,7 @@ export class Volume {
         `Invalid volume mountpoint '${mountpoint}', expected an absolute path with no trailing slash: '${original}'`
       );
     }
-    return new Volume(spec, scheme as VolumeScheme, locator, mountpoint);
+    return new Volume(spec, scheme as VolumeScheme, locator, mountpoint, options);
   }
 }
 

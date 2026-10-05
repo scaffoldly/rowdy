@@ -91,6 +91,13 @@ describe('environment', () => {
       expect(server?.['adapter']).toBeInstanceOf(S3Adapter);
     });
 
+    it('passes ?lock=1 through to the adapter', async () => {
+      const environment = withVolumes(['s3://example-bucket?lock=1:/data']);
+      await finalize(environment);
+      const adapter = (await environment['_vfs'])?.['adapter'] as S3Adapter;
+      expect(adapter['options']).toMatchObject({ bucket: 'example-bucket', lockOnOpen: true, mountpoint: '/data' });
+    });
+
     it('mounts only the first volume for now', async () => {
       const env = await finalize(withVolumes([`file://${backing}:/first`, `file://${backing}:/second`]));
       expect(env.VFS_PREFIX).toBe('/first');
