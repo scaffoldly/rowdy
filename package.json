@@ -8,6 +8,7 @@
     "dist/**/*.js",
     "dist/**/*.d.ts",
     "dist/**/*.js.map",
+    "lib/**/*.so",
     "native/vfspreload.c"
   ],
   "repository": {
@@ -27,9 +28,8 @@
   },
   "engineStrict": false,
   "scripts": {
-    "build": "yarn build:embed && yarn build:index",
+    "build": "yarn build:index",
     "build:native": "sh native/build.sh x64 && sh native/build.sh arm64",
-    "build:embed": "node scripts/embed.js",
     "build:index": "tsup",
     "test": "yarn jest -- --verbose --testTimeout=30000",
     "test:native": "sh native/test.sh",
@@ -60,7 +60,8 @@
             {
               "tsconfig": "tests/tsconfig.json"
             }
-          ]
+          ],
+          "^.+\\.so$": "<rootDir>/tests/transformers.js"
         },
         "moduleNameMapper": {
           "^@scaffoldly/rowdy-vfs$": "<rootDir>/src/index.ts"

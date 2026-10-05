@@ -26,8 +26,9 @@ spawn(cmd, args, { env });
 
 `applyVfs` writes the shim for the running architecture to `/tmp/rowdy/vfspreload.so` (the path
 is the second argument) and returns `{ preload, prefix, backing }`. The shims for `linux-x64` and
-`linux-arm64` are embedded in the package, so there is no native build at install time and a
-`pkg`-built binary carries them in its snapshot.
+`linux-arm64` ship twice: as files under `lib/linux-<arch>/vfspreload.so` (`shimFile()` returns
+the path, for a Dockerfile `COPY`) and inlined into `dist/index.js`, so there is no native build
+at install time and a `pkg`-built binary carries them in its snapshot.
 
 ## What the shim covers
 
@@ -58,7 +59,7 @@ Each entry point is hooked on its own: musl binds libc-internal cross-calls (`fo
 ```sh
 yarn build:native   # compiles native/vfspreload.c for x64 and arm64 in alpine (docker)
 yarn test:native    # drives the shim through busybox, node and a C caller under LD_PRELOAD
-yarn build          # embeds lib/linux-*/vfspreload.so into src/shims.ts, then bundles
+yarn build          # bundles src/ with lib/linux-*/vfspreload.so inlined
 yarn test
 ```
 

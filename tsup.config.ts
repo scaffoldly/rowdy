@@ -8,4 +8,11 @@ export default defineConfig({
   dts: true,
   cjsInterop: true,
   shims: true,
+  esbuildOptions(options) {
+    options.loader = {
+      ...options.loader,
+      // lib/linux-<arch>/vfspreload.so are inlined into dist/index.js as Uint8Array
+      '.so': 'binary',
+    };
+  },
 });

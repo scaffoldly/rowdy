@@ -1,7 +1,16 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs';
-import { dirname } from 'path';
+import { dirname, join } from 'path';
 import packageJson from '../package.json';
-import { shims } from './shims';
+import x64 from '../lib/linux-x64/vfspreload.so';
+import arm64 from '../lib/linux-arm64/vfspreload.so';
+
+// The shims ship twice: inlined here (so a pkg snapshot carries them and
+// materialize() needs nothing on disk) and as files under lib/ for consumers
+// that want to COPY one into an image.
+const shims: Record<string, Uint8Array | undefined> = {
+  'linux-x64': x64,
+  'linux-arm64': arm64,
+};
 
 const VERSION = packageJson.version;
 const NAME = packageJson.name;
@@ -29,7 +38,17 @@ export type VfsConfig = {
 /** The compiled shim for an architecture (`linux-x64`, `linux-arm64`), or undefined if not built in. */
 export const shim = (arch: string = process.arch): Buffer | undefined => {
   const data = shims[`linux-${arch}`];
-  return data ? Buffer.from(data, 'base64') : undefined;
+  return data ? Buffer.from(data) : undefined;
+};
+
+/**
+ * On-disk path of the shim shipped in this package (`lib/linux-<arch>/vfspreload.so`),
+ * or undefined when it is not present as a file (e.g. inside a pkg snapshot).
+ * Prefer `materialize()` at runtime; this is for build steps that copy the file.
+ */
+export const shimFile = (arch: string = process.arch): string | undefined => {
+  const path = join(__dirname, '..', 'lib', `linux-${arch}`, 'vfspreload.so');
+  return existsSync(path) ? path : undefined;
 };
 
 /**

@@ -141,6 +141,5 @@ dist
 # pkg output
 dist/
 bin/
-# Compiled shims (built by native/build.sh, embedded by scripts/embed.js)
+# Compiled shims (built by native/build.sh, shipped in the package)
 lib/
-src/shims.ts

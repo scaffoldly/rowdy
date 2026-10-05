@@ -87,16 +87,13 @@ jobs:
           path: lib
           merge-multiple: false
 
-      - name: Embed shims
+      - name: Test
         run: |
           for arch in x64 arm64; do
             mkdir -p lib/linux-$arch
             mv lib/vfspreload-linux-$arch/vfspreload.so lib/linux-$arch/vfspreload.so
           done
-          yarn && yarn build:embed
-
-      - name: Test
-        run: yarn test
+          yarn && yarn test
 
   build-publish:
     runs-on: ubuntu-latest

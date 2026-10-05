@@ -44,7 +44,7 @@ const createTsConfig = (files, project, extraGlobals = {}, ruleOverrides = {}) =
 
 module.exports = [
   { ignores: ['node_modules/**', 'dist/**', '**/*.d.ts'] },
-  { files: ['eslint.config.js', 'scripts/**/*.js'], languageOptions: { globals: globals.node } },
+  { files: ['eslint.config.js'], languageOptions: { globals: globals.node } },
   js.configs.recommended,
   createTsConfig(['src/**/*.ts'], './tsconfig.json', globals.browser, { 'no-console': 'warn' }),
   {

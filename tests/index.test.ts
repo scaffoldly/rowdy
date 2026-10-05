@@ -1,4 +1,4 @@
-import { applyVfs, materialize, shim, VFS_PRELOAD, VfsEnv } from '@scaffoldly/rowdy-vfs';
+import { applyVfs, materialize, shim, shimFile, VFS_PRELOAD, VfsEnv } from '@scaffoldly/rowdy-vfs';
 import { existsSync, mkdtempSync, readFileSync, rmSync, statSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
@@ -27,6 +27,15 @@ describe('rowdy-vfs', () => {
 
     it('is undefined for an unknown architecture', () => {
       expect(shim('mips')).toBeUndefined();
+    });
+
+    it('ships as a file matching the inlined copy', () => {
+      for (const arch of ['x64', 'arm64']) {
+        const file = shimFile(arch);
+        expect(file).toMatch(new RegExp(`lib/linux-${arch}/vfspreload\\.so$`));
+        expect(readFileSync(file!).equals(shim(arch)!)).toBe(true);
+      }
+      expect(shimFile('mips')).toBeUndefined();
     });
   });
 
