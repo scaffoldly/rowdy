@@ -28,7 +28,7 @@ import packageJson from '../package.json';
 import { ABORT, Rowdy } from '.';
 import { isatty } from 'tty';
 import { LambdaFunction } from './aws/lambda/index';
-import { applyVfs } from '@scaffoldly/rowdy-vfs';
+import { applyVfs, LocalAdapter, VfsServer, VFS_SOCKET } from '@scaffoldly/rowdy-vfs';
 import { LambdaImageService } from './aws/lambda/image';
 import { inspect } from 'util';
 import { cpus } from 'os';
@@ -85,7 +85,8 @@ export type ProcessEnv = Record<
   | 'ROWDY_VFS'
   | 'LD_PRELOAD'
   | 'VFS_PREFIX'
-  | 'VFS_BACKING',
+  | 'VFS_BACKING'
+  | 'VFS_SOCKET',
   string | undefined
 >;
 
@@ -120,6 +121,7 @@ export class Environment implements ILoggable {
   private _rowdy: Rowdy;
   private _port?: number;
   private _registry: string | undefined;
+  private _vfs?: Promise<VfsServer>;
 
   constructor(public readonly log: Logger) {
     this.signal.addEventListener('abort', () => {
@@ -532,6 +534,32 @@ export class Environment implements ILoggable {
     return this;
   }
 
+  /**
+   * The VFS supervisor the preloaded shim reports to over a unix-domain socket
+   * (protocol: @scaffoldly/rowdy-vfs DISCLOSURE). Started once per process on
+   * first use and closed on abort. LocalAdapter until a backing store is
+   * configured, so the backing directory is the whole store.
+   */
+  private vfsServer(): Promise<VfsServer> {
+    if (!this._vfs) {
+      const server = new VfsServer(new LocalAdapter(), {
+        socket: VFS_SOCKET,
+        onRequest: (request, reply) =>
+          this.log.debug(`VFS request`, { request: JSON.stringify(request), reply: JSON.stringify(reply) }),
+        onError: (request, error) =>
+          this.log.warn(`VFS adapter error`, { request: JSON.stringify(request), error: `${error}` }),
+      });
+      this.signal.addEventListener('abort', () => {
+        server.close().catch((err) => this.log.debug(`VFS supervisor close failed`, { error: `${err}` }));
+      });
+      this._vfs = server.listen().then((s) => {
+        this.log.debug(`VFS supervisor listening`, { socket: s.socket });
+        return s;
+      });
+    }
+    return this._vfs;
+  }
+
   get Env(): Observable<ProcessEnv> {
     return new Observable<ProcessEnv>((subscriber) => {
       const env: ProcessEnv = { ...process.env } as ProcessEnv;
@@ -540,13 +568,29 @@ export class Environment implements ILoggable {
           env[name] = value;
         },
         error: (err) => subscriber.error(err),
-        complete: () => {
-          // Opt-in userspace VFS (ROWDY_VFS): the shim is materialized and prepended to the
-          // child's LD_PRELOAD. Child env only; rowdy's own process is never preloaded.
+        complete: async () => {
+          // Userspace VFS, opted into by declaring `volumes:` in the Routes manifest: the shim
+          // is materialized and prepended to the child's LD_PRELOAD, and the supervisor socket
+          // it reports to is started here. Child env only; rowdy's own process is never
+          // preloaded. ROWDY_VFS is the shim's own switch, set here, not an operator knob.
           try {
-            const vfs = applyVfs(env);
-            if (vfs) {
-              this.log.debug(`VFS preload enabled for child`, vfs);
+            const [volume, ...ignored] = this._routes.intoVolumes();
+            if (volume) {
+              if (volume.scheme !== 'file') {
+                throw new Error(`Volume '${volume.spec}': ${volume.scheme}:// is not supported yet (see #27)`);
+              }
+              if (ignored.length) {
+                this.log.warn(`Only the first volume is mounted for now`, {
+                  mounted: volume.spec,
+                  ignored: ignored.map((v) => v.spec).join(', '),
+                });
+              }
+              env.ROWDY_VFS = '1';
+              env.VFS_PREFIX = volume.mountpoint;
+              env.VFS_BACKING = volume.locator;
+              const { socket } = await this.vfsServer();
+              const vfs = applyVfs(env, { socket });
+              this.log.debug(`VFS enabled for child`, { volume: volume.spec, ...vfs });
             }
           } catch (err) {
             subscriber.error(err);

@@ -245,29 +245,41 @@ Alongside its existing Lambda, IAM and ECR permissions, the role the deploy assu
 The deployed function is granted `scheduler:*` when the Container Runtime Interface is enabled
 with `--cri`.
 
-## Userspace VFS (experimental)
+## Volumes (experimental)
 
-Setting `ROWDY_VFS=1` on the function gives the app a writable, persistent directory tree at `/vfs`
-(configurable with `VFS_PREFIX`) backed by `/tmp/vfsstore` (`VFS_BACKING`). Nothing is mounted:
-rowdy writes the [`@scaffoldly/rowdy-vfs`](https://github.com/scaffoldly/rowdy/tree/vfs) shim to
-`/tmp/rowdy/vfspreload.so` and prepends it to the app's `LD_PRELOAD`, so the libc path calls the
-app makes (`open`, `stat`, `opendir`, `rename`, `getcwd`, `realpath`, …) are rewritten in-process.
-The Lambda sandbox denies every kernel-mediated option (`/dev/fuse`, `mount(2)`, namespaces,
-ptrace, seccomp-notify), which is why it works this way.
+`spec.volumes` gives the app a writable, persistent directory that is not part of the image. Each
+entry is `<scheme>://<locator>:<mountpoint>`:
 
-Off by default. Rowdy's own process is never preloaded, and an existing `LD_PRELOAD` is kept.
+```yaml
+spec:
+  default: 'http://localhost:3000/'
+  volumes:
+    - 'file:///tmp/vfsstore:/vfs'
+```
+
+`file://<dir>` backs the mountpoint with a directory on the function's `/tmp` (persists across warm
+invocations of one execution environment). `s3://<bucket>[/<prefix>]` is parsed and validated today
+and mounts in a later release ([#27](https://github.com/scaffoldly/rowdy/issues/27)). One volume is
+mounted for now; extra entries are logged and ignored.
+
+Nothing is mounted in the kernel sense. The Lambda sandbox denies every kernel-mediated option
+(`/dev/fuse`, `mount(2)`, namespaces, ptrace, seccomp-notify), so rowdy writes the
+[`@scaffoldly/rowdy-vfs`](https://github.com/scaffoldly/rowdy/tree/vfs) shim to
+`/tmp/rowdy/vfspreload.so` and prepends it to the app's `LD_PRELOAD`. The libc path calls the app
+makes (`open`, `stat`, `opendir`, `rename`, `getcwd`, `realpath`, …) are rewritten in-process to the
+backing directory, and the shim reports what it does to rowdy over a local unix socket
+(`VFS_SOCKET`) so the backing store can be populated and persisted. Rowdy's own process is never
+preloaded; an existing `LD_PRELOAD` is kept.
 
 Limits of the preload model:
 
-- Only dynamically linked musl (alpine) binaries that go through libc see `/vfs`. Static binaries
-  and Go programs that issue raw syscalls do not.
-- `mmap` of a `/vfs` file is not translated; neither are `nftw`, `glob`, or `posix_spawn` paths.
+- Only dynamically linked musl (alpine) binaries that go through libc see the mountpoint. Static
+  binaries and Go programs that issue raw syscalls do not.
+- `mmap` of a file under the mountpoint is not translated; neither are `nftw`, `glob`, or
+  `posix_spawn` paths.
 - It is not a mountpoint, so a process started outside rowdy cannot see it.
-
-Declarative volumes with other backings (`s3://bucket:/path`) are tracked in
-[#27](https://github.com/scaffoldly/rowdy/issues/27).
 
 ## Out of scope
 
 The local runtime (no `AWS_LAMBDA_RUNTIME_API`) ignores `spec.crontab` and never starts the
-command, so `ROWDY_VFS` only takes effect on a deployed function.
+command, so `spec.volumes` only takes effect on a deployed function.
