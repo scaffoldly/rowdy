@@ -1,0 +1,84 @@
+Dual-use disclosure for @scaffoldly/rowdy-vfs
+
+What this package contains
+
+  lib/linux-x64/vfspreload.so and lib/linux-arm64/vfspreload.so are small
+  compiled shared objects (ELF, musl). The same two files are also inlined
+  into dist/index.js as base64 so a bundled consumer can write them to disk
+  at runtime (materialize()). They are built in GitHub Actions from
+  native/vfspreload.c on the `vfs` branch of https://github.com/scaffoldly/rowdy
+  and the published tarball carries sigstore provenance for that build.
+
+What the shared object does
+
+  It is an LD_PRELOAD interposer for libc path functions (open, stat, access,
+  opendir, mkdir, unlink, rename, link, symlink, chdir, getcwd, realpath,
+  readlink, exec*, close/fsync for files it opened, and the single-path
+  syscalls via syscall(2)). When a path starts with VFS_PREFIX (default /vfs)
+  it is rewritten to VFS_BACKING (default /tmp/vfsstore) before the real libc
+  function is called. Paths returned to the program (getcwd, realpath,
+  readlink) are rewritten back. The program reads and writes ordinary files
+  under VFS_BACKING through the unmodified libc data path.
+
+Local supervisor socket
+
+  When VFS_SOCKET is set (rowdy sets it to /tmp/rowdy/vfs.sock), the shim
+  connects to that unix-domain stream socket, which is created and owned by
+  the supervisor process that launched the program (rowdy). It is used to
+  ask the supervisor to populate VFS_BACKING before a path is used and to
+  persist it afterwards. The shim never opens TCP/IP sockets, never resolves
+  DNS, and never talks to anything other than that one local socket. When
+  VFS_SOCKET is unset or the socket is absent, no connection is made and the
+  shim is a plain local-directory overlay.
+
+  Protocol: one newline-delimited JSON object per request and per reply.
+  Only paths, flags and metadata cross the socket; file contents never do.
+
+    Request                                  When the shim sends it
+    {"op":"stat","path":P}                   before stat/access/open on P
+    {"op":"fetch","path":P}                  before open(P) for reading
+    {"op":"list","path":P}                   before opendir/scandir(P)
+    {"op":"open","path":P,"flags":F}         after open(P) for writing
+    {"op":"flush","path":P}                  on close/fsync of a written P
+    {"op":"mkdir","path":P}                  after mkdir(P)
+    {"op":"unlink","path":P}                 after unlink/rmdir(P)
+    {"op":"rename","from":A,"to":B}          after rename(A, B)
+
+    Reply: {"ok":true} or {"ok":false,"errno":N}
+
+  P, A and B are paths under VFS_PREFIX. The supervisor decides what backs
+  them (a local directory today; an object store such as S3, using the
+  supervisor's own credentials, in a later version). The shim holds no
+  credentials of any kind.
+
+Why it exists
+
+  rowdy (https://github.com/scaffoldly/rowdy) is an entrypoint supervisor for
+  containers running on AWS Lambda. The Lambda sandbox denies every
+  kernel-mediated way to present a virtual filesystem (no /dev/fuse,
+  mount(2), unshare, ptrace and seccomp-notify all return EPERM), so the only
+  way to give an application a writable, persistent directory tree is to
+  rewrite its libc path calls in-process. rowdy prepends this shim to the
+  LD_PRELOAD of the application it launches, and only when the operator opts
+  in with ROWDY_VFS=1.
+
+What it does not do
+
+  - No TCP/IP, no DNS, no connections other than the local VFS_SOCKET above.
+  - No reads or writes outside VFS_BACKING beyond passing calls through to
+    the real libc unchanged.
+  - No credential, environment or keystroke capture; no process injection
+    beyond the LD_PRELOAD the launching process sets explicitly.
+  - No install-time scripts in this package; nothing runs on npm install.
+  - Does not load itself into any process unless LD_PRELOAD names it.
+
+Intended legitimate use
+
+  Giving a container application a writable virtual directory, backed by a
+  local directory or by object storage, under a serverless runtime that
+  forbids mounts. Enabled per deployment by the operator who owns both the
+  container and the function.
+
+Contact
+
+  https://github.com/scaffoldly/rowdy/issues

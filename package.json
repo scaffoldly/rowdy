@@ -8,8 +8,12 @@
     "dist/**/*.js",
     "dist/**/*.d.ts",
     "dist/**/*.js.map",
-    "lib/**/*.so"
+    "lib/**/*.so",
+    "DISCLOSURE"
   ],
+  "contentPolicy": {
+    "class": "dual-use"
+  },
   "repository": {
     "type": "git",
     "url": "git+https://github.com/scaffoldly/rowdy.git"

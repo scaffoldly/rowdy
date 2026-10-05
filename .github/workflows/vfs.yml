@@ -161,28 +161,35 @@ jobs:
           id-token-audience: npm:registry.npmjs.org
           exchange-url: https://registry.npmjs.org/-/npm/v1/oidc/token/exchange/package/@scaffoldly%2frowdy-vfs
 
-      # DEVNOTE: npm, not yarn v1: --provenance attaches a sigstore/SLSA attestation binding the
-      # tarball (shims included) to this workflow run, which yarn v1 cannot emit.
-      - name: Publish pre-release to NPM
-        run: npm publish --tag beta --access public --provenance
+      # DEVNOTE: This package declares dual-use content (contentPolicy + DISCLOSURE: it ships an
+      # LD_PRELOAD libc interposer), so npm only lets CI *stage* a version; a maintainer promotes
+      # it with 2FA via `npm stage approve <stage-id>` or on npmjs.com. npm, not yarn v1, because
+      # `npm stage` needs npm >= 11.15 and --provenance attaches a sigstore/SLSA attestation
+      # binding the tarball (shims included) to this workflow run.
+      - name: Stage pre-release on NPM
+        run: |
+          npm install -g npm@latest
+          npm stage publish --tag beta --access public --provenance
         env:
           NODE_AUTH_TOKEN: ${{ steps.identity.outputs.exchange-token }}
 
       - name: Create pre-release summary
         run: |
-          echo "## 🚀 Pre-release Published" >> $GITHUB_STEP_SUMMARY
+          echo "## 📦 Pre-release Staged" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "**Package:** ${{ steps.version.outputs.name }}" >> $GITHUB_STEP_SUMMARY
           echo "**Version:** ${{ steps.version.outputs.version }}" >> $GITHUB_STEP_SUMMARY
           echo "**Tag:** beta" >> $GITHUB_STEP_SUMMARY
           echo "**Commit:** ${GITHUB_SHA:0:7}" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "### 📦 NPM Package" >> $GITHUB_STEP_SUMMARY
-          echo "Install the pre-release version:" >> $GITHUB_STEP_SUMMARY
+          echo "### ✅ Approve (dual-use package: a maintainer promotes it with 2FA)" >> $GITHUB_STEP_SUMMARY
           echo '```bash' >> $GITHUB_STEP_SUMMARY
-          echo "npm install ${{ steps.version.outputs.name }}@beta" >> $GITHUB_STEP_SUMMARY
-          echo "# or specific version:" >> $GITHUB_STEP_SUMMARY
+          echo "npm stage list ${{ steps.version.outputs.name }}" >> $GITHUB_STEP_SUMMARY
+          echo "npm stage approve <stage-id>" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          echo "Then install with:" >> $GITHUB_STEP_SUMMARY
+          echo '```bash' >> $GITHUB_STEP_SUMMARY
           echo "npm install ${{ steps.version.outputs.name }}@${{ steps.version.outputs.version }}" >> $GITHUB_STEP_SUMMARY
           echo '```' >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "**Note:** Add \`[skip-prerelease]\` to commit message to skip pre-release publishing." >> $GITHUB_STEP_SUMMARY
+          echo "**Note:** Add \`[skip-prerelease]\` to commit message to skip staging." >> $GITHUB_STEP_SUMMARY

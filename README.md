@@ -63,8 +63,22 @@ yarn build          # bundles src/ with lib/linux-*/vfspreload.so inlined
 yarn test
 ```
 
-CI builds and tests the shim on native x64 and arm64 runners, then publishes a `beta` pre-release
-to npm on every push to the `vfs` branch.
+CI builds and tests the shim on native x64 and arm64 runners, then **stages** a `beta` pre-release
+on npm (with provenance) on every push to the `vfs` branch. A maintainer promotes it:
+
+```sh
+npm stage list @scaffoldly/rowdy-vfs
+npm stage approve <stage-id>   # prompts for 2FA
+```
+
+## Dual-use declaration
+
+This package ships an `LD_PRELOAD` libc interposer, which looks like a hooking kit to automated
+scanning, so it declares npm's [dual-use content policy](https://docs.npmjs.com/policies/dual-use/):
+`contentPolicy.class = "dual-use"` in `package.json` plus a `DISCLOSURE` file in the tarball
+describing exactly what the shim does, the local supervisor socket it may use, and what it never
+does. Both must stay in every future version. Keep `DISCLOSURE` accurate when the shim's
+capabilities change.
 
 Pluggable backings (`s3://bucket:/path`) are tracked in
 [scaffoldly/rowdy#27](https://github.com/scaffoldly/rowdy/issues/27).
