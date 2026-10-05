@@ -28,6 +28,7 @@ import packageJson from '../package.json';
 import { ABORT, Rowdy } from '.';
 import { isatty } from 'tty';
 import { LambdaFunction } from './aws/lambda/index';
+import { applyVfs } from '@scaffoldly/rowdy-vfs';
 import { LambdaImageService } from './aws/lambda/image';
 import { inspect } from 'util';
 import { cpus } from 'os';
@@ -76,7 +77,15 @@ const entrypoint = <T>(
 };
 
 export type ProcessEnv = Record<
-  'HTTP_HOST' | 'HTTP_HOSTNAME' | 'HTTP_PROTO' | 'HTTP_UA' | 'NET_PRIVATE_IPV4',
+  | 'HTTP_HOST'
+  | 'HTTP_HOSTNAME'
+  | 'HTTP_PROTO'
+  | 'HTTP_UA'
+  | 'NET_PRIVATE_IPV4'
+  | 'ROWDY_VFS'
+  | 'LD_PRELOAD'
+  | 'VFS_PREFIX'
+  | 'VFS_BACKING',
   string | undefined
 >;
 
@@ -532,6 +541,17 @@ export class Environment implements ILoggable {
         },
         error: (err) => subscriber.error(err),
         complete: () => {
+          // Opt-in userspace VFS (ROWDY_VFS): the shim is materialized and prepended to the
+          // child's LD_PRELOAD. Child env only; rowdy's own process is never preloaded.
+          try {
+            const vfs = applyVfs(env);
+            if (vfs) {
+              this.log.debug(`VFS preload enabled for child`, vfs);
+            }
+          } catch (err) {
+            subscriber.error(err);
+            return;
+          }
           this.log.debug(`Environment variables finalized`, { env: JSON.stringify(env) });
           subscriber.next({ ...env });
           subscriber.complete();

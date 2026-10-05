@@ -136,5 +136,7 @@
     "compress": "Brotli",
     "public": true
   },
-  "dependencies": {}
+  "dependencies": {
+    "@scaffoldly/rowdy-vfs": "^0.1.0-beta.20261005140140.6590a73"
+  }
 }
