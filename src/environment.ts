@@ -551,6 +551,8 @@ export class Environment implements ILoggable {
         bucket: bucket!,
         prefix: rest.join('/') || undefined,
         mountpoint: volume.mountpoint,
+        lockOnOpen: volume.options.lock,
+        owner: process.env.AWS_LAMBDA_LOG_STREAM_NAME,
         backing,
         log: (message, params) => this.log.debug(`VFS s3 ${message}`, { params: JSON.stringify(params ?? {}) }),
       });
@@ -573,7 +575,13 @@ export class Environment implements ILoggable {
           this.log.warn(`VFS adapter error`, { request: JSON.stringify(request), error: `${error}` }),
       });
       this.signal.addEventListener('abort', () => {
-        server.close().catch((err) => this.log.debug(`VFS supervisor close failed`, { error: `${err}` }));
+        // Give leases back before the socket goes away so other instances are not held up until TTL.
+        const adapter = server['adapter'];
+        const released = adapter instanceof S3Adapter ? adapter.releaseAll() : Promise.resolve();
+        released
+          .catch((err) => this.log.debug(`VFS lease release failed`, { error: `${err}` }))
+          .then(() => server.close())
+          .catch((err) => this.log.debug(`VFS supervisor close failed`, { error: `${err}` }));
       });
       this._vfs = server.listen().then((s) => {
         this.log.debug(`VFS supervisor listening`, { socket: s.socket });

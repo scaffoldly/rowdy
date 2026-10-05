@@ -266,6 +266,14 @@ the object's ETag, so if something else changed the object meanwhile the app's `
 bucket and `Get`/`Put`/`DeleteObject` on the prefix; the bucket itself must already exist. One
 volume is mounted for now; extra entries are logged and ignored.
 
+Several function instances can share an `s3://` volume. Reads re-check the object's ETag (at most
+every 2 s) and pick up other instances' writes; programs that take advisory locks (SQLite, lockfile
+libraries) get a lease in the bucket for the duration of the lock, so their transactions serialize
+across instances and a contended lock shows up as `EAGAIN`/`SQLITE_BUSY` to retry. For plain files
+the lease is opt-in: `s3://<bucket>?lock=1:/mnt` holds it across each open-for-write/close window;
+without it a conflicting write fails `close()` with `ESTALE` instead of waiting. Design and
+trade-offs: [ADR 0001](https://github.com/scaffoldly/rowdy/blob/vfs/docs/adr/0001-multi-writer-leases.md).
+
 Nothing is mounted in the kernel sense. The Lambda sandbox denies every kernel-mediated option
 (`/dev/fuse`, `mount(2)`, namespaces, ptrace, seccomp-notify), so rowdy writes the
 [`@scaffoldly/rowdy-vfs`](https://github.com/scaffoldly/rowdy/tree/vfs) shim to

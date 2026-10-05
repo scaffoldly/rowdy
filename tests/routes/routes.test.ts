@@ -419,8 +419,10 @@ spec:
     });
 
     it('should reject malformed entries', () => {
-      expect(() => Volume.parse('s3://example-bucket')).toThrow('expected <scheme>://<locator>:<mountpoint>');
-      expect(() => Volume.parse('s3://example-bucket:vfs')).toThrow('expected <scheme>://<locator>:<mountpoint>');
+      expect(() => Volume.parse('s3://example-bucket')).toThrow('expected <scheme>://<locator>[?options]:<mountpoint>');
+      expect(() => Volume.parse('s3://example-bucket:vfs')).toThrow(
+        'expected <scheme>://<locator>[?options]:<mountpoint>'
+      );
       expect(() => Volume.parse('s3://:/vfs')).toThrow('the locator is empty');
       expect(() => Volume.parse('s3://example-bucket:/')).toThrow('no trailing slash');
       expect(() => Volume.parse('s3://example-bucket:/vfs/')).toThrow('no trailing slash');
@@ -430,5 +432,31 @@ spec:
     it('should reject a bad entry when loading a manifest', () => {
       expect(() => Routes.fromURL(`volumes:\n  - "nope"\n`)).toThrow("Invalid volume 'nope'");
     });
+  });
+});
+
+describe('volume options', () => {
+  it('parses ?lock=1 on the locator', () => {
+    const volume = Volume.parse('s3://example-bucket/tenant?lock=1:/data');
+    expect(volume.locator).toBe('example-bucket/tenant');
+    expect(volume.mountpoint).toBe('/data');
+    expect(volume.options).toEqual({ lock: true });
+    expect(volume.spec).toBe('s3://example-bucket/tenant?lock=1:/data');
+  });
+
+  it('defaults to no lock', () => {
+    expect(Volume.parse('s3://example-bucket:/data').options).toEqual({ lock: false });
+    expect(Volume.parse('s3://example-bucket?lock=0:/data').options).toEqual({ lock: false });
+    expect(Volume.parse('s3://example-bucket?lock:/data').options).toEqual({ lock: true });
+  });
+
+  it('rejects unknown options and bad values', () => {
+    expect(() => Volume.parse('s3://example-bucket?nope=1:/data')).toThrow("Invalid volume option 'nope'");
+    expect(() => Volume.parse('s3://example-bucket?lock=maybe:/data')).toThrow("Invalid value 'maybe'");
+  });
+
+  it('round-trips through the manifest data url', () => {
+    const routes = Routes.empty().withVolumes(['s3://example-bucket?lock=1:/data']);
+    expect(Routes.fromDataURL(routes.intoDataURL()).intoVolumes()[0]!.options.lock).toBe(true);
   });
 });
