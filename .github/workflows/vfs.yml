@@ -161,8 +161,10 @@ jobs:
           id-token-audience: npm:registry.npmjs.org
           exchange-url: https://registry.npmjs.org/-/npm/v1/oidc/token/exchange/package/@scaffoldly%2frowdy-vfs
 
+      # DEVNOTE: npm, not yarn v1: --provenance attaches a sigstore/SLSA attestation binding the
+      # tarball (shims included) to this workflow run, which yarn v1 cannot emit.
       - name: Publish pre-release to NPM
-        run: yarn publish --tag beta --access public
+        run: npm publish --tag beta --access public --provenance
         env:
           NODE_AUTH_TOKEN: ${{ steps.identity.outputs.exchange-token }}
 
