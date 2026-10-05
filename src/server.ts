@@ -32,6 +32,12 @@ export interface VfsAdapter {
   unlink(path: string): Promise<void>;
   /** After rename. */
   rename(from: string, to: string): Promise<void>;
+  /** Before a read under a lock (SQLite SHARED): make the local copy current. Optional. */
+  revalidate?(path: string): Promise<void>;
+  /** Before a write under a lock (SQLite RESERVED/EXCLUSIVE): take the lease, or throw EAGAIN. Optional. */
+  lock?(path: string): Promise<void>;
+  /** After the write lock is dropped (and the flush is done): release the lease. Optional. */
+  unlock?(path: string): Promise<void>;
 }
 
 /**
@@ -43,6 +49,7 @@ export const LINUX_ERRNO = {
   EPERM: 1,
   ENOENT: 2,
   EIO: 5,
+  EAGAIN: 11,
   EACCES: 13,
   EEXIST: 17,
   EXDEV: 18,
@@ -109,7 +116,7 @@ export class LocalAdapter implements VfsAdapter {
 }
 
 export type VfsRequest =
-  | { op: 'stat' | 'fetch' | 'list' | 'flush' | 'mkdir' | 'unlink'; path: string }
+  | { op: 'stat' | 'fetch' | 'list' | 'flush' | 'mkdir' | 'unlink' | 'revalidate' | 'lock' | 'unlock'; path: string }
   | { op: 'open'; path: string; flags: number }
   | { op: 'rename'; from: string; to: string };
 
@@ -198,7 +205,7 @@ export class VfsServer {
     try {
       request = JSON.parse(line) as VfsRequest;
     } catch {
-      return { ok: false, errno: constants.errno.EINVAL };
+      return { ok: false, errno: LINUX_ERRNO.EINVAL };
     }
     const reply = await this.dispatch(request);
     this.options.onRequest?.(request, reply);
@@ -215,24 +222,33 @@ export class VfsServer {
         case 'mkdir':
         case 'unlink':
           if (typeof request.path !== 'string') {
-            return { ok: false, errno: constants.errno.EINVAL };
+            return { ok: false, errno: LINUX_ERRNO.EINVAL };
           }
           await this.adapter[request.op](request.path);
           return { ok: true };
+        case 'revalidate':
+        case 'lock':
+        case 'unlock':
+          if (typeof request.path !== 'string') {
+            return { ok: false, errno: LINUX_ERRNO.EINVAL };
+          }
+          // Adapters without leases (LocalAdapter) simply have nothing to do.
+          await this.adapter[request.op]?.(request.path);
+          return { ok: true };
         case 'open':
           if (typeof request.path !== 'string') {
-            return { ok: false, errno: constants.errno.EINVAL };
+            return { ok: false, errno: LINUX_ERRNO.EINVAL };
           }
           await this.adapter.open(request.path, Number(request.flags) || 0);
           return { ok: true };
         case 'rename':
           if (typeof request.from !== 'string' || typeof request.to !== 'string') {
-            return { ok: false, errno: constants.errno.EINVAL };
+            return { ok: false, errno: LINUX_ERRNO.EINVAL };
           }
           await this.adapter.rename(request.from, request.to);
           return { ok: true };
         default:
-          return { ok: false, errno: constants.errno.ENOSYS };
+          return { ok: false, errno: LINUX_ERRNO.ENOSYS };
       }
     } catch (e) {
       this.options.onError?.(request, e);

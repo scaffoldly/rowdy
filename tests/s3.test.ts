@@ -7,7 +7,19 @@ import {
   PutObjectCommand,
   S3Client,
 } from '@aws-sdk/client-s3';
-import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync, mkdirSync } from 'fs';
+import {
+  closeSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  openSync,
+  readdirSync,
+  readFileSync,
+  readSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { Readable } from 'stream';
@@ -37,7 +49,9 @@ class FakeS3 {
     if (command instanceof GetObjectCommand) {
       const o = this.objects.get(command.input.Key!);
       if (!o) throw notFound('NoSuchKey');
-      return { ETag: o.etag, ContentLength: o.body.length, Body: Readable.from([o.body]) };
+      const body = Readable.from([o.body]) as Readable & { transformToString(): Promise<string> };
+      body.transformToString = async () => o.body.toString();
+      return { ETag: o.etag, ContentLength: o.body.length, Body: body };
     }
     if (command instanceof PutObjectCommand) {
       const key = command.input.Key!;
@@ -272,6 +286,161 @@ describe('S3Adapter', () => {
 
     it('refuses a rename across the mountpoint boundary', async () => {
       await expect(adapter.rename(`${mount}/a.txt`, '/tmp/elsewhere.txt')).rejects.toMatchObject({ errno: 18 });
+    });
+  });
+
+  describe('revalidation', () => {
+    const fresh = (revalidateMs: number): S3Adapter =>
+      new S3Adapter({
+        bucket: 'example-bucket',
+        mountpoint: mount,
+        backing,
+        client: s3 as unknown as S3Client,
+        revalidateMs,
+      });
+
+    it('refetches in place when the object changed', async () => {
+      const a = fresh(0);
+      s3.put('doc.txt', 'v1');
+      await a.fetch(`${mount}/doc.txt`);
+      const fd = openSync(join(backing, 'doc.txt'), 'r'); // held open across the refetch, like SQLite
+      s3.put('doc.txt', 'v2!');
+      await a.fetch(`${mount}/doc.txt`);
+      expect(readFileSync(join(backing, 'doc.txt'), 'utf8')).toBe('v2!');
+      const buf = Buffer.alloc(3);
+      readSync(fd, buf, 0, 3, 0);
+      closeSync(fd);
+      expect(buf.toString()).toBe('v2!'); // same inode: the open descriptor sees the new bytes
+    });
+
+    it('does not download when the ETag is unchanged', async () => {
+      const a = fresh(0);
+      s3.put('same.txt', 'x');
+      await a.fetch(`${mount}/same.txt`);
+      s3.calls.length = 0;
+      await a.fetch(`${mount}/same.txt`);
+      expect(s3.calls).toEqual(['HeadObjectCommand']);
+    });
+
+    it('skips the HEAD inside the TTL', async () => {
+      const a = fresh(60_000);
+      s3.put('ttl.txt', 'x');
+      await a.fetch(`${mount}/ttl.txt`);
+      s3.calls.length = 0;
+      await a.fetch(`${mount}/ttl.txt`);
+      await a.stat(`${mount}/ttl.txt`);
+      expect(s3.calls).toEqual([]);
+    });
+
+    it('revalidate() bypasses the TTL', async () => {
+      const a = fresh(60_000);
+      s3.put('force.txt', 'v1');
+      await a.fetch(`${mount}/force.txt`);
+      s3.put('force.txt', 'v2');
+      await a.revalidate(`${mount}/force.txt`);
+      expect(readFileSync(join(backing, 'force.txt'), 'utf8')).toBe('v2');
+    });
+
+    it('never overwrites a dirty local copy', async () => {
+      const a = fresh(0);
+      s3.put('mine.txt', 'remote v1');
+      await a.fetch(`${mount}/mine.txt`);
+      await a.open(`${mount}/mine.txt`, 1);
+      writeFileSync(join(backing, 'mine.txt'), 'local edits');
+      s3.put('mine.txt', 'remote v2');
+      await a.fetch(`${mount}/mine.txt`);
+      expect(readFileSync(join(backing, 'mine.txt'), 'utf8')).toBe('local edits');
+    });
+
+    it('drops the local copy when the object was deleted remotely', async () => {
+      const a = fresh(0);
+      s3.put('gone.txt', 'x');
+      await a.fetch(`${mount}/gone.txt`);
+      s3.objects.delete('gone.txt');
+      await expect(a.stat(`${mount}/gone.txt`)).rejects.toMatchObject({ errno: 2 });
+      expect(existsSync(join(backing, 'gone.txt'))).toBe(false);
+    });
+
+    it('resizes a placeholder when the listing shows a change', async () => {
+      const a = fresh(0);
+      s3.put('ph.txt', 'abc');
+      await a.list(mount);
+      expect(statSync(join(backing, 'ph.txt')).size).toBe(3);
+      s3.put('ph.txt', 'abcdef');
+      await a.stat(`${mount}/ph.txt`);
+      expect(statSync(join(backing, 'ph.txt')).size).toBe(6);
+    });
+  });
+
+  describe('leases', () => {
+    const leased = (owner: string, extra: Partial<ConstructorParameters<typeof S3Adapter>[0]> = {}): S3Adapter =>
+      new S3Adapter({
+        bucket: 'example-bucket',
+        mountpoint: mount,
+        backing: mkdtempSync(join(tmpdir(), `rowdy-vfs-${owner}-`)),
+        client: s3 as unknown as S3Client,
+        owner,
+        lockWaitMs: 150,
+        leaseMs: 10_000,
+        ...extra,
+      });
+
+    it('creates and deletes a lease object under .rowdy/locks', async () => {
+      const a = leased('alice');
+      await a.lock(`${mount}/db.sqlite`);
+      expect([...s3.objects.keys()]).toEqual(['.rowdy/locks/db.sqlite']);
+      expect(JSON.parse(s3.objects.get('.rowdy/locks/db.sqlite')!.body.toString()).owner).toBe('alice');
+      await a.unlock(`${mount}/db.sqlite`);
+      expect(s3.objects.size).toBe(0);
+    });
+
+    it('is re-entrant for the holder and EAGAIN for everyone else', async () => {
+      const a = leased('alice');
+      const b = leased('bob');
+      await a.lock(`${mount}/db.sqlite`);
+      await a.lock(`${mount}/db.sqlite`); // no-op
+      await expect(b.lock(`${mount}/db.sqlite`)).rejects.toMatchObject({ errno: 11 });
+      await a.unlock(`${mount}/db.sqlite`);
+      await expect(b.lock(`${mount}/db.sqlite`)).resolves.toBeUndefined();
+      await b.unlock(`${mount}/db.sqlite`);
+    });
+
+    it('takes over an expired lease', async () => {
+      const b = leased('bob');
+      s3.put('.rowdy/locks/db.sqlite', JSON.stringify({ owner: 'crashed', expiresAt: Date.now() - 1 }));
+      await b.lock(`${mount}/db.sqlite`);
+      expect(JSON.parse(s3.objects.get('.rowdy/locks/db.sqlite')!.body.toString()).owner).toBe('bob');
+      await b.unlock(`${mount}/db.sqlite`);
+    });
+
+    it('waits for a lease that is released in time', async () => {
+      const a = leased('alice', { lockWaitMs: 2000 });
+      const b = leased('bob', { lockWaitMs: 2000 });
+      await a.lock(`${mount}/db.sqlite`);
+      setTimeout(() => void a.unlock(`${mount}/db.sqlite`), 100);
+      await expect(b.lock(`${mount}/db.sqlite`)).resolves.toBeUndefined();
+      await b.unlock(`${mount}/db.sqlite`);
+    });
+
+    it('hides lease objects from listings', async () => {
+      const a = leased('alice');
+      s3.put('real.txt', 'x');
+      await a.lock(`${mount}/real.txt`);
+      await adapter.list(mount);
+      expect(readdirSync(backing)).toEqual(['real.txt']);
+      await a.unlock(`${mount}/real.txt`);
+    });
+
+    it('lockOnOpen holds the lease across the open/flush window', async () => {
+      const a = leased('alice', { lockOnOpen: true });
+      const b = leased('bob', { lockOnOpen: true });
+      writeFileSync(join(a['options'].backing, 'f.txt'), 'from alice');
+      await a.open(`${mount}/f.txt`, 1);
+      expect(s3.objects.has('.rowdy/locks/f.txt')).toBe(true);
+      await expect(b.open(`${mount}/f.txt`, 1)).rejects.toMatchObject({ errno: 11 });
+      await a.flush(`${mount}/f.txt`);
+      expect(s3.objects.has('.rowdy/locks/f.txt')).toBe(false);
+      expect(s3.objects.get('f.txt')?.body.toString()).toBe('from alice');
     });
   });
 

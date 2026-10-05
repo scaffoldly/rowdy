@@ -1,7 +1,6 @@
-import { VfsServer, VfsAdapter, VfsError } from '../src/server';
+import { LINUX_ERRNO, VfsServer, VfsAdapter, VfsError } from '../src/server';
 import { connect } from 'net';
 import { mkdtempSync, rmSync, existsSync, writeFileSync } from 'fs';
-import { constants } from 'os';
 import { tmpdir } from 'os';
 import { join } from 'path';
 
@@ -88,7 +87,7 @@ describe('VfsServer', () => {
   it('returns ENOSYS for unknown op', async () => {
     await server.listen();
     const replies = await request('{"op":"unknown","path":"/vfs"}');
-    expect(replies).toEqual(['{"ok":false,"errno":' + constants.errno.ENOSYS + '}']);
+    expect(replies).toEqual(['{"ok":false,"errno":' + LINUX_ERRNO.ENOSYS + '}']);
   });
 
   it('handles two requests in one chunk and one request split across chunks', async () => {

@@ -125,6 +125,8 @@ net.createServer(c => {
         c.write('{"ok":false,"errno":13}\n');
       } else if (req.op === "flush" && path.includes("flushfail")) {
         c.write('{"ok":false,"errno":5}\n');
+      } else if (req.op === "lock" && path.includes("busy")) {
+        c.write('{"ok":false,"errno":11}\n');
       } else {
         c.write('{"ok":true}\n');
       }
@@ -173,6 +175,37 @@ esac
 if grep -q "/tmp/notvfs" /tmp/ops.log 2>/dev/null; then
   fail "logged non-/vfs path"
 fi
+
+# advisory locks: a SQLite write transaction becomes lock -> flush -> unlock,
+# a read transaction becomes revalidate, and a refused lock is SQLITE_BUSY.
+rm -f /tmp/ops.log
+node --no-warnings -e '
+const { DatabaseSync } = require("node:sqlite");
+const db = new DatabaseSync("/vfs/t.sqlite");
+db.exec("PRAGMA journal_mode=DELETE; PRAGMA synchronous=FULL;");
+db.exec("CREATE TABLE t (v TEXT)");
+db.exec("INSERT INTO t VALUES (1)");
+console.log(JSON.stringify(db.prepare("SELECT count(*) AS n FROM t").get()));
+db.close();
+' | grep -q '"n":1' || fail "sqlite round trip under the shim"
+LOG=$(cat /tmp/ops.log | tr '\n' ' ')
+for op in "lock /vfs/t.sqlite" "flush /vfs/t.sqlite" "unlock /vfs/t.sqlite" "revalidate /vfs/t.sqlite"; do
+  case "$LOG" in *"$op "*) ;; *) fail "missing '$op' in: $LOG";; esac
+done
+case "$LOG" in
+  *"lock /vfs/t.sqlite"*"unlock /vfs/t.sqlite"*) ;;
+  *) fail "lock did not precede unlock: $LOG";;
+esac
+if node --no-warnings -e '
+const { DatabaseSync } = require("node:sqlite");
+const db = new DatabaseSync("/vfs/busy.sqlite");
+db.exec("CREATE TABLE t (v TEXT)");
+' 2>&1 | grep -qiE "locked|busy|EAGAIN"; then
+  :
+else
+  fail "refused lock did not surface as SQLITE_BUSY"
+fi
+echo "locks: ok"
 
 kill $SRVPID
 wait $SRVPID 2>/dev/null || true

@@ -95,3 +95,33 @@ sends them; the disclosure must stay truthful.
 
 Tracked as issues under scaffoldly/rowdy#27, in dependency order: inode-preserving refetch +
 revalidation; lease primitive and protocol ops; `fcntl` hook (SQLite); opt-in open-time leases.
+
+## Appendix A: effect on non-SQLite workloads
+
+The decision is additive for workloads that do not use SQLite, and the defaults do not change for
+them:
+
+- Revalidation helps everyone: an instance sees other instances' writes on the next open instead of
+  serving a stale copy forever. In-place refetch only matters to processes that hold files open.
+- The `fcntl` hook only fires for programs that take POSIX locks. Plain `writeFile`/`readFile` never
+  call it. Programs that do lock (SQLite, lockfile libraries, LevelDB/RocksDB via `flock`) get
+  cross-instance exclusion without changes; `flock()` should be hooked alongside `fcntl` for them.
+- Open-time leases are opt-in per volume (`?lock=1`). Without them, plain files keep the
+  optimistic `ESTALE`-on-conflict behaviour.
+
+| Pattern                                              | Verdict                                                                                                                                                                                     |
+| ---------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Write-once files (uploads, images, build artifacts)  | Good as-is; leases unnecessary                                                                                                                                                              |
+| Read-mostly config/data (JSON, SQLite read replicas) | Good; revalidation makes updates propagate                                                                                                                                                  |
+| Read-modify-write of one file from many instances    | Needs `?lock=1` **and** opening `O_RDWR` before reading. Read-close-then-write is a TOCTOU race the lease cannot cover; `ESTALE` + retry still preserves correctness                        |
+| Shared append log (`O_APPEND`, long-open fd)         | Wrong tool: nothing uploads until close/fsync, and two instances' appends cannot merge — a lease serializes but does not merge. Use per-instance log objects, or S3 Express append          |
+| `O_EXCL` create as a mutex (`.lock` files, git)      | Works locally; cross-instance it is caught late by `If-None-Match: *` at `close()`. Could be made atomic by mapping `O_CREAT\|O_EXCL` to a lease-style conditional create — small follow-up |
+| mmap-based stores (LMDB)                             | Not covered: mmap'd writes do not flush until `msync`/`close`, and those engines assume one host. Would need an `msync` hook; not planned                                                   |
+| Many small files (`node_modules`-like)               | Works; first access per instance is a HEAD/GET each. Listing placeholders help. Cold starts pay for it                                                                                      |
+| Large objects (video)                                | Works; whole-object materialize on first open per instance, whole-object upload on close. No range reads — pre-existing ceiling                                                             |
+| Processes that `fsync` constantly                    | Upload per fsync: chatty and slow. Fine for correctness, bad for throughput                                                                                                                 |
+
+The lease design serializes _who writes an object_; it never merges content. Anything whose
+correctness needs merging (logs, counters in a text file) should be redesigned (one object per
+instance or record) or moved to a real database — the same constraint as any shared filesystem
+without a server in front of it.

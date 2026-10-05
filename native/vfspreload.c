@@ -52,6 +52,7 @@
 #include <dirent.h>
 #include <pthread.h>
 #include <utime.h>
+#include <sys/file.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/statfs.h>
@@ -307,6 +308,49 @@ static void fd_copy(int from, int to) {
     free(g_fdpath[to]);
     g_fdpath[to] = p;
     pthread_mutex_unlock(&g_lock);
+}
+
+/* Copy of the tracked path (caller frees), or NULL when `fd` is not ours. */
+static char *fd_path(int fd) {
+    if (fd < 0 || fd >= FD_MAX) return NULL;
+    pthread_mutex_lock(&g_lock);
+    char *p = g_fdpath[fd] ? strdup(g_fdpath[fd]) : NULL;
+    pthread_mutex_unlock(&g_lock);
+    return p;
+}
+
+/* Advisory-lock state per descriptor: 1 while the program holds a write lock
+ * (fcntl F_WRLCK / flock LOCK_EX) on it, i.e. while the supervisor holds the
+ * lease for the file. Plain POSIX semantics, no knowledge of any program. */
+static unsigned char g_fdwlock[FD_MAX];
+
+/* Forward the program's advisory lock transitions to the supervisor:
+ *   read lock   -> "revalidate" (make the local copy current), unless this fd
+ *                  already holds the write lock (a downgrade, not a new read)
+ *   write lock  -> "lock" (take the lease; EAGAIN when someone else holds it)
+ *   unlock      -> "flush" then "unlock", only if a write lock was held
+ * Returns 0 to proceed with the real lock call, -1 with errno to fail it. */
+static int lock_transition(int fd, int type) {
+    char *vp = fd_path(fd);
+    if (!vp) return 0;
+    int r = 0;
+    if (type == F_WRLCK) {
+        if (!g_fdwlock[fd]) {
+            r = notify("lock", vp, NULL, 0);
+            if (r == 0) g_fdwlock[fd] = 1;
+        }
+    } else if (type == F_RDLCK) {
+        if (!g_fdwlock[fd]) r = notify("revalidate", vp, NULL, 0);
+    } else if (type == F_UNLCK) {
+        if (g_fdwlock[fd]) {
+            r = notify("flush", vp, NULL, 0);
+            g_fdwlock[fd] = 0;
+            int u = notify("unlock", vp, NULL, 0);
+            if (r == 0) r = u;
+        }
+    }
+    free(vp);
+    return r;
 }
 
 static int is_write(int flags) {
@@ -727,9 +771,11 @@ ssize_t readlinkat(int dirfd, const char *path, char *buf, size_t bufsz) {
 
 int close(int fd) {
     if (!real_close_) vfs_init();
+    /* Closing drops any advisory lock the program still held: end the lease too. */
+    int l = (fd >= 0 && fd < FD_MAX && g_fdwlock[fd]) ? lock_transition(fd, F_UNLCK) : 0;
     int r = real_close_(fd);
     int f = flush_fd(fd, 1);
-    if (f < 0) return -1;
+    if (f < 0 || l < 0) return -1;
     return r;
 }
 
@@ -774,6 +820,39 @@ int fclose(FILE *f) {
     int r = real_(f);
     if (fd >= 0 && flush_fd(fd, 1) < 0) return EOF;
     return r;
+}
+
+/* ---- advisory locks ----------------------------------------------------------
+ * The lock is still taken locally (the real call runs), so behaviour within one
+ * process is unchanged; the supervisor is additionally told about transitions
+ * on descriptors under VFS_PREFIX. A "lock" refused with EAGAIN fails the call
+ * exactly like a contended POSIX lock, so callers retry as they already do. */
+
+int fcntl(int fd, int cmd, ...) {
+    REAL(fcntl);
+    va_list ap; va_start(ap, cmd);
+    int lockcmd = cmd == F_SETLK || cmd == F_SETLKW
+#ifdef F_OFD_SETLK
+        || cmd == F_OFD_SETLK || cmd == F_OFD_SETLKW
+#endif
+        ;
+    if (lockcmd) {
+        struct flock *fl = va_arg(ap, struct flock *);
+        va_end(ap);
+        if (fl && lock_transition(fd, fl->l_type) < 0) return -1;
+        return real_(fd, cmd, fl);
+    }
+    void *arg = va_arg(ap, void *);
+    va_end(ap);
+    return real_(fd, cmd, arg);
+}
+
+int flock(int fd, int op) {
+    REAL(flock);
+    int kind = op & ~LOCK_NB;
+    int type = kind == LOCK_EX ? F_WRLCK : kind == LOCK_SH ? F_RDLCK : kind == LOCK_UN ? F_UNLCK : -1;
+    if (type >= 0 && lock_transition(fd, type) < 0) return -1;
+    return real_(fd, op);
 }
 
 /* ---- raw syscall(2) ----------------------------------------------------------

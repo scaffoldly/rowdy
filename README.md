@@ -40,7 +40,9 @@ The public libc path surface: `open`/`openat`/`creat`, `fopen`/`freopen`, `stat`
 
 `getcwd`, `realpath` and `readlink` are translated in reverse so the backing directory never
 leaks into the app's view. `syscall(2)` is interposed for the single-path syscalls, since libuv
-(node) stats through `syscall(SYS_statx)` rather than the wrapper.
+(node) stats through `syscall(SYS_statx)` rather than the wrapper. `close`, `fsync`, `fdatasync`,
+`dup*`, `fclose`, `fcntl` locks and `flock` are hooked on descriptors the shim opened so the
+supervisor hears about writes and advisory-lock transitions; the real calls still run.
 
 Each entry point is hooked on its own: musl binds libc-internal cross-calls (`fopen` → `open`,
 `scandir` → `opendir`) internally, so one wrapper never covers another.
@@ -95,6 +97,14 @@ unix-domain socket (one JSON object per line, paths and metadata only; the proto
   `rename` copies server-side then deletes (a renamed directory moves every key under it). S3 has
   no directories: an empty directory exists only locally until something is flushed under it.
   Credentials come from the default provider chain of the process running the server.
+  Multi-writer behaviour follows [ADR 0001](docs/adr/0001-multi-writer-leases.md): a trusted local
+  copy is re-checked against the object's ETag at most every `revalidateMs` (default 2 s) and
+  refetched **in place** when it changed, so an open descriptor sees the new bytes; writers can be
+  serialized with leases (`<prefix>/.rowdy/locks/<key>`, conditional creates, `leaseMs` TTL with
+  renewal, `lockWaitMs` before `EAGAIN`). The shim turns advisory locks into lease traffic
+  (`fcntl`/`flock`: read lock → `revalidate`, write lock → `lock`, unlock → `flush` + `unlock`), which
+  is what makes SQLite transactions serialize across machines without WAL. `lockOnOpen: true`
+  additionally holds the lease across every open-for-write/close window for plain files.
 
 ```ts
 import { S3Adapter, VfsServer, VFS_SOCKET, applyVfs } from '@scaffoldly/rowdy-vfs';

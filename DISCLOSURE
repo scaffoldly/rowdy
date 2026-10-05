@@ -43,8 +43,24 @@ Local supervisor socket
     {"op":"mkdir","path":P}                  after mkdir(P)
     {"op":"unlink","path":P}                 after unlink/rmdir(P)
     {"op":"rename","from":A,"to":B}          after rename(A, B)
+    {"op":"revalidate","path":P}             when the program takes a read lock
+                                             on P (fcntl F_RDLCK / SQLite SHARED)
+    {"op":"lock","path":P}                   when the program takes a write lock
+                                             on P (fcntl F_WRLCK / SQLite RESERVED)
+    {"op":"unlock","path":P}                 when the program drops a write lock
+                                             on P (fcntl F_UNLCK), after "flush"
 
     Reply: {"ok":true} or {"ok":false,"errno":N}
+
+  The three lock-related requests exist so that a supervisor backed by shared
+  storage can serialize writers across machines (a lease held for the duration
+  of a write transaction). The shim learns about them by interposing
+  fcntl(2) byte-range locking on descriptors it opened under VFS_PREFIX; it
+  still performs the real fcntl locally. A supervisor that answers "lock" with
+  {"ok":false,"errno":11} makes fcntl return EAGAIN, exactly as a contended
+  POSIX lock would, so programs such as SQLite retry under their own
+  busy-timeout. Nothing else about locking is changed or hidden from the
+  program.
 
   P, A and B are paths under VFS_PREFIX. The supervisor decides what backs
   them (a local directory today; an object store such as S3, using the
