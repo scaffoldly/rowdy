@@ -3,7 +3,9 @@ import { defineConfig } from 'tsup';
 export default defineConfig({
   entry: ['src/index.ts'],
   format: ['cjs'],
-  target: 'esnext',
+  // node22, not esnext: the binary loader would otherwise emit Uint8Array.fromBase64 (ES2025),
+  // which Node 22 lacks.
+  target: 'node22',
   sourcemap: 'inline',
   dts: true,
   cjsInterop: true,

@@ -93,7 +93,7 @@ jobs:
             mkdir -p lib/linux-$arch
             mv lib/vfspreload-linux-$arch/vfspreload.so lib/linux-$arch/vfspreload.so
           done
-          yarn && yarn test
+          yarn && yarn build && yarn test
 
   build-publish:
     runs-on: ubuntu-latest
