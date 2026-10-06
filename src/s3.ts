@@ -7,12 +7,12 @@ import {
   PutObjectCommand,
   S3Client,
 } from '@aws-sdk/client-s3';
-import { createReadStream, createWriteStream, existsSync, mkdirSync, statSync } from 'fs';
+import { createReadStream, createWriteStream, existsSync, mkdirSync, readFileSync, statSync } from 'fs';
 import { promises as fs } from 'fs';
 import { dirname, join } from 'path';
 import { Readable } from 'stream';
 import { pipeline } from 'stream/promises';
-import { randomUUID } from 'crypto';
+import { createHash, randomUUID } from 'crypto';
 import { LINUX_ERRNO, VfsAdapter, VfsError } from './server';
 
 export type S3AdapterOptions = {
@@ -61,6 +61,20 @@ const snapshot = (local: string): { mtimeMs: number; size: number } | undefined 
   try {
     const st = statSync(local);
     return { mtimeMs: st.mtimeMs, size: st.size };
+  } catch {
+    return undefined;
+  }
+};
+
+/** The MD5 an S3 ETag encodes for a single-part, non-KMS object, or undefined (multipart ETags have a "-N" suffix). */
+const etagMd5 = (etag?: string): string | undefined => {
+  const hex = etag?.replace(/"/g, '');
+  return hex && /^[0-9a-f]{32}$/.test(hex) ? hex : undefined;
+};
+
+const md5 = (local: string): string | undefined => {
+  try {
+    return createHash('md5').update(readFileSync(local)).digest('hex');
   } catch {
     return undefined;
   }
@@ -189,7 +203,20 @@ export class S3Adapter implements VfsAdapter {
       return true;
     }
     const now = snapshot(local);
-    return !now || now.mtimeMs !== entry.synced.mtimeMs || now.size !== entry.synced.size;
+    if (!now) {
+      return true;
+    }
+    if (now.mtimeMs === entry.synced.mtimeMs && now.size === entry.synced.size) {
+      return false;
+    }
+    // Touched, but are the bytes different from the base? A rollback that restores the base
+    // (SQLite after a failed commit) must count as unmodified, or the copy could never heal.
+    const base = etagMd5(entry.etag);
+    if (base && now.size === entry.synced.size && md5(local) === base) {
+      entry.synced = now;
+      return false;
+    }
+    return true;
   }
 
   /**
@@ -436,9 +463,9 @@ export class S3Adapter implements VfsAdapter {
       return; // removed before the flush reached us; unlink will follow
     }
     const current = this.entries.get(key);
-    if (current?.synced && current.synced.mtimeMs === mtimeMs && current.synced.size === size) {
-      // Local and remote already agree (fetched and untouched, or fsync at commit followed by the
-      // unlock-time flush): nothing to upload.
+    if (current && !this.modified(local, current)) {
+      // The bytes already equal the base this copy is on (fetched and untouched, fsync then the
+      // unlock-time flush, or a rollback that restored them): nothing to upload.
       return;
     }
     const base = current?.etag;
@@ -611,7 +638,17 @@ export class S3Adapter implements VfsAdapter {
       return;
     }
     const key = this.key(rel);
-    await this.serial(key, () => this.acquire(key, path));
+    await this.serial(key, async () => {
+      await this.acquire(key, path);
+      // The caller read this file before locking it (SQLite: SHARED, then RESERVED). If another
+      // instance committed in between, writing on what was read would be stale: hand back EAGAIN
+      // so the caller drops its read lock and re-reads; the next revalidate fetches the new base.
+      const entry = this.entries.get(key);
+      if (entry?.etag && (await this.head(key))?.etag !== entry.etag) {
+        await this.release(key);
+        throw VfsError.code('EAGAIN', `${path}: changed by another writer since it was read; retry`);
+      }
+    });
   }
 
   /** Protocol op: release the lease for `path`. */

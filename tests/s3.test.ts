@@ -20,6 +20,7 @@ import {
   statSync,
   writeFileSync,
 } from 'fs';
+import { createHash } from 'crypto';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { Readable } from 'stream';
@@ -31,10 +32,10 @@ type Stored = { body: Buffer; etag: string };
 class FakeS3 {
   readonly objects = new Map<string, Stored>();
   readonly calls: string[] = [];
-  private version = 0;
 
   put(key: string, body: string): Stored {
-    const stored = { body: Buffer.from(body), etag: `"v${++this.version}"` };
+    // Real S3 ETags for single-part puts are the MD5 of the body; the adapter relies on that.
+    const stored = { body: Buffer.from(body), etag: `"${createHash('md5').update(body).digest('hex')}"` };
     this.objects.set(key, stored);
     return stored;
   }
@@ -160,7 +161,7 @@ describe('S3Adapter', () => {
       s3.calls.length = 0;
       await adapter.fetch(`${mount}/hello.txt`);
       expect(s3.calls).toEqual([]);
-      expect(stored.etag).toBe('"v1"');
+      expect(stored.etag).toBe(`"${createHash('md5').update('hello').digest('hex')}"`);
     });
 
     it('removes a stale placeholder when the object is gone', async () => {
@@ -368,6 +369,25 @@ describe('S3Adapter', () => {
       expect(s3.calls).not.toContain('PutObjectCommand');
     });
 
+    it('treats bytes restored to the base as unmodified, so a rolled-back copy heals', async () => {
+      // A failed commit: the app rewrote the file (flush -> ESTALE), then rolled it back to the
+      // exact base bytes. Nothing must be uploaded, and the next revalidate must fetch the newer
+      // remote version instead of protecting the "edited" local copy.
+      const a = fresh(0);
+      s3.put('db.sqlite', 'base');
+      await a.fetch(`${mount}/db.sqlite`);
+      const local = join(backing, 'db.sqlite');
+      s3.put('db.sqlite', 'moved'); // someone else won
+      writeFileSync(local, 'mine'); // our attempted write, then its flush fails...
+      await expect(a.flush(`${mount}/db.sqlite`)).rejects.toMatchObject({ errno: 116 });
+      writeFileSync(local, 'base'); // ...and the app rolls back to the base bytes
+      s3.calls.length = 0;
+      await a.flush(`${mount}/db.sqlite`); // rollback's fsync
+      expect(s3.calls).not.toContain('PutObjectCommand');
+      await a.revalidate(`${mount}/db.sqlite`);
+      expect(readFileSync(local, 'utf8')).toBe('moved');
+    });
+
     it('drops the local copy when the object was deleted remotely', async () => {
       const a = fresh(0);
       s3.put('gone.txt', 'x');
@@ -419,6 +439,27 @@ describe('S3Adapter', () => {
       await a.unlock(`${mount}/db.sqlite`);
       await expect(b.lock(`${mount}/db.sqlite`)).resolves.toBeUndefined();
       await b.unlock(`${mount}/db.sqlite`);
+    });
+
+    it('yields EAGAIN when the object moved since this instance last read it', async () => {
+      const a = leased('alice', { revalidateMs: 0 });
+      const b = leased('bob', { revalidateMs: 0 });
+      s3.put('db.sqlite', 'v1');
+      await a.fetch(`${mount}/db.sqlite`);
+      await b.fetch(`${mount}/db.sqlite`);
+      // bob commits a new version while alice holds only her read view
+      writeFileSync(join(b['options'].backing, 'db.sqlite'), 'v2 by bob');
+      await b.lock(`${mount}/db.sqlite`);
+      await b.flush(`${mount}/db.sqlite`);
+      await b.unlock(`${mount}/db.sqlite`);
+      // alice's write lock must not succeed on the stale view...
+      await expect(a.lock(`${mount}/db.sqlite`)).rejects.toMatchObject({ errno: 11 });
+      expect(s3.objects.has('.rowdy/locks/db.sqlite')).toBe(false); // lease given back
+      // ...but after re-reading (what SQLite does on BUSY) it does
+      await a.revalidate(`${mount}/db.sqlite`);
+      expect(readFileSync(join(a['options'].backing, 'db.sqlite'), 'utf8')).toBe('v2 by bob');
+      await expect(a.lock(`${mount}/db.sqlite`)).resolves.toBeUndefined();
+      await a.unlock(`${mount}/db.sqlite`);
     });
 
     it('takes over an expired lease', async () => {
