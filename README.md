@@ -91,20 +91,24 @@ capabilities change.
 
 ## Supervisor and adapters
 
-Several directories can be mounted at once. Pass `mounts` to `applyVfs` and put the adapters behind
-a `MountAdapter`, which routes each operation to the mount its path falls in (the longest mountpoint
-wins, so a mount nested in another owns its own subtree; a rename across mounts is `EXDEV`):
+Several directories can be mounted at once. Pass `mounts` to `applyVfs` and give `P9Server` one
+entry per mount; a client attaches to a mount by its mountpoint and the longest mountpoint wins for
+a path, so a mount nested in another owns its own subtree (a rename across mounts is `EXDEV`):
 
 ```ts
 const mounts = [
   { prefix: '/s3', backing: '/tmp/vfsstore' },
   { prefix: '/scratch', backing: '/tmp/vfsstore.1' },
 ];
-const server = await new VfsServer(
-  new MountAdapter([
-    { mountpoint: '/s3', adapter: new S3Adapter({ bucket, mountpoint: '/s3', backing: '/tmp/vfsstore' }) },
-    { mountpoint: '/scratch', adapter: new LocalAdapter() },
-  ]),
+const server = await new P9Server(
+  [
+    {
+      mountpoint: '/s3',
+      backing: '/tmp/vfsstore',
+      adapter: new S3Adapter({ bucket, mountpoint: '/s3', backing: '/tmp/vfsstore' }),
+    },
+    { mountpoint: '/scratch', backing: '/tmp/vfsstore.1', adapter: new LocalAdapter() },
+  ],
   { socket: VFS_SOCKET }
 ).listen();
 applyVfs(env, { socket: server.socket, mounts }); // sets VFS_MOUNTS
@@ -112,7 +116,7 @@ applyVfs(env, { socket: server.socket, mounts }); // sets VFS_MOUNTS
 
 Backing directories must not nest inside one another.
 
-With `VFS_SOCKET` set, the shim reports every operation on the mountpoint to a `VfsServer` over a
+With `VFS_SOCKET` set, the shim talks 9P2000.L to a `P9Server` over a
 unix-domain socket (one JSON object per line, paths and metadata only; the protocol is in
 `DISCLOSURE`). The server dispatches to a `VfsAdapter`:
 
@@ -135,14 +139,14 @@ unix-domain socket (one JSON object per line, paths and metadata only; the proto
   additionally holds the lease across every open-for-write/close window for plain files.
 
 ```ts
-import { S3Adapter, VfsServer, VFS_SOCKET, applyVfs } from '@scaffoldly/rowdy-vfs';
+import { P9Server, S3Adapter, VFS_SOCKET, applyVfs } from '@scaffoldly/rowdy-vfs';
 
-const server = await new VfsServer(
-  new S3Adapter({ bucket: 'example-bucket', mountpoint: '/vfs', backing: '/tmp/vfsstore' }),
-  { socket: VFS_SOCKET }
-).listen();
-const env = { ...process.env, ROWDY_VFS: '1', VFS_PREFIX: '/vfs', VFS_BACKING: '/tmp/vfsstore' };
-applyVfs(env, { socket: server.socket });
+const adapter = new S3Adapter({ bucket: 'example-bucket', mountpoint: '/vfs', backing: '/tmp/vfsstore' });
+const server = await new P9Server([{ mountpoint: '/vfs', backing: '/tmp/vfsstore', adapter }], {
+  socket: VFS_SOCKET,
+}).listen();
+const env = { ...process.env, ROWDY_VFS: '1' };
+applyVfs(env, { socket: server.socket, mounts: [{ prefix: '/vfs', backing: '/tmp/vfsstore' }] });
 ```
 
 Ceilings of the S3 adapter: whole-object materialization (an object must fit on the backing disk),

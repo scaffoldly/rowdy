@@ -88,10 +88,10 @@ describe('rowdy-vfs', () => {
         expect(config).toMatchObject({ prefix: '/s3', backing: '/tmp/vfsstore', mounts });
       });
 
-      it('leaves VFS_MOUNTS unset without the option', () => {
+      it('always tells the shim its mounts: the default pair becomes the one entry', () => {
         const e = env({ ROWDY_VFS: '1' });
-        expect(applyVfs(e, { preload })).not.toHaveProperty('mounts');
-        expect(e.VFS_MOUNTS).toBeUndefined();
+        expect(applyVfs(e, { preload })?.mounts).toEqual([{ prefix: '/vfs', backing: '/tmp/vfsstore' }]);
+        expect(e.VFS_MOUNTS).toBe('/vfs=/tmp/vfsstore');
       });
 
       it('rejects prefixes and backing directories the shim could not parse or keep apart', () => {
@@ -127,7 +127,12 @@ describe('rowdy-vfs', () => {
 
     it('enables the preload and defaults the prefix and backing', () => {
       const e = env({ ROWDY_VFS: '1' });
-      expect(applyVfs(e, preload)).toEqual({ preload, prefix: '/vfs', backing: '/tmp/vfsstore' });
+      expect(applyVfs(e, preload)).toEqual({
+        preload,
+        prefix: '/vfs',
+        backing: '/tmp/vfsstore',
+        mounts: [{ prefix: '/vfs', backing: '/tmp/vfsstore' }],
+      });
       expect(e.LD_PRELOAD).toBe(preload);
       expect(e.VFS_PREFIX).toBe('/vfs');
       expect(e.VFS_BACKING).toBe('/tmp/vfsstore');
@@ -148,7 +153,12 @@ describe('rowdy-vfs', () => {
 
     it('preserves an explicit prefix and backing', () => {
       const e = env({ ROWDY_VFS: 'true', VFS_PREFIX: '/data', VFS_BACKING: '/tmp/data' });
-      expect(applyVfs(e, preload)).toEqual({ preload, prefix: '/data', backing: '/tmp/data' });
+      expect(applyVfs(e, preload)).toEqual({
+        preload,
+        prefix: '/data',
+        backing: '/tmp/data',
+        mounts: [{ prefix: '/data', backing: '/tmp/data' }],
+      });
     });
 
     it('sets VFS_SOCKET when socket is provided', () => {
@@ -158,6 +168,7 @@ describe('rowdy-vfs', () => {
         prefix: '/vfs',
         backing: '/tmp/vfsstore',
         socket: '/tmp/sock',
+        mounts: [{ prefix: '/vfs', backing: '/tmp/vfsstore' }],
       });
       expect(e.VFS_SOCKET).toBe('/tmp/sock');
     });
@@ -168,6 +179,7 @@ describe('rowdy-vfs', () => {
         preload,
         prefix: '/vfs',
         backing: '/tmp/vfsstore',
+        mounts: [{ prefix: '/vfs', backing: '/tmp/vfsstore' }],
         socket: '/tmp/other',
       });
       expect(e.VFS_SOCKET).toBe('/tmp/other'); // untouched

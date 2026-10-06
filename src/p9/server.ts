@@ -131,6 +131,18 @@ const attrOf = (st: Stats): Attr => ({
   dataVersion: 0n,
 });
 
+// The shim performs the real operation on the backing directory before it tells us, so the
+// backing step of a structural operation may find its work already done. That is not an error.
+const applied = async (op: () => Promise<unknown>, ...codes: Array<keyof typeof LINUX_ERRNO>): Promise<void> => {
+  try {
+    await op();
+  } catch (e) {
+    if (!codes.includes(((e as { code?: string }).code ?? '') as keyof typeof LINUX_ERRNO)) {
+      throw e;
+    }
+  }
+};
+
 /** The `type` byte of a directory entry (DT_*). */
 const direntType = (d: FsDirent): number =>
   d.isDirectory() ? 4 : d.isSymbolicLink() ? 10 : d.isFile() ? 8 : d.isFIFO() ? 1 : d.isSocket() ? 12 : 0;
@@ -491,7 +503,7 @@ export class P9Server {
       case T.Tsymlink: {
         const dir = this.fid(session, req.fid);
         const rel = this.child(dir.rel, req.name);
-        await fs.symlink(req.target, this.backing(dir, rel));
+        await applied(() => fs.symlink(req.target, this.backing(dir, rel)), 'EEXIST');
         await dir.mount.adapter.flush(this.vpath(dir, rel));
         return R.symlink(req.tag, qidOf(await this.lstat(dir, rel)));
       }
@@ -613,7 +625,7 @@ export class P9Server {
           throw VfsError.code('EXDEV', 'link across mounts');
         }
         const rel = this.child(dir.rel, req.name);
-        await fs.link(this.backing(target), this.backing(dir, rel));
+        await applied(() => fs.link(this.backing(target), this.backing(dir, rel)), 'EEXIST');
         await dir.mount.adapter.flush(this.vpath(dir, rel));
         return R.link(req.tag);
       }
@@ -621,7 +633,15 @@ export class P9Server {
       case T.Tmkdir: {
         const dir = this.fid(session, req.dfid);
         const rel = this.child(dir.rel, req.name);
-        await fs.mkdir(this.backing(dir, rel), req.mode & 0o7777);
+        await applied(async () => {
+          try {
+            await fs.mkdir(this.backing(dir, rel), req.mode & 0o7777);
+          } catch (e) {
+            if ((e as { code?: string }).code !== 'EEXIST' || !(await this.lstat(dir, rel)).isDirectory()) {
+              throw e;
+            }
+          }
+        });
         await dir.mount.adapter.mkdir(this.vpath(dir, rel));
         return R.mkdir(req.tag, qidOf(await this.lstat(dir, rel)));
       }
@@ -630,11 +650,19 @@ export class P9Server {
         const dir = this.fid(session, req.dirfid);
         const rel = this.child(dir.rel, req.name);
         const path = this.backing(dir, rel);
-        if (req.flags & AT_REMOVEDIR) {
-          await fs.rmdir(path);
-        } else {
-          await fs.unlink(path);
-        }
+        // The shim does not say whether it removed a file or a directory; either is gone by now.
+        await applied(async () => {
+          try {
+            await (req.flags & AT_REMOVEDIR ? fs.rmdir(path) : fs.unlink(path));
+          } catch (e) {
+            const code = (e as { code?: string }).code;
+            if (code === 'EISDIR' || code === 'EPERM') {
+              await fs.rmdir(path);
+            } else {
+              throw e;
+            }
+          }
+        }, 'ENOENT');
         await dir.mount.adapter.unlink(this.vpath(dir, rel));
         return R.unlinkat(req.tag);
       }
@@ -701,7 +729,15 @@ export class P9Server {
     if (from.mount !== to.mount) {
       throw VfsError.code('EXDEV', 'rename across mounts');
     }
-    await fs.rename(this.backing(from, fromRel), this.backing(to, toRel));
+    try {
+      await fs.rename(this.backing(from, fromRel), this.backing(to, toRel));
+    } catch (e) {
+      // Already moved by the shim: the source is gone and the target is there.
+      const target = await fs.lstat(this.backing(to, toRel)).catch(() => undefined);
+      if ((e as { code?: string }).code !== 'ENOENT' || !target) {
+        throw e;
+      }
+    }
     await from.mount.adapter.rename(this.vpath(from, fromRel), this.vpath(to, toRel));
     moved?.(toRel);
     return R.rename(tag);

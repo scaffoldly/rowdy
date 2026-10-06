@@ -35,6 +35,19 @@ jobs:
       - name: Compile shim
         run: sh native/build.sh ${{ matrix.arch }}
 
+      # The test supervisor is the package's own 9P server, so the test needs dist/.
+      - name: Use Node.js 22.x
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22.x
+          cache: 'yarn'
+
+      - name: Build package
+        run: |
+          mkdir -p lib/linux-x64 lib/linux-arm64
+          for arch in x64 arm64; do [ -f lib/linux-$arch/vfspreload.so ] || cp lib/linux-${{ matrix.arch }}/vfspreload.so lib/linux-$arch/vfspreload.so; done
+          yarn --frozen-lockfile && yarn build
+
       - name: Test shim
         run: sh native/test.sh ${{ matrix.arch }}
 

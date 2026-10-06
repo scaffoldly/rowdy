@@ -15,13 +15,14 @@ if [ -z "${VFS_STAGE:-}" ]; then
       arm64) platform="--platform linux/arm64" ;;
     esac
     root="$(cd "$(dirname "$0")/.." && pwd)"
-    exec docker run --rm $platform -v "$root/native:/n:ro" node:22-alpine sh /n/test.sh
+    [ -f "$root/dist/index.js" ] || { echo "dist/index.js missing: run yarn build first (the test supervisor is the package's 9P server)" >&2; exit 2; }
+    exec docker run --rm $platform -v "$root:/w:ro" node:22-alpine sh /w/native/test.sh
   fi
   apk add --no-cache gcc musl-dev linux-headers >/dev/null 2>&1
-  gcc -O2 -shared -fPIC -Wall -Wextra -Werror /n/vfspreload.c -o /tmp/vfspreload.so
+  gcc -O2 -shared -fPIC -Wall -Wextra -Werror /w/native/vfspreload.c -o /tmp/vfspreload.so
   echo "compile: ok"
   # the shell performs redirections itself, so it must be preloaded too
-  exec env VFS_STAGE=1 LD_PRELOAD=/tmp/vfspreload.so VFS_PREFIX=/vfs VFS_BACKING=/tmp/vfsstore sh "$0"
+  exec env VFS_STAGE=1 LD_PRELOAD=/tmp/vfspreload.so VFS_MOUNTS=/vfs=/tmp/vfsstore sh "$0"
 fi
 fail() { echo "FAIL: $*"; exit 1; }
 
@@ -131,38 +132,12 @@ assert.deepStrictEqual(fs.readdirSync(\"/b\").sort(), [\"f\", \"g\"]);
 ' || fail "mounts"
 echo "mounts: ok"
 
-# supervisor socket tests
-cat > /tmp/server.js <<'SRV'
-const net = require("net");
-const fs = require("fs");
-try { fs.unlinkSync("/tmp/vfs.sock"); } catch(e) {}
-net.createServer(c => {
-  let buf = "";
-  c.on("data", d => {
-    buf += d.toString();
-    let nl;
-    while ((nl = buf.indexOf("\n")) >= 0) {
-      const line = buf.slice(0, nl);
-      buf = buf.slice(nl + 1);
-      const req = JSON.parse(line);
-      const path = req.path || req.from || "";
-      fs.appendFileSync("/tmp/ops.log", req.op + " " + path + "\n");
-      if (path.includes("denied")) {
-        c.write('{"ok":false,"errno":13}\n');
-      } else if (req.op === "flush" && path.includes("flushfail")) {
-        c.write('{"ok":false,"errno":5}\n');
-      } else if (req.op === "lock" && path.includes("busy")) {
-        c.write('{"ok":false,"errno":11}\n');
-      } else {
-        c.write('{"ok":true}\n');
-      }
-    }
-  });
-}).listen("/tmp/vfs.sock");
-SRV
-node /tmp/server.js &
+# supervisor socket tests: the package's 9P server, recording every adapter hook
+rm -f /tmp/ops.log /tmp/vfs.ready
+node /w/native/test-server.js &
 SRVPID=$!
-sleep 0.2
+for i in 1 2 3 4 5 6 7 8 9 10; do [ -f /tmp/vfs.ready ] && break; sleep 0.2; done
+[ -f /tmp/vfs.ready ] || fail "9P test server did not start"
 
 export VFS_SOCKET=/tmp/vfs.sock
 rm -f /tmp/ops.log
@@ -190,7 +165,7 @@ echo x > /tmp/notvfs   # outside the prefix: must not reach the supervisor
 
 LOG=$(cat /tmp/ops.log | tr '\n' ' ')
 case "$LOG" in
-  *"fetch /vfs/tracked open /vfs/tracked flush /vfs/tracked list /vfs mkdir /vfs/d2 rename /vfs/tracked stat /vfs/d2/tracked2 unlink /vfs/d2/tracked2 unlink /vfs/d2 "*)
+  *"stat /vfs/tracked stat /vfs/tracked fetch /vfs/tracked open /vfs/tracked flush /vfs/tracked stat /vfs list /vfs stat /vfs mkdir /vfs/d2 stat /vfs stat /vfs/d2 rename /vfs/tracked /vfs/d2/tracked2 stat /vfs stat /vfs/d2 stat /vfs/d2/tracked2 stat /vfs/d2 unlink /vfs/d2/tracked2 stat /vfs unlink /vfs/d2 "*)
     :
     ;;
   *)

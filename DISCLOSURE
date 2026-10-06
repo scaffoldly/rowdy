@@ -29,47 +29,52 @@ Local supervisor socket
   When VFS_SOCKET is set (rowdy sets it to /tmp/rowdy/vfs.sock), the shim
   connects to that unix-domain stream socket, which is created and owned by
   the supervisor process that launched the program (rowdy). It is used to
-  ask the supervisor to populate VFS_BACKING before a path is used and to
-  persist it afterwards. The shim never opens TCP/IP sockets, never resolves
+  ask the supervisor to populate a mount's backing directory before a path is
+  used and to persist it afterwards. The shim never opens TCP/IP sockets, never resolves
   DNS, and never talks to anything other than that one local socket. When
   VFS_SOCKET is unset or the socket is absent, no connection is made and the
   shim is a plain local-directory overlay.
 
-  Protocol: one newline-delimited JSON object per request and per reply.
-  Only paths, flags and metadata cross the socket; file contents never do.
+  Protocol: 9P2000.L, the Linux dialect of the Plan 9 file protocol, as a
+  client. Messages are size[4] type[1] tag[2] followed by the message's
+  fields; errors come back as Rlerror carrying a Linux errno. The shim sends
+  only the control messages, never Tread or Twrite: file contents stay on the
+  local backing directory and go through the unmodified libc data path.
 
-    Request                                  When the shim sends it
-    {"op":"stat","path":P}                   before stat/access/open on P
-    {"op":"fetch","path":P}                  before open(P) for reading
-    {"op":"list","path":P}                   before opendir/scandir(P)
-    {"op":"open","path":P,"flags":F}         after open(P) for writing
-    {"op":"flush","path":P}                  on close/fsync of a written P
-    {"op":"mkdir","path":P}                  after mkdir(P)
-    {"op":"unlink","path":P}                 after unlink/rmdir(P)
-    {"op":"rename","from":A,"to":B}          after rename(A, B)
-    {"op":"revalidate","path":P}             when the program takes a read lock
-                                             on P (fcntl F_RDLCK / SQLite SHARED)
-    {"op":"lock","path":P}                   when the program takes a write lock
-                                             on P (fcntl F_WRLCK / SQLite RESERVED)
-    {"op":"unlock","path":P}                 when the program drops a write lock
-                                             on P (fcntl F_UNLCK), after "flush"
+    Message                                  When the shim sends it
+    Tversion, Tattach(aname=prefix)          on connect, once per mount
+    Twalk(names) + Tclunk                    before stat/access/open on a path
+    Twalk + Tlopen(O_RDONLY) + Tclunk        before open(P) for reading
+    Twalk + Tlopen(O_DIRECTORY) + Tclunk     before opendir/scandir(P)
+    Twalk + Tlopen(flags)                    after open(P) for writing; the fid
+                                             stays with the descriptor
+    Tfsync(fid)                              on fsync of a written descriptor
+    Tclunk(fid)                              on the last close of a written
+                                             descriptor (the supervisor persists)
+    Twalk + Tlopen(O_WRONLY) + Tclunk        after truncate/link/symlink on P
+    Twalk(parent) + Tmkdir(name)             after mkdir(P)
+    Twalk(parent) + Tunlinkat(name)          after unlink/rmdir(P)
+    Twalk(parents) + Trenameat               after rename(A, B)
+    Tlock(fid, RDLCK)                        when the program takes a read lock
+                                             (fcntl F_RDLCK / SQLite SHARED)
+    Tlock(fid, WRLCK)                        when the program takes a write lock
+                                             (fcntl F_WRLCK / SQLite RESERVED)
+    Tlock(fid, UNLCK)                        when the program drops a write lock
+                                             (fcntl F_UNLCK)
 
-    Reply: {"ok":true} or {"ok":false,"errno":N}
+  The lock messages exist so that a supervisor backed by shared storage can
+  serialize writers across machines (a lease held for the duration of a write
+  transaction). The shim learns about them by interposing fcntl(2) byte-range
+  locking on descriptors it opened under a mount; it still performs the real
+  fcntl locally. A supervisor that answers Tlock with status BLOCKED makes
+  fcntl return EAGAIN, exactly as a contended POSIX lock would, so programs
+  such as SQLite retry under their own busy-timeout. Nothing else about
+  locking is changed or hidden from the program.
 
-  The three lock-related requests exist so that a supervisor backed by shared
-  storage can serialize writers across machines (a lease held for the duration
-  of a write transaction). The shim learns about them by interposing
-  fcntl(2) byte-range locking on descriptors it opened under VFS_PREFIX; it
-  still performs the real fcntl locally. A supervisor that answers "lock" with
-  {"ok":false,"errno":11} makes fcntl return EAGAIN, exactly as a contended
-  POSIX lock would, so programs such as SQLite retry under their own
-  busy-timeout. Nothing else about locking is changed or hidden from the
-  program.
-
-  P, A and B are paths under VFS_PREFIX. The supervisor decides what backs
-  them (a local directory today; an object store such as S3, using the
-  supervisor's own credentials, in a later version). The shim holds no
-  credentials of any kind.
+  Paths cross the socket as walk names relative to a mount. The supervisor
+  decides what backs them (a local directory, or an object store such as S3
+  using the supervisor's own credentials). The shim holds no credentials of
+  any kind.
 
 Why it exists
 

@@ -3,7 +3,13 @@
  * maps into a mount, and which descriptors are open on virtual files.
  *
  * Depends on vfs_transport.h and on nothing above it. The interposition layer
- * uses only what is declared here.
+ * uses only what is declared here: xlate/unxlate, notify, pre_open/post_open,
+ * flush_fd, lock_transition and the fd table helpers.
+ *
+ * The supervisor is a 9P2000.L server. A path operation is a walk from the
+ * mount's root fid, the operation on the fid, and a clunk; a descriptor opened
+ * for writing keeps its fid for as long as it is open, so fsync, locks and the
+ * final close address the same handle the supervisor already knows.
  */
 #ifndef VFS_CORE_H
 #define VFS_CORE_H
@@ -13,10 +19,11 @@
 /* A virtual prefix (e.g. "/vfs") served from a real directory (e.g.
  * "/tmp/vfsstore"). Neither ends in '/'. */
 struct vfs_mount {
-    char  *prefix;
-    size_t prefixlen;
-    char  *backing;
-    size_t backinglen;
+    char    *prefix;
+    size_t   prefixlen;
+    char    *backing;
+    size_t   backinglen;
+    uint32_t rootfid;   /* attached on connect; valid while g_ipc is */
 };
 
 #define MOUNT_MAX 16
@@ -50,12 +57,22 @@ static void mkdir_p(int (*real_mkdir)(const char *, mode_t), const char *dir) {
     real_mkdir(buf, 0777);
 }
 
+/* Attach every mount on a fresh connection. Called by the transport with g_lock held. */
+static int attach_all_locked(void) {
+    for (int i = 0; i < g_nmounts; i++) {
+        g_mounts[i].rootfid = g_nextfid++;
+        if (p9_attach_locked(g_mounts[i].rootfid, g_mounts[i].prefix) < 0) return -1;
+    }
+    return 0;
+}
+
 static void vfs_init(void) __attribute__((constructor));
 static void vfs_init(void) {
     if (g_init) return;
     g_init = 1;
 
     transport_init();
+    g_on_connect = attach_all_locked;
 
     /* VFS_MOUNTS: "prefix=backing" entries separated by ':'. The split is at the
      * last '=' of an entry, so a prefix may contain one. */
@@ -67,15 +84,6 @@ static void vfs_init(void) {
         for (const char *q = spec; q < end; q++) if (*q == '=') eq = q;
         if (eq) mount_add(spec, (size_t)(eq - spec), eq + 1, (size_t)(end - eq - 1));
         spec = *end ? end + 1 : end;
-    }
-
-    /* Without it: the single mount of VFS_PREFIX on VFS_BACKING. */
-    if (!g_nmounts) {
-        const char *p = getenv("VFS_PREFIX");
-        const char *b = getenv("VFS_BACKING");
-        if (!p || !*p) p = "/vfs";
-        if (!b || !*b) b = "/tmp/vfsstore";
-        mount_add(p, strlen(p), b, strlen(b));
     }
 
     /* Best-effort create each backing root so the VFS exists on first use. */
@@ -110,6 +118,13 @@ static const struct vfs_mount *mount_of_backing(const char *path) {
         if (under(path, m->backing, m->backinglen) && (!best || m->backinglen > best->backinglen)) best = m;
     }
     return best;
+}
+
+/* The path relative to its mount: "" for the root, else without a leading '/'. */
+static const char *rel_of(const struct vfs_mount *m, const char *path) {
+    const char *r = path + m->prefixlen;
+    while (*r == '/') r++;
+    return r;
 }
 
 /* ---- path translation ---------------------------------------------------- */
@@ -168,95 +183,142 @@ static int unxlate(char *buf, size_t bufsz) {
     static typeof(&name) real_; \
     if (!real_) real_ = (typeof(&name))dlsym(RTLD_NEXT, #name)
 
-/* The supervisor's say on `op` for virtual path `p` (and `p2` for rename). */
+/* ---- the supervisor's say ----------------------------------------------------
+ * Each path operation is walk, operation, clunk. The walk already runs the
+ * store's stat hook for the path; lopen runs fetch (read), open (write) or
+ * list (directory); clunk persists anything written through the fid. */
+
+/* Walk `rel` within `m`; -1 with errno when it is not there. */
+static int walk_to(const struct vfs_mount *m, const char *rel, uint32_t *fid) {
+    return p9_walk(m->rootfid, rel, fid);
+}
+
+/* Walk to the parent of `rel` and point `*name` at the last component. */
+static int walk_parent(const struct vfs_mount *m, const char *rel, uint32_t *fid, const char **name) {
+    static __thread char parent[PATH_MAX];
+    const char *slash = strrchr(rel, '/');
+    if (!slash) { parent[0] = '\0'; *name = rel; }
+    else {
+        size_t n = (size_t)(slash - rel);
+        if (n >= sizeof parent) { errno = ENAMETOOLONG; return -1; }
+        memcpy(parent, rel, n); parent[n] = '\0';
+        *name = slash + 1;
+    }
+    if (!**name) { errno = EINVAL; return -1; }   /* the mount root has no parent here */
+    return walk_to(m, parent, fid);
+}
+
+/* Walk, lopen with `flags`, clunk: the store populates (or registers) `rel`. */
+static int touch(const struct vfs_mount *m, const char *rel, uint32_t flags) {
+    uint32_t fid;
+    if (walk_to(m, rel, &fid) < 0) return -1;
+    int r = p9_lopen(fid, flags);
+    int e = errno;
+    p9_clunk(fid);
+    errno = e;
+    return r;
+}
+
+/* Tell the supervisor about `op` on virtual path `p` (and `p2` for rename).
+ * `flags` are the open(2) flags for "open". 0 without VFS_SOCKET, or when the
+ * path is not under a mount. */
 static int notify(const char *op, const char *p, const char *p2, int flags) {
-    return transport_call(op, p, p2, flags);
+    (void)flags;
+    if (!g_socket) return 0;
+    const struct vfs_mount *m = mount_of(p);
+    if (!m) return 0;
+    if (ensure_connected() < 0) return -1;   /* root fids exist only once attached */
+    const char *rel = rel_of(m, p);
+    uint32_t fid;
+    const char *name;
+    int r, e;
+
+    if (strcmp(op, "stat") == 0) {
+        if (walk_to(m, rel, &fid) < 0) return -1;
+        p9_clunk(fid);
+        return 0;
+    }
+    if (strcmp(op, "fetch") == 0) return touch(m, rel, O_RDONLY);
+    if (strcmp(op, "list") == 0) return touch(m, rel, O_RDONLY | O_DIRECTORY);
+    if (strcmp(op, "flush") == 0) return touch(m, rel, O_WRONLY);   /* written outside a descriptor we track */
+    if (strcmp(op, "mkdir") == 0) {
+        if (walk_parent(m, rel, &fid, &name) < 0) return -1;
+        r = p9_mkdir(fid, name, 0777); e = errno;
+        p9_clunk(fid); errno = e;
+        return r;
+    }
+    if (strcmp(op, "unlink") == 0) {
+        if (walk_parent(m, rel, &fid, &name) < 0) return -1;
+        r = p9_unlinkat(fid, name, 0); e = errno;
+        p9_clunk(fid); errno = e;
+        return r;
+    }
+    if (strcmp(op, "rename") == 0) {
+        const struct vfs_mount *m2 = p2 ? mount_of(p2) : NULL;
+        if (!m2 || m2 != m) {
+            /* Across mounts (or out of them): the bytes already moved on disk, so to the
+             * stores this is a file gone from one place and a new one in another. */
+            if (notify("unlink", p, NULL, 0) < 0) return -1;
+            return m2 ? notify("flush", p2, NULL, 0) : 0;
+        }
+        const char *rel2 = rel_of(m2, p2), *name2;
+        uint32_t fid2;
+        if (walk_parent(m, rel, &fid, &name) < 0) return -1;
+        if (walk_parent(m2, rel2, &fid2, &name2) < 0) { e = errno; p9_clunk(fid); errno = e; return -1; }
+        r = p9_renameat(fid, name, fid2, name2); e = errno;
+        p9_clunk(fid); p9_clunk(fid2); errno = e;
+        return r;
+    }
+    errno = EINVAL;
+    return -1;
 }
 
 /* ---- open files ------------------------------------------------------------
- * One entry per descriptor opened for writing on a virtual file. The supervisor
- * is told "open" when it is opened and "flush" when the last reference is
- * closed or fsync'd, so it can persist the backing file. */
+ * One entry per descriptor opened for writing on a virtual file: the fid the
+ * supervisor knows it by. dup'd descriptors share the fid through a count, so
+ * it is clunked (and the file persisted) when the last of them closes. */
 
 struct vfs_file {
-    char *vpath;            /* virtual path, or NULL when the fd is not ours */
-    unsigned char wlock;    /* 1 while the program holds a write lock (fcntl F_WRLCK /
-                             * flock LOCK_EX) on it, i.e. the supervisor holds the lease */
+    uint32_t fid;
+    int     *refs;          /* shared by every descriptor dup'd from this one; NULL when not ours */
+    unsigned char wlock;    /* 1 while the program holds a write lock (fcntl F_WRLCK / flock LOCK_EX),
+                             * i.e. while the supervisor holds the lease */
 };
 
 #define FD_MAX 65536
 static struct vfs_file g_files[FD_MAX];
 
-static void fd_track(int fd, const char *vpath) {
+static void fd_track(int fd, uint32_t fid) {
     if (fd < 0 || fd >= FD_MAX) return;
-    char *copy = strdup(vpath);
+    int *refs = malloc(sizeof *refs);
+    if (refs) *refs = 1;
     pthread_mutex_lock(&g_lock);
-    free(g_files[fd].vpath);
-    g_files[fd].vpath = copy;
+    g_files[fd].fid = fid;
+    g_files[fd].refs = refs;
+    g_files[fd].wlock = 0;
     pthread_mutex_unlock(&g_lock);
 }
 
-/* Removes and returns the tracked path (caller frees), or NULL. */
-static char *fd_take(int fd) {
-    if (fd < 0 || fd >= FD_MAX) return NULL;
-    pthread_mutex_lock(&g_lock);
-    char *p = g_files[fd].vpath;
-    g_files[fd].vpath = NULL;
-    pthread_mutex_unlock(&g_lock);
-    return p;
-}
-
-/* Copies the tracking of `from` onto `to` (dup family). */
+/* Copies the tracking of `from` onto `to` (dup family): one more reference to the fid. */
 static void fd_copy(int from, int to) {
     if (from < 0 || from >= FD_MAX || to < 0 || to >= FD_MAX || from == to) return;
     pthread_mutex_lock(&g_lock);
-    char *p = g_files[from].vpath ? strdup(g_files[from].vpath) : NULL;
-    free(g_files[to].vpath);
-    g_files[to].vpath = p;
+    if (g_files[from].refs) {
+        (*g_files[from].refs)++;
+        g_files[to] = g_files[from];
+        g_files[to].wlock = 0;
+    } else {
+        g_files[to].refs = NULL;
+    }
     pthread_mutex_unlock(&g_lock);
 }
 
-/* Copy of the tracked path (caller frees), or NULL when `fd` is not ours. */
-static char *fd_path(int fd) {
-    if (fd < 0 || fd >= FD_MAX) return NULL;
-    pthread_mutex_lock(&g_lock);
-    char *p = g_files[fd].vpath ? strdup(g_files[fd].vpath) : NULL;
-    pthread_mutex_unlock(&g_lock);
-    return p;
+static int fd_tracked(int fd) {
+    return fd >= 0 && fd < FD_MAX && g_files[fd].refs != NULL;
 }
 
 static int fd_wlocked(int fd) {
-    return fd >= 0 && fd < FD_MAX && g_files[fd].wlock;
-}
-
-/* Forward the program's advisory lock transitions to the supervisor:
- *   read lock   -> "revalidate" (make the local copy current), unless this fd
- *                  already holds the write lock (a downgrade, not a new read)
- *   write lock  -> "lock" (take the lease; EAGAIN when someone else holds it)
- *   unlock      -> "flush" then "unlock", only if a write lock was held
- * Plain POSIX semantics, no knowledge of any program. Returns 0 to proceed with
- * the real lock call, -1 with errno to fail it. */
-static int lock_transition(int fd, int type) {
-    char *vp = fd_path(fd);
-    if (!vp) return 0;
-    int r = 0;
-    if (type == F_WRLCK) {
-        if (!g_files[fd].wlock) {
-            r = notify("lock", vp, NULL, 0);
-            if (r == 0) g_files[fd].wlock = 1;
-        }
-    } else if (type == F_RDLCK) {
-        if (!g_files[fd].wlock) r = notify("revalidate", vp, NULL, 0);
-    } else if (type == F_UNLCK) {
-        if (g_files[fd].wlock) {
-            r = notify("flush", vp, NULL, 0);
-            g_files[fd].wlock = 0;
-            int u = notify("unlock", vp, NULL, 0);
-            if (r == 0) r = u;
-        }
-    }
-    free(vp);
-    return r;
+    return fd_tracked(fd) && g_files[fd].wlock;
 }
 
 static int is_write(int flags) {
@@ -272,22 +334,64 @@ static int pre_open(const char *vp, int flags) {
     return -1;
 }
 
-/* After a successful open of virtual path `vp` as `fd`: register writers. */
+/* After a successful open of virtual path `vp` as `fd`: a writer gets a fid that
+ * stays open with the descriptor. The real open has already created the file, so
+ * the walk finds it; lopen registers the write with the store. */
 static int post_open(int fd, const char *vp, int flags) {
     if (fd < 0 || !is_write(flags)) return fd;
-    if (notify("open", vp, NULL, flags) < 0) {
+    if (!g_socket) return fd;
+    const struct vfs_mount *m = mount_of(vp);
+    if (!m) return fd;
+    uint32_t fid;
+    if (ensure_connected() < 0 || walk_to(m, rel_of(m, vp), &fid) < 0 || p9_lopen(fid, (uint32_t)flags & ~(uint32_t)(O_CREAT | O_EXCL)) < 0) {
         int e = errno; real_close_(fd); errno = e; return -1;
     }
-    fd_track(fd, vp);
+    fd_track(fd, fid);
     return fd;
 }
 
-/* On the last close (or an fsync) of a writer: ask the supervisor to persist. */
+/* On fsync: persist through the fid. On the last close: clunk it, which persists
+ * and gives back any lease. */
 static int flush_fd(int fd, int take) {
-    char *vp = take ? fd_take(fd) : fd_path(fd);
-    if (!vp) return 0;
-    int r = notify("flush", vp, NULL, 0);
-    free(vp);
+    if (!fd_tracked(fd)) return 0;
+    pthread_mutex_lock(&g_lock);
+    uint32_t fid = g_files[fd].fid;
+    int last = 0;
+    if (take) {
+        last = --(*g_files[fd].refs) == 0;
+        if (last) free(g_files[fd].refs);
+        g_files[fd].refs = NULL;
+        g_files[fd].wlock = 0;
+    }
+    pthread_mutex_unlock(&g_lock);
+    if (!take) return p9_fsync(fid);
+    return last ? p9_clunk(fid) : 0;
+}
+
+/* Forward the program's advisory lock transitions to the supervisor:
+ *   read lock   -> Tlock RDLCK (the store makes the local copy current), unless
+ *                  this fd already holds the write lock (a downgrade, not a new read)
+ *   write lock  -> Tlock WRLCK (the store takes the lease; BLOCKED is EAGAIN)
+ *   unlock      -> Tlock UNLCK (persist, give the lease back), only after a write lock
+ * Plain POSIX semantics, no knowledge of any program. Returns 0 to proceed with
+ * the real lock call, -1 with errno to fail it. */
+static int lock_transition(int fd, int type) {
+    if (!fd_tracked(fd)) return 0;
+    uint32_t fid = g_files[fd].fid;
+    int r = 0;
+    if (type == F_WRLCK) {
+        if (!g_files[fd].wlock) {
+            r = p9_lock(fid, P9_LOCK_WRLCK);
+            if (r == 0) g_files[fd].wlock = 1;
+        }
+    } else if (type == F_RDLCK) {
+        if (!g_files[fd].wlock) r = p9_lock(fid, P9_LOCK_RDLCK);
+    } else if (type == F_UNLCK) {
+        if (g_files[fd].wlock) {
+            g_files[fd].wlock = 0;
+            r = p9_lock(fid, P9_LOCK_UNLCK);
+        }
+    }
     return r;
 }
 

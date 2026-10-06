@@ -22,6 +22,7 @@ describe('dist/index.js', () => {
         preload: path,
         prefix: '/vfs',
         backing: '/tmp/vfsstore',
+        mounts: [{ prefix: '/vfs', backing: '/tmp/vfsstore' }],
       });
     } finally {
       rmSync(dir, { recursive: true, force: true });

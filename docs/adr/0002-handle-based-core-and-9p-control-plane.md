@@ -119,8 +119,12 @@ shim's binary goes through registry review once.
 1. Restructure the shim into the three layers, still speaking the JSON protocol. Lands the mount
    table (multi-volume) and the fd table on their own. **Done**: `native/vfs_transport.h`,
    `native/vfs_core.h`, `native/vfspreload.c`; `VFS_MOUNTS`; `MountAdapter` on the supervisor side.
-2. Move `VfsAdapter` to the handle-based operations table.
-3. Replace the wire format with 9P2000.L; rewrite `DISCLOSURE`.
+2. Move `VfsAdapter` to the handle-based operations table. **Done, with a change**: handles live in
+   `P9Server`'s fid table; the adapter interface stays addressed by virtual path, since the stores it
+   fronts (S3, a directory) are themselves path-keyed, so `S3Adapter` and its tests carried over
+   unchanged.
+3. Replace the wire format with 9P2000.L; rewrite `DISCLOSURE`. **Done**: `native/vfs_transport.h` is a
+   9P2000.L client, `src/p9/` the server (and a client for tests); the JSON protocol is gone.
 4. Add the kernel v9fs conformance job.
 
 ## Open questions

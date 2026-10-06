@@ -41,8 +41,8 @@ export type VfsConfig = {
   backing: string;
   /** Supervisor socket the shim reports to, if any. */
   socket?: string;
-  /** Every mount, when more than the single prefix/backing pair was asked for. */
-  mounts?: VfsMountPoint[];
+  /** Every mount; `prefix`/`backing` above are the first of them. */
+  mounts: VfsMountPoint[];
 };
 
 /** The compiled shim for an architecture (`linux-x64`, `linux-arm64`), or undefined if not built in. */
@@ -82,11 +82,12 @@ export const materialize = (path: string = VFS_PRELOAD, arch: string = process.a
 export type ApplyVfsOptions = {
   /** Where to write the shim. Default VFS_PRELOAD. */
   preload?: string;
-  /** Supervisor socket the shim should talk to (a listening VfsServer). Unset: local overlay only. */
+  /** Supervisor socket the shim should talk to (a listening P9Server). Unset: local overlay only. */
   socket?: string;
   /**
-   * Several mounts instead of the single `VFS_PREFIX` on `VFS_BACKING`. Backing directories must
-   * not nest inside one another. The first is also written to `VFS_PREFIX` / `VFS_BACKING`.
+   * The mounts. Default: one, `VFS_PREFIX` on `VFS_BACKING` (from `env` or the defaults). Backing
+   * directories must not nest inside one another. The first is also written to `VFS_PREFIX` /
+   * `VFS_BACKING`; the shim reads `VFS_MOUNTS`.
    */
   mounts?: VfsMountPoint[];
 };
@@ -123,27 +124,22 @@ export const applyVfs = (env: VfsEnv, options: ApplyVfsOptions | string = {}): V
   const preload = materialize(opts.preload ?? VFS_PRELOAD);
   const existing = (env.LD_PRELOAD ?? '').split(':').filter((p) => p && p !== preload);
   env.LD_PRELOAD = [preload, ...existing].join(':');
-  const [first] = opts.mounts ?? [];
-  if (opts.mounts && first) {
-    env.VFS_MOUNTS = encodeMounts(opts.mounts);
-    env.VFS_PREFIX = first.prefix;
-    env.VFS_BACKING = first.backing;
-  }
-  env.VFS_PREFIX = env.VFS_PREFIX || VFS_PREFIX;
-  env.VFS_BACKING = env.VFS_BACKING || VFS_BACKING;
+  const mounts = opts.mounts?.length
+    ? opts.mounts
+    : [{ prefix: env.VFS_PREFIX || VFS_PREFIX, backing: env.VFS_BACKING || VFS_BACKING }];
+  env.VFS_MOUNTS = encodeMounts(mounts);
+  env.VFS_PREFIX = mounts[0]!.prefix;
+  env.VFS_BACKING = mounts[0]!.backing;
   if (opts.socket) {
     env.VFS_SOCKET = opts.socket;
   }
-  return {
-    preload,
-    prefix: env.VFS_PREFIX,
-    backing: env.VFS_BACKING,
-    socket: env.VFS_SOCKET,
-    ...(env.VFS_MOUNTS && opts.mounts ? { mounts: opts.mounts } : {}),
-  };
+  return { preload, prefix: env.VFS_PREFIX, backing: env.VFS_BACKING, socket: env.VFS_SOCKET, mounts };
 };
 
 export * from './server';
 export * from './s3';
+export * from './p9/server';
+export * from './p9/client';
+export * as wire from './p9/wire';
 
 export { VERSION, NAME, id };
