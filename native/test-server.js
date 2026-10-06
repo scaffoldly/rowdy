@@ -2,6 +2,7 @@
 // that records every hook to /tmp/ops.log and refuses a few paths so the shim's error paths
 // are exercised. Needs dist/ built; runs in the node:22-alpine test container and on a CI runner.
 const fs = require('fs');
+/* global require, __dirname */
 const path = require('path');
 const { P9Server, LocalAdapter, VfsError } = require(path.join(__dirname, '..', 'dist', 'index.js'));
 

@@ -149,7 +149,7 @@ const direntType = (d: FsDirent): number =>
 
 export class P9Server {
   private server?: Server;
-  private readonly mounts: P9Mount[];
+  private readonly _mounts: P9Mount[];
   readonly socket: string;
 
   constructor(
@@ -166,7 +166,7 @@ export class P9Server {
       }
       seen.add(mountpoint);
     }
-    this.mounts = [...mounts];
+    this._mounts = [...mounts];
     this.socket = options.socket;
   }
 
@@ -174,10 +174,15 @@ export class P9Server {
     return this.server?.listening ?? false;
   }
 
+  /** What is mounted, in declaration order. */
+  get mounts(): ReadonlyArray<P9Mount> {
+    return this._mounts;
+  }
+
   async listen(): Promise<this> {
     await fs.mkdir(posix.dirname(this.socket), { recursive: true });
     await fs.rm(this.socket, { force: true });
-    for (const m of this.mounts) {
+    for (const m of this._mounts) {
       await fs.mkdir(m.backing, { recursive: true });
     }
     this.server = createServer((conn) => this.serve(conn));
@@ -350,7 +355,7 @@ export class P9Server {
       }
 
       case T.Tattach: {
-        const mount = this.mounts.find((m) => m.mountpoint === req.aname);
+        const mount = this._mounts.find((m) => m.mountpoint === req.aname);
         if (!mount) {
           throw VfsError.code('ENOENT', `no mount at '${req.aname}'`);
         }
