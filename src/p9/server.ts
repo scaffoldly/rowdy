@@ -255,15 +255,21 @@ export class P9Server {
       return R.lerror(tag, e instanceof WireError ? LINUX_ERRNO.EINVAL : LINUX_ERRNO.EIO);
     }
     const mount = 'fid' in request ? session.fids.get(request.fid)?.mount.mountpoint : undefined;
+    let reply: Buffer;
+    let ecode: number | undefined;
     try {
-      const reply = await this.dispatch(session, request);
-      this.options.onRequest?.(request, mount);
-      return reply;
+      reply = await this.dispatch(session, request);
     } catch (e) {
-      const ecode = errnoOf(e);
-      this.options.onRequest?.(request, mount, ecode);
-      return R.lerror(request.tag, ecode);
+      ecode = errnoOf(e);
+      reply = R.lerror(request.tag, ecode);
     }
+    // An observer that throws is the observer's problem, never the client's or the process's.
+    try {
+      this.options.onRequest?.(request, mount, ecode);
+    } catch {
+      /* ignored */
+    }
+    return reply;
   }
 
   // ---- helpers ------------------------------------------------------------------------------

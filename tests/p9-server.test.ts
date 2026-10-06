@@ -314,6 +314,28 @@ describe('P9Server', () => {
     await expect(client.clunk(fid)).rejects.toMatchObject({ errno: LINUX_ERRNO.EBADF });
   });
 
+  it('answers correctly even when the onRequest observer throws', async () => {
+    const observed: string[] = [];
+    const throwing = await new P9Server([{ mountpoint: '/s3', backing: join(dir, 's3'), adapter: s3 }], {
+      socket: join(dir, 'throwing.sock'),
+      onRequest: (request) => {
+        observed.push(String(request.type));
+        throw new TypeError('Do not know how to serialize a BigInt');
+      },
+    }).listen();
+    const c = await new P9Client(throwing.socket).connect();
+    try {
+      await c.version();
+      const r = (await c.attach('/s3')).fid;
+      expect((await c.getattr(r, GETATTR.ALL)).qid.type).toBe(QTDIR);
+      await expect(c.walk(r, ['missing'])).rejects.toMatchObject({ errno: LINUX_ERRNO.ENOENT }); // errors still flow
+      expect(observed.length).toBeGreaterThanOrEqual(3);
+    } finally {
+      c.close();
+      await throwing.close();
+    }
+  });
+
   it('serves a second mount independently', async () => {
     const other = (await client.attach('/scratch')).fid;
     await client.lcreate(other, 'tmp.bin', O_WRONLY | O_CREAT);
