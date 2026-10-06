@@ -7,12 +7,13 @@ import {
   PutObjectCommand,
   S3Client,
 } from '@aws-sdk/client-s3';
-import { createReadStream, createWriteStream, existsSync, mkdirSync, readFileSync, statSync } from 'fs';
+import { createReadStream, createWriteStream, existsSync, mkdirSync, statSync } from 'fs';
 import { promises as fs } from 'fs';
 import { dirname, join } from 'path';
 import { Readable } from 'stream';
 import { pipeline } from 'stream/promises';
 import { createHash, randomUUID } from 'crypto';
+import { crc32 } from 'zlib';
 import { LINUX_ERRNO, VfsAdapter, VfsError } from './server';
 
 export type S3AdapterOptions = {
@@ -55,26 +56,67 @@ type Entry = {
    * it, and a flush must upload it. Unset for a brand-new local file.
    */
   synced?: { mtimeMs: number; size: number };
+  /** Digest of the base version's bytes, to tell "touched" from "changed" without trusting mtime. */
+  checksum?: Checksum;
+};
+
+/**
+ * S3's full-object additional checksum of a remote version. Every upload this adapter makes
+ * carries CRC32; SDK and console uploads since late 2024 carry one too, independent of
+ * encryption (unlike the ETag) and of multipart. Composite (per-part) checksums are not usable,
+ * and an object without any checksum simply has no digest until it is next written.
+ */
+type Checksum = { algo: 'crc32' | 'sha1' | 'sha256'; value: string };
+
+type ChecksumFields = {
+  ChecksumCRC32?: string;
+  ChecksumSHA1?: string;
+  ChecksumSHA256?: string;
+  ChecksumType?: string;
+};
+
+const checksumOf = (out: ChecksumFields): Checksum | undefined => {
+  if (out.ChecksumType === 'COMPOSITE') {
+    return undefined;
+  }
+  if (out.ChecksumCRC32) {
+    return { algo: 'crc32', value: out.ChecksumCRC32 };
+  }
+  if (out.ChecksumSHA256) {
+    return { algo: 'sha256', value: out.ChecksumSHA256 };
+  }
+  if (out.ChecksumSHA1) {
+    return { algo: 'sha1', value: out.ChecksumSHA1 };
+  }
+  return undefined;
+};
+
+/** Streams the local file through the same algorithm, base64 like S3 reports it. */
+const digest = async (local: string, algo: Checksum['algo']): Promise<string | undefined> => {
+  try {
+    if (algo === 'crc32') {
+      let value = 0;
+      for await (const chunk of createReadStream(local)) {
+        value = crc32(chunk as Buffer, value);
+      }
+      const out = Buffer.alloc(4);
+      out.writeUInt32BE(value);
+      return out.toString('base64');
+    }
+    const hash = createHash(algo);
+    for await (const chunk of createReadStream(local)) {
+      hash.update(chunk as Buffer);
+    }
+    return hash.digest('base64');
+  } catch {
+    return undefined;
+  }
 };
 
 const snapshot = (local: string): { mtimeMs: number; size: number } | undefined => {
   try {
     const st = statSync(local);
     return { mtimeMs: st.mtimeMs, size: st.size };
-  } catch {
-    return undefined;
-  }
-};
-
-/** The MD5 an S3 ETag encodes for a single-part, non-KMS object, or undefined (multipart ETags have a "-N" suffix). */
-const etagMd5 = (etag?: string): string | undefined => {
-  const hex = etag?.replace(/"/g, '');
-  return hex && /^[0-9a-f]{32}$/.test(hex) ? hex : undefined;
-};
-
-const md5 = (local: string): string | undefined => {
-  try {
-    return createHash('md5').update(readFileSync(local)).digest('hex');
   } catch {
     return undefined;
   }
@@ -151,10 +193,12 @@ export class S3Adapter implements VfsAdapter {
     return next;
   }
 
-  private async head(key: string): Promise<{ etag?: string; size?: number } | undefined> {
+  private async head(key: string): Promise<{ etag?: string; size?: number; checksum?: Checksum } | undefined> {
     try {
-      const out = await this.client.send(new HeadObjectCommand({ Bucket: this.options.bucket, Key: key }));
-      return { etag: out.ETag, size: out.ContentLength };
+      const out = await this.client.send(
+        new HeadObjectCommand({ Bucket: this.options.bucket, Key: key, ChecksumMode: 'ENABLED' })
+      );
+      return { etag: out.ETag, size: out.ContentLength, checksum: checksumOf(out) };
     } catch (e) {
       if (isNotFound(e)) {
         return undefined;
@@ -181,7 +225,7 @@ export class S3Adapter implements VfsAdapter {
     if (existsSync(local) && existing?.materialized !== false) {
       return; // real local content (fetched or written here) takes precedence
     }
-    if (existing?.materialized && existing.etag !== etag && !this.modified(local, existing)) {
+    if (existing?.materialized && existing.etag !== etag && !(await this.modified(local, existing))) {
       existing.checkedAt = 0; // the listing says it changed: re-check on next use
     }
     if (existsSync(local) && existing?.materialized) {
@@ -198,7 +242,7 @@ export class S3Adapter implements VfsAdapter {
   }
 
   /** True when the local file has changed since it last agreed with the remote (or never did). */
-  private modified(local: string, entry: Entry): boolean {
+  private async modified(local: string, entry: Entry): Promise<boolean> {
     if (!entry.synced) {
       return true;
     }
@@ -211,10 +255,12 @@ export class S3Adapter implements VfsAdapter {
     }
     // Touched, but are the bytes different from the base? A rollback that restores the base
     // (SQLite after a failed commit) must count as unmodified, or the copy could never heal.
-    const base = etagMd5(entry.etag);
-    if (base && now.size === entry.synced.size && md5(local) === base) {
-      entry.synced = now;
-      return false;
+    // One streamed pass over the file, only when the size still matches the base.
+    if (entry.checksum && now.size === entry.synced.size) {
+      if ((await digest(local, entry.checksum.algo)) === entry.checksum.value) {
+        entry.synced = now;
+        return false;
+      }
     }
     return true;
   }
@@ -227,7 +273,9 @@ export class S3Adapter implements VfsAdapter {
   private async download(key: string, local: string): Promise<{ etag?: string; size?: number }> {
     let out;
     try {
-      out = await this.client.send(new GetObjectCommand({ Bucket: this.options.bucket, Key: key }));
+      out = await this.client.send(
+        new GetObjectCommand({ Bucket: this.options.bucket, Key: key, ChecksumMode: 'ENABLED' })
+      );
     } catch (e) {
       throw isNotFound(e) ? VfsError.code('ENOENT', `${key}: no such object`) : toVfsError(e);
     }
@@ -239,6 +287,7 @@ export class S3Adapter implements VfsAdapter {
       materialized: true,
       checkedAt: Date.now(),
       synced: snapshot(local),
+      checksum: checksumOf(out),
     });
     this.log(`fetched`, { key, size: out.ContentLength });
     return { etag: out.ETag, size: out.ContentLength };
@@ -256,7 +305,7 @@ export class S3Adapter implements VfsAdapter {
       return;
     }
     const local = this.local(rel);
-    if (this.modified(local, entry)) {
+    if (await this.modified(local, entry)) {
       return;
     }
     const ttl = this.options.revalidateMs ?? 2000;
@@ -272,6 +321,7 @@ export class S3Adapter implements VfsAdapter {
     }
     if (head.etag === entry.etag) {
       entry.checkedAt = Date.now();
+      entry.checksum ??= head.checksum;
       return;
     }
     if (entry.materialized) {
@@ -284,6 +334,7 @@ export class S3Adapter implements VfsAdapter {
         materialized: false,
         checkedAt: Date.now(),
         synced: snapshot(local),
+        checksum: head.checksum,
       });
     }
     this.log(`revalidated`, { key, etag: head.etag });
@@ -463,7 +514,7 @@ export class S3Adapter implements VfsAdapter {
       return; // removed before the flush reached us; unlink will follow
     }
     const current = this.entries.get(key);
-    if (current && !this.modified(local, current)) {
+    if (current && !(await this.modified(local, current))) {
       // The bytes already equal the base this copy is on (fetched and untouched, fsync then the
       // unlock-time flush, or a rollback that restored them): nothing to upload.
       return;
@@ -478,6 +529,7 @@ export class S3Adapter implements VfsAdapter {
           Key: key,
           Body: body,
           ContentLength: size,
+          ChecksumAlgorithm: 'CRC32',
           ...(base ? { IfMatch: base } : { IfNoneMatch: '*' }),
         })
       );
@@ -487,6 +539,7 @@ export class S3Adapter implements VfsAdapter {
         materialized: true,
         checkedAt: Date.now(),
         synced: { mtimeMs, size },
+        checksum: checksumOf(out),
       });
       this.log(`flushed`, { key, size, base });
     } catch (e) {

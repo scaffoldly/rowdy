@@ -20,24 +20,37 @@ import {
   statSync,
   writeFileSync,
 } from 'fs';
-import { createHash } from 'crypto';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { Readable } from 'stream';
+import { crc32 } from 'zlib';
 import { S3Adapter, VfsError } from '../src';
 
-type Stored = { body: Buffer; etag: string };
+type Stored = { body: Buffer; etag: string; crc32: string };
 
-/** Enough of S3 to exercise the adapter: keys, ETags, conditional puts, prefix listing. */
+/** Base64 CRC32 as S3 reports it for a full-object checksum. */
+const crc32b64 = (body: Buffer): string => {
+  const out = Buffer.alloc(4);
+  out.writeUInt32BE(crc32(body));
+  return out.toString('base64');
+};
+
+/** Enough of S3 to exercise the adapter: keys, opaque ETags, CRC32 checksums, conditional puts, prefix listing. */
 class FakeS3 {
   readonly objects = new Map<string, Stored>();
   readonly calls: string[] = [];
+  private version = 0;
 
   put(key: string, body: string): Stored {
-    // Real S3 ETags for single-part puts are the MD5 of the body; the adapter relies on that.
-    const stored = { body: Buffer.from(body), etag: `"${createHash('md5').update(body).digest('hex')}"` };
+    // ETags are opaque on purpose (as with SSE-KMS or multipart): the adapter must not read MD5s out of them.
+    const buf = Buffer.from(body);
+    const stored = { body: buf, etag: `"v${++this.version}"`, crc32: crc32b64(buf) };
     this.objects.set(key, stored);
     return stored;
+  }
+
+  private checksums(o: Stored, input: { ChecksumMode?: string }): { ChecksumCRC32?: string } {
+    return input.ChecksumMode === 'ENABLED' ? { ChecksumCRC32: o.crc32 } : {};
   }
 
   async send(command: unknown): Promise<unknown> {
@@ -45,14 +58,14 @@ class FakeS3 {
     if (command instanceof HeadObjectCommand) {
       const o = this.objects.get(command.input.Key!);
       if (!o) throw notFound();
-      return { ETag: o.etag, ContentLength: o.body.length };
+      return { ETag: o.etag, ContentLength: o.body.length, ...this.checksums(o, command.input) };
     }
     if (command instanceof GetObjectCommand) {
       const o = this.objects.get(command.input.Key!);
       if (!o) throw notFound('NoSuchKey');
       const body = Readable.from([o.body]) as Readable & { transformToString(): Promise<string> };
       body.transformToString = async () => o.body.toString();
-      return { ETag: o.etag, ContentLength: o.body.length, Body: body };
+      return { ETag: o.etag, ContentLength: o.body.length, Body: body, ...this.checksums(o, command.input) };
     }
     if (command instanceof PutObjectCommand) {
       const key = command.input.Key!;
@@ -61,7 +74,11 @@ class FakeS3 {
       if (command.input.IfMatch && existing?.etag !== command.input.IfMatch) throw precondition();
       const chunks: Buffer[] = [];
       for await (const chunk of command.input.Body as Readable) chunks.push(Buffer.from(chunk));
-      return { ETag: this.put(key, Buffer.concat(chunks).toString()).etag };
+      const stored = this.put(key, Buffer.concat(chunks).toString());
+      return {
+        ETag: stored.etag,
+        ...(command.input.ChecksumAlgorithm === 'CRC32' ? { ChecksumCRC32: stored.crc32 } : {}),
+      };
     }
     if (command instanceof DeleteObjectCommand) {
       this.objects.delete(command.input.Key!);
@@ -161,7 +178,7 @@ describe('S3Adapter', () => {
       s3.calls.length = 0;
       await adapter.fetch(`${mount}/hello.txt`);
       expect(s3.calls).toEqual([]);
-      expect(stored.etag).toBe(`"${createHash('md5').update('hello').digest('hex')}"`);
+      expect(stored.etag).toBe('"v1"');
     });
 
     it('removes a stale placeholder when the object is gone', async () => {

@@ -54,9 +54,12 @@ caller already expresses, and keep the conditional uploads as the safety net und
    instance last read: a mismatch means another writer committed between our `SHARED` and
    `RESERVED`, so the lease is given back and `EAGAIN` is returned *before* any write; SQLite drops
    `SHARED` on that `BUSY`, re-takes it (`revalidate` fetches the new base) and the transaction
-   proceeds on fresh pages. And "locally modified" is decided by bytes, not mtime: a copy whose MD5
-   equals the base ETag (a rollback that restored the base after a failed commit) is treated as
-   clean, so it is neither re-uploaded nor protected from the next revalidation.
+   proceeds on fresh pages. And "locally modified" is decided by bytes, not mtime: a copy whose
+   checksum equals the base version's (a rollback that restored the base after a failed commit) is
+   treated as clean, so it is neither re-uploaded nor protected from the next revalidation. The
+   digest is S3's full-object additional checksum (uploads set `CRC32`; `HEAD`/`GET` ask for it with
+   `ChecksumMode: ENABLED`), not the ETag, which is only an MD5 for single-part SSE-S3 objects.
+   Computing it is one streamed pass over the local file, and only when the size still matches.
 
 5. **Open-grained leases for plain files, opt-in per volume.** `open(O_WRONLY|O_RDWR)` acquires,
    `close` releases after `flush`. Opt-in (`s3://bucket:/mnt?lock=1` or a manifest flag) because many
