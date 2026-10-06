@@ -1,9 +1,11 @@
 import { EMPTY, from, map, Observable, of, Subject, switchMap, take } from 'rxjs';
 import { FileDescriptors, Pipeline, Proxy, Request, Response } from '../pipeline';
 import { PassThrough, Writable } from 'stream';
-import { ILoggable, log, Logger, Trace } from '../log';
+import { ILoggable, log as root, Logger, Trace } from '../log';
 import { execa } from 'execa';
 import type { Options } from 'execa';
+
+const log = root.child('shell');
 
 export class ShellRequest<P extends Pipeline> extends Request<P> {
   constructor(

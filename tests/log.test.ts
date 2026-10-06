@@ -1,4 +1,4 @@
-import { mask, maskEnv, maskHeaders, maskJson, maskQuery, maskUrl } from '../src/log';
+import { Logger, mask, maskEnv, maskHeaders, maskJson, maskQuery, maskUrl } from '../src/log';
 
 describe('log masking', () => {
   describe('mask', () => {
@@ -25,11 +25,7 @@ describe('log masking', () => {
 
   it('maskEnv keeps every name and masks every value', () => {
     const out = maskEnv({ CF_API_TOKEN: 'cf-0123456789abcdef0123456789abcdef', PATH: '/usr/bin', EMPTY: undefined });
-    expect(JSON.parse(out)).toEqual({
-      CF_API_TOKEN: 'cf-0…cdef (35 chars)',
-      PATH: '/…n (8 chars)',
-      EMPTY: '… (0 chars)',
-    });
+    expect(out).toBe('[CF_API_TOKEN=cf-0…cdef (35 chars), PATH=/…n (8 chars), EMPTY=… (0 chars)]');
     expect(out).not.toContain('0123456789abcdef0123456789abcdef');
   });
 
@@ -128,5 +124,163 @@ describe('log masking', () => {
       expect(maskJson(undefined)).toBeUndefined();
       expect(maskJson('plain')).toBe('"plain"');
     });
+  });
+});
+
+describe('Logger', () => {
+  const ENV = ['ROWDY_LOG_LEVEL', 'ROWDY_LOG_FORMAT', 'ROWDY_DEBUG', 'ROWDY_TRACE'] as const;
+  const saved: Record<string, string | undefined> = {};
+  let lines: Array<{ sink: string; text: string }>;
+  let spies: jest.SpyInstance[];
+  const text = (): string[] => lines.map((line) => line.text);
+
+  beforeEach(() => {
+    for (const key of ENV) {
+      saved[key] = process.env[key];
+      delete process.env[key];
+    }
+    new Logger().withLevel(undefined).withFormat(undefined);
+    Logger.unbind('req');
+    lines = [];
+    spies = (['debug', 'info', 'warn', 'error'] as const).map((sink) =>
+      jest.spyOn(console, sink).mockImplementation((...args: unknown[]) => {
+        lines.push({ sink, text: args.map(String).join(' ') });
+      })
+    );
+  });
+
+  afterEach(() => {
+    spies.forEach((spy) => spy.mockRestore());
+    new Logger().withLevel(undefined).withFormat(undefined);
+    Logger.unbind('req');
+    for (const key of ENV) {
+      if (saved[key] === undefined) delete process.env[key];
+      else process.env[key] = saved[key];
+    }
+  });
+
+  describe('level', () => {
+    it('defaults to info: debug and trace are silent', () => {
+      const log = new Logger();
+      log.error('e');
+      log.warn('w');
+      log.info('i');
+      log.debug('d');
+      log.trace('t');
+      expect(text()).toEqual(['ERROR rowdy e', 'WARN  rowdy w', 'INFO  rowdy i']);
+    });
+
+    it('follows ROWDY_LOG_LEVEL, case-insensitively', () => {
+      process.env.ROWDY_LOG_LEVEL = 'WARN';
+      const log = new Logger();
+      log.info('i');
+      log.warn('w');
+      expect(text()).toEqual(['WARN  rowdy w']);
+      expect(log.level).toBe('warn');
+    });
+
+    it('keeps ROWDY_DEBUG and ROWDY_TRACE as aliases', () => {
+      process.env.ROWDY_DEBUG = 'true';
+      expect(new Logger().level).toBe('debug');
+      process.env.ROWDY_TRACE = 'true';
+      expect(new Logger().level).toBe('trace');
+    });
+
+    it('lets an explicit ROWDY_LOG_LEVEL override stale legacy flags', () => {
+      process.env.ROWDY_DEBUG = 'true';
+      process.env.ROWDY_TRACE = 'true';
+      process.env.ROWDY_LOG_LEVEL = 'info';
+      const log = new Logger();
+      log.debug('d');
+      expect(text()).toEqual([]);
+      expect(log.isDebugging).toBe(false);
+    });
+
+    it('ignores an unknown level instead of failing', () => {
+      process.env.ROWDY_LOG_LEVEL = 'chatty';
+      expect(new Logger().level).toBe('info');
+    });
+
+    it('is shared by every logger, children included', () => {
+      const child = new Logger().child('vfs');
+      new Logger().withLevel('debug');
+      child.debug('d');
+      expect(text()).toEqual(['DEBUG rowdy:vfs d']);
+    });
+  });
+
+  describe('text format', () => {
+    it('writes level, component, message and key=value fields, with no timestamp', () => {
+      new Logger().child('vfs').info('flushed', { key: 'db/nuss.sqlite', size: 12288, ok: true });
+      expect(text()).toEqual(['INFO  rowdy:vfs flushed key=db/nuss.sqlite size=12288 ok=true']);
+    });
+
+    it('quotes values with spaces unless they are already delimited', () => {
+      new Logger().info('m', { a: 'two words', b: '', c: '{"json": "as is"}', d: 'Name(x=1 y=2)', e: '[1, 2]' });
+      expect(text()).toEqual(['INFO  rowdy m a="two words" b="" c={"json": "as is"} d=Name(x=1 y=2) e=[1, 2]']);
+    });
+
+    it('keeps one event per line', () => {
+      new Logger().warn('first\nsecond', { error: new Error('boom') });
+      expect(text()).toHaveLength(1);
+      expect(text()[0]).not.toContain('\n');
+      expect(text()[0]).toContain('WARN  rowdy first \\n second error=');
+      expect(text()[0]).toContain('Error: boom');
+    });
+
+    it('logs an error as name and message, with its stack only at debug and above', () => {
+      const log = new Logger();
+      log.warn('upstream error', { error: new Error('read ECONNRESET') });
+      expect(text()).toEqual(['WARN  rowdy upstream error error="Error: read ECONNRESET"']);
+      log.withLevel('debug');
+      log.warn('upstream error', { error: new Error('read ECONNRESET') });
+      expect(text()[1]).toContain('error="Error: read ECONNRESET \\n at ');
+    });
+
+    it('sends warn and error to stderr sinks and the rest to stdout sinks', () => {
+      new Logger().withLevel('trace');
+      const log = new Logger();
+      log.error('e');
+      log.warn('w');
+      log.info('i');
+      log.debug('d');
+      log.trace('t');
+      expect(lines.map((line) => line.sink)).toEqual(['error', 'warn', 'info', 'debug', 'debug']);
+      expect(text()[4]).toBe('TRACE rowdy t');
+    });
+  });
+
+  it('stamps bound context on every line until unbound', () => {
+    const log = new Logger().child('lambda');
+    Logger.bind({ req: '575b7bbe' });
+    log.info('Request', { path: '/db' });
+    new Logger().child('vfs').info('flushed');
+    Logger.unbind('req');
+    log.info('idle');
+    expect(text()).toEqual([
+      'INFO  rowdy:lambda Request path=/db req=575b7bbe',
+      'INFO  rowdy:vfs flushed req=575b7bbe',
+      'INFO  rowdy:lambda idle',
+    ]);
+  });
+
+  it('emits one JSON object per line when ROWDY_LOG_FORMAT=json', () => {
+    process.env.ROWDY_LOG_FORMAT = 'json';
+    Logger.bind({ req: '575b7bbe' });
+    new Logger().child('vfs').warn('lock failed', { path: '/s3/db', errno: 11 });
+    expect(JSON.parse(text()[0]!)).toEqual({
+      level: 'warn',
+      component: 'vfs',
+      msg: 'lock failed',
+      path: '/s3/db',
+      errno: 11,
+      req: '575b7bbe',
+    });
+  });
+
+  it('returns the same child for the same component', () => {
+    const log = new Logger();
+    expect(log.child('vfs')).toBe(log.child('vfs'));
+    expect(log.child('vfs').component).toBe('vfs');
   });
 });

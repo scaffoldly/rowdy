@@ -39,5 +39,6 @@ if (require.main === module) {
 
 export { Environment };
 export { Crontab, Routes, URI, Volume } from './routes';
-export { Logger, mask, maskEnv, maskHeaders, maskJson, maskQuery, maskUrl } from './log';
+export { Logger, isLevel, mask, maskEnv, maskHeaders, maskJson, maskQuery, maskUrl } from './log';
+export type { Format, Level } from './log';
 export { Rowdy } from './api';

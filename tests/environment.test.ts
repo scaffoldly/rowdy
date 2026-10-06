@@ -67,6 +67,16 @@ describe('environment', () => {
     }
   });
 
+  describe('levelOf', () => {
+    it('prefers --log-level, then --trace, then --debug, else info', () => {
+      expect(Environment.levelOf({})).toBe('info');
+      expect(Environment.levelOf({ debug: true })).toBe('debug');
+      expect(Environment.levelOf({ debug: true, trace: true })).toBe('trace');
+      expect(Environment.levelOf({ logLevel: 'WARN', debug: true, trace: true })).toBe('warn');
+      expect(Environment.levelOf({ logLevel: 'chatty', debug: true })).toBe('debug');
+    });
+  });
+
   describe('userspace VFS', () => {
     it('is off without volumes', async () => {
       const environment = new Environment(logger);

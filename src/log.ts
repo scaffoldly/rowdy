@@ -46,9 +46,11 @@ export const mask = (value: unknown): string => {
   return `${s.slice(0, keep)}…${keep ? s.slice(-keep) : ''} (${s.length} chars)`;
 };
 
-/** An environment as it may be logged: every name, every value masked. */
+/** An environment as it may be logged, `[NAME=value, …]`: every name, every value masked. */
 export const maskEnv = (env: Record<string, unknown> = {}): string =>
-  JSON.stringify(Object.fromEntries(Object.entries(env).map(([name, value]) => [name, mask(value)])));
+  `[${Object.entries(env)
+    .map(([name, value]) => `${name}=${mask(value)}`)
+    .join(', ')}]`;
 
 const masked = (value: unknown, key = ''): unknown => {
   if (typeof value === 'string') {
@@ -114,28 +116,105 @@ export const maskHeaders = (headers: Record<string, unknown> = {}): string =>
     })
     .join(', ');
 
-export class Logger {
-  private _debug = false;
-  private _trace = false;
+export type Level = 'error' | 'warn' | 'info' | 'debug' | 'trace';
+export type Format = 'text' | 'json';
 
-  constructor() {}
+const LEVELS: Record<Level, number> = { error: 0, warn: 1, info: 2, debug: 3, trace: 4 };
+
+export const isLevel = (value: unknown): value is Level => typeof value === 'string' && value in LEVELS;
+
+// Process-wide: every Logger, children included, shares one level, format and context.
+const state: { level?: Level; format?: Format; context: Record<string, Primitive> } = { context: {} };
+
+const envLevel = (): Level => {
+  const explicit = process.env.ROWDY_LOG_LEVEL?.toLowerCase();
+  if (isLevel(explicit)) {
+    return explicit;
+  }
+  if (process.env.ROWDY_TRACE === 'true') {
+    return 'trace';
+  }
+  if (process.env.ROWDY_DEBUG === 'true') {
+    return 'debug';
+  }
+  return 'info';
+};
+
+const envFormat = (): Format => (process.env.ROWDY_LOG_FORMAT?.toLowerCase() === 'json' ? 'json' : 'text');
+
+// One event per line: the log collector splits on newlines.
+const oneLine = (value: string): string => value.replace(/\r?\n\s*/g, ' \\n ');
+
+// Human-oriented `key=value`: quoted only when the value has spaces and is not already
+// delimited (`{…}`, `[…]`, `Name(…)`). Use the json format for machine parsing.
+const field = (key: string, value: Primitive): string => {
+  const text = oneLine(value instanceof Error ? `${value.name}: ${value.message}` : String(value));
+  const delimited = /^[{[]/.test(text) || /^[\w.]+\(.*\)$/.test(text);
+  return `${key}=${text === '' || (/\s/.test(text) && !delimited) ? `"${text}"` : text}`;
+};
+
+export class Logger {
+  private static children = new Map<string, Logger>();
+
+  constructor(public readonly component?: string) {}
+
+  /** A logger whose lines carry `component`. Shares level, format and context with every other. */
+  child(component: string): Logger {
+    let child = Logger.children.get(component);
+    if (!child) {
+      child = new Logger(component);
+      Logger.children.set(component, child);
+    }
+    return child;
+  }
+
+  /** Fields stamped on every line until unbound, e.g. the invocation being served. */
+  static bind(fields: Record<string, Primitive>): void {
+    Object.assign(state.context, fields);
+  }
+
+  static unbind(...keys: string[]): void {
+    for (const key of keys) {
+      delete state.context[key];
+    }
+  }
+
+  get level(): Level {
+    return state.level ?? envLevel();
+  }
+
+  get format(): Format {
+    return state.format ?? envFormat();
+  }
+
+  enabled(level: Level): boolean {
+    return LEVELS[level] <= LEVELS[this.level];
+  }
 
   get isDebugging(): boolean {
-    return process.env.ROWDY_DEBUG === 'true' || this._debug;
+    return this.enabled('debug');
   }
 
   get isTracing(): boolean {
-    return process.env.ROWDY_TRACE === 'true' || this._trace;
+    return this.enabled('trace');
+  }
+
+  withLevel(level: Level | undefined): this {
+    state.level = level;
+    return this;
+  }
+
+  withFormat(format: Format | undefined): this {
+    state.format = format;
+    return this;
   }
 
   withDebugging(): this {
-    this._debug = true;
-    return this;
+    return this.enabled('debug') ? this : this.withLevel('debug');
   }
 
   withTracing(): this {
-    this._trace = true;
-    return this;
+    return this.withLevel('trace');
   }
 
   static asPrimitive(value: Loggable): Primitive {
@@ -182,62 +261,54 @@ export class Logger {
     }
   }
 
-  private log = (
-    level: 'info' | 'error' | 'warn' | 'debug',
-    message: string,
-    params: Loggable | Record<string, Loggable>
-  ): void => {
-    if (level !== 'info') {
-      message = `[${level.toUpperCase()}] ${message}`;
-    }
-
-    message = `[rowdy] ${message}`;
-
-    if (isLoggable(params)) {
-      // eslint-disable-next-line no-console
-      return console[level](`${message} ${Logger.asPrimitive(params)}`);
-    }
-
-    try {
-      params = Object.entries(params).reduce(
-        (acc, [key, value]) => {
-          acc[key] = Logger.asPrimitive(value);
-          return acc;
-        },
-        {} as Record<string, Primitive>
-      );
-
-      if (Object.keys(params).length === 0) {
-        // eslint-disable-next-line no-console
-        return console[level](`${message}`);
-      }
-
-      // eslint-disable-next-line no-console
-      return console[level](`${message}`, JSON.stringify(params));
-    } catch (error) {
-      // eslint-disable-next-line no-console
-      return console.error(`Unable to log`, { error, level, message, params });
-    }
-  };
-
-  info = (message: string, params: Record<string, Loggable> = {}): void => {
-    return this.log('info', message, params);
-  };
-
-  error = (message: string, params: Record<string, Loggable> = {}): void => {
-    return this.log('error', message, params);
-  };
-
-  warn = (message: string, params: Record<string, Loggable> = {}): void => {
-    return this.log('warn', message, params);
-  };
-
-  debug = (message: string, params: Loggable | Record<string, Loggable> = {}): void => {
-    if (!this.isDebugging) {
+  private log = (level: Level, message: string, params: Loggable | Record<string, Loggable>): void => {
+    if (!this.enabled(level)) {
       return;
     }
-    return this.log('debug', message, params);
+
+    const sink = level === 'trace' ? 'debug' : level;
+
+    try {
+      // A stack is debugging detail: below debug an error is its name and message.
+      const primitive = (value: Loggable): Primitive =>
+        value instanceof Error && !this.enabled('debug')
+          ? `${value.name}: ${value.message}`
+          : Logger.asPrimitive(value);
+      const fields: Record<string, Primitive> = isLoggable(params)
+        ? { value: primitive(params) }
+        : Object.fromEntries(Object.entries(params).map(([key, value]) => [key, primitive(value)]));
+      Object.assign(fields, state.context);
+
+      if (this.format === 'json') {
+        const line: Record<string, unknown> = { level, component: this.component, msg: message };
+        for (const [key, value] of Object.entries(fields)) {
+          line[key] = value instanceof Error ? `${value.name}: ${value.message}` : value;
+        }
+        // eslint-disable-next-line no-console
+        return console[sink](JSON.stringify(line));
+      }
+
+      const head = `${level.toUpperCase().padEnd(5)} rowdy${this.component ? `:${this.component}` : ''} ${oneLine(message)}`;
+      const tail = Object.entries(fields).map(([key, value]) => field(key, value));
+      // eslint-disable-next-line no-console
+      return console[sink]([head, ...tail].join(' '));
+    } catch (error) {
+      // eslint-disable-next-line no-console
+      return console.error(`Unable to log`, { error, level, message });
+    }
   };
+
+  error = (message: string, params: Record<string, Loggable> = {}): void => this.log('error', message, params);
+
+  warn = (message: string, params: Record<string, Loggable> = {}): void => this.log('warn', message, params);
+
+  info = (message: string, params: Record<string, Loggable> = {}): void => this.log('info', message, params);
+
+  debug = (message: string, params: Loggable | Record<string, Loggable> = {}): void =>
+    this.log('debug', message, params);
+
+  trace = (message: string, params: Loggable | Record<string, Loggable> = {}): void =>
+    this.log('trace', message, params);
 }
 
 export const log = new Logger();
@@ -264,7 +335,7 @@ export function Trace<This, Args extends ILoggable[], T extends Loggable>(
       thisName = `${this.constructor.name}.${name}`;
     }
 
-    log.info('Trace.call', { method: thisName, args });
+    log.trace('Trace.call', { method: thisName, args });
 
     const now = performance.now();
     const result: unknown = value.apply(this, args);
@@ -278,7 +349,7 @@ export function Trace<This, Args extends ILoggable[], T extends Loggable>(
           throw new TypeError(`@Trace ${name}: emission is not Loggable`);
         }
         const duration = performance.now() - now;
-        log.info(`Trace.emit (${duration.toFixed(2)}ms)`, { method: thisName, value: emission });
+        log.trace(`Trace.emit (${duration.toFixed(2)}ms)`, { method: thisName, value: emission });
       })
     );
   };

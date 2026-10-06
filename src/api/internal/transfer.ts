@@ -715,7 +715,7 @@ export class Upload implements ILoggable {
   }
 
   get log(): Logger {
-    return this.transfer.log;
+    return this.transfer.log.child('transfer');
   }
 
   get http(): AxiosInstance {
@@ -902,7 +902,7 @@ class UploadStatus implements ILoggable {
   constructor(private upload: Upload) {}
 
   get log(): Logger {
-    return this.upload.log;
+    return this.upload.log.child('transfer');
   }
 
   get http(): AxiosInstance {

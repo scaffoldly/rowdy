@@ -1,5 +1,7 @@
 import { appendFileSync } from 'fs';
-import { log } from '../log';
+import { log as root } from '../log';
+
+const log = root.child('github');
 
 export const writeGithubOutput = (name: string, value?: string): void => {
   const output = process.env.GITHUB_OUTPUT;

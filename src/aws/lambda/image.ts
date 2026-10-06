@@ -17,7 +17,7 @@ export class LambdaImageService implements ILambdaImageService {
   constructor(private environment: Environment) {}
 
   get log(): Logger {
-    return this.environment.log;
+    return this.environment.log.child('image');
   }
 
   get signal(): AbortSignal {
