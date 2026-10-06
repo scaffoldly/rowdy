@@ -9,12 +9,12 @@ export const writeGithubOutput = (name: string, value?: string): void => {
     return;
   }
   if (!value) {
-    log.warn(`GITHUB_OUTPUT is set but there is no value for '${name}', skipping output`);
+    log.warn('GitHub Output Skipped', { name, reason: 'no value' });
     return;
   }
   try {
     appendFileSync(output, `${name}=${value}\n`);
   } catch (err) {
-    log.warn(`Failed to write '${name}' to GITHUB_OUTPUT`, { error: `${err}` });
+    log.warn('GitHub Output Failed', { name, error: `${err}` });
   }
 };

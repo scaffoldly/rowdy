@@ -13,6 +13,6 @@ export const headers = async (log: Logger, scheme: string, realm: URL, service: 
     });
   }
 
-  log.warn(`AWS service ${service} not implemented for authentication headers`);
+  log.warn('Unsupported AWS Service', { service, for: 'authentication headers' });
   return HttpHeaders.from({});
 };

@@ -519,7 +519,7 @@ export class Environment implements ILoggable {
         tap(() => (delay = 0)),
         catchError((err) => {
           delay = delay ? Math.min(delay * 2, 1000) : 100;
-          log.warn('Pipeline error, skipping to repeat', { error: `${err}`, delay });
+          log.warn('Pipeline Error', { error: `${err}`, retryIn: `${delay} ms` });
           return EMPTY;
         })
       )
@@ -647,7 +647,7 @@ export class Environment implements ILoggable {
             const [volume, ...ignored] = this._routes.intoVolumes();
             if (volume) {
               if (ignored.length) {
-                this.log.warn(`Only the first volume is mounted for now`, {
+                this.log.warn('Extra Volumes Ignored', {
                   mounted: volume.spec,
                   ignored: ignored.map((v) => v.spec).join(', '),
                 });

@@ -28,8 +28,7 @@ async function main(): Promise<void> {
 }
 
 const error = (error: Error): void => {
-  // eslint-disable-next-line no-console
-  console.error(`Fatal Error: ${error.message}`, error.stack);
+  log.error('Fatal Error', { error: error.message, stack: error.stack ?? '' });
   process.exit(1);
 };
 
