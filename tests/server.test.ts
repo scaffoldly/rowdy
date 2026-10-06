@@ -1,4 +1,4 @@
-import { LINUX_ERRNO, VfsServer, VfsAdapter, VfsError } from '../src/server';
+import { LINUX_ERRNO, MountAdapter, VfsServer, VfsAdapter, VfsError } from '../src/server';
 import { connect } from 'net';
 import { mkdtempSync, rmSync, existsSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
@@ -128,5 +128,97 @@ describe('VfsServer', () => {
     expect(existsSync(socketPath)).toBe(true);
     await server.listen();
     expect(existsSync(socketPath)).toBe(true);
+  });
+});
+
+describe('MountAdapter', () => {
+  const recorder = (name: string, calls: string[], optional = true): VfsAdapter => {
+    const record =
+      (op: string) =>
+      async (...args: unknown[]): Promise<void> => {
+        calls.push(`${name}.${op}(${args.join(',')})`);
+      };
+    return {
+      stat: record('stat'),
+      fetch: record('fetch'),
+      list: record('list'),
+      open: record('open'),
+      flush: record('flush'),
+      mkdir: record('mkdir'),
+      unlink: record('unlink'),
+      rename: record('rename'),
+      ...(optional ? { revalidate: record('revalidate'), lock: record('lock'), unlock: record('unlock') } : {}),
+    };
+  };
+
+  let calls: string[];
+  let mounts: MountAdapter;
+
+  beforeEach(() => {
+    calls = [];
+    mounts = new MountAdapter([
+      { mountpoint: '/s3', adapter: recorder('s3', calls) },
+      { mountpoint: '/s3/scratch', adapter: recorder('scratch', calls, false) },
+      { mountpoint: '/data', adapter: recorder('data', calls) },
+    ]);
+  });
+
+  it('routes each operation to the mount its path falls in', async () => {
+    await mounts.stat('/s3/a.txt');
+    await mounts.fetch('/data/b.txt');
+    await mounts.list('/s3');
+    await mounts.open('/data/c.txt', 577);
+    await mounts.flush('/data/c.txt');
+    await mounts.mkdir('/s3/dir');
+    await mounts.unlink('/s3/dir');
+    expect(calls).toEqual([
+      's3.stat(/s3/a.txt)',
+      'data.fetch(/data/b.txt)',
+      's3.list(/s3)',
+      'data.open(/data/c.txt,577)',
+      'data.flush(/data/c.txt)',
+      's3.mkdir(/s3/dir)',
+      's3.unlink(/s3/dir)',
+    ]);
+  });
+
+  it('gives a nested mount its own subtree and does not match lookalike prefixes', async () => {
+    await mounts.stat('/s3/scratch/tmp.bin');
+    await mounts.stat('/s3/scratchpad');
+    await mounts.stat('/s3x/a');
+    await mounts.stat('/elsewhere');
+    expect(calls).toEqual(['scratch.stat(/s3/scratch/tmp.bin)', 's3.stat(/s3/scratchpad)']);
+    expect(mounts.mountOf('/s3/scratch')?.mountpoint).toBe('/s3/scratch');
+    expect(mounts.mountOf('/s3x')).toBeUndefined();
+  });
+
+  it('forwards the lock operations only to adapters that have them', async () => {
+    await mounts.lock('/s3/db.sqlite');
+    await mounts.revalidate('/s3/db.sqlite');
+    await mounts.unlock('/s3/db.sqlite');
+    await expect(mounts.lock('/s3/scratch/x')).resolves.toBeUndefined();
+    expect(calls).toEqual(['s3.lock(/s3/db.sqlite)', 's3.revalidate(/s3/db.sqlite)', 's3.unlock(/s3/db.sqlite)']);
+  });
+
+  it('renames within a mount and answers EXDEV across mounts', async () => {
+    await mounts.rename('/data/a', '/data/b');
+    expect(calls).toEqual(['data.rename(/data/a,/data/b)']);
+    await expect(mounts.rename('/s3/a', '/data/a')).rejects.toMatchObject({ errno: LINUX_ERRNO.EXDEV });
+    await expect(mounts.rename('/s3/a', '/s3/scratch/a')).rejects.toMatchObject({ errno: LINUX_ERRNO.EXDEV });
+    expect(calls).toHaveLength(1);
+  });
+
+  it('lists its adapters most specific first and rejects bad or duplicate mountpoints', () => {
+    expect(mounts.adapters).toHaveLength(3);
+    const a = recorder('a', []);
+    expect(() => new MountAdapter([{ mountpoint: 'rel', adapter: a }])).toThrow('Invalid mountpoint');
+    expect(() => new MountAdapter([{ mountpoint: '/a/', adapter: a }])).toThrow('Invalid mountpoint');
+    expect(
+      () =>
+        new MountAdapter([
+          { mountpoint: '/a', adapter: a },
+          { mountpoint: '/a', adapter: a },
+        ])
+    ).toThrow("Mountpoint '/a' is declared twice");
   });
 });

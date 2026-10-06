@@ -52,7 +52,7 @@ caller already expresses, and keep the conditional uploads as the safety net und
 
    Two details close the read-then-write window. `lock` compares the remote ETag with the one this
    instance last read: a mismatch means another writer committed between our `SHARED` and
-   `RESERVED`, so the lease is given back and `EAGAIN` is returned *before* any write; SQLite drops
+   `RESERVED`, so the lease is given back and `EAGAIN` is returned _before_ any write; SQLite drops
    `SHARED` on that `BUSY`, re-takes it (`revalidate` fetches the new base) and the transaction
    proceeds on fresh pages. And "locally modified" is decided by bytes, not mtime: a copy whose
    checksum equals the base version's (a rollback that restored the base after a failed commit) is

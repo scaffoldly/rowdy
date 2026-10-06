@@ -6,7 +6,8 @@ What this package contains
   compiled shared objects (ELF, musl). The same two files are also inlined
   into dist/index.js as base64 so a bundled consumer can write them to disk
   at runtime (materialize()). They are built in GitHub Actions from
-  native/vfspreload.c on the `vfs` branch of https://github.com/scaffoldly/rowdy
+  native/vfspreload.c (which includes native/vfs_core.h and
+  native/vfs_transport.h) on the `vfs` branch of https://github.com/scaffoldly/rowdy
   and the published tarball carries sigstore provenance for that build.
 
 What the shared object does
@@ -18,7 +19,10 @@ What the shared object does
   it is rewritten to VFS_BACKING (default /tmp/vfsstore) before the real libc
   function is called. Paths returned to the program (getcwd, realpath,
   readlink) are rewritten back. The program reads and writes ordinary files
-  under VFS_BACKING through the unmodified libc data path.
+  under VFS_BACKING through the unmodified libc data path. VFS_MOUNTS
+  ("prefix=backing" entries separated by ':') declares several such
+  prefix/directory pairs at once; a path is rewritten by the longest prefix
+  it falls under.
 
 Local supervisor socket
 

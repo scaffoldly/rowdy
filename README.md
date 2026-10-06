@@ -84,6 +84,27 @@ capabilities change.
 
 ## Supervisor and adapters
 
+Several directories can be mounted at once. Pass `mounts` to `applyVfs` and put the adapters behind
+a `MountAdapter`, which routes each operation to the mount its path falls in (the longest mountpoint
+wins, so a mount nested in another owns its own subtree; a rename across mounts is `EXDEV`):
+
+```ts
+const mounts = [
+  { prefix: '/s3', backing: '/tmp/vfsstore' },
+  { prefix: '/scratch', backing: '/tmp/vfsstore.1' },
+];
+const server = await new VfsServer(
+  new MountAdapter([
+    { mountpoint: '/s3', adapter: new S3Adapter({ bucket, mountpoint: '/s3', backing: '/tmp/vfsstore' }) },
+    { mountpoint: '/scratch', adapter: new LocalAdapter() },
+  ]),
+  { socket: VFS_SOCKET }
+).listen();
+applyVfs(env, { socket: server.socket, mounts }); // sets VFS_MOUNTS
+```
+
+Backing directories must not nest inside one another.
+
 With `VFS_SOCKET` set, the shim reports every operation on the mountpoint to a `VfsServer` over a
 unix-domain socket (one JSON object per line, paths and metadata only; the protocol is in
 `DISCLOSURE`). The server dispatches to a `VfsAdapter`:

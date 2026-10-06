@@ -25,9 +25,12 @@ export const VFS_PREFIX = '/vfs';
 export const VFS_BACKING = '/tmp/vfsstore';
 
 export type VfsEnv = Record<
-  'ROWDY_VFS' | 'LD_PRELOAD' | 'VFS_PREFIX' | 'VFS_BACKING' | 'VFS_SOCKET',
+  'ROWDY_VFS' | 'LD_PRELOAD' | 'VFS_PREFIX' | 'VFS_BACKING' | 'VFS_SOCKET' | 'VFS_MOUNTS',
   string | undefined
 >;
+
+/** A virtual prefix the app sees and the real directory that backs it. */
+export type VfsMountPoint = { prefix: string; backing: string };
 
 export type VfsConfig = {
   /** Path of the materialized shim, first entry of LD_PRELOAD. */
@@ -38,6 +41,8 @@ export type VfsConfig = {
   backing: string;
   /** Supervisor socket the shim reports to, if any. */
   socket?: string;
+  /** Every mount, when more than the single prefix/backing pair was asked for. */
+  mounts?: VfsMountPoint[];
 };
 
 /** The compiled shim for an architecture (`linux-x64`, `linux-arm64`), or undefined if not built in. */
@@ -79,6 +84,28 @@ export type ApplyVfsOptions = {
   preload?: string;
   /** Supervisor socket the shim should talk to (a listening VfsServer). Unset: local overlay only. */
   socket?: string;
+  /**
+   * Several mounts instead of the single `VFS_PREFIX` on `VFS_BACKING`. Backing directories must
+   * not nest inside one another. The first is also written to `VFS_PREFIX` / `VFS_BACKING`.
+   */
+  mounts?: VfsMountPoint[];
+};
+
+// VFS_MOUNTS is "prefix=backing" entries joined by ':', split by the shim at the last '='.
+const encodeMounts = (mounts: VfsMountPoint[]): string => {
+  for (const { prefix, backing } of mounts) {
+    if (!prefix.startsWith('/') || prefix === '/' || prefix.endsWith('/') || prefix.includes(':')) {
+      throw new Error(`${id()}: invalid mount prefix '${prefix}'`);
+    }
+    if (!backing.startsWith('/') || backing.endsWith('/') || /[:=]/.test(backing)) {
+      throw new Error(`${id()}: invalid backing directory '${backing}'`);
+    }
+    const nested = mounts.find((other) => other.backing !== backing && other.backing.startsWith(`${backing}/`));
+    if (nested) {
+      throw new Error(`${id()}: backing directory '${nested.backing}' is inside '${backing}'`);
+    }
+  }
+  return mounts.map(({ prefix, backing }) => `${prefix}=${backing}`).join(':');
 };
 
 /**
@@ -96,12 +123,24 @@ export const applyVfs = (env: VfsEnv, options: ApplyVfsOptions | string = {}): V
   const preload = materialize(opts.preload ?? VFS_PRELOAD);
   const existing = (env.LD_PRELOAD ?? '').split(':').filter((p) => p && p !== preload);
   env.LD_PRELOAD = [preload, ...existing].join(':');
+  const [first] = opts.mounts ?? [];
+  if (opts.mounts && first) {
+    env.VFS_MOUNTS = encodeMounts(opts.mounts);
+    env.VFS_PREFIX = first.prefix;
+    env.VFS_BACKING = first.backing;
+  }
   env.VFS_PREFIX = env.VFS_PREFIX || VFS_PREFIX;
   env.VFS_BACKING = env.VFS_BACKING || VFS_BACKING;
   if (opts.socket) {
     env.VFS_SOCKET = opts.socket;
   }
-  return { preload, prefix: env.VFS_PREFIX, backing: env.VFS_BACKING, socket: env.VFS_SOCKET };
+  return {
+    preload,
+    prefix: env.VFS_PREFIX,
+    backing: env.VFS_BACKING,
+    socket: env.VFS_SOCKET,
+    ...(env.VFS_MOUNTS && opts.mounts ? { mounts: opts.mounts } : {}),
+  };
 };
 
 export * from './server';

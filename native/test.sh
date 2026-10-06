@@ -105,6 +105,32 @@ echo "fopen: ok"
 env -u LD_PRELOAD sh -c '[ ! -e /vfs ]' || fail "/vfs visible without preload"
 env -u LD_PRELOAD sh -c '[ -d /tmp/vfsstore ]' || fail "backing dir missing"
 
+# several mounts: the longest prefix wins and each maps to its own backing directory
+env VFS_MOUNTS=/a=/tmp/store/a:/a/inner=/tmp/store/inner:/b=/tmp/store/b sh -euc '
+fail() { echo "FAIL: $*"; exit 1; }
+echo one > /a/f
+echo two > /b/f
+echo deep > /a/inner/x
+[ "$(cat /a/f)" = "one" ] && [ "$(cat /b/f)" = "two" ] || fail "mounts: read back"
+[ -f /tmp/store/a/f ] && [ -f /tmp/store/b/f ] || fail "mounts: each backing directory"
+[ -f /tmp/store/inner/x ] && [ ! -e /tmp/store/a/inner/x ] || fail "mounts: nested mount wins for its subtree"
+[ ! -e /vfs ] || fail "mounts: /vfs present although VFS_MOUNTS is set"
+[ ! -e /ax ] && [ ! -e /bb ] || fail "mounts: lookalike prefix"
+ln -s /b/f /a/lnk
+[ "$(readlink /a/lnk)" = "/b/f" ] || fail "mounts: readlink across mounts: $(readlink /a/lnk)"
+[ "$(cat /a/lnk)" = "two" ] || fail "mounts: symlink across mounts"
+[ "$(cd /b && pwd)" = "/b" ] || fail "mounts: getcwd"
+[ "$(cd /a/inner && pwd)" = "/a/inner" ] || fail "mounts: getcwd nested: $(cd /a/inner && pwd)"
+mv /a/f /b/g
+[ "$(cat /b/g)" = "one" ] && [ ! -e /a/f ] || fail "mounts: mv across mounts"
+node -e "
+const fs = require(\"fs\"), assert = require(\"assert\");
+assert.strictEqual(fs.realpathSync(\"/a/inner/../inner/x\"), \"/a/inner/x\");
+assert.deepStrictEqual(fs.readdirSync(\"/b\").sort(), [\"f\", \"g\"]);
+" || fail "mounts: node"
+' || fail "mounts"
+echo "mounts: ok"
+
 # supervisor socket tests
 cat > /tmp/server.js <<'SRV'
 const net = require("net");
@@ -175,6 +201,12 @@ esac
 if grep -q "/tmp/notvfs" /tmp/ops.log 2>/dev/null; then
   fail "logged non-/vfs path"
 fi
+
+# a second mount reaches the supervisor under its own virtual path
+rm -f /tmp/ops.log
+env VFS_MOUNTS=/vfs=/tmp/vfsstore:/b=/tmp/store/b sh -c 'echo x > /b/reported' || fail "mounts: write to second mount with a supervisor"
+grep -q "open /b/reported" /tmp/ops.log && grep -q "flush /b/reported" /tmp/ops.log ||
+  fail "mounts: second mount not reported: $(tr '\n' ' ' < /tmp/ops.log)"
 
 # advisory locks: a SQLite write transaction becomes lock -> flush -> unlock,
 # a read transaction becomes revalidate, and a refused lock is SQLITE_BUSY.

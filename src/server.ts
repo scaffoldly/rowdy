@@ -115,6 +115,87 @@ export class LocalAdapter implements VfsAdapter {
   async rename(): Promise<void> {}
 }
 
+/** A mountpoint (the virtual directory the application sees) and the adapter behind it. */
+export type VfsMount = { mountpoint: string; adapter: VfsAdapter };
+
+/**
+ * Several mounts behind one supervisor: each operation goes to the adapter of the mount its path
+ * falls in, the longest mountpoint winning so a mount nested in another owns its own subtree.
+ */
+export class MountAdapter implements VfsAdapter {
+  private readonly mounts: VfsMount[];
+
+  constructor(mounts: VfsMount[]) {
+    const seen = new Set<string>();
+    for (const { mountpoint } of mounts) {
+      if (!mountpoint.startsWith('/') || mountpoint === '/' || mountpoint.endsWith('/')) {
+        throw new Error(`Invalid mountpoint '${mountpoint}', expected an absolute path with no trailing slash`);
+      }
+      if (seen.has(mountpoint)) {
+        throw new Error(`Mountpoint '${mountpoint}' is declared twice`);
+      }
+      seen.add(mountpoint);
+    }
+    this.mounts = [...mounts].sort((a, b) => b.mountpoint.length - a.mountpoint.length);
+  }
+
+  /** The adapters, most specific mountpoint first. */
+  get adapters(): VfsAdapter[] {
+    return this.mounts.map((m) => m.adapter);
+  }
+
+  /** The mount `path` falls in, or undefined when it is under none. */
+  mountOf(path: string): VfsMount | undefined {
+    return this.mounts.find(({ mountpoint }) => path === mountpoint || path.startsWith(`${mountpoint}/`));
+  }
+
+  private at(path: string): VfsAdapter | undefined {
+    return this.mountOf(path)?.adapter;
+  }
+
+  async stat(path: string): Promise<void> {
+    await this.at(path)?.stat(path);
+  }
+  async fetch(path: string): Promise<void> {
+    await this.at(path)?.fetch(path);
+  }
+  async list(path: string): Promise<void> {
+    await this.at(path)?.list(path);
+  }
+  async open(path: string, flags: number): Promise<void> {
+    await this.at(path)?.open(path, flags);
+  }
+  async flush(path: string): Promise<void> {
+    await this.at(path)?.flush(path);
+  }
+  async mkdir(path: string): Promise<void> {
+    await this.at(path)?.mkdir(path);
+  }
+  async unlink(path: string): Promise<void> {
+    await this.at(path)?.unlink(path);
+  }
+  async revalidate(path: string): Promise<void> {
+    await this.at(path)?.revalidate?.(path);
+  }
+  async lock(path: string): Promise<void> {
+    await this.at(path)?.lock?.(path);
+  }
+  async unlock(path: string): Promise<void> {
+    await this.at(path)?.unlock?.(path);
+  }
+
+  // Each store only knows its own objects, so a rename is within one mount or it is EXDEV,
+  // which is also what the kernel answers across filesystems: callers fall back to copy+delete.
+  async rename(from: string, to: string): Promise<void> {
+    const source = this.mountOf(from);
+    const target = this.mountOf(to);
+    if (source !== target) {
+      throw VfsError.code('EXDEV', `${from} -> ${to}: rename across mounts`);
+    }
+    await source?.adapter.rename(from, to);
+  }
+}
+
 export type VfsRequest =
   | { op: 'stat' | 'fetch' | 'list' | 'flush' | 'mkdir' | 'unlink' | 'revalidate' | 'lock' | 'unlock'; path: string }
   | { op: 'open'; path: string; flags: number }

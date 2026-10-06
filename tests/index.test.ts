@@ -69,7 +69,47 @@ describe('rowdy-vfs', () => {
       VFS_PREFIX: undefined,
       VFS_BACKING: undefined,
       VFS_SOCKET: undefined,
+      VFS_MOUNTS: undefined,
       ...overrides,
+    });
+
+    describe('mounts', () => {
+      const mounts = [
+        { prefix: '/s3', backing: '/tmp/vfsstore' },
+        { prefix: '/data/cache', backing: '/tmp/vfsstore.1' },
+      ];
+
+      it('encodes several mounts for the shim and keeps the first as the single-mount pair', () => {
+        const e = env({ ROWDY_VFS: '1' });
+        const config = applyVfs(e, { preload, mounts });
+        expect(e.VFS_MOUNTS).toBe('/s3=/tmp/vfsstore:/data/cache=/tmp/vfsstore.1');
+        expect(e.VFS_PREFIX).toBe('/s3');
+        expect(e.VFS_BACKING).toBe('/tmp/vfsstore');
+        expect(config).toMatchObject({ prefix: '/s3', backing: '/tmp/vfsstore', mounts });
+      });
+
+      it('leaves VFS_MOUNTS unset without the option', () => {
+        const e = env({ ROWDY_VFS: '1' });
+        expect(applyVfs(e, { preload })).not.toHaveProperty('mounts');
+        expect(e.VFS_MOUNTS).toBeUndefined();
+      });
+
+      it('rejects prefixes and backing directories the shim could not parse or keep apart', () => {
+        const bad =
+          (m: Array<{ prefix: string; backing: string }>): (() => unknown) =>
+          () =>
+            applyVfs(env({ ROWDY_VFS: '1' }), { preload, mounts: m });
+        expect(bad([{ prefix: 's3', backing: '/tmp/a' }])).toThrow("invalid mount prefix 's3'");
+        expect(bad([{ prefix: '/s3/', backing: '/tmp/a' }])).toThrow('invalid mount prefix');
+        expect(bad([{ prefix: '/a:b', backing: '/tmp/a' }])).toThrow('invalid mount prefix');
+        expect(bad([{ prefix: '/s3', backing: '/tmp/a=b' }])).toThrow('invalid backing directory');
+        expect(
+          bad([
+            { prefix: '/a', backing: '/tmp/store' },
+            { prefix: '/b', backing: '/tmp/store/b' },
+          ])
+        ).toThrow("backing directory '/tmp/store/b' is inside '/tmp/store'");
+      });
     });
 
     it('is off by default', () => {

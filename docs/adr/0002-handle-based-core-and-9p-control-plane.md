@@ -112,7 +112,8 @@ always the preload shim.
 ## Sequencing
 
 1. Restructure the shim into the three layers, still speaking the JSON protocol. Lands the mount
-   table (multi-volume) and the fd table on their own.
+   table (multi-volume) and the fd table on their own. **Done**: `native/vfs_transport.h`,
+   `native/vfs_core.h`, `native/vfspreload.c`; `VFS_MOUNTS`; `MountAdapter` on the supervisor side.
 2. Move `VfsAdapter` to the handle-based operations table.
 3. Replace the wire format with 9P2000.L; rewrite `DISCLOSURE`.
 4. Add the kernel v9fs conformance job.
