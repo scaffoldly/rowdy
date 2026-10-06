@@ -716,11 +716,17 @@ export class Routes implements IRoutes, ILoggable {
   // container start, not the first file access.
   withVolumes(specs: Array<string>): this {
     specs.forEach((spec) => {
-      spec = Volume.parse(spec).spec;
-      if (this.volumes.includes(spec)) {
+      const volume = Volume.parse(spec);
+      if (this.volumes.includes(volume.spec)) {
         return;
       }
-      this.volumes.push(spec);
+      const taken = this.intoVolumes().find((v) => v.mountpoint === volume.mountpoint);
+      if (taken) {
+        throw new Error(
+          `Volume mountpoint '${volume.mountpoint}' is used by both '${taken.spec}' and '${volume.spec}'`
+        );
+      }
+      this.volumes.push(volume.spec);
     });
     return this;
   }

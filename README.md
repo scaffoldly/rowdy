@@ -263,8 +263,11 @@ are downloaded into `/tmp/vfsstore` the first time the app opens them, directory
 the bucket, and files are uploaded when the app closes or fsyncs them. The upload is conditional on
 the object's ETag, so if something else changed the object meanwhile the app's `close()` fails with
 `ESTALE` instead of overwriting it. The deploy grants the execution role `s3:ListBucket` on the
-bucket and `Get`/`Put`/`DeleteObject` on the prefix; the bucket itself must already exist. One
-volume is mounted for now; extra entries are logged and ignored.
+bucket and `Get`/`Put`/`DeleteObject` on the prefix; the bucket itself must already exist.
+
+Every entry is mounted. Mountpoints must be distinct; one may sit inside another, in which case the
+inner volume owns its subtree. A rename from one volume to another fails with `EXDEV`, as it does
+across filesystems, and tools such as `mv` fall back to copy and delete.
 
 Several function instances can share an `s3://` volume. Reads re-check the object's ETag (at most
 every 2 s) and pick up other instances' writes; programs that take advisory locks (SQLite, lockfile

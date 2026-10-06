@@ -457,6 +457,14 @@ describe('volume options', () => {
     expect(() => Volume.parse('s3://example-bucket:/data:local=/abs')).toThrow('relative to the mountpoint');
   });
 
+  it('refuses two volumes on one mountpoint, and keeps an exact duplicate once', () => {
+    const routes = Routes.empty().withVolumes(['s3://example-bucket:/data', 's3://example-bucket:/data']);
+    expect(routes.intoVolumes()).toHaveLength(1);
+    expect(() => routes.withVolumes(['s3://other-bucket:/data'])).toThrow(
+      "Volume mountpoint '/data' is used by both 's3://example-bucket:/data' and 's3://other-bucket:/data'"
+    );
+  });
+
   it('parses local= globs, splitting flags on commas outside braces', () => {
     const volume = Volume.parse('s3://example-bucket:/s3:local=*-{journal,wal,shm},lock,local=cache/**');
     expect(volume.mountpoint).toBe('/s3');
