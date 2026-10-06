@@ -1,5 +1,5 @@
 import { Logger, Environment, Routes } from '@scaffoldly/rowdy';
-import { LocalAdapter, MountAdapter, S3Adapter, VFS_BACKING, VFS_PRELOAD, VFS_SOCKET } from '@scaffoldly/rowdy-vfs';
+import { LocalAdapter, P9Server, S3Adapter, VFS_BACKING, VFS_PRELOAD, VFS_SOCKET } from '@scaffoldly/rowdy-vfs';
 import { existsSync, mkdtempSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
@@ -124,13 +124,13 @@ describe('environment', () => {
       expect(env.VFS_BACKING).toBe(VFS_BACKING);
       expect(env.VFS_SOCKET).toBe(VFS_SOCKET);
       const server = await environment['_vfs'];
-      expect((server?.['adapter'] as MountAdapter).adapters[0]).toBeInstanceOf(S3Adapter);
+      expect(server?.mounts[0]?.adapter).toBeInstanceOf(S3Adapter);
     });
 
     it('passes the lock and local flags through to the adapter', async () => {
       const environment = withVolumes(['s3://example-bucket:/data:lock,local=*-{journal,wal,shm}']);
       await finalize(environment);
-      const adapter = ((await environment['_vfs'])?.['adapter'] as MountAdapter).adapters[0] as S3Adapter;
+      const adapter = (await environment['_vfs'])?.mounts[0]?.adapter as S3Adapter;
       expect(adapter['options']).toMatchObject({
         bucket: 'example-bucket',
         lockOnOpen: true,
@@ -150,10 +150,12 @@ describe('environment', () => {
       // the first mount is also the single-mount pair
       expect(env.VFS_PREFIX).toBe('/s3');
       expect(env.VFS_BACKING).toBe(VFS_BACKING);
-      const mounts = (await environment['_vfs'])?.['adapter'] as MountAdapter;
-      expect(mounts.mountOf('/s3/db/nuss.sqlite')?.adapter).toBeInstanceOf(S3Adapter);
-      expect(mounts.mountOf('/scratch/tmp.bin')?.adapter).toBeInstanceOf(LocalAdapter);
-      expect((mounts.mountOf('/data/x')?.adapter as S3Adapter)['options']).toMatchObject({
+      const server = (await environment['_vfs']) as P9Server;
+      const at = (mountpoint: string) => server.mounts.find((m) => m.mountpoint === mountpoint);
+      expect(at('/s3')?.adapter).toBeInstanceOf(S3Adapter);
+      expect(at('/scratch')?.adapter).toBeInstanceOf(LocalAdapter);
+      expect(at('/scratch')?.backing).toBe(backing);
+      expect((at('/data')?.adapter as S3Adapter)['options']).toMatchObject({
         bucket: 'other-bucket',
         prefix: 'tenant',
         backing: `${VFS_BACKING}.2`,
