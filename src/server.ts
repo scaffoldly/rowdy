@@ -49,6 +49,7 @@ export const LINUX_ERRNO = {
   EPERM: 1,
   ENOENT: 2,
   EIO: 5,
+  EBADF: 9,
   EAGAIN: 11,
   EACCES: 13,
   EEXIST: 17,
@@ -59,6 +60,7 @@ export const LINUX_ERRNO = {
   ENOSPC: 28,
   ENOSYS: 38,
   ENOTEMPTY: 39,
+  ENOTSUP: 95,
   ESTALE: 116,
 } as const;
 
