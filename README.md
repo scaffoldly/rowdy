@@ -286,6 +286,11 @@ Flags follow the mountpoint, docker `-v` style, separated by commas (outside bra
   sidecar files that must not be shared, e.g. SQLite's rollback journal:
   `s3://<bucket>:/s3:local=*-{journal,wal,shm}`. Repeat the flag for more globs.
 
+`@scaffoldly/rowdy-vfs` is pinned by commit, not by registry version: `package.json` points at the
+`rowdy-vfs-<sha>.tgz` asset that the `vfs` branch's CI uploads to the rolling `vfs-builds` release
+on every push, so a shim change reaches rowdy without waiting on the registry's review of the
+binary. The npm release of the package is the reviewed, attested one for other consumers.
+
 Nothing is mounted in the kernel sense. The Lambda sandbox denies every kernel-mediated option
 (`/dev/fuse`, `mount(2)`, namespaces, ptrace, seccomp-notify), so rowdy writes the
 [`@scaffoldly/rowdy-vfs`](https://github.com/scaffoldly/rowdy/tree/vfs) shim to
