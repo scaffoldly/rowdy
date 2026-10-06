@@ -1,7 +1,9 @@
 import parseDataURL from 'data-urls';
 import { match as pathMatch, compile as pathCompile, pathToRegexp } from 'path-to-regexp';
 import { decode, labelToName } from 'whatwg-encoding';
-import { ILoggable, log, maskUrl } from './log';
+import { ILoggable, log as root, maskUrl } from './log';
+
+const log = root.child('routes');
 import { CheckResult, cloudCheck, httpCheck, httpsCheck, rowdyCheck } from './util/checks';
 import { existsSync, readFileSync } from 'fs';
 import * as YAML from 'yaml';

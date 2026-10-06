@@ -300,6 +300,33 @@ Limits of the preload model:
   `posix_spawn` paths.
 - It is not a mountpoint, so a process started outside rowdy cannot see it.
 
+## Logging
+
+Rowdy logs one readable line per event, with no timestamp (the log collector adds its own):
+
+```
+INFO  rowdy:lambda Request request=LambdaRequest(http method=POST path=/api/db …) req=575b7bbe
+DEBUG rowdy:vfs flushed key=db/nuss.sqlite size=4710400 req=575b7bbe
+WARN  rowdy:http upstream error status=502 error="Error: read ECONNRESET"
+```
+
+`LEVEL rowdy[:component] message key=value …`. `req` is the first 8 characters of the invocation's
+request id and is on every line written while that invocation is being served.
+
+| Setting                          | Values                                    | Default |
+| -------------------------------- | ----------------------------------------- | ------- |
+| `ROWDY_LOG_LEVEL`, `--log-level` | `error`, `warn`, `info`, `debug`, `trace` | `info`  |
+| `ROWDY_LOG_FORMAT`               | `text`, `json` (one object per line)      | `text`  |
+
+`ROWDY_DEBUG=true` / `--debug` and `ROWDY_TRACE=true` / `--trace` still work as aliases for the
+`debug` and `trace` levels; an explicit `ROWDY_LOG_LEVEL` wins over them. `rowdy create` deploys the
+function at the level it was run with, and the GitHub Action takes it as the `log-level` input.
+
+Values that look like credentials are never written in full, at any level: environment values,
+headers and query parameters with credential-like names, URL passwords and AWS SDK payloads are
+masked to their length and a short prefix and suffix (`ghp_…wxyz (40 chars)`). Request and response
+bodies are not logged, only sized.
+
 ## Out of scope
 
 The local runtime (no `AWS_LAMBDA_RUNTIME_API`) ignores `spec.crontab` and never starts the

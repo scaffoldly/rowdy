@@ -19,7 +19,7 @@ import {
   timer,
 } from 'rxjs';
 import { Routes } from './routes';
-import { ILoggable, log, Logger, mask, maskEnv, maskJson, Trace } from './log';
+import { ILoggable, isLevel, Level, log, Logger, mask, maskEnv, maskJson, Trace } from './log';
 import { ShellProxy, ShellRequest } from './proxy/shell';
 import { ShellPipeline } from './shell/pipeline';
 import { Pipeline, Result } from './pipeline';
@@ -30,6 +30,7 @@ import { isatty } from 'tty';
 import { LambdaFunction } from './aws/lambda/index';
 import {
   applyVfs,
+  LINUX_ERRNO,
   LocalAdapter,
   S3Adapter,
   VfsAdapter,
@@ -41,7 +42,6 @@ import { Volume } from './routes';
 import { LambdaImageService } from './aws/lambda/image';
 import { inspect } from 'util';
 import { cpus } from 'os';
-import { log as consoleLog } from 'console';
 import { internalIpV4Sync } from 'internal-ip';
 import { writeGithubOutput } from './util/github';
 
@@ -151,16 +151,23 @@ export class Environment implements ILoggable {
       .scriptName(this.bin!)
       .env(this.bin!.toUpperCase())
       .version(packageJson.version)
+      // DEVNOTE: No `choices`: this also arrives as ROWDY_LOG_LEVEL, and a bad value in a deployed
+      // function's environment must fall back to the default rather than fail startup.
+      .option('log-level', {
+        type: 'string',
+        description: 'Log verbosity: error, warn, info, debug or trace (default: info)',
+        group: 'Logging:',
+      })
       .option('debug', {
         type: 'boolean',
         default: false,
-        description: 'Enable debug logging',
+        description: 'Alias for --log-level debug',
         group: 'Logging:',
       })
       .option('trace', {
         type: 'boolean',
         default: false,
-        description: 'Enable trace logging',
+        description: 'Alias for --log-level trace',
         group: 'Logging:',
       })
       .command({
@@ -249,12 +256,13 @@ export class Environment implements ILoggable {
                       new LambdaImageService(this).withLayersFrom('ghcr.io/scaffoldly/rowdy:beta')
                     ).withImage(argv.image);
 
-                    if (argv.debug) {
-                      lambda = lambda.withEnvironment('ROWDY_DEBUG', 'true');
-                    }
-                    if (argv.trace) {
-                      lambda = lambda.withEnvironment('ROWDY_TRACE', 'true');
-                    }
+                    // DEVNOTE: The function's environment is merged on update, so the legacy flags
+                    // are written explicitly: a function once deployed at debug must not stay there.
+                    const level = Environment.levelOf(argv);
+                    lambda = lambda
+                      .withEnvironment('ROWDY_LOG_LEVEL', level)
+                      .withEnvironment('ROWDY_DEBUG', `${level === 'debug' || level === 'trace'}`)
+                      .withEnvironment('ROWDY_TRACE', `${level === 'trace'}`);
                     if (argv.command) {
                       lambda = lambda.withCommand(argv.command);
                     }
@@ -268,10 +276,7 @@ export class Environment implements ILoggable {
                       lambda = lambda.withCRI();
                     }
                     if (argv.routes) {
-                      consoleLog('!!! setting routes', argv.routes);
-                      const routes = Routes.fromURL(argv.routes);
-                      consoleLog('!!! parsed routes', routes.repr());
-                      lambda = lambda.withRoutes(routes);
+                      lambda = lambda.withRoutes(Routes.fromURL(argv.routes));
                     }
                     if (argv.secrets) {
                       lambda = lambda.withSecrets(argv.secrets);
@@ -387,12 +392,13 @@ export class Environment implements ILoggable {
       .help()
       .parseSync();
 
-    if (parsed.debug) {
-      this.log = this.log.withDebugging();
-    }
-
-    if (parsed.trace) {
-      this.log = this.log.withTracing();
+    // An explicit level wins; the boolean flags only ever raise verbosity.
+    if (isLevel(parsed.logLevel?.toLowerCase())) {
+      this.log.withLevel(parsed.logLevel.toLowerCase() as Level);
+    } else if (parsed.trace) {
+      this.log.withTracing();
+    } else if (parsed.debug) {
+      this.log.withDebugging();
     }
 
     log.info(`${packageJson.name}@${packageJson.version} has started.`);
@@ -537,10 +543,33 @@ export class Environment implements ILoggable {
     return `Environment(routes=${Logger.asPrimitive(this._routes)})`;
   }
 
+  /** The level a set of CLI flags asks for: `--log-level`, else the `--trace` / `--debug` aliases. */
+  static levelOf(argv: { logLevel?: string; debug?: boolean; trace?: boolean }): Level {
+    const explicit = argv.logLevel?.toLowerCase();
+    if (isLevel(explicit)) {
+      return explicit;
+    }
+    return argv.trace ? 'trace' : argv.debug ? 'debug' : 'info';
+  }
+
   withEnv(name: keyof ProcessEnv, value: ProcessEnv[keyof ProcessEnv]): this {
     this.log.debug(`Received environment variable`, { name, value: mask(value) });
     this._envVars.next({ name, value });
     return this;
+  }
+
+  // Log fields from a plain object: primitives as they are, anything else as JSON.
+  private static flat(fields: Record<string, unknown> = {}): Record<string, string | number | boolean> {
+    return Object.fromEntries(
+      Object.entries(fields)
+        .filter(([, value]) => value !== undefined)
+        .map(([key, value]) => [
+          key,
+          typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean'
+            ? value
+            : JSON.stringify(value),
+        ])
+    );
   }
 
   /** The store behind a volume: a local directory is the whole store; a bucket is synced into it. */
@@ -555,7 +584,7 @@ export class Environment implements ILoggable {
         localOnly: volume.options.local,
         owner: process.env.AWS_LAMBDA_LOG_STREAM_NAME,
         backing,
-        log: (message, params) => this.log.debug(`VFS s3 ${message}`, { params: JSON.stringify(params ?? {}) }),
+        log: (message, params) => this.log.child('vfs').debug(message, Environment.flat(params)),
       });
     }
     return new LocalAdapter();
@@ -570,10 +599,17 @@ export class Environment implements ILoggable {
     if (!this._vfs) {
       const server = new VfsServer(this.vfsAdapter(volume, backing), {
         socket: VFS_SOCKET,
-        onRequest: (request, reply) =>
-          this.log.debug(`VFS request`, { request: JSON.stringify(request), reply: JSON.stringify(reply) }),
-        onError: (request, error) =>
-          this.log.warn(`VFS adapter error`, { request: JSON.stringify(request), error: `${error}` }),
+        onRequest: ({ op, ...request }, reply) =>
+          this.log.child('vfs').debug(op, Environment.flat({ ...request, ...reply })),
+        // A miss before a create and a contended lock are how the protocol says "not yet".
+        onError: ({ op, ...request }, error) => {
+          const errno = (error as { errno?: number }).errno;
+          const expected = errno === LINUX_ERRNO.ENOENT || errno === LINUX_ERRNO.EAGAIN;
+          this.log.child('vfs')[expected ? 'debug' : 'warn'](`${op} failed`, {
+            ...Environment.flat(request),
+            error: `${error}`,
+          });
+        },
       });
       this.signal.addEventListener('abort', () => {
         // Give leases back before the socket goes away so other instances are not held up until TTL.

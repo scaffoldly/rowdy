@@ -1,13 +1,15 @@
 import { catchError, from, map, NEVER, Observable, of, race, switchMap } from 'rxjs';
 import { Pipeline, Proxy, Request } from '../pipeline';
 import { Readable } from 'stream';
-import { ILoggable, log, Logger, maskHeaders, maskQuery, maskUrl, Trace } from '../log';
+import { ILoggable, log as root, Logger, maskHeaders, maskQuery, maskUrl, Trace } from '../log';
 import axios, { AxiosHeaders, AxiosResponseHeaders, isAxiosError } from 'axios';
 import { Agent } from 'https';
 import { URI } from '../routes';
 import { APIGatewayProxyEventV2 } from 'aws-lambda';
 import { Rowdy } from '../api';
 import packageJson from '../../package.json';
+
+const log = root.child('http');
 
 export type Prelude = { statusCode: number; headers: Headers; cookies: string[] };
 

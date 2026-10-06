@@ -1,6 +1,8 @@
 import * as net from 'net';
 import * as tls from 'tls';
-import { log } from '../log';
+import { log as root } from '../log';
+
+const log = root.child('health');
 
 export const DEFAULT_TIMEOUT = 5000;
 

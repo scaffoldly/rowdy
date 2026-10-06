@@ -2,7 +2,7 @@ import { AsyncSubject, defer, map, NEVER, Observable, of, race, switchMap, tap }
 import { Proxy, Pipeline, Request, Response, Result, Chunk } from '../pipeline';
 import { Environment } from '../environment';
 import axios from 'axios';
-import { log, maskHeaders, maskQuery, maskUrl, Trace } from '../log';
+import { log as root, Logger, maskHeaders, maskQuery, maskUrl, Trace } from '../log';
 import { APIGatewayProxyEventV2 } from 'aws-lambda';
 import { HttpProxy, HttpHeaders, HttpResponse, Source } from '../proxy/http';
 import { ShellResponse } from '../proxy/shell';
@@ -11,6 +11,8 @@ import { CRI, GrpcRouter, RuntimeService } from '@scaffoldly/rowdy-grpc';
 import { LambdaCri } from './lambda/cri';
 import { Rowdy } from '../api';
 import http from 'http';
+
+const log = root.child('lambda');
 
 type FunctionUrlEvent = APIGatewayProxyEventV2;
 
@@ -79,6 +81,7 @@ export class LambdaPipeline extends Pipeline {
     const url = `http://${this.runtimeApi}/2018-06-01/runtime/invocation/next`;
 
     return defer(() => {
+      Logger.unbind('req');
       log.debug(`Fetching next invocation`, { url });
       return axios.get<string>(url, { responseType: 'text', signal: this.signal, timeout: 0 });
     }).pipe(
@@ -86,6 +89,7 @@ export class LambdaPipeline extends Pipeline {
         this._requestId = headers['lambda-runtime-aws-request-id'];
         const deadline = headers['lambda-runtime-deadline-ms'];
         const request = new LambdaRequest(this, data).withDeadline(new Date(Number(deadline)));
+        Logger.bind({ req: String(this._requestId).slice(0, 8) });
         log.debug(`Received invocation`, { requestId: this._requestId, deadline, request });
         return request;
       })

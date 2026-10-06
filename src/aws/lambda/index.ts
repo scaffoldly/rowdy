@@ -282,7 +282,7 @@ export class LambdaFunction implements Logger {
   }
 
   get log(): Logger {
-    return this.imageService.log;
+    return this.imageService.log.child('deploy');
   }
 
   get signal(): AbortSignal {
