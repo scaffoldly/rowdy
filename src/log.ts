@@ -67,6 +67,46 @@ const masked = (value: unknown, key = ''): unknown => {
 /** JSON of an arbitrary structure with `Variables` maps and credential-named strings masked. */
 export const maskJson = (value: unknown): string => JSON.stringify(masked(value));
 
+// Header and query-parameter names whose values are credentials. Wider than SENSITIVE: `auth`
+// would also hit harmless structure keys such as Lambda's `AuthType`.
+const SENSITIVE_NAME =
+  /auth|cookie|secret|token|password|passwd|api[-_]?key|access[-_]?key|credential|session|signature/i;
+
+/** A query string as it may be logged: every name, sensitive-named values masked. */
+export const maskQuery = (search: string | URLSearchParams = ''): string =>
+  [...new URLSearchParams(search)]
+    .map(([name, value]) => `${name}=${SENSITIVE_NAME.test(name) ? mask(value) : value}`)
+    .join('&');
+
+/** A URL as it may be logged: password and sensitive-named query values masked. */
+export const maskUrl = (url: string | { toString(): string }): string => {
+  let parsed;
+  try {
+    // eslint-disable-next-line no-restricted-globals -- URI (routes.ts) depends on this module
+    parsed = new URL(String(url));
+  } catch {
+    return String(url);
+  }
+  if (!parsed.host) {
+    return String(url); // opaque (data:, file:): nothing to mask by name
+  }
+  const auth = parsed.username ? `${parsed.username}${parsed.password ? `:${mask(parsed.password)}` : ''}@` : '';
+  const query = maskQuery(parsed.searchParams);
+  return `${parsed.protocol}//${auth}${parsed.host}${parsed.pathname}${query ? `?${query}` : ''}${parsed.hash}`;
+};
+
+/** Headers as they may be logged, `name=value, …`: every name, credential values masked. */
+export const maskHeaders = (headers: Record<string, unknown> = {}): string =>
+  Object.entries(headers)
+    .map(([name, value]) => {
+      const values = (Array.isArray(value) ? value : [value]).map((v) => String(v ?? ''));
+      const shown = SENSITIVE_NAME.test(name)
+        ? values.map(mask)
+        : values.map((v) => (/^https?:\/\//.test(v) ? maskUrl(v) : v));
+      return `${name}=${shown.join(',')}`;
+    })
+    .join(', ');
+
 export class Logger {
   private _debug = false;
   private _trace = false;

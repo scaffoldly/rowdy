@@ -1,7 +1,7 @@
 import { catchError, from, map, NEVER, Observable, of, race, switchMap } from 'rxjs';
 import { Pipeline, Proxy, Request } from '../pipeline';
 import { Readable } from 'stream';
-import { ILoggable, log, Logger, Trace } from '../log';
+import { ILoggable, log, Logger, maskHeaders, maskQuery, maskUrl, Trace } from '../log';
 import axios, { AxiosHeaders, AxiosResponseHeaders, isAxiosError } from 'axios';
 import { Agent } from 'https';
 import { URI } from '../routes';
@@ -333,7 +333,7 @@ class RowdyHttpResponse extends HttpResponse {
       host: proxy.uri.host,
       hostname: proxy.uri.hostname,
       port: proxy.uri.port,
-      searchParams: JSON.stringify(Object.fromEntries(proxy.uri.searchParams)),
+      searchParams: maskQuery(proxy.uri.searchParams),
       uri: Logger.asPrimitive(proxy.uri),
     });
 
@@ -402,9 +402,9 @@ class RowdyHttpResponse extends HttpResponse {
       const source = proxy.source;
 
       log.debug('Rowdy HTTP 307 Redirect', {
-        location,
+        location: maskUrl(location),
         include,
-        source: JSON.stringify(source),
+        source: `${source.method} ${maskUrl(source.uri)} headers=[${maskHeaders(source.headers)}]`,
       });
 
       let uri = URI.from(location);
@@ -413,7 +413,7 @@ class RowdyHttpResponse extends HttpResponse {
       }
 
       log.debug('Rowdy HTTP 307 Redirecting to', {
-        uri: uri.toString(),
+        uri: maskUrl(uri),
       });
 
       return of(
@@ -455,7 +455,7 @@ class LocalHttpResponse extends HttpResponse {
         log.debug('Local Http Proxy', {
           method: proxy.method,
           uri,
-          headers: JSON.stringify(headers),
+          headers: maskHeaders(headers),
         });
 
         return from(
@@ -500,7 +500,7 @@ class LocalHttpResponse extends HttpResponse {
           map((response) => {
             log.debug(`HttpProxy.invoke() response`, {
               status: response.status,
-              headers: JSON.stringify(response.headers),
+              headers: maskHeaders(response.headers),
             });
             return this.withStatus(response.status)
               .withHeaders(HttpHeaders.fromAxios(response.headers).proxy())

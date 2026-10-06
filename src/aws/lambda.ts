@@ -2,7 +2,7 @@ import { AsyncSubject, defer, map, NEVER, Observable, of, race, switchMap, tap }
 import { Proxy, Pipeline, Request, Response, Result, Chunk } from '../pipeline';
 import { Environment } from '../environment';
 import axios from 'axios';
-import { log, Trace } from '../log';
+import { log, maskHeaders, maskQuery, maskUrl, Trace } from '../log';
 import { APIGatewayProxyEventV2 } from 'aws-lambda';
 import { HttpProxy, HttpHeaders, HttpResponse, Source } from '../proxy/http';
 import { ShellResponse } from '../proxy/shell';
@@ -85,8 +85,9 @@ export class LambdaPipeline extends Pipeline {
       map(({ data, headers }) => {
         this._requestId = headers['lambda-runtime-aws-request-id'];
         const deadline = headers['lambda-runtime-deadline-ms'];
-        log.debug(`Received invocation`, { requestId: this._requestId, deadline, data });
-        return new LambdaRequest(this, data).withDeadline(new Date(Number(deadline)));
+        const request = new LambdaRequest(this, data).withDeadline(new Date(Number(deadline)));
+        log.debug(`Received invocation`, { requestId: this._requestId, deadline, request });
+        return request;
       })
     );
   }
@@ -123,7 +124,7 @@ export class LambdaRequest extends Request<LambdaPipeline> {
       data = JSON.parse(this.data);
     } catch (error) {
       log.debug(`Not JSON: ${error instanceof Error ? error.message : String(error)}`, {
-        data: this.data,
+        bytes: this.data.length,
         stack: error instanceof Error ? error.stack : undefined,
       });
       return NEVER;
@@ -189,7 +190,7 @@ export class LambdaRequest extends Request<LambdaPipeline> {
       return this.intoCron(data);
     }
 
-    log.warn('Unsupported HTTP Event', { data: this.data });
+    log.warn('Unsupported HTTP Event', { request: this });
     return NEVER;
   }
 
@@ -264,8 +265,34 @@ export class LambdaRequest extends Request<LambdaPipeline> {
     return NEVER;
   }
 
+  // The invocation's shape, never its content: header values that are credentials are masked,
+  // the body and cookies are counted.
+  private summary(): string {
+    let event: unknown;
+    try {
+      event = JSON.parse(this.data);
+    } catch {
+      return `text bytes=${this.data.length}`;
+    }
+    if (isFunctionUrlEvent(event)) {
+      const { headers, cookies, body, rawPath, rawQueryString, requestContext, isBase64Encoded } = event;
+      return [
+        `http method=${requestContext.http.method}`,
+        `path=${rawPath}`,
+        `query=[${maskQuery(rawQueryString)}]`,
+        `headers=[${maskHeaders(headers)}]`,
+        `cookies=${cookies?.length ?? 0}`,
+        `body=${(body ?? '').length}${isBase64Encoded ? ' base64' : ''} chars`,
+      ].join(' ');
+    }
+    if (isCronEvent(event)) {
+      return `cron line=[${event.spec?.line ?? ''}]`;
+    }
+    return `unknown keys=[${event && typeof event === 'object' ? Object.keys(event).join(',') : typeof event}]`;
+  }
+
   override repr(): string {
-    return `LambdaRequest(data=${this.data})`;
+    return `LambdaRequest(${this.summary()})`;
   }
 }
 
@@ -313,7 +340,7 @@ export class LambdaCronProxy extends LambdaHttpProxy {
         const settle = (): void =>
           cancelDeadline(() => {
             if (http.status >= 400) {
-              log.warn('LambdaCronProxy Request Failed', { status: http.status, uri: this.uri.toString() });
+              log.warn('LambdaCronProxy Request Failed', { status: http.status, uri: maskUrl(this.uri) });
               response.error(new Error(`Cron request to ${this.uri.toString()} failed with status ${http.status}`));
               return;
             }
