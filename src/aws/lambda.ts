@@ -321,7 +321,7 @@ export class LambdaHttpProxy extends HttpProxy<LambdaPipeline> {
   override into(): Observable<Response<LambdaPipeline>> {
     return this.invoke().pipe(
       map((http) => {
-        const response = new LambdaResponse(this.pipeline, this.request);
+        const response = new LambdaResponse(this.pipeline, this.request).withStatus(http.status);
         const { cancel: cancelDeadline } = this.request.onDeadline(() => {
           log.warn('LambdaHttpProxy Request Deadline Reached', { requestId: this.pipeline.requestId });
           response.error(new Error('Request deadline reached'));
@@ -345,7 +345,7 @@ export class LambdaCronProxy extends LambdaHttpProxy {
   override into(): Observable<Response<LambdaPipeline>> {
     return this.invoke().pipe(
       map((http) => {
-        const response = new LambdaResponse(this.pipeline, this.request);
+        const response = new LambdaResponse(this.pipeline, this.request).withStatus(http.status);
         const { cancel: cancelDeadline } = this.request.onDeadline(() => {
           log.warn('LambdaCronProxy Request Deadline Reached', { requestId: this.pipeline.requestId });
           response.error(new Error('Request deadline reached'));
@@ -378,6 +378,12 @@ export class LambdaCronProxy extends LambdaHttpProxy {
 export class LambdaResponse extends Response<LambdaPipeline> {
   private chunks: number = 0;
   private bytes: number = 0;
+  private status?: number;
+
+  withStatus(status: number): this {
+    this.status = status;
+    return this;
+  }
 
   @Trace
   override into(): Observable<Result<LambdaPipeline>> {
@@ -409,7 +415,7 @@ export class LambdaResponse extends Response<LambdaPipeline> {
         chunks: this.chunks,
         bytes: this.bytes,
       });
-      result.next(new Result(this.pipeline, this.request, true, this.bytes));
+      result.next(new Result(this.pipeline, this.request, true, this.bytes, this.status));
     });
 
     req.on('close', () => {
@@ -427,7 +433,7 @@ export class LambdaResponse extends Response<LambdaPipeline> {
         chunks: this.chunks,
         bytes: this.bytes,
       });
-      result.next(new Result(this.pipeline, this.request, false, this.bytes));
+      result.next(new Result(this.pipeline, this.request, false, this.bytes, this.status));
       result.complete();
     });
 
@@ -437,7 +443,7 @@ export class LambdaResponse extends Response<LambdaPipeline> {
         chunks: this.chunks,
         bytes: this.bytes,
       });
-      result.next(new Result(this.pipeline, this.request, false, this.bytes));
+      result.next(new Result(this.pipeline, this.request, false, this.bytes, this.status));
       result.complete();
     });
 
@@ -447,7 +453,7 @@ export class LambdaResponse extends Response<LambdaPipeline> {
         chunks: this.chunks,
         bytes: this.bytes,
       });
-      result.next(new Result(this.pipeline, this.request, false, this.bytes));
+      result.next(new Result(this.pipeline, this.request, false, this.bytes, this.status));
       result.complete();
     });
 

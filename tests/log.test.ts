@@ -297,6 +297,39 @@ describe('Logger', () => {
     });
   });
 
+  describe('relay', () => {
+    it("passes a line of the command's output through as written, in the same shape", () => {
+      const id = '4a43db8d-4950-44f7-b92a-eb1cef487d8b';
+      const log = new Logger();
+      log.child('stdout').relay('info', '▲ Next.js 16.2.4');
+      Logger.bind({ requestId: id });
+      log.child('stdout').relay('info', 'sqlite ready at /s3/db/nuss.sqlite  ');
+      log.child('stderr').relay('error', '(node:13) ExperimentalWarning: SQLite is an experimental feature');
+      expect(lines).toEqual([
+        { sink: 'info', text: 'INFO Stdout ▲ Next.js 16.2.4' },
+        { sink: 'info', text: `INFO RequestId: ${id} Stdout sqlite ready at /s3/db/nuss.sqlite` },
+        {
+          sink: 'error',
+          text: `INFO RequestId: ${id} Stderr (node:13) ExperimentalWarning: SQLite is an experimental feature`,
+        },
+      ]);
+    });
+
+    it('is not filtered by level, drops blank lines and leaves JSON lines untouched', () => {
+      const log = new Logger().withLevel('error').child('stdout');
+      log.relay('info', 'still here');
+      log.relay('info', '   ');
+      log.relay('info', '{"level":"info","msg":"from the app"}');
+      expect(text()).toEqual(['INFO Stdout still here', '{"level":"info","msg":"from the app"}']);
+    });
+
+    it('wraps the line as an object in the json format', () => {
+      process.env.ROWDY_LOG_FORMAT = 'json';
+      new Logger().child('stderr').relay('error', 'boom');
+      expect(JSON.parse(text()[0]!)).toEqual({ level: 'info', component: 'stderr', msg: 'boom' });
+    });
+  });
+
   it('returns the same child for the same component', () => {
     const log = new Logger();
     expect(log.child('vfs')).toBe(log.child('vfs'));

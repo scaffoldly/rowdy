@@ -316,8 +316,12 @@ INFO RequestId: 4a43db8d-4950-44f7-b92a-eb1cef487d8b Result Success: true Bytes:
 END RequestId: 4a43db8d-4950-44f7-b92a-eb1cef487d8b
 ```
 
-At `info` a request is its method and path and a result is its outcome, size and duration; headers
-(masked), the routing table and per-subsystem detail are at `debug`.
+At `info` a request is its method and path and a result is its status, outcome, size and duration;
+headers (masked), the routing table and per-subsystem detail are at `debug`.
+
+The command's own output is relayed a line at a time in the same shape, with the stream it came
+from as the component (`INFO RequestId: … Stdout ready on :3000`). It is never filtered by level or
+reworded, and a line that is already JSON is passed through untouched.
 
 | Setting                          | Values                                    | Default |
 | -------------------------------- | ----------------------------------------- | ------- |

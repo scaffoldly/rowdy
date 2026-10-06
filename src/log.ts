@@ -315,6 +315,33 @@ export class Logger {
     }
   };
 
+  /**
+   * A line of someone else's output (the command's stdout or stderr), relayed as written: never
+   * filtered by level, never recased. A line that is already JSON is passed through untouched.
+   */
+  relay = (sink: 'info' | 'error', line: string): void => {
+    if (!line.trim()) {
+      return;
+    }
+    const text = line.replace(/\s+$/, '');
+    if (/^\s*\{.*\}$/.test(text)) {
+      // eslint-disable-next-line no-console
+      return console[sink](text);
+    }
+    if (this.format === 'json') {
+      // eslint-disable-next-line no-console
+      return console[sink](JSON.stringify({ level: 'info', component: this.component, msg: text, ...state.context }));
+    }
+    const { requestId } = state.context;
+    const head = [
+      'INFO',
+      ...(requestId === undefined ? [] : [`RequestId: ${String(requestId)}`]),
+      ...(this.component ? [capital(this.component)] : []),
+    ];
+    // eslint-disable-next-line no-console
+    return console[sink](`${head.join(' ')} ${text}`);
+  };
+
   error = (message: string, params: Record<string, Loggable> = {}): void => this.log('error', message, params);
 
   warn = (message: string, params: Record<string, Loggable> = {}): void => this.log('warn', message, params);
