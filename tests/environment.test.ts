@@ -1,5 +1,14 @@
 import { Logger, Environment, Routes } from '@scaffoldly/rowdy';
-import { LocalAdapter, P9Server, S3Adapter, VFS_BACKING, VFS_PRELOAD, VFS_SOCKET } from '@scaffoldly/rowdy-vfs';
+import {
+  LocalAdapter,
+  P9Client,
+  P9Server,
+  S3Adapter,
+  VFS_BACKING,
+  VFS_PRELOAD,
+  VFS_SOCKET,
+  wire,
+} from '@scaffoldly/rowdy-vfs';
 import { existsSync, mkdtempSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
@@ -159,6 +168,29 @@ describe('environment', () => {
         bucket: 'other-bucket',
         prefix: 'tenant',
         backing: `${VFS_BACKING}.2`,
+      });
+    });
+
+    it('survives logging a 9P request with 64-bit fields (the Tgetattr mask took production down)', async () => {
+      const environment = withVolumes([`file://${backing}:/vfs`]);
+      await finalize(environment);
+      const server = (await environment['_vfs']) as P9Server;
+      const client = await new P9Client(server.socket).connect();
+      try {
+        await client.version();
+        const { fid } = await client.attach('/vfs');
+        const attr = await client.getattr(fid, wire.GETATTR.ALL); // mask is a bigint
+        expect(attr.qid.type).toBe(wire.QTDIR);
+        await client.lopen(fid, 0);
+        expect((await client.readdir(fid, 0n)).map((e) => e.name)).toEqual(['.', '..']); // offset is a bigint
+        await client.clunk(fid);
+      } finally {
+        client.close();
+      }
+      expect(Environment['flat']({ mask: 16383n, nested: { offset: 2n ** 40n }, s: 'x' })).toEqual({
+        mask: '16383',
+        nested: '{"offset":"1099511627776"}',
+        s: 'x',
       });
     });
 
