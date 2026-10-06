@@ -1,6 +1,6 @@
 import { EMPTY, from, map, Observable, of, Subject, switchMap, take } from 'rxjs';
 import { FileDescriptors, Pipeline, Proxy, Request, Response } from '../pipeline';
-import { PassThrough, Writable } from 'stream';
+import { PassThrough } from 'stream';
 import { ILoggable, log as root, Logger, Trace } from '../log';
 import { execa } from 'execa';
 import type { Options } from 'execa';
@@ -119,13 +119,26 @@ export class ShellProxy<P extends Pipeline> extends Proxy<P, ShellResponse> {
 }
 
 export class ShellResponse extends Subject<{ code: number }> implements ILoggable {
-  static onData =
-    (response: ShellResponse, stream: Writable) =>
-    (chunk: Buffer): void => {
-      log.debug('Received command output', { bin: response.bin, length: chunk.length });
+  // The command's output, a line at a time, in the same shape as rowdy's own lines. Which stream
+  // a line came from is the component; severity is not inferred from it.
+  static onData = (response: ShellResponse, stream: 'stdout' | 'stderr'): ((chunk?: Buffer) => void) => {
+    const out = root.child(stream);
+    const sink = stream === 'stdout' ? 'info' : 'error';
+    let partial = '';
+    return (chunk?: Buffer): void => {
+      if (!chunk) {
+        out.relay(sink, partial); // stream ended: flush an unterminated last line
+        partial = '';
+        return;
+      }
       response._bytes += chunk.length;
-      stream.write(`[${response.bin}] ${chunk.toString()}`);
+      const lines = (partial + chunk.toString()).split(/\r?\n/);
+      partial = lines.pop() ?? '';
+      for (const line of lines) {
+        out.relay(sink, line);
+      }
     };
+  };
 
   public readonly output = new PassThrough();
   private _bytes: number = 0;
@@ -141,8 +154,8 @@ export class ShellResponse extends Subject<{ code: number }> implements ILoggabl
     this.fds.stdout.pipe(this.output, { end: false });
     this.fds.stderr.pipe(this.output, { end: false });
 
-    const stdout = ShellResponse.onData(this, process.stdout);
-    const stderr = ShellResponse.onData(this, process.stderr);
+    const stdout = ShellResponse.onData(this, 'stdout');
+    const stderr = ShellResponse.onData(this, 'stderr');
 
     this.fds.stdout.on('data', stdout);
     this.fds.stderr.on('data', stderr);
@@ -152,6 +165,7 @@ export class ShellResponse extends Subject<{ code: number }> implements ILoggabl
     });
 
     this.fds.stdout.on('end', () => {
+      stdout();
       this.fds.stdout.removeListener('data', stdout);
       if (this.fds.stderr.readableEnded) {
         this.output.end();
@@ -159,6 +173,7 @@ export class ShellResponse extends Subject<{ code: number }> implements ILoggabl
     });
 
     this.fds.stderr.on('end', () => {
+      stderr();
       this.fds.stderr.removeListener('data', stderr);
       if (this.fds.stdout.readableEnded) {
         this.output.end();

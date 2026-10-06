@@ -172,7 +172,8 @@ export class Result<P extends Pipeline> implements ILoggable {
     protected readonly pipeline: P,
     public readonly request: Request<P>,
     public readonly success: boolean,
-    public readonly bytes: number
+    public readonly bytes: number,
+    public readonly status?: number
   ) {}
 
   get uptime(): number {
@@ -185,7 +186,12 @@ export class Result<P extends Pipeline> implements ILoggable {
 
   /** The one-line account of this result for the access log. */
   brief(): Record<string, string | number | boolean> {
-    return { success: this.success, bytes: this.bytes, duration: `${this.duration.toFixed(2)} ms` };
+    return {
+      ...(this.status === undefined ? {} : { status: this.status }),
+      success: this.success,
+      bytes: this.bytes,
+      duration: `${this.duration.toFixed(2)} ms`,
+    };
   }
 
   repr(): string {

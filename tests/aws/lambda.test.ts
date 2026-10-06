@@ -1,5 +1,7 @@
 import { Environment, Logger, Rowdy } from '@scaffoldly/rowdy';
 import { LambdaPipeline, LambdaRequest } from '../../src/aws/lambda';
+import { Result } from '../../src/pipeline';
+import { ShellResponse } from '../../src/proxy/shell';
 import { HttpProxy } from '../../src/proxy/http';
 import { APIGatewayProxyEventV2 } from 'aws-lambda';
 import { lastValueFrom } from 'rxjs';
@@ -95,6 +97,36 @@ describe('aws lambda runtime', () => {
       expect(output).toContain('X-Secret=');
       expect(output).toContain('token=');
       expect(output).toContain('cookies=1');
+    });
+
+    it('briefs a request as method and path and a result as status, outcome, size and duration', () => {
+      const pipeline = new LambdaPipeline(new Environment(new Logger()));
+      const request = new LambdaRequest(pipeline, JSON.stringify(event()));
+      expect(request.brief()).toEqual({ method: 'POST', path: '/tunnel/gc' });
+      expect(new Result(pipeline, request, true, 194, 200).brief()).toEqual({
+        status: 200,
+        success: true,
+        bytes: 194,
+        duration: expect.stringMatching(/^\d+\.\d{2} ms$/),
+      });
+      expect(new Result(pipeline, request, false, 0).brief()).not.toHaveProperty('status');
+    });
+
+    it("relays the command's output a whole line at a time", () => {
+      const lines: string[] = [];
+      const spy = jest
+        .spyOn(console, 'info')
+        .mockImplementation((...args: unknown[]) => void lines.push(args.join(' ')));
+      try {
+        const onData = ShellResponse.onData({ _bytes: 0 } as unknown as ShellResponse, 'stdout');
+        onData(Buffer.from('first line\nsecond '));
+        onData(Buffer.from('line\r\n\nthird, unterminated'));
+        expect(lines).toEqual(['INFO Stdout first line', 'INFO Stdout second line']);
+        onData(); // stream end
+        expect(lines[2]).toBe('INFO Stdout third, unterminated');
+      } finally {
+        spy.mockRestore();
+      }
     });
 
     it('summarizes a non-JSON payload by size only', () => {
