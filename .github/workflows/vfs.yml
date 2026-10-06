@@ -108,6 +108,41 @@ jobs:
           done
           yarn && yarn build && yarn test
 
+  # Step 4 of ADR 0002: the kernel's own 9P client mounts the server. It needs the 9p modules on
+  # the runner's kernel, which is not guaranteed, so a missing module is reported, not failed on.
+  conformance:
+    runs-on: ubuntu-latest
+    needs: [native]
+    name: Kernel v9fs conformance
+    continue-on-error: true
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+
+      - name: Use Node.js 22.x
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22.x
+          cache: 'yarn'
+
+      - name: Download shims
+        uses: actions/download-artifact@v4
+        with:
+          pattern: vfspreload-linux-*
+          path: lib
+          merge-multiple: false
+
+      - name: Build package
+        run: |
+          for arch in x64 arm64; do
+            mkdir -p lib/linux-$arch
+            mv lib/vfspreload-linux-$arch/vfspreload.so lib/linux-$arch/vfspreload.so
+          done
+          yarn --frozen-lockfile && yarn build
+
+      - name: Mount with v9fs and exercise it
+        run: sh native/conformance.sh
+
   build-publish:
     runs-on: ubuntu-latest
     needs: [native, lint, test]

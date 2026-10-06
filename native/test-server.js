@@ -1,8 +1,9 @@
 // The supervisor for native/test.sh: the package's 9P server over two mounts, with an adapter
 // that records every hook to /tmp/ops.log and refuses a few paths so the shim's error paths
-// are exercised. Runs inside node:22-alpine with the repository at /w (dist built).
+// are exercised. Needs dist/ built; runs in the node:22-alpine test container and on a CI runner.
 const fs = require('fs');
-const { P9Server, LocalAdapter, VfsError } = require('/w/dist/index.js');
+const path = require('path');
+const { P9Server, LocalAdapter, VfsError } = require(path.join(__dirname, '..', 'dist', 'index.js'));
 
 class Recording extends LocalAdapter {
   hook(op, path) {
