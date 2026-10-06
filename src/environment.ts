@@ -32,12 +32,12 @@ import {
   applyVfs,
   LINUX_ERRNO,
   LocalAdapter,
-  MountAdapter,
+  P9Server,
   S3Adapter,
   VfsAdapter,
-  VfsServer,
   VFS_BACKING,
   VFS_SOCKET,
+  wire,
 } from '@scaffoldly/rowdy-vfs';
 import { Volume } from './routes';
 import { LambdaImageService } from './aws/lambda/image';
@@ -131,7 +131,7 @@ export class Environment implements ILoggable {
   private _rowdy: Rowdy;
   private _port?: number;
   private _registry: string | undefined;
-  private _vfs?: Promise<VfsServer>;
+  private _vfs?: Promise<P9Server>;
 
   constructor(public readonly log: Logger) {
     this.signal.addEventListener('abort', () => {
@@ -599,32 +599,32 @@ export class Environment implements ILoggable {
    * (protocol: @scaffoldly/rowdy-vfs DISCLOSURE). Started once per process on
    * first use, for the first declared volume, and closed on abort.
    */
-  private vfsServer(mounts: Array<{ volume: Volume; backing: string }>): Promise<VfsServer> {
+  private vfsServer(mounts: Array<{ volume: Volume; backing: string }>): Promise<P9Server> {
     if (!this._vfs) {
-      const adapter = new MountAdapter(
+      const names = Object.fromEntries(Object.entries(wire.T).map(([name, type]) => [type, name]));
+      const server = new P9Server(
         mounts.map(({ volume, backing }) => ({
           mountpoint: volume.mountpoint,
+          backing,
           adapter: this.vfsAdapter(volume, backing),
-        }))
+        })),
+        {
+          socket: VFS_SOCKET,
+          // A miss before a create and a contended lock are how the protocol says "not yet".
+          onRequest: ({ type, tag: _tag, ...request }, mount, ecode) => {
+            const expected = ecode === undefined || ecode === LINUX_ERRNO.ENOENT || ecode === LINUX_ERRNO.EAGAIN;
+            this.log.child('vfs')[expected ? 'debug' : 'warn'](names[type] ?? `T${type}`, {
+              ...(mount ? { mount } : {}),
+              ...Environment.flat({ ...request, ...('names' in request ? { names: request.names.join('/') } : {}) }),
+              ...(ecode === undefined ? {} : { ecode }),
+            });
+          },
+        }
       );
-      const server = new VfsServer(adapter, {
-        socket: VFS_SOCKET,
-        onRequest: ({ op, ...request }, reply) =>
-          this.log.child('vfs').debug(op, Environment.flat({ ...request, ...reply })),
-        // A miss before a create and a contended lock are how the protocol says "not yet".
-        onError: ({ op, ...request }, error) => {
-          const errno = (error as { errno?: number }).errno;
-          const expected = errno === LINUX_ERRNO.ENOENT || errno === LINUX_ERRNO.EAGAIN;
-          this.log.child('vfs')[expected ? 'debug' : 'warn'](`${op} failed`, {
-            ...Environment.flat(request),
-            error: `${error}`,
-          });
-        },
-      });
       this.signal.addEventListener('abort', () => {
         // Give leases back before the socket goes away so other instances are not held up until TTL.
         const released = Promise.all(
-          adapter.adapters.map((a) => (a instanceof S3Adapter ? a.releaseAll() : Promise.resolve()))
+          server.mounts.map(({ adapter }) => (adapter instanceof S3Adapter ? adapter.releaseAll() : Promise.resolve()))
         );
         released
           .catch((err) => this.log.debug(`VFS lease release failed`, { error: `${err}` }))
