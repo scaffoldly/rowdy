@@ -24,7 +24,7 @@ async function main(): Promise<void> {
   ABORT.signal.addEventListener('abort', () => subscription.unsubscribe());
 
   await firstValueFrom(stop$);
-  log.info('Shutting down.');
+  log.info('Shutting Down');
 }
 
 const error = (error: Error): void => {

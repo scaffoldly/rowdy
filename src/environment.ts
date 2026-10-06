@@ -40,7 +40,6 @@ import {
 } from '@scaffoldly/rowdy-vfs';
 import { Volume } from './routes';
 import { LambdaImageService } from './aws/lambda/image';
-import { inspect } from 'util';
 import { cpus } from 'os';
 import { internalIpV4Sync } from 'internal-ip';
 import { writeGithubOutput } from './util/github';
@@ -287,7 +286,7 @@ export class Environment implements ILoggable {
 
                     this._subscriptions.push(
                       lambda.observe().subscribe({
-                        next: (fn) => this.log.info(`State Updated: ${inspect(fn.State)}`),
+                        next: (fn) => this.log.info('State Updated', Environment.flat(fn.State)),
                         complete: () => {
                           this.log.info('Lambda Function Installation Complete');
                           writeGithubOutput('url', lambda.State.FunctionUrl);
@@ -401,7 +400,7 @@ export class Environment implements ILoggable {
       this.log.withDebugging();
     }
 
-    log.info(`${packageJson.name}@${packageJson.version} has started.`);
+    log.info('Rowdy Started', { version: packageJson.version });
     log.debug(`Arguments parsed`, { parsed: maskJson(parsed), env: maskEnv(process.env) });
 
     if (isatty(process.stdout.fd)) {
@@ -479,12 +478,12 @@ export class Environment implements ILoggable {
         )
         .subscribe(({ name, router }) => {
           this._pipelines.forEach((p) => p.withRouter(router));
-          this.log.info(`gRPC server initialized by ${name}`);
+          this.log.info('gRPC Server Initialized', { by: name });
         })
     );
 
     if (this.command && this.command.length) {
-      log.info(`Starting command`, { command: this.command });
+      log.info('Starting Command', { argv: this.command });
 
       this._subscriptions.push(
         new ShellProxy(shell, new ShellRequest(shell, this.command).withInput(process.stdin))
@@ -494,7 +493,7 @@ export class Environment implements ILoggable {
             this._subscriptions.push(
               response.subscribe({
                 complete: () => {
-                  log.info(`'${response.bin}' completed`, { response });
+                  log.info('Command Completed', { bin: response.bin, response });
                   if (this._port) {
                     // TODO: Clean up CTRL+C
                     return;
@@ -528,13 +527,16 @@ export class Environment implements ILoggable {
 
     return pipeline.pipe(
       takeUntil(fromEvent(this.signal, 'abort')),
-      tap((request) => log.info('Request', { request, routes: this.routes })),
+      tap((request) => {
+        log.info('Request', request.brief());
+        log.debug('Request Detail', { request, routes: this.routes });
+      }),
       mergeMap((request) => request.into().pipe(tap(() => this._envVars.complete())), Environment.CONCURRENCY),
       tap((proxy) => log.debug('Proxy', { proxy })),
       mergeMap((proxy) => proxy.into(), Environment.CONCURRENCY),
       tap((response) => log.debug('Respond', { response })),
       mergeMap((response) => response.into(), Environment.CONCURRENCY),
-      tap((result) => log.info('Result', { result })),
+      tap((result) => log.info('Result', result.brief())),
       repeat({ delay: () => timer(delay) })
     );
   }

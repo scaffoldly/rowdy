@@ -199,7 +199,7 @@ export class URI extends URL implements ILoggable {
       exhaustMap(() => check$),
       filter(Boolean),
       take(1),
-      tap(() => log.info(`URI is healthy`, { uri: this })),
+      tap(() => log.debug(`URI is healthy`, { uri: this })),
       map(() => this),
       shareReplay(1)
     );

@@ -81,7 +81,7 @@ export class LambdaPipeline extends Pipeline {
     const url = `http://${this.runtimeApi}/2018-06-01/runtime/invocation/next`;
 
     return defer(() => {
-      Logger.unbind('req');
+      Logger.unbind('requestId');
       log.debug(`Fetching next invocation`, { url });
       return axios.get<string>(url, { responseType: 'text', signal: this.signal, timeout: 0 });
     }).pipe(
@@ -89,7 +89,7 @@ export class LambdaPipeline extends Pipeline {
         this._requestId = headers['lambda-runtime-aws-request-id'];
         const deadline = headers['lambda-runtime-deadline-ms'];
         const request = new LambdaRequest(this, data).withDeadline(new Date(Number(deadline)));
-        Logger.bind({ req: String(this._requestId).slice(0, 8) });
+        Logger.bind({ requestId: String(this._requestId) });
         log.debug(`Received invocation`, { requestId: this._requestId, deadline, request });
         return request;
       })
@@ -267,6 +267,22 @@ export class LambdaRequest extends Request<LambdaPipeline> {
   @Trace
   protected intoShell(): Observable<Proxy<LambdaPipeline, ShellResponse>> {
     return NEVER;
+  }
+
+  override brief(): Record<string, string | number | boolean> {
+    let event: unknown;
+    try {
+      event = JSON.parse(this.data);
+    } catch {
+      return { kind: 'text', bytes: this.data.length };
+    }
+    if (isFunctionUrlEvent(event)) {
+      return { method: event.requestContext.http.method, path: event.rawPath };
+    }
+    if (isCronEvent(event)) {
+      return { cron: event.spec?.line ?? '' };
+    }
+    return { kind: 'unknown' };
   }
 
   // The invocation's shape, never its content: header values that are credentials are masked,
