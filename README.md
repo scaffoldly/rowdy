@@ -60,6 +60,13 @@ Each entry point is hooked on its own: musl binds libc-internal cross-calls (`fo
 
 ```sh
 yarn build:native   # compiles native/vfspreload.c for x64 and arm64 in alpine (docker)
+```
+
+Every push to `vfs` also uploads the packed build as an asset of the rolling `vfs-builds` pre-release
+(`rowdy-vfs-<sha>.tgz`), which is how rowdy pins this package: by commit, without waiting on the
+registry's review of the shim. The npm release stays the reviewed, attested one for everyone else.
+
+```sh
 yarn test:native    # drives the shim through busybox, node and a C caller under LD_PRELOAD
 yarn build          # bundles src/ with lib/linux-*/vfspreload.so inlined
 yarn test

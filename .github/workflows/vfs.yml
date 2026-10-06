@@ -106,7 +106,7 @@ jobs:
       !contains(github.event.head_commit.message, '[skip-prerelease]')
 
     permissions:
-      contents: read
+      contents: write
       id-token: write
 
     steps:
@@ -151,6 +151,25 @@ jobs:
         run: |
           yarn version --new-version ${{ steps.version.outputs.version }} --no-git-tag-version
 
+      # DEVNOTE: rowdy consumes this package by commit, not through the registry: the registry
+      # review of a release that carries an ELF takes an hour and a maintainer's 2FA, and rowdy is
+      # the only consumer that needs the build the moment it exists. Every build lands as an asset
+      # of one rolling pre-release, named by commit, so rowdy's package.json can pin
+      #   https://github.com/scaffoldly/rowdy/releases/download/vfs-builds/rowdy-vfs-<sha>.tgz
+      # The registry still gets the staged, attested release below for everyone else.
+      - name: Publish build to the vfs-builds release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          ASSET="rowdy-vfs-${GITHUB_SHA:0:7}.tgz"
+          mv "$(npm pack --silent)" "$ASSET"
+          gh release view vfs-builds >/dev/null 2>&1 || gh release create vfs-builds \
+            --prerelease --target "$GITHUB_SHA" --title "rowdy-vfs builds" \
+            --notes "Builds of @scaffoldly/rowdy-vfs from the vfs branch, one asset per commit, for rowdy to pin by SHA. The npm registry carries the reviewed, attested releases."
+          gh release upload vfs-builds "$ASSET" --clobber
+          echo "asset=$ASSET" >> $GITHUB_OUTPUT
+        id: asset
+
       # DEVNOTE: The OIDC token isn't an npm token. The registry exchanges it for a short-lived
       # publish token scoped to this package, the same exchange `npm publish` does internally.
       # Trusted publishing is configured on npmjs.com for this repository and vfs.yml.
@@ -193,3 +212,8 @@ jobs:
           echo '```' >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "**Note:** Add \`[skip-prerelease]\` to commit message to skip staging." >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### 🔗 For rowdy (no review wait)" >> $GITHUB_STEP_SUMMARY
+          echo '```json' >> $GITHUB_STEP_SUMMARY
+          echo "\"@scaffoldly/rowdy-vfs\": \"https://github.com/scaffoldly/rowdy/releases/download/vfs-builds/${{ steps.asset.outputs.asset }}\"" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
