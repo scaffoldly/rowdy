@@ -548,6 +548,69 @@ describe('S3Adapter', () => {
     });
   });
 
+  describe('localOnly', () => {
+    const scratch = (): S3Adapter =>
+      new S3Adapter({
+        bucket: 'example-bucket',
+        mountpoint: mount,
+        backing,
+        client: s3 as unknown as S3Client,
+        revalidateMs: 0,
+        localOnly: ['*-{journal,wal,shm}', 'cache/**'],
+      });
+
+    it('never touches S3 for a matching file: open, flush, lock, unlink are local no-ops', async () => {
+      const a = scratch();
+      writeFileSync(join(backing, 'db.sqlite-journal'), 'pages');
+      await a.stat(`${mount}/db.sqlite-journal`);
+      await a.fetch(`${mount}/db.sqlite-journal`);
+      await a.open(`${mount}/db.sqlite-journal`, 1);
+      await a.lock(`${mount}/db.sqlite-journal`);
+      await a.flush(`${mount}/db.sqlite-journal`);
+      await a.unlock(`${mount}/db.sqlite-journal`);
+      await a.revalidate(`${mount}/db.sqlite-journal`);
+      await a.unlink(`${mount}/db.sqlite-journal`);
+      expect(s3.calls).toEqual([]);
+      expect(s3.objects.size).toBe(0);
+    });
+
+    it('matches a bare glob by file name at any depth and a slashed glob by path', async () => {
+      const a = scratch();
+      writeFileSync(join(backing, 'x.tmp'), 'x');
+      mkdirSync(join(backing, 'deep', 'cache'), { recursive: true });
+      writeFileSync(join(backing, 'deep', 'cache', 'db.sqlite-wal'), 'w'); // bare glob: any depth
+      await a.flush(`${mount}/deep/cache/db.sqlite-wal`);
+      mkdirSync(join(backing, 'cache', 'sub'), { recursive: true });
+      writeFileSync(join(backing, 'cache', 'sub', 'blob.bin'), 'b'); // slashed glob: path under cache/
+      await a.flush(`${mount}/cache/sub/blob.bin`);
+      expect(s3.calls).toEqual([]);
+      await a.open(`${mount}/x.tmp`, 0); // not matched: ordinary S3 path (HEAD on open)
+      expect(s3.calls).toEqual(['HeadObjectCommand']);
+    });
+
+    it('the database itself still syncs while its sidecar stays local', async () => {
+      const a = scratch();
+      writeFileSync(join(backing, 'db.sqlite'), 'main');
+      writeFileSync(join(backing, 'db.sqlite-journal'), 'scratch');
+      await a.open(`${mount}/db.sqlite`, 1);
+      await a.flush(`${mount}/db.sqlite`);
+      await a.flush(`${mount}/db.sqlite-journal`);
+      expect([...s3.objects.keys()]).toEqual(['db.sqlite']);
+    });
+
+    it('rename across the boundary uploads on the way out and deletes on the way in', async () => {
+      const a = scratch();
+      writeFileSync(join(backing, 'final.txt'), 'done'); // the shim has already moved staging.txt-journal -> final.txt
+      await a.rename(`${mount}/staging.txt-journal`, `${mount}/final.txt`);
+      expect(s3.objects.get('final.txt')?.body.toString()).toBe('done');
+      expect(s3.calls).not.toContain('CopyObjectCommand');
+      s3.calls.length = 0;
+      await a.rename(`${mount}/final.txt`, `${mount}/final.txt-wal`);
+      expect(s3.objects.has('final.txt')).toBe(false);
+      expect(s3.calls).toEqual(['DeleteObjectCommand']);
+    });
+  });
+
   it('surfaces S3 errors as VfsError errnos', async () => {
     s3.send = async () => {
       throw Object.assign(new Error('AccessDenied'), { name: 'AccessDenied', $metadata: { httpStatusCode: 403 } });

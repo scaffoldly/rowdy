@@ -40,6 +40,43 @@ export type S3AdapterOptions = {
   lockOnOpen?: boolean;
   /** Identifies this supervisor in lease objects. Default: a random id per process. */
   owner?: string;
+  /**
+   * Globs for paths (relative to the mountpoint) that live in the backing directory only: never
+   * fetched, uploaded, deleted or leased, and invisible to other instances. A glob without a `/`
+   * matches a file name at any depth. `*` and `?` stay within one segment, `**` crosses segments,
+   * `{a,b}` alternates. Scratch and sidecar files, e.g. `*-{journal,wal,shm}`.
+   */
+  localOnly?: string[];
+};
+
+/** Minimal glob -> RegExp: `*`, `?` within a segment, `**` across segments, `{a,b}` alternation. */
+const globToRegExp = (glob: string): RegExp => {
+  let re = '';
+  let depth = 0;
+  for (let i = 0; i < glob.length; i++) {
+    const c = glob[i]!;
+    if (c === '*') {
+      if (glob[i + 1] === '*') {
+        re += '.*';
+        i++;
+      } else {
+        re += '[^/]*';
+      }
+    } else if (c === '?') {
+      re += '[^/]';
+    } else if (c === '{') {
+      depth++;
+      re += '(?:';
+    } else if (c === '}' && depth > 0) {
+      depth--;
+      re += ')';
+    } else if (c === ',' && depth > 0) {
+      re += '|';
+    } else {
+      re += c.replace(/[.+^$()|[\]\\{}]/g, '\\$&');
+    }
+  }
+  return new RegExp(`^(?:${re})$`);
 };
 
 /** What the adapter knows about one key. `etag` is the version the local copy is based on. */
@@ -144,10 +181,14 @@ export class S3Adapter implements VfsAdapter {
   private readonly chains = new Map<string, Promise<unknown>>();
   private readonly log: (message: string, params?: Record<string, unknown>) => void;
 
+  /** Compiled localOnly globs; `pathy` ones (containing a `/`) match the whole relative path. */
+  private readonly localOnly: Array<{ re: RegExp; pathy: boolean }>;
+
   constructor(private readonly options: S3AdapterOptions) {
     this.client = options.client ?? new S3Client({});
     this.log = options.log ?? (() => {});
     this.owner = options.owner ?? randomUUID();
+    this.localOnly = (options.localOnly ?? []).map((glob) => ({ re: globToRegExp(glob), pathy: glob.includes('/') }));
     mkdirSync(options.backing, { recursive: true });
   }
 
@@ -340,10 +381,19 @@ export class S3Adapter implements VfsAdapter {
     this.log(`revalidated`, { key, etag: head.etag });
   }
 
+  /** True when `rel` matches a localOnly glob: the backing file is the whole story. */
+  private isLocal(rel: string): boolean {
+    if (!this.localOnly.length) {
+      return false;
+    }
+    const name = rel.slice(rel.lastIndexOf('/') + 1);
+    return this.localOnly.some(({ re, pathy }) => re.test(pathy ? rel : name));
+  }
+
   /** Protocol op: make the local copy of `path` current before a read (bypasses the TTL). */
   async revalidate(path: string): Promise<void> {
     const rel = this.rel(path);
-    if (rel === undefined || rel === '') {
+    if (rel === undefined || rel === '' || this.isLocal(rel)) {
       return;
     }
     const key = this.key(rel);
@@ -358,6 +408,9 @@ export class S3Adapter implements VfsAdapter {
     if (rel === '') {
       await fs.mkdir(this.options.backing, { recursive: true });
       return;
+    }
+    if (this.isLocal(rel)) {
+      return; // the shim's own stat of the backing file is the answer
     }
     const key = this.key(rel);
     if (existsSync(this.local(rel))) {
@@ -383,7 +436,7 @@ export class S3Adapter implements VfsAdapter {
 
   async fetch(path: string): Promise<void> {
     const rel = this.rel(path);
-    if (rel === undefined || rel === '') {
+    if (rel === undefined || rel === '' || this.isLocal(rel)) {
       return;
     }
     const key = this.key(rel);
@@ -461,7 +514,7 @@ export class S3Adapter implements VfsAdapter {
 
   async open(path: string, _flags: number): Promise<void> {
     const rel = this.rel(path);
-    if (rel === undefined || rel === '') {
+    if (rel === undefined || rel === '' || this.isLocal(rel)) {
       return;
     }
     const key = this.key(rel);
@@ -484,7 +537,7 @@ export class S3Adapter implements VfsAdapter {
 
   async flush(path: string): Promise<void> {
     const rel = this.rel(path);
-    if (rel === undefined || rel === '') {
+    if (rel === undefined || rel === '' || this.isLocal(rel)) {
       return;
     }
     const key = this.key(rel);
@@ -694,7 +747,7 @@ export class S3Adapter implements VfsAdapter {
   /** Protocol op: hold the lease for `path` until unlock (SQLite's write transaction). */
   async lock(path: string): Promise<void> {
     const rel = this.rel(path);
-    if (rel === undefined || rel === '') {
+    if (rel === undefined || rel === '' || this.isLocal(rel)) {
       return;
     }
     const key = this.key(rel);
@@ -714,7 +767,7 @@ export class S3Adapter implements VfsAdapter {
   /** Protocol op: release the lease for `path`. */
   async unlock(path: string): Promise<void> {
     const rel = this.rel(path);
-    if (rel === undefined || rel === '') {
+    if (rel === undefined || rel === '' || this.isLocal(rel)) {
       return;
     }
     const key = this.key(rel);
@@ -728,7 +781,7 @@ export class S3Adapter implements VfsAdapter {
 
   async unlink(path: string): Promise<void> {
     const rel = this.rel(path);
-    if (rel === undefined || rel === '') {
+    if (rel === undefined || rel === '' || this.isLocal(rel)) {
       return;
     }
     const key = this.key(rel);
@@ -751,6 +804,22 @@ export class S3Adapter implements VfsAdapter {
       throw VfsError.code('EXDEV', `${from} -> ${to}: rename across the mountpoint boundary`);
     }
     const target = this.local(relTo);
+    const fromLocal = this.isLocal(relFrom);
+    const toLocal = this.isLocal(relTo);
+    if (fromLocal && toLocal) {
+      return; // both sides live in the backing directory, which the shim already renamed
+    }
+    if (fromLocal) {
+      // Leaving the local-only set: the file now exists remotely as `to`, uploaded as new.
+      const toKey = this.key(relTo);
+      await this.serial(toKey, () => this.put(toKey, target, to));
+      return;
+    }
+    if (toLocal) {
+      // Entering the local-only set: the remote object `from` goes away.
+      await this.unlink(from);
+      return;
+    }
     if (existsSync(target) && statSync(target).isDirectory()) {
       // The local rename already moved the tree; move every object under the old prefix.
       const oldPrefix = this.dirPrefix(relFrom);
