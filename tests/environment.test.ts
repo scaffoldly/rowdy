@@ -42,6 +42,31 @@ describe('environment', () => {
     rmSync(backing, { recursive: true, force: true });
   });
 
+  it('logs the finalized environment with values masked', async () => {
+    const lines: string[] = [];
+    const spy = jest.spyOn(console, 'debug').mockImplementation((...args: unknown[]) => {
+      lines.push(args.join(' '));
+    });
+    const before = process.env.ROWDY_DEBUG;
+    process.env.ROWDY_DEBUG = 'true';
+    process.env.CANARY_API_TOKEN = 'canary-0123456789-do-not-log-me-abcdef';
+    try {
+      const environment = new Environment(logger).withEnv('HTTP_UA', 'canary-user-agent/that-is-long-enough');
+      const env = await finalize(environment);
+      expect(env.CANARY_API_TOKEN).toBe('canary-0123456789-do-not-log-me-abcdef'); // the child still gets it
+      const output = lines.join('\n');
+      expect(output).toContain('Environment variables finalized');
+      expect(output).toContain('CANARY_API_TOKEN');
+      expect(output).not.toContain('0123456789-do-not-log-me');
+      expect(output).not.toContain('canary-user-agent/that');
+    } finally {
+      spy.mockRestore();
+      delete process.env.CANARY_API_TOKEN;
+      if (before === undefined) delete process.env.ROWDY_DEBUG;
+      else process.env.ROWDY_DEBUG = before;
+    }
+  });
+
   describe('userspace VFS', () => {
     it('is off without volumes', async () => {
       const environment = new Environment(logger);
