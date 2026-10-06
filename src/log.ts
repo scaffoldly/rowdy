@@ -68,9 +68,16 @@ const masked = (value: unknown, key = ''): unknown => {
 export const maskJson = (value: unknown): string => JSON.stringify(masked(value));
 
 // Header and query-parameter names whose values are credentials. Wider than SENSITIVE: `auth`
-// would also hit harmless structure keys such as Lambda's `AuthType`.
-const SENSITIVE_NAME =
-  /auth|cookie|secret|token|password|passwd|api[-_]?key|access[-_]?key|credential|session|signature/i;
+// would also hit harmless structure keys such as Lambda's `AuthType`. Short names match only as
+// whole words, so `encoded`, `keyword`, `design` and `postcode` stay readable.
+const SENSITIVE_NAME = new RegExp(
+  [
+    'auth|cookie|secret|token|passw|passcode|passphrase|credential|session|signature|jwt|bearer|assertion|private',
+    'key($|[-_.])',
+    '(^|[-_.])(code|sig|otp|pin|nonce)($|[-_.])',
+  ].join('|'),
+  'i'
+);
 
 /** A query string as it may be logged: every name, sensitive-named values masked. */
 export const maskQuery = (search: string | URLSearchParams = ''): string =>

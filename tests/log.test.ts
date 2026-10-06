@@ -60,8 +60,8 @@ describe('log masking', () => {
       });
       expect(out).not.toContain('canary-cookie');
       expect(out).not.toContain('canary-referer-token');
-      expect(out).toContain('referer=https://example.com/cb?code=ok&access_token=');
-      expect(out.match(/chars\)/g)).toHaveLength(3);
+      expect(out).toContain('referer=https://example.com/cb?code=… (2 chars)&access_token=');
+      expect(out.match(/chars\)/g)).toHaveLength(4);
     });
   });
 
@@ -69,6 +69,17 @@ describe('log masking', () => {
     it('keeps parameter names and masks sensitive-named values', () => {
       expect(maskQuery('page=2&token=canary-query-token-0123456789')).toBe('page=2&token=can…789 (29 chars)');
       expect(maskQuery('')).toBe('');
+    });
+
+    it('masks one-time codes, keys and signatures by whole-word name, not by substring', () => {
+      const secret = 'canary-0123456789-abcdef';
+      const sensitive = ['code', 'auth_code', 'key', 'apikey', 'api_key', 'x-api-key', 'sig', 'X-Amz-Signature'];
+      for (const name of [...sensitive, 'otp', 'jwt', 'pin', 'id_token', 'passcode']) {
+        expect(maskQuery(`${name}=${secret}`)).not.toContain(secret);
+      }
+      for (const name of ['keyword', 'encoded', 'design', 'postcode', 'content-encoding', 'page', 'spinner', 'state']) {
+        expect(maskQuery(`${name}=${secret}`)).toBe(`${name}=${secret}`);
+      }
     });
 
     it('masks a URL password and sensitive query values, and leaves the rest of the URL alone', () => {
