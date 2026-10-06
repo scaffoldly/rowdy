@@ -38,6 +38,10 @@ inputs:
     description: "Secrets (alpha feature)."
     required: false
     default: ""
+  log-level:
+    description: "Log verbosity for the deploy and for the deployed function: error, warn, info, debug or trace. (Default: info)"
+    required: false
+    default: "info"
 outputs:
   url:
     description: The URL of the deployed application.
@@ -63,8 +67,7 @@ runs:
         ${{ inputs.cloud }} ${{ inputs.compute }} ${{ inputs.image }}
         ${{ inputs.command }}
       env:
-        ROWDY_DEBUG: "true"
-        ROWDY_TRACE: "true"
+        ROWDY_LOG_LEVEL: "${{ inputs.log-level }}"
         ROWDY_NAME: "${{ inputs.name }}"
         ROWDY_MEMORY: "${{ inputs.memory }}"
         ROWDY_CRI: "${{ inputs.cri }}"
