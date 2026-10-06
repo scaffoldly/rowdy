@@ -34,6 +34,39 @@ const isLoggable = (v: unknown): v is Loggable =>
   v instanceof AbortSignal ||
   v instanceof Buffer;
 
+const SENSITIVE = /secret|token|password|passwd|credential|authorization|cookie/i;
+
+/**
+ * A sensitive string as it may be logged: its length and a short prefix and suffix. At most 4
+ * characters per end and never more than a quarter of the string; under 8 characters, none.
+ */
+export const mask = (value: unknown): string => {
+  const s = typeof value === 'string' ? value : String(value ?? '');
+  const keep = Math.min(4, Math.floor(s.length / 8));
+  return `${s.slice(0, keep)}…${keep ? s.slice(-keep) : ''} (${s.length} chars)`;
+};
+
+/** An environment as it may be logged: every name, every value masked. */
+export const maskEnv = (env: Record<string, unknown> = {}): string =>
+  JSON.stringify(Object.fromEntries(Object.entries(env).map(([name, value]) => [name, mask(value)])));
+
+const masked = (value: unknown, key = ''): unknown => {
+  if (typeof value === 'string') {
+    return SENSITIVE.test(key) ? mask(value) : value;
+  }
+  if (Array.isArray(value)) {
+    return value.map((v) => masked(v, key));
+  }
+  if (value && typeof value === 'object' && typeof (value as { toJSON?: unknown }).toJSON !== 'function') {
+    const env = key === 'Variables';
+    return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, env ? mask(v) : masked(v, k)]));
+  }
+  return value;
+};
+
+/** JSON of an arbitrary structure with `Variables` maps and credential-named strings masked. */
+export const maskJson = (value: unknown): string => JSON.stringify(masked(value));
+
 export class Logger {
   private _debug = false;
   private _trace = false;

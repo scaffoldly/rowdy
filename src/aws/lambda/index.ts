@@ -82,6 +82,7 @@ import promiseRetry from 'promise-retry';
 import { inspect } from 'util';
 import { Environment, Routes } from '../..';
 import { Crontab } from '../../routes';
+import { mask, maskJson } from '../../log';
 import { TPulledImage } from '../../api/types';
 
 const TAG_KEY_REGEX = /^(?!aws:)[A-Za-z0-9 _.:\-=+@]{1,128}$/;
@@ -452,7 +453,7 @@ export class LambdaFunction implements Logger {
   }
 
   withEnvironment(key: string, value: string, overwrite = true): this {
-    this.log.debug(`withEnvironment(key=${key}, value=${value}, overwrite=${overwrite})`);
+    this.log.debug(`withEnvironment(key=${key}, value=${mask(value)}, overwrite=${overwrite})`);
 
     key = key
       .replace(/[^a-zA-Z0-9_]/g, '_')
@@ -1256,8 +1257,8 @@ export class LambdaFunction implements Logger {
         output?: unknown;
       };
       this.log.debug(`[${clientName ?? 'UnknownClient'}] [${commandName ?? 'UnknownCommand'}]`, {
-        input: JSON.stringify(input),
-        output: JSON.stringify(output),
+        input: maskJson(input),
+        output: maskJson(output),
       });
     }
   };
@@ -1272,7 +1273,7 @@ export class LambdaFunction implements Logger {
         error?: unknown;
       };
       this.log.debug(`[${clientName ?? 'UnknownClient'}] [${commandName ?? 'UnknownCommand'}]`, {
-        input: JSON.stringify(input),
+        input: maskJson(input),
         error: inspect(error),
       });
       return;

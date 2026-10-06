@@ -19,7 +19,7 @@ import {
   timer,
 } from 'rxjs';
 import { Routes } from './routes';
-import { ILoggable, log, Logger, Trace } from './log';
+import { ILoggable, log, Logger, mask, maskEnv, maskJson, Trace } from './log';
 import { ShellProxy, ShellRequest } from './proxy/shell';
 import { ShellPipeline } from './shell/pipeline';
 import { Pipeline, Result } from './pipeline';
@@ -396,7 +396,7 @@ export class Environment implements ILoggable {
     }
 
     log.info(`${packageJson.name}@${packageJson.version} has started.`);
-    log.debug(`Arguments parsed`, { parsed: JSON.stringify(parsed), env: JSON.stringify(process.env) });
+    log.debug(`Arguments parsed`, { parsed: maskJson(parsed), env: maskEnv(process.env) });
 
     if (isatty(process.stdout.fd)) {
       log.info('Press Ctrl+C to exit.');
@@ -538,7 +538,7 @@ export class Environment implements ILoggable {
   }
 
   withEnv(name: keyof ProcessEnv, value: ProcessEnv[keyof ProcessEnv]): this {
-    this.log.debug(`Received environment variable`, { name, value });
+    this.log.debug(`Received environment variable`, { name, value: mask(value) });
     this._envVars.next({ name, value });
     return this;
   }
@@ -628,7 +628,7 @@ export class Environment implements ILoggable {
             subscriber.error(err);
             return;
           }
-          this.log.debug(`Environment variables finalized`, { env: JSON.stringify(env) });
+          this.log.debug(`Environment variables finalized`, { env: maskEnv(env) });
           subscriber.next({ ...env });
           subscriber.complete();
         },
