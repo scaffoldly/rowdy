@@ -4,7 +4,7 @@ on:
   push:
     branches:
       - vfs
-      - vfs/**
+      - vfs-*
   pull_request_target:
     branches:
       - vfs
