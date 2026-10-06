@@ -145,12 +145,22 @@ const envFormat = (): Format => (process.env.ROWDY_LOG_FORMAT?.toLowerCase() ===
 // One event per line: the log collector splits on newlines.
 const oneLine = (value: string): string => value.replace(/\r?\n\s*/g, ' \\n ');
 
-// Human-oriented `key=value`: quoted only when the value has spaces and is not already
-// delimited (`{…}`, `[…]`, `Name(…)`). Use the json format for machine parsing.
+// The text format follows the Lambda platform's own lines (`START RequestId: … Version: 47`):
+// `LEVEL RequestId: <id> Component Message Key: value …`. Human-oriented; use json for parsing.
+const capital = (word: string): string => (word ? word[0]!.toUpperCase() + word.slice(1) : word);
+
+// Plain-word messages are title-cased; anything with punctuation or identifiers is left as written.
+const title = (message: string): string =>
+  /^[A-Za-z][A-Za-z ]*$/.test(message) ? message.replace(/\b[a-z]+\b/g, capital) : oneLine(message);
+
 const field = (key: string, value: Primitive): string => {
-  const text = oneLine(value instanceof Error ? `${value.name}: ${value.message}` : String(value));
-  const delimited = /^[{[]/.test(text) || /^[\w.]+\(.*\)$/.test(text);
-  return `${key}=${text === '' || (/\s/.test(text) && !delimited) ? `"${text}"` : text}`;
+  const text =
+    value instanceof Error
+      ? value.name === 'Error'
+        ? value.message
+        : `${value.name}: ${value.message}`
+      : String(value);
+  return `${capital(key)}: ${oneLine(text) || '""'}`;
 };
 
 export class Logger {
@@ -168,7 +178,10 @@ export class Logger {
     return child;
   }
 
-  /** Fields stamped on every line until unbound, e.g. the invocation being served. */
+  /**
+   * Fields stamped on every line until unbound. `requestId` is the invocation being served and
+   * leads the line, as it does on the platform's START / END / REPORT.
+   */
   static bind(fields: Record<string, Primitive>): void {
     Object.assign(state.context, fields);
   }
@@ -271,9 +284,7 @@ export class Logger {
     try {
       // A stack is debugging detail: below debug an error is its name and message.
       const primitive = (value: Loggable): Primitive =>
-        value instanceof Error && !this.enabled('debug')
-          ? `${value.name}: ${value.message}`
-          : Logger.asPrimitive(value);
+        value instanceof Error && !this.enabled('debug') ? value : Logger.asPrimitive(value);
       const fields: Record<string, Primitive> = isLoggable(params)
         ? { value: primitive(params) }
         : Object.fromEntries(Object.entries(params).map(([key, value]) => [key, primitive(value)]));
@@ -288,10 +299,16 @@ export class Logger {
         return console[sink](JSON.stringify(line));
       }
 
-      const head = `${level.toUpperCase().padEnd(5)} rowdy${this.component ? `:${this.component}` : ''} ${oneLine(message)}`;
-      const tail = Object.entries(fields).map(([key, value]) => field(key, value));
+      const { requestId, ...rest } = fields;
+      const head = [
+        level.toUpperCase(),
+        ...(requestId === undefined ? [] : [`RequestId: ${String(requestId)}`]),
+        ...(this.component ? [capital(this.component)] : []),
+        title(message),
+      ];
+      const tail = Object.entries(rest).map(([key, value]) => field(key, value));
       // eslint-disable-next-line no-console
-      return console[sink]([head, ...tail].join(' '));
+      return console[sink]([...head, ...tail].join(' '));
     } catch (error) {
       // eslint-disable-next-line no-console
       return console.error(`Unable to log`, { error, level, message });

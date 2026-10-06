@@ -68,6 +68,11 @@ export abstract class Request<P extends Pipeline> implements ILoggable {
 
   constructor(protected readonly pipeline: P) {}
 
+  /** The one-line account of this request for the access log; `repr()` is the detail. */
+  public brief(): Record<string, string | number | boolean> {
+    return {};
+  }
+
   public withDeadline(at: Date): this {
     this._deadline = at;
     return this;
@@ -176,6 +181,11 @@ export class Result<P extends Pipeline> implements ILoggable {
 
   get duration(): number {
     return performance.now() - this.request.createdAt;
+  }
+
+  /** The one-line account of this result for the access log. */
+  brief(): Record<string, string | number | boolean> {
+    return { success: this.success, bytes: this.bytes, duration: `${this.duration.toFixed(2)} ms` };
   }
 
   repr(): string {

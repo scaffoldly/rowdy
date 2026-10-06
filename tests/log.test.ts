@@ -140,7 +140,7 @@ describe('Logger', () => {
       delete process.env[key];
     }
     new Logger().withLevel(undefined).withFormat(undefined);
-    Logger.unbind('req');
+    Logger.unbind('req', 'requestId', 'instance');
     lines = [];
     spies = (['debug', 'info', 'warn', 'error'] as const).map((sink) =>
       jest.spyOn(console, sink).mockImplementation((...args: unknown[]) => {
@@ -152,7 +152,7 @@ describe('Logger', () => {
   afterEach(() => {
     spies.forEach((spy) => spy.mockRestore());
     new Logger().withLevel(undefined).withFormat(undefined);
-    Logger.unbind('req');
+    Logger.unbind('req', 'requestId', 'instance');
     for (const key of ENV) {
       if (saved[key] === undefined) delete process.env[key];
       else process.env[key] = saved[key];
@@ -167,7 +167,7 @@ describe('Logger', () => {
       log.info('i');
       log.debug('d');
       log.trace('t');
-      expect(text()).toEqual(['ERROR rowdy e', 'WARN  rowdy w', 'INFO  rowdy i']);
+      expect(text()).toEqual(['ERROR E', 'WARN W', 'INFO I']);
     });
 
     it('follows ROWDY_LOG_LEVEL, case-insensitively', () => {
@@ -175,7 +175,7 @@ describe('Logger', () => {
       const log = new Logger();
       log.info('i');
       log.warn('w');
-      expect(text()).toEqual(['WARN  rowdy w']);
+      expect(text()).toEqual(['WARN W']);
       expect(log.level).toBe('warn');
     });
 
@@ -205,36 +205,46 @@ describe('Logger', () => {
       const child = new Logger().child('vfs');
       new Logger().withLevel('debug');
       child.debug('d');
-      expect(text()).toEqual(['DEBUG rowdy:vfs d']);
+      expect(text()).toEqual(['DEBUG Vfs D']);
     });
   });
 
   describe('text format', () => {
-    it('writes level, component, message and key=value fields, with no timestamp', () => {
+    it('follows the platform lines: level, component, message, then Key: value pairs, no timestamp', () => {
       new Logger().child('vfs').info('flushed', { key: 'db/nuss.sqlite', size: 12288, ok: true });
-      expect(text()).toEqual(['INFO  rowdy:vfs flushed key=db/nuss.sqlite size=12288 ok=true']);
+      expect(text()).toEqual(['INFO Vfs Flushed Key: db/nuss.sqlite Size: 12288 Ok: true']);
     });
 
-    it('quotes values with spaces unless they are already delimited', () => {
-      new Logger().info('m', { a: 'two words', b: '', c: '{"json": "as is"}', d: 'Name(x=1 y=2)', e: '[1, 2]' });
-      expect(text()).toEqual(['INFO  rowdy m a="two words" b="" c={"json": "as is"} d=Name(x=1 y=2) e=[1, 2]']);
+    it('title-cases plain-word messages and leaves identifiers and punctuation alone', () => {
+      const log = new Logger();
+      log.info('gRPC server starting', { port: 7939 });
+      log.info('URI is healthy');
+      log.info('mirror.gcr.io/library/alpine: Pulling from library/alpine');
+      log.info('m', { responseBytes: 12, empty: '', duration: '4.20 ms' });
+      expect(text()).toEqual([
+        'INFO gRPC Server Starting Port: 7939',
+        'INFO URI Is Healthy',
+        'INFO mirror.gcr.io/library/alpine: Pulling from library/alpine',
+        'INFO M ResponseBytes: 12 Empty: "" Duration: 4.20 ms',
+      ]);
     });
 
     it('keeps one event per line', () => {
       new Logger().warn('first\nsecond', { error: new Error('boom') });
       expect(text()).toHaveLength(1);
       expect(text()[0]).not.toContain('\n');
-      expect(text()[0]).toContain('WARN  rowdy first \\n second error=');
-      expect(text()[0]).toContain('Error: boom');
+      expect(text()[0]).toBe('WARN first \\n second Error: boom');
     });
 
     it('logs an error as name and message, with its stack only at debug and above', () => {
       const log = new Logger();
       log.warn('upstream error', { error: new Error('read ECONNRESET') });
-      expect(text()).toEqual(['WARN  rowdy upstream error error="Error: read ECONNRESET"']);
+      expect(text()).toEqual(['WARN Upstream Error Error: read ECONNRESET']);
+      log.warn('upstream error', { error: new TypeError('bad input') });
+      expect(text()[1]).toBe('WARN Upstream Error Error: TypeError: bad input');
       log.withLevel('debug');
       log.warn('upstream error', { error: new Error('read ECONNRESET') });
-      expect(text()[1]).toContain('error="Error: read ECONNRESET \\n at ');
+      expect(text()[2]).toContain('WARN Upstream Error Error: Error: read ECONNRESET \\n at ');
     });
 
     it('sends warn and error to stderr sinks and the rest to stdout sinks', () => {
@@ -246,27 +256,36 @@ describe('Logger', () => {
       log.debug('d');
       log.trace('t');
       expect(lines.map((line) => line.sink)).toEqual(['error', 'warn', 'info', 'debug', 'debug']);
-      expect(text()[4]).toBe('TRACE rowdy t');
+      expect(text()[4]).toBe('TRACE T');
     });
   });
 
-  it('stamps bound context on every line until unbound', () => {
-    const log = new Logger().child('lambda');
-    Logger.bind({ req: '575b7bbe' });
-    log.info('Request', { path: '/db' });
-    new Logger().child('vfs').info('flushed');
-    Logger.unbind('req');
-    log.info('idle');
+  it('leads every line with the bound RequestId, like START / END / REPORT, until unbound', () => {
+    const id = '4a43db8d-4950-44f7-b92a-eb1cef487d8b';
+    const log = new Logger();
+    Logger.bind({ requestId: id });
+    log.info('Request', { method: 'POST', path: '/api/db' });
+    log.child('vfs').debug('hidden at info');
+    log.child('http').warn('upstream error', { status: 502 });
+    Logger.unbind('requestId');
+    log.info('Rowdy Started', { version: '0.1.0' });
     expect(text()).toEqual([
-      'INFO  rowdy:lambda Request path=/db req=575b7bbe',
-      'INFO  rowdy:vfs flushed req=575b7bbe',
-      'INFO  rowdy:lambda idle',
+      `INFO RequestId: ${id} Request Method: POST Path: /api/db`,
+      `WARN RequestId: ${id} Http Upstream Error Status: 502`,
+      'INFO Rowdy Started Version: 0.1.0',
     ]);
+  });
+
+  it('appends other bound context as ordinary fields', () => {
+    Logger.bind({ instance: 'i-1' });
+    new Logger().info('ready');
+    Logger.unbind('instance');
+    expect(text()).toEqual(['INFO Ready Instance: i-1']);
   });
 
   it('emits one JSON object per line when ROWDY_LOG_FORMAT=json', () => {
     process.env.ROWDY_LOG_FORMAT = 'json';
-    Logger.bind({ req: '575b7bbe' });
+    Logger.bind({ requestId: '575b7bbe' });
     new Logger().child('vfs').warn('lock failed', { path: '/s3/db', errno: 11 });
     expect(JSON.parse(text()[0]!)).toEqual({
       level: 'warn',
@@ -274,7 +293,7 @@ describe('Logger', () => {
       msg: 'lock failed',
       path: '/s3/db',
       errno: 11,
-      req: '575b7bbe',
+      requestId: '575b7bbe',
     });
   });
 

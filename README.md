@@ -302,16 +302,22 @@ Limits of the preload model:
 
 ## Logging
 
-Rowdy logs one readable line per event, with no timestamp (the log collector adds its own):
+Rowdy's lines follow the Lambda platform's own (`START RequestId: … Version: 47`), so they read as
+one stream: the level, the invocation's `RequestId` while one is being served, the component, the
+message, then `Key: value` pairs. No timestamp; the log collector adds its own.
 
 ```
-INFO  rowdy:lambda Request request=LambdaRequest(http method=POST path=/api/db …) req=575b7bbe
-DEBUG rowdy:vfs flushed key=db/nuss.sqlite size=4710400 req=575b7bbe
-WARN  rowdy:http upstream error status=502 error="Error: read ECONNRESET"
+INFO Rowdy Started Version: 0.1.0
+START RequestId: 4a43db8d-4950-44f7-b92a-eb1cef487d8b Version: 47
+INFO RequestId: 4a43db8d-4950-44f7-b92a-eb1cef487d8b Request Method: POST Path: /api/db
+DEBUG RequestId: 4a43db8d-4950-44f7-b92a-eb1cef487d8b Vfs Flushed Key: db/nuss.sqlite Size: 4710400
+WARN RequestId: 4a43db8d-4950-44f7-b92a-eb1cef487d8b Http Upstream Error Status: 502 Error: read ECONNRESET
+INFO RequestId: 4a43db8d-4950-44f7-b92a-eb1cef487d8b Result Success: true Bytes: 214 Duration: 4632.24 ms
+END RequestId: 4a43db8d-4950-44f7-b92a-eb1cef487d8b
 ```
 
-`LEVEL rowdy[:component] message key=value …`. `req` is the first 8 characters of the invocation's
-request id and is on every line written while that invocation is being served.
+At `info` a request is its method and path and a result is its outcome, size and duration; headers
+(masked), the routing table and per-subsystem detail are at `debug`.
 
 | Setting                          | Values                                    | Default |
 | -------------------------------- | ----------------------------------------- | ------- |
@@ -319,7 +325,8 @@ request id and is on every line written while that invocation is being served.
 | `ROWDY_LOG_FORMAT`               | `text`, `json` (one object per line)      | `text`  |
 
 `ROWDY_DEBUG=true` / `--debug` and `ROWDY_TRACE=true` / `--trace` still work as aliases for the
-`debug` and `trace` levels; an explicit `ROWDY_LOG_LEVEL` wins over them. `rowdy create` deploys the
+`debug` and `trace` levels; an explicit `ROWDY_LOG_LEVEL` wins over them. `ROWDY_LOG_FORMAT=json` is for
+machines: the text format is meant to be read, not parsed. `rowdy create` deploys the
 function at the level it was run with, and the GitHub Action takes it as the `log-level` input.
 
 Values that look like credentials are never written in full, at any level: environment values,

@@ -55,7 +55,7 @@ describe('environment', () => {
       const env = await finalize(environment);
       expect(env.CANARY_API_TOKEN).toBe('canary-0123456789-do-not-log-me-abcdef'); // the child still gets it
       const output = lines.join('\n');
-      expect(output).toContain('Environment variables finalized');
+      expect(output).toContain('Environment Variables Finalized');
       expect(output).toContain('CANARY_API_TOKEN');
       expect(output).not.toContain('0123456789-do-not-log-me');
       expect(output).not.toContain('canary-user-agent/that');
