@@ -477,12 +477,17 @@ class LocalHttpResponse extends HttpResponse {
               signal: proxy.signal,
             })
             .catch((error) => {
-              log.warn(`HttpProxy.into() Axios Error`, { error, isAxiosError: isAxiosError(error) });
+              // An HTTP status never lands here (validateStatus accepts all): this is the upstream
+              // not answering. A cancelled request is how shutdown and deadlines look.
+              const cancelled = isAxiosError(error) && error.code === 'ERR_CANCELED';
+              log[cancelled ? 'debug' : 'warn']('Upstream Unreachable', {
+                error,
+                code: isAxiosError(error) ? (error.code ?? '') : '',
+              });
               if (!isAxiosError<Readable>(error)) {
                 throw new Error(`Non-HTTP error occurred: ${error instanceof Error ? error.message : String(error)}`);
               }
               if (!error.response) {
-                log.debug('Creating an Axios Response', { error });
                 error.response = {
                   data: Readable.from(error instanceof Error ? error.message : String(error)),
                   status: 500,

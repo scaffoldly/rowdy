@@ -194,7 +194,7 @@ export class LambdaRequest extends Request<LambdaPipeline> {
       return this.intoCron(data);
     }
 
-    log.warn('Unsupported HTTP Event', { request: this });
+    log.warn('Unsupported Event', { request: this });
     return NEVER;
   }
 
@@ -207,14 +207,14 @@ export class LambdaRequest extends Request<LambdaPipeline> {
       headers: {},
     };
 
-    const fail = (message: string): Observable<Proxy<LambdaPipeline, HttpResponse>> => {
-      log.warn(message, { line });
+    const fail = (message: string, reason: string): Observable<Proxy<LambdaPipeline, HttpResponse>> => {
+      log.warn(message, { line, reason });
       return of(
         new LambdaCronProxy(
           this.pipeline,
           this,
           'GET',
-          URI.fromError(new Error(message), 500),
+          URI.fromError(new Error(`${message}: ${reason}`), 500),
           HttpHeaders.from({}),
           Buffer.alloc(0),
           source
@@ -226,13 +226,13 @@ export class LambdaRequest extends Request<LambdaPipeline> {
     try {
       cron = Crontab.parse(line);
     } catch (error) {
-      return fail(`Unparseable Cron Event: ${error instanceof Error ? error.message : String(error)}`);
+      return fail('Unparseable Cron Event', error instanceof Error ? error.message : String(error));
     }
 
     // DEVNOTE: Only ever run what this deployment's own manifest declares, so a schedule that
     // reconciliation missed is harmless.
     if (!this.pipeline.routes.crontab.includes(cron.line)) {
-      return fail(`Unknown Cron Event, not declared in spec.crontab`);
+      return fail('Undeclared Cron Event', 'not declared in spec.crontab');
     }
 
     const uri = cron.uriRef;
@@ -323,7 +323,7 @@ export class LambdaHttpProxy extends HttpProxy<LambdaPipeline> {
       map((http) => {
         const response = new LambdaResponse(this.pipeline, this.request).withStatus(http.status);
         const { cancel: cancelDeadline } = this.request.onDeadline(() => {
-          log.warn('LambdaHttpProxy Request Deadline Reached', { requestId: this.pipeline.requestId });
+          log.warn('Request Deadline Reached');
           response.error(new Error('Request deadline reached'));
           http.data.destroy(new Error('Request deadline reached'));
         });
@@ -347,7 +347,7 @@ export class LambdaCronProxy extends LambdaHttpProxy {
       map((http) => {
         const response = new LambdaResponse(this.pipeline, this.request).withStatus(http.status);
         const { cancel: cancelDeadline } = this.request.onDeadline(() => {
-          log.warn('LambdaCronProxy Request Deadline Reached', { requestId: this.pipeline.requestId });
+          log.warn('Cron Request Deadline Reached');
           response.error(new Error('Request deadline reached'));
           http.data.destroy(new Error('Request deadline reached'));
         });
@@ -360,7 +360,7 @@ export class LambdaCronProxy extends LambdaHttpProxy {
         const settle = (): void =>
           cancelDeadline(() => {
             if (http.status >= 400) {
-              log.warn('LambdaCronProxy Request Failed', { status: http.status, uri: maskUrl(this.uri) });
+              log.warn('Cron Request Failed', { status: http.status, uri: maskUrl(this.uri) });
               response.error(new Error(`Cron request to ${this.uri.toString()} failed with status ${http.status}`));
               return;
             }
@@ -428,31 +428,20 @@ export class LambdaResponse extends Response<LambdaPipeline> {
     });
 
     req.on('error', (error) => {
-      log.warn(`LambdaResponse HTTP Request Error`, {
-        error: JSON.stringify(error),
-        chunks: this.chunks,
-        bytes: this.bytes,
-      });
+      // The response could not be handed back to the runtime: the invocation is lost.
+      log.error('Response Delivery Failed', { error, chunks: this.chunks, bytes: this.bytes });
       result.next(new Result(this.pipeline, this.request, false, this.bytes, this.status));
       result.complete();
     });
 
     req.on('abort', () => {
-      log.warn(`LambdaResponse HTTP Request Aborted`, {
-        requestId: this.pipeline.requestId,
-        chunks: this.chunks,
-        bytes: this.bytes,
-      });
+      log.warn('Response Delivery Aborted', { chunks: this.chunks, bytes: this.bytes });
       result.next(new Result(this.pipeline, this.request, false, this.bytes, this.status));
       result.complete();
     });
 
     req.on('timeout', () => {
-      log.warn(`LambdaResponse HTTP Request Timed Out`, {
-        requestId: this.pipeline.requestId,
-        chunks: this.chunks,
-        bytes: this.bytes,
-      });
+      log.warn('Response Delivery Timed Out', { chunks: this.chunks, bytes: this.bytes });
       result.next(new Result(this.pipeline, this.request, false, this.bytes, this.status));
       result.complete();
     });
@@ -492,7 +481,7 @@ export class LambdaResponse extends Response<LambdaPipeline> {
         req.write(chunk.data);
       },
       error: (error) => {
-        log.warn(`LambdaResponse Error`, { error, chunks: this.chunks, responseBytes: this.bytes });
+        log.warn('Response Failed', { error, chunks: this.chunks, bytes: this.bytes });
         if (!this.bytes) req.write('\r\n\r\n'); // empty body
         req.addTrailers({
           'Lambda-Runtime-Function-Error-Type': `Runtime.${error.name}`,

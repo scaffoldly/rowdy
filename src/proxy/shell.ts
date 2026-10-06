@@ -74,7 +74,7 @@ export class ShellProxy<P extends Pipeline> extends Proxy<P, ShellResponse> {
 
             if (this._background) {
               proc.on('error', (error) => {
-                log.error(`${bin} error`, { bin, error });
+                log.error('Command Failed', { bin, error });
                 response.error(error);
               });
               proc.on('exit', (code) => {
@@ -89,7 +89,7 @@ export class ShellProxy<P extends Pipeline> extends Proxy<P, ShellResponse> {
           }),
           map((result) => {
             if (typeof result === 'string' || result instanceof Uint8Array) {
-              log.error(`Unexpected result type: ${result}`);
+              log.error('Unexpected Command Result', { bin, type: typeof result });
               response.next({ code: -1 });
               response.complete();
               return response;

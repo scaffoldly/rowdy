@@ -949,7 +949,7 @@ class UploadStatus implements ILoggable {
       }
       this._config = JSON.parse(config.toString('utf-8')) as External['Config'];
     } catch (err) {
-      this.log.warn(`Unable to parse image config: ${err}`);
+      this.log.warn('Image Config Unreadable', { error: `${err}` });
     }
     return this;
   }

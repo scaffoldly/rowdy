@@ -55,7 +55,7 @@ module.exports = [
       ],
       '@typescript-eslint/no-explicit-any': 'error',
       '@typescript-eslint/no-require-imports': 'off',
-      'no-console': 'warn',
+      'no-console': 'error',
       'no-case-declarations': 'off',
       'no-restricted-globals': [
         'error',

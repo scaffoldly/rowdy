@@ -573,7 +573,7 @@ export class Routes implements IRoutes, ILoggable {
         return Routes.fromPath(join(process.cwd(), url));
       }
     } catch (e) {
-      log.warn(`Failed to access Routes URL: ${e instanceof Error ? e.message : String(e)}`, { url });
+      log.warn('Routes URL Unreadable', { url, error: e instanceof Error ? e.message : String(e) });
     }
 
     if (Routes.isInline(url)) {
@@ -583,7 +583,7 @@ export class Routes implements IRoutes, ILoggable {
       return Routes.fromSchema(YAML.parse(url)); // YAML is a superset of JSON
     }
 
-    log.warn(`Unsupported Routes URL, defaulting to empty routes`, { url });
+    log.warn('Unsupported Routes URL', { url, using: 'default routes' });
 
     return Routes.default();
   }
@@ -649,12 +649,11 @@ export class Routes implements IRoutes, ILoggable {
 
       throw new Error(`Unsupported routes file type: ${path}`);
     } catch (e) {
-      log.warn(
-        `Failed to load routes from path: ${e instanceof Error ? e.message : String(e)}. Using default routes.`,
-        {
-          path,
-        }
-      );
+      log.warn('Routes File Unreadable', {
+        path,
+        error: e instanceof Error ? e.message : String(e),
+        using: 'default routes',
+      });
       return Routes.default();
     }
   }
@@ -678,8 +677,10 @@ export class Routes implements IRoutes, ILoggable {
 
       throw new Error(`Invalid MIME type ${data.mimeType.essence}`);
     } catch (e) {
-      log.warn(`Failed to load routes: ${e instanceof Error ? e.message : String(e)}. Using default routes.`, {
-        dataUrl,
+      log.warn('Routes Data URL Unreadable', {
+        chars: dataUrl.length,
+        error: e instanceof Error ? e.message : String(e),
+        using: 'default routes',
       });
       return Routes.default();
     }
@@ -865,7 +866,7 @@ export class Routes implements IRoutes, ILoggable {
               matched.protocol = `insecure+${matched.protocol}`;
             }
           } catch (e) {
-            log.warn(`URI Compilation Failure: ${e instanceof Error ? e.message : String(e)}`, { uri });
+            log.warn('URI Compilation Failed', { uri, error: e instanceof Error ? e.message : String(e) });
           }
 
           return matched;

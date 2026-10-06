@@ -546,7 +546,7 @@ export class LambdaFunction implements Logger {
 
   withSecrets(secrets: unknown): this {
     if (!secrets || typeof secrets !== 'string') {
-      this.log.warn('Unknown secrets format, skipping', { type: typeof secrets });
+      this.log.warn('Secrets Skipped', { reason: 'not a JSON string', type: typeof secrets });
       return this;
     }
     return Object.entries(JSON.parse(secrets))
