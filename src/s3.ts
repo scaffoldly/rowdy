@@ -520,37 +520,45 @@ export class S3Adapter implements VfsAdapter {
       return;
     }
     const base = current?.etag;
-    const body = createReadStream(local);
-    body.on('error', () => {}); // the SDK consumes read errors; a destroyed stream must not throw
-    try {
-      const out = await this.client.send(
-        new PutObjectCommand({
-          Bucket: this.options.bucket,
-          Key: key,
-          Body: body,
-          ContentLength: size,
-          ChecksumAlgorithm: 'CRC32',
-          ...(base ? { IfMatch: base } : { IfNoneMatch: '*' }),
-        })
-      );
-      this.entries.set(key, {
-        etag: out.ETag,
-        size,
-        materialized: true,
-        checkedAt: Date.now(),
-        synced: { mtimeMs, size },
-        checksum: checksumOf(out),
-      });
-      this.log(`flushed`, { key, size, base });
-    } catch (e) {
-      body.destroy();
-      if (isPreconditionFailed(e)) {
-        throw VfsError.code(
-          'ESTALE',
-          `${path}: object changed in S3 since it was opened (expected ETag ${base ?? 'none'})`
+    for (let attempt = 1; ; attempt++) {
+      const body = createReadStream(local);
+      body.on('error', () => {}); // the SDK consumes read errors; a destroyed stream must not throw
+      try {
+        const out = await this.client.send(
+          new PutObjectCommand({
+            Bucket: this.options.bucket,
+            Key: key,
+            Body: body,
+            ContentLength: size,
+            ChecksumAlgorithm: 'CRC32',
+            ...(base ? { IfMatch: base } : { IfNoneMatch: '*' }),
+          })
         );
+        this.entries.set(key, {
+          etag: out.ETag,
+          size,
+          materialized: true,
+          checkedAt: Date.now(),
+          synced: { mtimeMs, size },
+          checksum: checksumOf(out),
+        });
+        this.log(`flushed`, { key, size, base });
+        return;
+      } catch (e) {
+        body.destroy();
+        if (isPreconditionFailed(e)) {
+          throw VfsError.code(
+            'ESTALE',
+            `${path}: object changed in S3 since it was opened (expected ETag ${base ?? 'none'})`
+          );
+        }
+        if (isConditionalConflict(e) && attempt < 3) {
+          // Collided with another conditional write in flight; the condition was never evaluated.
+          await backoff(50 * attempt);
+          continue;
+        }
+        throw toVfsError(e);
       }
-      throw toVfsError(e);
     }
   }
 
@@ -611,36 +619,35 @@ export class S3Adapter implements VfsAdapter {
     const deadline = Date.now() + (this.options.lockWaitMs ?? 5000);
     let delay = 50;
     for (;;) {
+      // 412: someone holds it. 409: we collided with another taker inside S3; treat it the same
+      // way (read the lease, back off, retry) rather than as an I/O error.
       try {
         const etag = await this.writeLease(lockKey, { IfNoneMatch: '*' });
         this.hold(key, lockKey, etag);
         return;
       } catch (e) {
-        if (!isPreconditionFailed(e)) {
+        if (!isPreconditionFailed(e) && !isConditionalConflict(e)) {
           throw toVfsError(e);
         }
       }
       // Held by someone. Expired? Take it over against its exact ETag.
       const current = await this.readLease(lockKey);
-      if (!current) {
-        continue; // released between our attempt and the read: retry immediately
-      }
-      if (current.body.expiresAt < Date.now() && current.etag) {
+      if (current?.body.expiresAt !== undefined && current.body.expiresAt < Date.now() && current.etag) {
         try {
           const etag = await this.writeLease(lockKey, { IfMatch: current.etag });
           this.log(`lease taken over`, { key, from: current.body.owner });
           this.hold(key, lockKey, etag);
           return;
         } catch (e) {
-          if (!isPreconditionFailed(e)) {
+          if (!isPreconditionFailed(e) && !isConditionalConflict(e)) {
             throw toVfsError(e);
           }
         }
       }
       if (Date.now() >= deadline) {
-        throw VfsError.code('EAGAIN', `${path}: locked by ${current.body.owner}`);
+        throw VfsError.code('EAGAIN', `${path}: locked by ${current?.body.owner ?? 'another writer'}`);
       }
-      await new Promise((r) => setTimeout(r, delay));
+      await backoff(delay);
       delay = Math.min(delay * 2, 1000);
     }
   }
@@ -814,6 +821,18 @@ const isPreconditionFailed = (e: unknown): boolean => {
   const err = e as S3Error;
   return err?.$metadata?.httpStatusCode === 412 || err?.name === 'PreconditionFailed';
 };
+
+/**
+ * 409 ConditionalRequestConflict: two conditional writes to the same key raced inside S3 and
+ * this one was turned away before its condition was even evaluated. Nothing is known about the
+ * object; S3's guidance is to retry.
+ */
+const isConditionalConflict = (e: unknown): boolean => {
+  const err = e as S3Error;
+  return err?.$metadata?.httpStatusCode === 409 || err?.name === 'ConditionalRequestConflict';
+};
+
+const backoff = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
 const toVfsError = (e: unknown): VfsError => {
   if (e instanceof VfsError) {

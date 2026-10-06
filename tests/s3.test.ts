@@ -39,6 +39,8 @@ const crc32b64 = (body: Buffer): string => {
 class FakeS3 {
   readonly objects = new Map<string, Stored>();
   readonly calls: string[] = [];
+  /** Keys whose next conditional PutObject is turned away with 409 ConditionalRequestConflict. */
+  readonly conflictNext = new Set<string>();
   private version = 0;
 
   put(key: string, body: string): Stored {
@@ -70,6 +72,7 @@ class FakeS3 {
     if (command instanceof PutObjectCommand) {
       const key = command.input.Key!;
       const existing = this.objects.get(key);
+      if ((command.input.IfNoneMatch || command.input.IfMatch) && this.conflictNext.delete(key)) throw conflict();
       if (command.input.IfNoneMatch === '*' && existing) throw precondition();
       if (command.input.IfMatch && existing?.etag !== command.input.IfMatch) throw precondition();
       const chunks: Buffer[] = [];
@@ -120,6 +123,14 @@ class FakeS3 {
 const notFound = (name = 'NotFound') => Object.assign(new Error(name), { name, $metadata: { httpStatusCode: 404 } });
 const precondition = () =>
   Object.assign(new Error('PreconditionFailed'), { name: 'PreconditionFailed', $metadata: { httpStatusCode: 412 } });
+const conflict = () =>
+  Object.assign(
+    new Error('The conditional request cannot succeed due to a conflicting operation against this resource.'),
+    {
+      name: 'ConditionalRequestConflict',
+      $metadata: { httpStatusCode: 409 },
+    }
+  );
 
 describe('S3Adapter', () => {
   let backing: string;
@@ -263,6 +274,17 @@ describe('S3Adapter', () => {
       await adapter.open(`${mount}/race.txt`, 0); // HEAD: nothing there
       s3.put('race.txt', 'theirs');
       await expect(adapter.flush(`${mount}/race.txt`)).rejects.toMatchObject({ errno: 116 });
+    });
+
+    it('retries a flush that S3 turned away with 409 ConditionalRequestConflict', async () => {
+      s3.put('busy.txt', 'v1');
+      await adapter.fetch(`${mount}/busy.txt`);
+      await adapter.open(`${mount}/busy.txt`, 1);
+      writeFileSync(join(backing, 'busy.txt'), 'v2');
+      s3.conflictNext.add('busy.txt'); // another conditional write was in flight on this key
+      await adapter.flush(`${mount}/busy.txt`);
+      expect(s3.objects.get('busy.txt')?.body.toString()).toBe('v2');
+      expect(s3.calls.filter((c) => c === 'PutObjectCommand')).toHaveLength(2);
     });
 
     it('ignores a flush for a file that is already gone', async () => {
@@ -476,6 +498,14 @@ describe('S3Adapter', () => {
       await a.revalidate(`${mount}/db.sqlite`);
       expect(readFileSync(join(a['options'].backing, 'db.sqlite'), 'utf8')).toBe('v2 by bob');
       await expect(a.lock(`${mount}/db.sqlite`)).resolves.toBeUndefined();
+      await a.unlock(`${mount}/db.sqlite`);
+    });
+
+    it('retries a lease create that collided inside S3 (409) instead of failing with EIO', async () => {
+      const a = leased('alice');
+      s3.conflictNext.add('.rowdy/locks/db.sqlite');
+      await expect(a.lock(`${mount}/db.sqlite`)).resolves.toBeUndefined();
+      expect(JSON.parse(s3.objects.get('.rowdy/locks/db.sqlite')!.body.toString()).owner).toBe('alice');
       await a.unlock(`${mount}/db.sqlite`);
     });
 
