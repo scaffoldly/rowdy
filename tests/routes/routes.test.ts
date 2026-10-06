@@ -419,9 +419,9 @@ spec:
     });
 
     it('should reject malformed entries', () => {
-      expect(() => Volume.parse('s3://example-bucket')).toThrow('expected <scheme>://<locator>[?options]:<mountpoint>');
+      expect(() => Volume.parse('s3://example-bucket')).toThrow('expected <scheme>://<locator>:<mountpoint>[:<flags>]');
       expect(() => Volume.parse('s3://example-bucket:vfs')).toThrow(
-        'expected <scheme>://<locator>[?options]:<mountpoint>'
+        'expected <scheme>://<locator>:<mountpoint>[:<flags>]'
       );
       expect(() => Volume.parse('s3://:/vfs')).toThrow('the locator is empty');
       expect(() => Volume.parse('s3://example-bucket:/')).toThrow('no trailing slash');
@@ -436,27 +436,35 @@ spec:
 });
 
 describe('volume options', () => {
-  it('parses ?lock=1 on the locator', () => {
-    const volume = Volume.parse('s3://example-bucket/tenant?lock=1:/data');
+  it('parses the lock flag after the mountpoint', () => {
+    const volume = Volume.parse('s3://example-bucket/tenant:/data:lock=1');
     expect(volume.locator).toBe('example-bucket/tenant');
     expect(volume.mountpoint).toBe('/data');
-    expect(volume.options).toEqual({ lock: true });
-    expect(volume.spec).toBe('s3://example-bucket/tenant?lock=1:/data');
+    expect(volume.options).toEqual({ lock: true, local: [] });
+    expect(volume.spec).toBe('s3://example-bucket/tenant:/data:lock=1');
   });
 
   it('defaults to no lock', () => {
-    expect(Volume.parse('s3://example-bucket:/data').options).toEqual({ lock: false });
-    expect(Volume.parse('s3://example-bucket?lock=0:/data').options).toEqual({ lock: false });
-    expect(Volume.parse('s3://example-bucket?lock:/data').options).toEqual({ lock: true });
+    expect(Volume.parse('s3://example-bucket:/data').options).toEqual({ lock: false, local: [] });
+    expect(Volume.parse('s3://example-bucket:/data:lock=0').options).toEqual({ lock: false, local: [] });
+    expect(Volume.parse('s3://example-bucket:/data:lock').options).toEqual({ lock: true, local: [] });
   });
 
   it('rejects unknown options and bad values', () => {
-    expect(() => Volume.parse('s3://example-bucket?nope=1:/data')).toThrow("Invalid volume option 'nope'");
-    expect(() => Volume.parse('s3://example-bucket?lock=maybe:/data')).toThrow("Invalid value 'maybe'");
+    expect(() => Volume.parse('s3://example-bucket:/data:nope=1')).toThrow("Invalid volume flag 'nope'");
+    expect(() => Volume.parse('s3://example-bucket:/data:lock=maybe')).toThrow("Invalid value 'maybe'");
+    expect(() => Volume.parse('s3://example-bucket:/data:local')).toThrow('needs a value');
+    expect(() => Volume.parse('s3://example-bucket:/data:local=/abs')).toThrow('relative to the mountpoint');
+  });
+
+  it('parses local= globs, splitting flags on commas outside braces', () => {
+    const volume = Volume.parse('s3://example-bucket:/s3:local=*-{journal,wal,shm},lock,local=cache/**');
+    expect(volume.mountpoint).toBe('/s3');
+    expect(volume.options).toEqual({ lock: true, local: ['*-{journal,wal,shm}', 'cache/**'] });
   });
 
   it('round-trips through the manifest data url', () => {
-    const routes = Routes.empty().withVolumes(['s3://example-bucket?lock=1:/data']);
+    const routes = Routes.empty().withVolumes(['s3://example-bucket:/data:lock']);
     expect(Routes.fromDataURL(routes.intoDataURL()).intoVolumes()[0]!.options.lock).toBe(true);
   });
 });

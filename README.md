@@ -248,7 +248,7 @@ with `--cri`.
 ## Volumes (experimental)
 
 `spec.volumes` gives the app a writable, persistent directory that is not part of the image. Each
-entry is `<scheme>://<locator>:<mountpoint>`:
+entry is `<scheme>://<locator>:<mountpoint>[:<flags>]`:
 
 ```yaml
 spec:
@@ -270,9 +270,18 @@ Several function instances can share an `s3://` volume. Reads re-check the objec
 every 2 s) and pick up other instances' writes; programs that take advisory locks (SQLite, lockfile
 libraries) get a lease in the bucket for the duration of the lock, so their transactions serialize
 across instances and a contended lock shows up as `EAGAIN`/`SQLITE_BUSY` to retry. For plain files
-the lease is opt-in: `s3://<bucket>?lock=1:/mnt` holds it across each open-for-write/close window;
-without it a conflicting write fails `close()` with `ESTALE` instead of waiting. Design and
-trade-offs: [ADR 0001](https://github.com/scaffoldly/rowdy/blob/vfs/docs/adr/0001-multi-writer-leases.md).
+the lease is opt-in: the `lock` flag (`s3://<bucket>:/mnt:lock`) holds it across each
+open-for-write/close window; without it a conflicting write fails `close()` with `ESTALE` instead
+of waiting. Design and trade-offs:
+[ADR 0001](https://github.com/scaffoldly/rowdy/blob/vfs/docs/adr/0001-multi-writer-leases.md).
+
+Flags follow the mountpoint, docker `-v` style, separated by commas (outside braces):
+
+- `lock` — lease every open-for-write/close window (above).
+- `local=<glob>` — files matching the glob (relative to the mountpoint; a glob without `/` matches a
+  file name at any depth) stay in the backing directory and never reach the store. For scratch and
+  sidecar files that must not be shared, e.g. SQLite's rollback journal:
+  `s3://<bucket>:/s3:local=*-{journal,wal,shm}`. Repeat the flag for more globs.
 
 Nothing is mounted in the kernel sense. The Lambda sandbox denies every kernel-mediated option
 (`/dev/fuse`, `mount(2)`, namespaces, ptrace, seccomp-notify), so rowdy writes the
