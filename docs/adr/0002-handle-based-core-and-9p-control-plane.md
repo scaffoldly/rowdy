@@ -1,6 +1,6 @@
 # ADR 0002: A kernel-shaped shim and a 9P2000.L control plane
 
-- Status: Proposed (2026-10-06)
+- Status: Accepted (2026-10-06, after external review)
 - Scope: `@scaffoldly/rowdy-vfs` (shim, supervisor protocol, `VfsAdapter`)
 - Relates to: scaffoldly/rowdy#27, [ADR 0001](0001-multi-writer-leases.md)
 - Origin: external design review of the 0.1.0 betas
@@ -45,7 +45,7 @@ application holds a real kernel descriptor on the backing file, so `read`, `prea
 sandbox denies every kernel client (`mount`, `/dev/fuse`, namespaces), so in Lambda the client is
 always the preload shim.
 
-## Decision (proposed)
+## Decision
 
 1. **Layer the shim like a kernel.** Three layers with one-way dependencies:
    - _interposition_: the libc symbols, argument marshalling, nothing else;
@@ -107,9 +107,14 @@ always the preload shim.
   the shim; a new ELF goes back through registry review; `DISCLOSURE` is rewritten; `Twalk` is
   chattier than one `stat` line (mitigated by multi-name walks and the attribute cache).
 - Neutral: shim and supervisor ship in one package and negotiate with `Tversion`, so there is no
-  mixed-version deployment to support.
+  mixed-version deployment to support. The JSON protocol, the single-mount `VFS_PREFIX` /
+  `VFS_BACKING` form and the path-keyed adapter interface are removed rather than kept alongside:
+  nothing outside this repository speaks them.
 
 ## Sequencing
+
+Steps 2–4 ship as one release from a `vfs/9p` branch (the publish job only runs on `vfs`), so the
+shim's binary goes through registry review once.
 
 1. Restructure the shim into the three layers, still speaking the JSON protocol. Lands the mount
    table (multi-volume) and the fd table on their own. **Done**: `native/vfs_transport.h`,
