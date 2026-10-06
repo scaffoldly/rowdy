@@ -397,23 +397,37 @@ export type Health = { [origin: string]: URIHealth };
 
 export type VolumeScheme = 'file' | 's3';
 
-/** Per-volume options, given as a query string on the locator: `s3://bucket?lock=1:/mnt`. */
+/**
+ * Per-volume options, given as flags after the mountpoint (docker `-v` style):
+ * `s3://bucket:/mnt:lock,local=*-{journal,wal,shm}`. Flags are separated by
+ * commas outside braces; a flag is a bare switch (`lock`) or `key=value`, and a
+ * list-valued flag may be repeated.
+ */
 export type VolumeOptions = {
   /** Hold a lease across every open-for-write/close window (plain files). Default false. */
   lock: boolean;
+  /**
+   * Globs (relative to the mountpoint) for files that live in the backing directory only: never
+   * fetched from or written to the store, invisible to other instances. Scratch and sidecar
+   * files such as SQLite's `*-{journal,wal,shm}`. Default none.
+   */
+  local: string[];
 };
 
 /**
- * One `volumes:` entry: `<scheme>://<locator>[?options]:<mountpoint>`. The
+ * One `volumes:` entry: `<scheme>://<locator>:<mountpoint>[:<flags>]`. The
  * mountpoint is the absolute directory the application sees; the locator
  * names what backs it (`file://<dir>` a local directory,
- * `s3://<bucket>[/<prefix>]` an object store). Declaring a volume is what
- * turns on the userspace VFS for the container.
+ * `s3://<bucket>[/<prefix>]` an object store); the flags are the volume's
+ * options. Declaring a volume is what turns on the userspace VFS for the
+ * container.
  */
 export class Volume {
   static readonly SCHEMES: ReadonlyArray<VolumeScheme> = ['file', 's3'];
-  private static readonly PATTERN = /^([a-z][a-z0-9+.-]*):\/\/([^?:]*?)(?:\?([^:]*))?:(\/.*)$/;
-  private static readonly OPTIONS: ReadonlyArray<keyof VolumeOptions> = ['lock'];
+  static readonly SYNTAX = '<scheme>://<locator>:<mountpoint>[:<flags>]';
+  private static readonly PATTERN = /^([a-z][a-z0-9+.-]*):\/\/([^:]*):(\/[^:]*)(?::(.*))?$/;
+  private static readonly SWITCHES: ReadonlyArray<string> = ['lock'];
+  private static readonly LISTS: ReadonlyArray<string> = ['local'];
 
   private constructor(
     readonly spec: string,
@@ -423,19 +437,53 @@ export class Volume {
     readonly options: VolumeOptions
   ) {}
 
-  private static parseOptions(query: string | undefined, original: string): VolumeOptions {
-    const options: VolumeOptions = { lock: false };
-    if (!query) {
+  /** Split on commas that are not inside `{...}`, so brace globs survive. */
+  private static splitFlags(flags: string): string[] {
+    const out: string[] = [];
+    let depth = 0;
+    let current = '';
+    for (const c of flags) {
+      if (c === '{') depth++;
+      if (c === '}' && depth > 0) depth--;
+      if (c === ',' && depth === 0) {
+        out.push(current);
+        current = '';
+        continue;
+      }
+      current += c;
+    }
+    out.push(current);
+    return out.map((f) => f.trim()).filter(Boolean);
+  }
+
+  private static parseOptions(flags: string | undefined, original: string): VolumeOptions {
+    const options: VolumeOptions = { lock: false, local: [] };
+    if (!flags) {
       return options;
     }
-    for (const [key, value] of new URLSearchParams(query)) {
-      if (!(Volume.OPTIONS as ReadonlyArray<string>).includes(key)) {
-        throw new Error(`Invalid volume option '${key}', expected one of ${Volume.OPTIONS.join(', ')}: '${original}'`);
+    const known = [...Volume.SWITCHES, ...Volume.LISTS.map((l) => `${l}=<glob>`)].join(', ');
+    for (const flag of Volume.splitFlags(flags)) {
+      const eq = flag.indexOf('=');
+      const key = eq === -1 ? flag : flag.slice(0, eq);
+      const value = eq === -1 ? undefined : flag.slice(eq + 1);
+      if (Volume.SWITCHES.includes(key)) {
+        if (value !== undefined && !['1', 'true', '0', 'false'].includes(value)) {
+          throw new Error(`Invalid value '${value}' for volume flag '${key}', expected 1|true|0|false: '${original}'`);
+        }
+        options.lock = value === undefined || value === '1' || value === 'true';
+      } else if (Volume.LISTS.includes(key)) {
+        if (!value) {
+          throw new Error(`Volume flag '${key}' needs a value, e.g. ${key}=*-{journal,wal,shm}: '${original}'`);
+        }
+        if (value.startsWith('/') || value.split('/').includes('..')) {
+          throw new Error(
+            `Invalid glob '${value}' for volume flag '${key}', expected a path relative to the mountpoint: '${original}'`
+          );
+        }
+        options.local.push(value);
+      } else {
+        throw new Error(`Invalid volume flag '${key}', expected one of ${known}: '${original}'`);
       }
-      if (!['1', 'true', '0', 'false', ''].includes(value)) {
-        throw new Error(`Invalid value '${value}' for volume option '${key}', expected 1|true|0|false: '${original}'`);
-      }
-      options[key as keyof VolumeOptions] = value === '1' || value === 'true' || value === '';
     }
     return options;
   }
@@ -445,16 +493,16 @@ export class Volume {
     spec = spec.trim();
     const match = Volume.PATTERN.exec(spec);
     if (!match) {
-      throw new Error(`Invalid volume '${original}', expected <scheme>://<locator>[?options]:<mountpoint>`);
+      throw new Error(`Invalid volume '${original}', expected ${Volume.SYNTAX}`);
     }
-    const [, scheme, locator, query, mountpoint] = match as unknown as [
+    const [, scheme, locator, mountpoint, flags] = match as unknown as [
+      string,
       string,
       string,
       string,
       string | undefined,
-      string,
     ];
-    const options = Volume.parseOptions(query, original);
+    const options = Volume.parseOptions(flags, original);
     if (!(Volume.SCHEMES as ReadonlyArray<string>).includes(scheme)) {
       throw new Error(`Invalid volume scheme '${scheme}', expected one of ${Volume.SCHEMES.join(', ')}: '${original}'`);
     }

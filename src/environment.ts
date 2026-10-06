@@ -552,6 +552,7 @@ export class Environment implements ILoggable {
         prefix: rest.join('/') || undefined,
         mountpoint: volume.mountpoint,
         lockOnOpen: volume.options.lock,
+        localOnly: volume.options.local,
         owner: process.env.AWS_LAMBDA_LOG_STREAM_NAME,
         backing,
         log: (message, params) => this.log.debug(`VFS s3 ${message}`, { params: JSON.stringify(params ?? {}) }),
