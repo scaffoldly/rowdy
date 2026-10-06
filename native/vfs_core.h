@@ -321,30 +321,48 @@ static int fd_wlocked(int fd) {
     return fd_tracked(fd) && g_files[fd].wlock;
 }
 
-static int is_write(int flags) {
-    return (flags & O_ACCMODE) != O_RDONLY || (flags & (O_CREAT | O_TRUNC));
-}
+/* The fid opened by pre_open, waiting for post_open to bind it to the descriptor.
+ * One open(2) is in flight per thread at a time. */
+static __thread uint32_t g_pending = P9_NOFID;
 
-/* Before opening virtual path `vp`: make sure the backing file is populated.
- * A missing object is only an error when the caller is not creating. */
+/* Before opening virtual path `vp`: walk to it and open it on the supervisor, so
+ * the backing file is populated (a read) or the store knows a write is coming.
+ * The fid stays open with the descriptor for as long as it is, readers included,
+ * so the supervisor knows which files are in use. A missing object is only an
+ * error when the caller is not creating; the file is then opened after the real
+ * open has made it. */
 static int pre_open(const char *vp, int flags) {
-    if (flags & O_TRUNC) return 0;
-    if (notify("fetch", vp, NULL, 0) == 0) return 0;
-    if ((flags & O_CREAT) && errno == ENOENT) return 0;
-    return -1;
+    g_pending = P9_NOFID;
+    if (!g_socket) return 0;
+    const struct vfs_mount *m = mount_of(vp);
+    if (!m) return 0;
+    if (ensure_connected() < 0) return -1;
+    uint32_t fid;
+    if (walk_to(m, rel_of(m, vp), &fid) < 0) return (flags & O_CREAT) && errno == ENOENT ? 0 : -1;
+    if (p9_lopen(fid, (uint32_t)flags & ~(uint32_t)(O_CREAT | O_EXCL)) < 0) {
+        int e = errno; p9_clunk(fid); errno = e; return -1;
+    }
+    g_pending = fid;
+    return 0;
 }
 
-/* After a successful open of virtual path `vp` as `fd`: a writer gets a fid that
- * stays open with the descriptor. The real open has already created the file, so
- * the walk finds it; lopen registers the write with the store. */
+/* After the real open of `vp` as `fd`: bind the pending fid to the descriptor, or,
+ * for a file the real open just created, open it on the supervisor now. */
 static int post_open(int fd, const char *vp, int flags) {
-    if (fd < 0 || !is_write(flags)) return fd;
+    uint32_t fid = g_pending;
+    g_pending = P9_NOFID;
+    if (fd < 0) {
+        if (fid != P9_NOFID) { int e = errno; p9_clunk(fid); errno = e; }
+        return fd;
+    }
     if (!g_socket) return fd;
     const struct vfs_mount *m = mount_of(vp);
     if (!m) return fd;
-    uint32_t fid;
-    if (ensure_connected() < 0 || walk_to(m, rel_of(m, vp), &fid) < 0 || p9_lopen(fid, (uint32_t)flags & ~(uint32_t)(O_CREAT | O_EXCL)) < 0) {
-        int e = errno; real_close_(fd); errno = e; return -1;
+    if (fid == P9_NOFID) {
+        if (ensure_connected() < 0 || walk_to(m, rel_of(m, vp), &fid) < 0 ||
+            p9_lopen(fid, (uint32_t)flags & ~(uint32_t)(O_CREAT | O_EXCL)) < 0) {
+            int e = errno; real_close_(fd); errno = e; return -1;
+        }
     }
     fd_track(fd, fid);
     return fd;

@@ -347,6 +347,10 @@ export class P9Server {
       }
     } finally {
       fid.dirty = false;
+      if (fid.flags !== undefined) {
+        fid.flags = undefined;
+        await fid.mount.adapter.release?.(this.vpath(fid)).catch(() => {});
+      }
     }
   }
 
@@ -483,6 +487,7 @@ export class P9Server {
           st = await this.lstat(fid);
         }
         fid.flags = req.flags;
+        await fid.mount.adapter.acquire?.(vpath);
         return R.lopen(req.tag, qidOf(st), 0);
       }
 
@@ -507,6 +512,7 @@ export class P9Server {
         dir.rel = rel;
         dir.flags = flags;
         await this.markDirty(dir, flags);
+        await dir.mount.adapter.acquire?.(vpath);
         const st = await this.lstat(dir);
         return R.lcreate(req.tag, qidOf(st), 0);
       }

@@ -36,6 +36,10 @@ export interface VfsAdapter {
   lock?(path: string): Promise<void>;
   /** After the write lock is dropped (and the flush is done): release the lease. Optional. */
   unlock?(path: string): Promise<void>;
+  /** After `path` was opened (readers included), once per open. Optional. */
+  acquire?(path: string): Promise<void>;
+  /** After the last close of a descriptor opened on `path`, once per open. Optional. */
+  release?(path: string): Promise<void>;
 }
 
 /**

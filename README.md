@@ -150,8 +150,9 @@ applyVfs(env, { socket: server.socket, mounts: [{ prefix: '/vfs', backing: '/tmp
 ```
 
 Ceilings of the S3 adapter: whole-object materialization (an object must fit on the backing disk),
-no eviction yet, last-writer-wins with ETag detection rather than locking, and errno values are
-Linux's regardless of the host.
+and errno values are Linux's regardless of the host. Materialized copies are kept within `cacheBytes`
+(default: half of the backing filesystem); past that, the least recently used copies that are not open
+and have no unflushed edits become placeholders again and are fetched on next use.
 
 Declarative `volumes:` in rowdy's Routes manifest drive all of this; see
 [scaffoldly/rowdy#27](https://github.com/scaffoldly/rowdy/issues/27).

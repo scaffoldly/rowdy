@@ -548,6 +548,64 @@ describe('S3Adapter', () => {
     });
   });
 
+  describe('eviction', () => {
+    const bounded = (cacheBytes: number): S3Adapter =>
+      new S3Adapter({
+        bucket: 'example-bucket',
+        mountpoint: mount,
+        backing,
+        client: s3 as unknown as S3Client,
+        revalidateMs: 60_000,
+        cacheBytes,
+      });
+    const isPlaceholder = (name: string): boolean => {
+      const buf = readFileSync(join(backing, name));
+      return buf.length > 0 && buf.every((b) => b === 0);
+    };
+
+    it('turns the least recently used copy back into a placeholder when the budget is exceeded', async () => {
+      const a = bounded(10);
+      s3.put('a.txt', 'aaaaaa');
+      s3.put('b.txt', 'bbbbbb');
+      await a.fetch(`${mount}/a.txt`);
+      await a.fetch(`${mount}/b.txt`); // 12 bytes materialized > 10
+      expect(isPlaceholder('a.txt')).toBe(true); // same size, no content
+      expect(statSync(join(backing, 'a.txt')).size).toBe(6);
+      expect(readFileSync(join(backing, 'b.txt'), 'utf8')).toBe('bbbbbb');
+      s3.calls.length = 0;
+      await a.fetch(`${mount}/a.txt`); // fetched again, and now b goes
+      expect(s3.calls).toContain('GetObjectCommand');
+      expect(readFileSync(join(backing, 'a.txt'), 'utf8')).toBe('aaaaaa');
+      expect(isPlaceholder('b.txt')).toBe(true);
+    });
+
+    it('never evicts a copy that is open or has unflushed edits', async () => {
+      const a = bounded(10);
+      s3.put('a.txt', 'aaaaaa');
+      s3.put('b.txt', 'bbbbbb');
+      s3.put('c.txt', 'cccccc');
+      await a.fetch(`${mount}/a.txt`);
+      await a.acquire(`${mount}/a.txt`); // a reader has it open
+      await a.fetch(`${mount}/b.txt`);
+      expect(readFileSync(join(backing, 'a.txt'), 'utf8')).toBe('aaaaaa'); // pinned
+      await a.release(`${mount}/a.txt`);
+      await a.open(`${mount}/b.txt`, 1);
+      writeFileSync(join(backing, 'b.txt'), 'edited'); // dirty, not uploaded yet
+      await a.fetch(`${mount}/c.txt`);
+      expect(readFileSync(join(backing, 'b.txt'), 'utf8')).toBe('edited'); // kept
+      expect(isPlaceholder('a.txt')).toBe(true); // the only evictable one went
+    });
+
+    it('is not applied without a budget being exceeded', async () => {
+      const a = bounded(1024);
+      s3.put('a.txt', 'aaaaaa');
+      s3.put('b.txt', 'bbbbbb');
+      await a.fetch(`${mount}/a.txt`);
+      await a.fetch(`${mount}/b.txt`);
+      expect(readFileSync(join(backing, 'a.txt'), 'utf8')).toBe('aaaaaa');
+    });
+  });
+
   describe('localOnly', () => {
     const scratch = (): S3Adapter =>
       new S3Adapter({

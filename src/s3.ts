@@ -41,6 +41,12 @@ export type S3AdapterOptions = {
   /** Identifies this supervisor in lease objects. Default: a random id per process. */
   owner?: string;
   /**
+   * How many bytes of materialized objects to keep in the backing directory before the least
+   * recently used copies that are not open and have no unflushed edits are turned back into
+   * placeholders. Default: half of the backing filesystem.
+   */
+  cacheBytes?: number;
+  /**
    * Globs for paths (relative to the mountpoint) that live in the backing directory only: never
    * fetched, uploaded, deleted or leased, and invisible to other instances. A glob without a `/`
    * matches a file name at any depth. `*` and `?` stay within one segment, `**` crosses segments,
@@ -95,6 +101,10 @@ type Entry = {
   synced?: { mtimeMs: number; size: number };
   /** Digest of the base version's bytes, to tell "touched" from "changed" without trusting mtime. */
   checksum?: Checksum;
+  /** Descriptors currently open on it: a materialized copy in use is never evicted. */
+  opens?: number;
+  /** Last time the local copy was asked for, for eviction order. */
+  usedAt?: number;
 };
 
 /**
@@ -320,6 +330,7 @@ export class S3Adapter implements VfsAdapter {
     } catch (e) {
       throw isNotFound(e) ? VfsError.code('ENOENT', `${key}: no such object`) : toVfsError(e);
     }
+    await this.makeRoom(key, out.ContentLength ?? 0);
     await fs.mkdir(dirname(local), { recursive: true });
     await pipeline(out.Body as Readable, createWriteStream(local, { flags: 'w' }));
     this.entries.set(key, {
@@ -330,8 +341,82 @@ export class S3Adapter implements VfsAdapter {
       synced: snapshot(local),
       checksum: checksumOf(out),
     });
+    this.entries.get(key)!.usedAt = Date.now();
     this.log(`fetched`, { key, size: out.ContentLength });
     return { etag: out.ETag, size: out.ContentLength };
+  }
+
+  /** The materialization budget: the option, else half of the backing filesystem, measured once. */
+  private budget?: Promise<number>;
+  private cacheBytes(): Promise<number> {
+    if (this.options.cacheBytes !== undefined) {
+      return Promise.resolve(this.options.cacheBytes);
+    }
+    this.budget ??= fs
+      .statfs(this.options.backing)
+      .then((s) => Math.floor((s.blocks * s.bsize) / 2))
+      .catch(() => 256 * 1024 * 1024);
+    return this.budget;
+  }
+
+  /**
+   * Before materializing `size` bytes for `key`: while the materialized copies would exceed the
+   * budget, turn the least recently used of them back into a placeholder. A copy that is open, or
+   * that has edits not yet uploaded, stays; so does the one being fetched.
+   */
+  private async makeRoom(key: string, size: number): Promise<void> {
+    const budget = await this.cacheBytes();
+    const materialized = (): Array<[string, Entry]> =>
+      [...this.entries].filter(([k, e]) => k !== key && e.materialized && e.size !== undefined);
+    let total = materialized().reduce((n, [, e]) => n + (e.size ?? 0), 0) + size;
+    if (total <= budget) {
+      return;
+    }
+    const candidates = materialized().sort(([, a], [, b]) => (a.usedAt ?? 0) - (b.usedAt ?? 0));
+    for (const [victim, entry] of candidates) {
+      if (total <= budget) {
+        break;
+      }
+      if (entry.opens) {
+        continue;
+      }
+      const local = join(this.options.backing, this.unkey(victim));
+      if (await this.modified(local, entry)) {
+        continue; // unflushed edits: not ours to drop
+      }
+      await fs.truncate(local, 0);
+      await fs.truncate(local, entry.size ?? 0); // the sparse placeholder stat() expects
+      entry.materialized = false;
+      entry.synced = snapshot(local);
+      entry.checksum = undefined;
+      total -= entry.size ?? 0;
+      this.log(`evicted`, { key: victim, size: entry.size });
+    }
+  }
+
+  /** Protocol op: a descriptor was opened on `path`; its copy stays materialized until released. */
+  async acquire(path: string): Promise<void> {
+    const rel = this.rel(path);
+    if (rel === undefined || rel === '' || this.isLocal(rel)) {
+      return;
+    }
+    const key = this.key(rel);
+    const entry = this.entries.get(key) ?? { materialized: true };
+    entry.opens = (entry.opens ?? 0) + 1;
+    entry.usedAt = Date.now();
+    this.entries.set(key, entry);
+  }
+
+  /** Protocol op: the last descriptor on `path` was closed. */
+  async release(path: string): Promise<void> {
+    const rel = this.rel(path);
+    if (rel === undefined || rel === '' || this.isLocal(rel)) {
+      return;
+    }
+    const entry = this.entries.get(this.key(rel));
+    if (entry?.opens) {
+      entry.opens -= 1;
+    }
   }
 
   /**
@@ -522,7 +607,7 @@ export class S3Adapter implements VfsAdapter {
       // Record the version this write is based on. A placeholder or a fetched copy already
       // carries it; a brand-new local file needs a HEAD to learn whether the object exists.
       if (this.options.lockOnOpen) {
-        await this.acquire(key, path); // EAGAIN after lockWaitMs when someone else holds it
+        await this.acquireLease(key, path); // EAGAIN after lockWaitMs when someone else holds it
       }
       const entry = this.entries.get(key);
       if (!entry) {
@@ -546,7 +631,7 @@ export class S3Adapter implements VfsAdapter {
         await this.put(key, this.local(rel), path);
       } finally {
         if (this.options.lockOnOpen) {
-          await this.release(key); // the open/close window is over, success or not
+          await this.releaseLease(key); // the open/close window is over, success or not
         }
       }
     });
@@ -664,7 +749,7 @@ export class S3Adapter implements VfsAdapter {
   }
 
   /** Take the lease for `key`, waiting up to lockWaitMs. Re-entrant for the holder. Caller holds the key lock. */
-  private async acquire(key: string, path: string): Promise<void> {
+  private async acquireLease(key: string, path: string): Promise<void> {
     if (this.leases.has(key)) {
       return;
     }
@@ -727,7 +812,7 @@ export class S3Adapter implements VfsAdapter {
   }
 
   /** Release the lease for `key` if we hold it. Idempotent. */
-  private async release(key: string): Promise<void> {
+  private async releaseLease(key: string): Promise<void> {
     const lease = this.leases.get(key);
     if (!lease) {
       return;
@@ -752,13 +837,13 @@ export class S3Adapter implements VfsAdapter {
     }
     const key = this.key(rel);
     await this.serial(key, async () => {
-      await this.acquire(key, path);
+      await this.acquireLease(key, path);
       // The caller read this file before locking it (SQLite: SHARED, then RESERVED). If another
       // instance committed in between, writing on what was read would be stale: hand back EAGAIN
       // so the caller drops its read lock and re-reads; the next revalidate fetches the new base.
       const entry = this.entries.get(key);
       if (entry?.etag && (await this.head(key))?.etag !== entry.etag) {
-        await this.release(key);
+        await this.releaseLease(key);
         throw VfsError.code('EAGAIN', `${path}: changed by another writer since it was read; retry`);
       }
     });
@@ -771,12 +856,12 @@ export class S3Adapter implements VfsAdapter {
       return;
     }
     const key = this.key(rel);
-    await this.serial(key, () => this.release(key));
+    await this.serial(key, () => this.releaseLease(key));
   }
 
   /** Drop every lease we hold (shutdown). */
   async releaseAll(): Promise<void> {
-    await Promise.all([...this.leases.keys()].map((key) => this.release(key)));
+    await Promise.all([...this.leases.keys()].map((key) => this.releaseLease(key)));
   }
 
   async unlink(path: string): Promise<void> {

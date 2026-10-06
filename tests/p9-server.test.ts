@@ -57,6 +57,12 @@ class Recorder implements VfsAdapter {
   async unlock(path: string): Promise<void> {
     this.hook('unlock', path);
   }
+  async acquire(path: string): Promise<void> {
+    this.hook('acquire', path);
+  }
+  async release(path: string): Promise<void> {
+    this.hook('release', path);
+  }
 }
 
 describe('P9Server', () => {
@@ -142,6 +148,11 @@ describe('P9Server', () => {
     expect(s3.calls.filter((c) => c.startsWith('fetch'))).toEqual(['fetch /s3/readme.txt']);
     expect(s3.calls.filter((c) => c.startsWith('open'))).toEqual([]);
     expect(s3.calls.filter((c) => c.startsWith('flush'))).toEqual([]);
+    // a reader is acquired at lopen and released at clunk, so the store knows the copy is in use
+    expect(s3.calls.filter((c) => /^(acquire|release)/.test(c))).toEqual([
+      'acquire /s3/readme.txt',
+      'release /s3/readme.txt',
+    ]);
   });
 
   it('opens for writing with the open hook and flushes once on fsync and once on clunk', async () => {
@@ -155,8 +166,10 @@ describe('P9Server', () => {
       'stat /s3/readme.txt',
       'fetch /s3/readme.txt',
       `open(${O_RDWR}) /s3/readme.txt`,
+      'acquire /s3/readme.txt',
       'flush /s3/readme.txt', // fsync
       'flush /s3/readme.txt', // clunk
+      'release /s3/readme.txt',
     ]);
   });
 
@@ -166,7 +179,12 @@ describe('P9Server', () => {
     await client.write(fid, 0n, Buffer.from('fresh'));
     await client.clunk(fid);
     expect(readFileSync(join(dir, 's3', 'new.txt'), 'utf8')).toBe('fresh');
-    expect(s3.calls).toEqual([`open(${O_WRONLY | O_TRUNC | O_CREAT}) /s3/new.txt`, 'flush /s3/new.txt']);
+    expect(s3.calls).toEqual([
+      `open(${O_WRONLY | O_TRUNC | O_CREAT}) /s3/new.txt`,
+      'acquire /s3/new.txt',
+      'flush /s3/new.txt',
+      'release /s3/new.txt',
+    ]);
 
     s3.calls = [];
     const again = await client.walk(root, []);
@@ -207,7 +225,7 @@ describe('P9Server', () => {
     s3.calls = [];
     c.close();
     await new Promise((r) => setTimeout(r, 50));
-    expect(s3.calls).toEqual(['flush /s3/db/nuss.sqlite', 'unlock /s3/db/nuss.sqlite']);
+    expect(s3.calls).toEqual(['flush /s3/db/nuss.sqlite', 'unlock /s3/db/nuss.sqlite', 'release /s3/db/nuss.sqlite']);
   });
 
   it('lists a directory with the list hook, including . and .., and paginates by offset', async () => {
