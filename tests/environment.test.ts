@@ -1,5 +1,5 @@
 import { Logger, Environment, Routes } from '@scaffoldly/rowdy';
-import { S3Adapter, VFS_BACKING, VFS_PRELOAD, VFS_SOCKET } from '@scaffoldly/rowdy-vfs';
+import { LocalAdapter, MountAdapter, S3Adapter, VFS_BACKING, VFS_PRELOAD, VFS_SOCKET } from '@scaffoldly/rowdy-vfs';
 import { existsSync, mkdtempSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
@@ -32,6 +32,7 @@ describe('environment', () => {
     delete process.env.VFS_PREFIX;
     delete process.env.VFS_BACKING;
     delete process.env.VFS_SOCKET;
+    delete process.env.VFS_MOUNTS;
   });
 
   // Each Environment may have started a VFS supervisor on the shared socket path.
@@ -123,13 +124,13 @@ describe('environment', () => {
       expect(env.VFS_BACKING).toBe(VFS_BACKING);
       expect(env.VFS_SOCKET).toBe(VFS_SOCKET);
       const server = await environment['_vfs'];
-      expect(server?.['adapter']).toBeInstanceOf(S3Adapter);
+      expect((server?.['adapter'] as MountAdapter).adapters[0]).toBeInstanceOf(S3Adapter);
     });
 
     it('passes the lock and local flags through to the adapter', async () => {
       const environment = withVolumes(['s3://example-bucket:/data:lock,local=*-{journal,wal,shm}']);
       await finalize(environment);
-      const adapter = (await environment['_vfs'])?.['adapter'] as S3Adapter;
+      const adapter = ((await environment['_vfs'])?.['adapter'] as MountAdapter).adapters[0] as S3Adapter;
       expect(adapter['options']).toMatchObject({
         bucket: 'example-bucket',
         lockOnOpen: true,
@@ -138,9 +139,25 @@ describe('environment', () => {
       });
     });
 
-    it('mounts only the first volume for now', async () => {
-      const env = await finalize(withVolumes([`file://${backing}:/first`, `file://${backing}:/second`]));
-      expect(env.VFS_PREFIX).toBe('/first');
+    it('mounts every declared volume, each on a backing directory of its own', async () => {
+      const environment = withVolumes([
+        's3://example-bucket:/s3:local=*-{journal,wal,shm}',
+        `file://${backing}:/scratch`,
+        's3://other-bucket/tenant:/data',
+      ]);
+      const env = await finalize(environment);
+      expect(env.VFS_MOUNTS).toBe(`/s3=${VFS_BACKING}:/scratch=${backing}:/data=${VFS_BACKING}.2`);
+      // the first mount is also the single-mount pair
+      expect(env.VFS_PREFIX).toBe('/s3');
+      expect(env.VFS_BACKING).toBe(VFS_BACKING);
+      const mounts = (await environment['_vfs'])?.['adapter'] as MountAdapter;
+      expect(mounts.mountOf('/s3/db/nuss.sqlite')?.adapter).toBeInstanceOf(S3Adapter);
+      expect(mounts.mountOf('/scratch/tmp.bin')?.adapter).toBeInstanceOf(LocalAdapter);
+      expect((mounts.mountOf('/data/x')?.adapter as S3Adapter)['options']).toMatchObject({
+        bucket: 'other-bucket',
+        prefix: 'tenant',
+        backing: `${VFS_BACKING}.2`,
+      });
     });
 
     it('starts the supervisor once per environment', async () => {

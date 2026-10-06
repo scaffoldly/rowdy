@@ -32,6 +32,7 @@ import {
   applyVfs,
   LINUX_ERRNO,
   LocalAdapter,
+  MountAdapter,
   S3Adapter,
   VfsAdapter,
   VfsServer,
@@ -94,7 +95,8 @@ export type ProcessEnv = Record<
   | 'LD_PRELOAD'
   | 'VFS_PREFIX'
   | 'VFS_BACKING'
-  | 'VFS_SOCKET',
+  | 'VFS_SOCKET'
+  | 'VFS_MOUNTS',
   string | undefined
 >;
 
@@ -597,9 +599,15 @@ export class Environment implements ILoggable {
    * (protocol: @scaffoldly/rowdy-vfs DISCLOSURE). Started once per process on
    * first use, for the first declared volume, and closed on abort.
    */
-  private vfsServer(volume: Volume, backing: string): Promise<VfsServer> {
+  private vfsServer(mounts: Array<{ volume: Volume; backing: string }>): Promise<VfsServer> {
     if (!this._vfs) {
-      const server = new VfsServer(this.vfsAdapter(volume, backing), {
+      const adapter = new MountAdapter(
+        mounts.map(({ volume, backing }) => ({
+          mountpoint: volume.mountpoint,
+          adapter: this.vfsAdapter(volume, backing),
+        }))
+      );
+      const server = new VfsServer(adapter, {
         socket: VFS_SOCKET,
         onRequest: ({ op, ...request }, reply) =>
           this.log.child('vfs').debug(op, Environment.flat({ ...request, ...reply })),
@@ -615,8 +623,9 @@ export class Environment implements ILoggable {
       });
       this.signal.addEventListener('abort', () => {
         // Give leases back before the socket goes away so other instances are not held up until TTL.
-        const adapter = server['adapter'];
-        const released = adapter instanceof S3Adapter ? adapter.releaseAll() : Promise.resolve();
+        const released = Promise.all(
+          adapter.adapters.map((a) => (a instanceof S3Adapter ? a.releaseAll() : Promise.resolve()))
+        );
         released
           .catch((err) => this.log.debug(`VFS lease release failed`, { error: `${err}` }))
           .then(() => server.close())
@@ -644,23 +653,26 @@ export class Environment implements ILoggable {
           // it reports to is started here. Child env only; rowdy's own process is never
           // preloaded. ROWDY_VFS is the shim's own switch, set here, not an operator knob.
           try {
-            const [volume, ...ignored] = this._routes.intoVolumes();
-            if (volume) {
-              if (ignored.length) {
-                this.log.warn('Extra Volumes Ignored', {
-                  mounted: volume.spec,
-                  ignored: ignored.map((v) => v.spec).join(', '),
-                });
-              }
+            const volumes = this._routes.intoVolumes();
+            if (volumes.length) {
               // file:// is served straight from its directory; anything else is materialized
-              // into the default backing directory on the function's /tmp.
-              const backing = volume.scheme === 'file' ? volume.locator : VFS_BACKING;
+              // into a directory of its own on the function's /tmp (siblings, never nested).
+              const mounts = volumes.map((volume, i) => ({
+                volume,
+                backing: volume.scheme === 'file' ? volume.locator : i ? `${VFS_BACKING}.${i}` : VFS_BACKING,
+              }));
               env.ROWDY_VFS = '1';
-              env.VFS_PREFIX = volume.mountpoint;
-              env.VFS_BACKING = backing;
-              const { socket } = await this.vfsServer(volume, backing);
-              const vfs = applyVfs(env, { socket });
-              this.log.debug(`VFS enabled for child`, { volume: volume.spec, ...vfs });
+              const { socket } = await this.vfsServer(mounts);
+              const vfs = applyVfs(env, {
+                socket,
+                mounts: mounts.map(({ volume, backing }) => ({ prefix: volume.mountpoint, backing })),
+              });
+              this.log.child('vfs').debug('Enabled For Child', {
+                volumes: volumes.map((v) => v.spec).join(', '),
+                mounts: env.VFS_MOUNTS,
+                preload: vfs?.preload,
+                socket: vfs?.socket,
+              });
             }
           } catch (err) {
             subscriber.error(err);
