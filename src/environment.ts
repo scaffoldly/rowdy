@@ -562,8 +562,16 @@ export class Environment implements ILoggable {
     return this;
   }
 
-  // Log fields from a plain object: primitives as they are, anything else as JSON.
+  // Log fields from a plain object: primitives as they are, bigints as digits, anything else as
+  // JSON (with bigints inside it as digits too). Logging must never throw.
   private static flat(fields: Record<string, unknown> = {}): Record<string, string | number | boolean> {
+    const json = (value: unknown): string => {
+      try {
+        return JSON.stringify(value, (_k, v: unknown) => (typeof v === 'bigint' ? v.toString() : v)) ?? '';
+      } catch (e) {
+        return `<unloggable: ${e instanceof Error ? e.message : String(e)}>`;
+      }
+    };
     return Object.fromEntries(
       Object.entries(fields)
         .filter(([, value]) => value !== undefined)
@@ -571,7 +579,9 @@ export class Environment implements ILoggable {
           key,
           typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean'
             ? value
-            : JSON.stringify(value),
+            : typeof value === 'bigint'
+              ? value.toString()
+              : json(value),
         ])
     );
   }
