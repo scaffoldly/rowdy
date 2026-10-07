@@ -48,8 +48,11 @@ jobs:
           for arch in x64 arm64; do [ -f lib/linux-$arch/vfspreload.so ] || cp lib/linux-${{ matrix.arch }}/vfspreload.so lib/linux-$arch/vfspreload.so; done
           yarn --frozen-lockfile && yarn build
 
-      - name: Test shim
-        run: sh native/test.sh ${{ matrix.arch }}
+      - name: Test shim (musl, alpine)
+        run: sh native/test.sh ${{ matrix.arch }} alpine
+
+      - name: Test shim (glibc, debian)
+        run: sh native/test.sh ${{ matrix.arch }} debian
 
       - name: Upload shim
         uses: actions/upload-artifact@v4
