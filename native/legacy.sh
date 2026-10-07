@@ -18,6 +18,7 @@ so="lib/linux-$arch/vfspreload.so"
 
 # debian:11 is glibc 2.31, amazonlinux:2 (the AL2 Lambda base) is glibc 2.26
 for image in debian:11 amazonlinux:2; do
+  docker pull -q --platform "$platform" "$image" >/dev/null
   out=$(docker run --rm --platform "$platform" -v "$root:/w:ro" "$image" \
     env LD_PRELOAD="/w/$so" VFS_MOUNTS=/vfs=/tmp/vfsstore sh -c '
       ls / >/dev/null && [ -d /tmp ] &&
