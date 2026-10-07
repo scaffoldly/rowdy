@@ -143,10 +143,16 @@ Rowdy's own process is never preloaded; an existing `LD_PRELOAD` is kept.
 
 ## Limits
 
-- Only dynamically linked musl (alpine) binaries that go through libc see the mountpoint. Static
-  binaries and Go programs that issue raw syscalls do not.
-- `mmap` of a file under the mountpoint is not translated; neither are `nftw`, `glob` or
-  `posix_spawn` paths.
+- Dynamically linked programs that go through libc see the mountpoint: musl (alpine) and glibc 2.34
+  or newer (debian 12, ubuntu 22.04+, Amazon Linux 2023, distroless `nodejs`/`cc`/`base`). One shim
+  serves both ([ADR 0003](https://github.com/scaffoldly/rowdy/blob/vfs/docs/adr/0003-one-shim-for-musl-and-glibc.md)).
+  Older glibc (Debian 11, Amazon Linux 2) still starts preloaded programs and passes basic file
+  operations, but is not otherwise tested. Static binaries and Go programs that issue raw syscalls
+  do not see the mountpoint.
+- `mmap` works through the descriptor, which already refers to the backing file: shared-mapping
+  writes upload on `close` or `fsync` like `write()`. `msync` alone does not upload.
+- Extended attributes are kept on the instance's backing file and are not stored in S3.
+- `glob` and `nftw` paths are not translated.
 - There is no mountpoint, so a process started outside rowdy cannot see it.
 - `s3://` consistency is per object. A multi-file update is not atomic across instances.
 
