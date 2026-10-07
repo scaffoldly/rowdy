@@ -16,8 +16,13 @@ inputs:
     description: "The compute type to deploy to (lambda, ecs, app-engine, azure-functions, or app-platform)"
     required: true
   image:
-    description: "The Docker image to deploy (e.g. ghcr.io/owner/repo@sha256:...)"
-    required: true
+    description: "The Docker image to deploy (e.g. ghcr.io/owner/repo@sha256:...). Ignored when dockerfile is set."
+    required: false
+    default: ""
+  dockerfile:
+    description: "Path to a Dockerfile to build and push to ghcr.io/<owner>/<repo>:rowdy, then deploy by digest. The build context is the Dockerfile's directory."
+    required: false
+    default: ""
   command:
     description: "Override the ENTRYPOINT/CMD in the Docker image. (Default: ENTRYPOINT+CMD defined in the image"
     required: false
@@ -38,17 +43,74 @@ inputs:
     description: "Secrets (alpha feature)."
     required: false
     default: ""
-  log-level:
-    description: "Log verbosity for the deploy and for the deployed function: error, warn, info, debug or trace. (Default: info)"
-    required: false
-    default: "info"
 outputs:
   url:
     description: The URL of the deployed application.
     value: ${{ steps.deploy.outputs.url }}
+  image:
+    description: The image reference that was deployed.
+    value: ${{ steps.deploy.outputs.image }}
 runs:
   using: "composite"
   steps:
+    - name: Resolve image
+      id: image
+      shell: bash
+      env:
+        IMAGE: ${{ inputs.image }}
+        DOCKERFILE: ${{ inputs.dockerfile }}
+        REPOSITORY: ${{ github.repository }}
+      run: |
+        if [ -z "$DOCKERFILE" ]; then
+          if [ -z "$IMAGE" ]; then
+            echo "::error title=Rowdy::Set either image or dockerfile."
+            exit 1
+          fi
+          echo "ref=$IMAGE" >> "$GITHUB_OUTPUT"
+          exit 0
+        fi
+        if [ -n "$IMAGE" ]; then
+          echo "::warning title=Rowdy::image is ignored when dockerfile is set."
+        fi
+        if [ ! -f "$DOCKERFILE" ]; then
+          echo "::error title=Rowdy::dockerfile '$DOCKERFILE' not found. Check out the repository before this step."
+          exit 1
+        fi
+        # ghcr.io rejects uppercase, and github.repository keeps the owner's case.
+        echo "name=ghcr.io/$(echo "$REPOSITORY" | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_OUTPUT"
+        echo "context=$(dirname "$DOCKERFILE")" >> "$GITHUB_OUTPUT"
+
+    - name: Set up QEMU
+      if: ${{ inputs.dockerfile != '' && runner.arch != 'X64' }}
+      uses: docker/setup-qemu-action@v4
+
+    - name: Set up Docker Buildx
+      if: ${{ inputs.dockerfile != '' }}
+      uses: docker/setup-buildx-action@v4
+
+    - name: Log in to GitHub Container Registry
+      if: ${{ inputs.dockerfile != '' }}
+      uses: docker/login-action@v4
+      with:
+        registry: ghcr.io
+        username: ${{ github.actor }}
+        password: ${{ github.token }}
+
+    - name: Build and push image
+      id: build
+      if: ${{ inputs.dockerfile != '' }}
+      uses: docker/build-push-action@v7
+      with:
+        context: ${{ steps.image.outputs.context }}
+        file: ${{ inputs.dockerfile }}
+        # The function is x86_64.
+        platforms: linux/amd64
+        pull: true
+        push: true
+        tags: ${{ steps.image.outputs.name }}:rowdy
+        cache-from: type=gha,scope=rowdy
+        cache-to: type=gha,scope=rowdy,mode=max
+
     - name: Configure AWS Credentials
       if: ${{ inputs.cloud == 'aws' }}
       uses: aws-actions/configure-aws-credentials@v5
@@ -62,12 +124,11 @@ runs:
     - name: Deploy with Rowdy
       id: deploy
       shell: bash
-      run: >
-        npx @scaffoldly/rowdy@beta create
-        ${{ inputs.cloud }} ${{ inputs.compute }} ${{ inputs.image }}
-        ${{ inputs.command }}
+      run: |
+        echo "image=$IMAGE" >> "$GITHUB_OUTPUT"
+        npx @scaffoldly/rowdy@beta create ${{ inputs.cloud }} ${{ inputs.compute }} "$IMAGE" ${{ inputs.command }}
       env:
-        ROWDY_LOG_LEVEL: "${{ inputs.log-level }}"
+        IMAGE: ${{ inputs.dockerfile != '' && format('{0}@{1}', steps.image.outputs.name, steps.build.outputs.digest) || steps.image.outputs.ref }}
         ROWDY_NAME: "${{ inputs.name }}"
         ROWDY_MEMORY: "${{ inputs.memory }}"
         ROWDY_CRI: "${{ inputs.cri }}"

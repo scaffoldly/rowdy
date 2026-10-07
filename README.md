@@ -7,12 +7,14 @@ are documented on [`main`](https://github.com/scaffoldly/rowdy/blob/main/README.
 ## Getting started
 
 The Action needs an AWS role it can assume through OIDC, so the job requires `id-token: write` and
-an `AWS_ROLE_ARN` in its environment:
+an `AWS_ROLE_ARN` in its environment. Given a Dockerfile, it also builds and pushes the image to
+GitHub Packages, which needs `packages: write` and the repository checked out:
 
 ```yaml
 permissions:
+  contents: read
   id-token: write
-  packages: write # for the docker/build-push-action step that usually precedes the deploy
+  packages: write
 
 env:
   AWS_ROLE_ARN: ${{ vars.AWS_ROLE_ARN }}
@@ -21,6 +23,8 @@ jobs:
   deploy:
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v4
+
       - name: Rowdy Deploy
         id: rowdy
         uses: scaffoldly/rowdy@github
@@ -28,37 +32,76 @@ jobs:
           cloud: aws
           compute: lambda
           name: ${{ github.repository }}
-          image: ghcr.io/${{ github.repository }}:latest
+          dockerfile: ./Dockerfile
           routes: |
             default: "http://localhost:3000/"
 
       - run: echo "deployed to ${{ steps.rowdy.outputs.url }}"
 ```
 
-Change `image` to a container the runner can pull, and `default` to the port the container listens
-on. The deployed URL comes back as `steps.<id>.outputs.url`, which is how a downstream step (a DNS
-record, a CDN origin, a smoke test) learns where the function lives.
+Change `default` to the port the container listens on. The deployed URL comes back as
+`steps.<id>.outputs.url`, which is how a downstream step (a DNS record, a CDN origin, a smoke test)
+learns where the function lives.
+
+### Building the image
+
+With `dockerfile`, the Action builds the image for `linux/amd64` from the Dockerfile's directory,
+pushes it as `ghcr.io/<owner>/<repo>:rowdy`, and deploys it by digest, so the function runs exactly
+what was just built. The `:rowdy` tag is the Action's own and leaves the repository's other tags
+alone; the build cache lives in the GitHub Actions cache under the `rowdy` scope for the same reason.
+
+A build that needs a different context, build arguments or another registry belongs in its own
+steps; pass the result as `image` instead (`image` is ignored when `dockerfile` is set):
+
+```yaml
+- uses: docker/build-push-action@v7
+  id: build
+  with:
+    context: .
+    file: standalone/Dockerfile
+    push: true
+    tags: ghcr.io/${{ github.repository }}:main
+
+- uses: scaffoldly/rowdy@github
+  with:
+    cloud: aws
+    compute: lambda
+    image: ghcr.io/${{ github.repository }}@${{ steps.build.outputs.digest }}
+```
+
+Log verbosity comes from `ROWDY_LOG_LEVEL` in the environment (`error`, `warn`, `info`, `debug` or
+`trace`; `info` when unset), set on the job or on the step. It applies to the deploy and is carried
+into the deployed function:
+
+```yaml
+- uses: scaffoldly/rowdy@github
+  env:
+    ROWDY_LOG_LEVEL: debug
+  with: …
+```
 
 The Action assumes the role with `aws-actions/configure-aws-credentials`, using `AWS_REGION` from
 the environment if set and `us-east-1` otherwise.
 
 ## Inputs
 
-| Input     | Required | Default                  | Description                                                                                                                                                                                                                      |
-| --------- | -------- | ------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `cloud`   | yes      |                          | Cloud provider. `aws` today.                                                                                                                                                                                                     |
-| `compute` | yes      |                          | Compute type. `lambda` today.                                                                                                                                                                                                    |
-| `image`   | yes      |                          | Container image to deploy, such as `ghcr.io/owner/repo@sha256:…`.                                                                                                                                                                |
-| `name`    | no       | the execution role's id  | Application name. Becomes the function name, sanitized.                                                                                                                                                                          |
-| `command` | no       | image `ENTRYPOINT`+`CMD` | Override the command the container runs.                                                                                                                                                                                         |
-| `memory`  | no       | `256`                    | Memory for the container, in megabytes.                                                                                                                                                                                          |
-| `cri`     | no       | `false`                  | Enable the Container Runtime Interface.                                                                                                                                                                                          |
-| `routes`  | no       |                          | Path to, or inline YAML/JSON of, a Routes manifest. Accepts a path, `file://`, `data:`, or the manifest inline. A bare spec is accepted. See [Routes](https://github.com/scaffoldly/rowdy/blob/main/README.md#routes) on `main`. |
-| `secrets` | no       |                          | Secrets to inject as environment variables. `${{ toJSON(secrets) }}` passes the repository's, minus `github_token`. Alpha.                                                                                                       |
+| Input        | Required | Default                  | Description                                                                                                                                                                                                                      |
+| ------------ | -------- | ------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `cloud`      | yes      |                          | Cloud provider. `aws` today.                                                                                                                                                                                                     |
+| `compute`    | yes      |                          | Compute type. `lambda` today.                                                                                                                                                                                                    |
+| `dockerfile` | one of   |                          | Dockerfile to build, push to `ghcr.io/<owner>/<repo>:rowdy` and deploy by digest. The build context is its directory. See [Building the image](#building-the-image).                                                             |
+| `image`      | one of   |                          | Container image to deploy, such as `ghcr.io/owner/repo@sha256:…`. Ignored when `dockerfile` is set.                                                                                                                              |
+| `name`       | no       | the execution role's id  | Application name. Becomes the function name, sanitized.                                                                                                                                                                          |
+| `command`    | no       | image `ENTRYPOINT`+`CMD` | Override the command the container runs.                                                                                                                                                                                         |
+| `memory`     | no       | `256`                    | Memory for the container, in megabytes.                                                                                                                                                                                          |
+| `cri`        | no       | `false`                  | Enable the Container Runtime Interface.                                                                                                                                                                                          |
+| `routes`     | no       |                          | Path to, or inline YAML/JSON of, a Routes manifest. Accepts a path, `file://`, `data:`, or the manifest inline. A bare spec is accepted. See [Routes](https://github.com/scaffoldly/rowdy/blob/main/README.md#routes) on `main`. |
+| `secrets`    | no       |                          | Secrets to inject as environment variables. `${{ toJSON(secrets) }}` passes the repository's, minus `github_token`. Alpha.                                                                                                       |
 
-| Output | Description                |
-| ------ | -------------------------- |
-| `url`  | The deployed Function URL. |
+| Output  | Description                            |
+| ------- | -------------------------------------- |
+| `url`   | The deployed Function URL.             |
+| `image` | The image reference that was deployed. |
 
 ## Scheduled requests
 
