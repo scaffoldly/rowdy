@@ -374,34 +374,39 @@ describe('aws lambda volumes', () => {
 });
 
 describe('aws lambda names', () => {
+  // DEVNOTE: Exact strings on purpose. Role and function names identify existing deployments, so any
+  // change to these outputs is a breaking change.
   const image = { namespace: 'acme', name: 'score' } as Parameters<typeof LambdaFunction.roleName>[0];
   const LONG = 'acme-org/a-very-long-repository-name-for-the-secure-development-ctf';
 
   it('keeps names that fit unchanged', () => {
     expect(LambdaFunction.roleName(image)).toBe('acme+score@rowdy.run');
     expect(LambdaFunction.roleName(image, 'acme/app')).toBe('acme+score@acme.app.rowdy.run');
+    expect(LambdaFunction.functionName('AROAEXAMPLEEXAMPLE12')).toBe('AROAEXAMPLEEXAMPLE12');
     expect(LambdaFunction.functionName('AROAEXAMPLEEXAMPLE12', 'acme/app')).toBe('acme_app');
   });
 
-  it('caps role and function names at 64 characters', () => {
-    const role = LambdaFunction.roleName(image, LONG);
-    expect(role).toHaveLength(64);
-    expect(role).toMatch(/^acme\+score@acme-org\.a-very-long-.*-[a-f0-9]{8}\.rowdy\.run$/);
-    expect(role).toMatch(/^[\w+=,.@-]+$/);
-
-    const fn = LambdaFunction.functionName('AROAEXAMPLEEXAMPLE12', `${LONG}-and-then-some-more`);
-    expect(fn).toHaveLength(64);
-    expect(fn).toMatch(/^[a-zA-Z0-9_-]+$/);
+  it('shortens role names over 64 characters', () => {
+    expect(LambdaFunction.roleName(image, LONG)).toBe(
+      'acme+score@acme-org.a-very-long-repository-na-3f032919.rowdy.run'
+    );
+    expect(LambdaFunction.roleName(image, `${LONG}-a`)).toBe(
+      'acme+score@acme-org.a-very-long-repository-na-b65aa1d8.rowdy.run'
+    );
+    expect(LambdaFunction.roleName(image, `${LONG}-b`)).toBe(
+      'acme+score@acme-org.a-very-long-repository-na-29249bf5.rowdy.run'
+    );
   });
 
-  it('keeps distinct long names distinct and stable', () => {
-    expect(LambdaFunction.roleName(image, `${LONG}-a`)).not.toBe(LambdaFunction.roleName(image, `${LONG}-b`));
-    expect(LambdaFunction.roleName(image, LONG)).toBe(LambdaFunction.roleName(image, LONG));
+  it('shortens function names over 64 characters', () => {
+    expect(LambdaFunction.functionName('AROAEXAMPLEEXAMPLE12', `${LONG}-and-then-some-more`)).toBe(
+      'acme-org_a-very-long-repository-name-for-the-secure-dev-ca1a9df8'
+    );
   });
 
   it('fits within the limit including the suffix', () => {
-    expect(fit('x'.repeat(100), '.suffix')).toHaveLength(64);
     expect(fit('short', '.suffix')).toBe('short.suffix');
+    expect(fit('x'.repeat(100), '.suffix')).toBe('xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx-09ecb6eb.suffix');
   });
 });
 
