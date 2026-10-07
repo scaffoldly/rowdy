@@ -33,6 +33,8 @@ jobs:
           dockerfile: ./Dockerfile
           routes: |
             default: "http://localhost:3000/"
+          volumes: |
+            s3://my-bucket:/data
 
       - run: echo "deployed to ${{ steps.rowdy.outputs.url }}"
 ```
@@ -97,6 +99,7 @@ the environment if set and `us-east-1` otherwise.
 | `cri`        | no       | `false`                  | Enable the Container Runtime Interface.                                                                                                                                                                                          |
 | `routes`     | no       |                          | Path to, or inline YAML/JSON of, a Routes manifest. Accepts a path, `file://`, `data:`, or the manifest inline. A bare spec is accepted. See [Routes](https://github.com/scaffoldly/rowdy/blob/main/README.md#routes) on `main`. |
 | `secrets`    | no       |                          | Secrets to inject as environment variables. `${{ toJSON(secrets) }}` passes the repository's, minus `github_token`. Alpha.                                                                                                       |
+| `volumes`    | no       |                          | Volumes to mount, one per line, such as `s3://my-bucket:/data`. Added to any `volumes` in `routes`. See [Volumes](https://github.com/scaffoldly/rowdy/blob/main/docs/volumes.md) on `main`.                                      |
 
 | Output  | Description                            |
 | ------- | -------------------------------------- |
