@@ -339,7 +339,7 @@ describe('P9Server', () => {
     const observed: string[] = [];
     const throwing = await new P9Server([{ mountpoint: '/s3', backing: join(dir, 's3'), adapter: s3 }], {
       socket: join(dir, 'throwing.sock'),
-      onRequest: (request) => {
+      onRequest: (request): never => {
         observed.push(String(request.type));
         throw new TypeError('Do not know how to serialize a BigInt');
       },

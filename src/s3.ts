@@ -202,7 +202,7 @@ export class S3Adapter implements VfsAdapter {
 
   constructor(private readonly options: S3AdapterOptions) {
     this.client = options.client ?? new S3Client({});
-    this.log = options.log ?? (() => {});
+    this.log = options.log ?? ((): void => {});
     if (options.trace) {
       this.traceCalls(options.trace);
     }
@@ -218,21 +218,22 @@ export class S3Adapter implements VfsAdapter {
    */
   private traceCalls(trace: NonNullable<S3AdapterOptions['trace']>): void {
     this.client.middlewareStack?.add(
-      (next, context) => async (args) => {
-        const op = `${context.commandName ?? 'S3'}`.replace(/Command$/, '');
-        const key = (args.input as { Key?: string }).Key;
-        const started = performance.now();
-        const duration = () => `${(performance.now() - started).toFixed(2)} ms`;
-        try {
-          const result = await next(args);
-          const { statusCode, headers } = (result.response ?? {}) as { statusCode?: number; headers?: unknown };
-          trace(op, { key, status: statusCode, duration: duration(), headers });
-          return result;
-        } catch (e) {
-          trace(op, { key, duration: duration(), error: `${e}` });
-          throw e;
-        }
-      },
+      (next, context) =>
+        async (args): ReturnType<typeof next> => {
+          const op = `${context.commandName ?? 'S3'}`.replace(/Command$/, '');
+          const key = (args.input as { Key?: string }).Key;
+          const started = performance.now();
+          const duration = (): string => `${(performance.now() - started).toFixed(2)} ms`;
+          try {
+            const result = await next(args);
+            const { statusCode, headers } = (result.response ?? {}) as { statusCode?: number; headers?: unknown };
+            trace(op, { key, status: statusCode, duration: duration(), headers });
+            return result;
+          } catch (e) {
+            trace(op, { key, duration: duration(), error: `${e}` });
+            throw e;
+          }
+        },
       { step: 'deserialize', priority: 'low', name: 'rowdyVfsTrace' }
     );
   }

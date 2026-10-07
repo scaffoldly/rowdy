@@ -66,7 +66,7 @@ class FakeS3 {
       const o = this.objects.get(command.input.Key!);
       if (!o) throw notFound('NoSuchKey');
       const body = Readable.from([o.body]) as Readable & { transformToString(): Promise<string> };
-      body.transformToString = async () => o.body.toString();
+      body.transformToString = async (): Promise<string> => o.body.toString();
       return { ETag: o.etag, ContentLength: o.body.length, Body: body, ...this.checksums(o, command.input) };
     }
     if (command instanceof PutObjectCommand) {
@@ -120,10 +120,12 @@ class FakeS3 {
   }
 }
 
-const notFound = (name = 'NotFound') => Object.assign(new Error(name), { name, $metadata: { httpStatusCode: 404 } });
-const precondition = () =>
+type S3Error = Error & { $metadata: { httpStatusCode: number } };
+const notFound = (name = 'NotFound'): S3Error =>
+  Object.assign(new Error(name), { name, $metadata: { httpStatusCode: 404 } });
+const precondition = (): S3Error =>
   Object.assign(new Error('PreconditionFailed'), { name: 'PreconditionFailed', $metadata: { httpStatusCode: 412 } });
-const conflict = () =>
+const conflict = (): S3Error =>
   Object.assign(
     new Error('The conditional request cannot succeed due to a conflicting operation against this resource.'),
     {
@@ -719,7 +721,7 @@ describe('S3Adapter', () => {
   });
 
   it('surfaces S3 errors as VfsError errnos', async () => {
-    s3.send = async () => {
+    s3.send = async (): Promise<never> => {
       throw Object.assign(new Error('AccessDenied'), { name: 'AccessDenied', $metadata: { httpStatusCode: 403 } });
     };
     await expect(adapter.stat(`${mount}/secret.txt`)).rejects.toBeInstanceOf(VfsError);
@@ -736,7 +738,9 @@ describe('S3Adapter', () => {
     const client = new S3Client({
       region: 'us-east-1',
       credentials: { accessKeyId: 'test', secretAccessKey: 'test' },
-      requestHandler: { handle: async () => ({ response: responses.shift()! }) },
+      requestHandler: {
+        handle: async (): Promise<{ response: (typeof responses)[number] }> => ({ response: responses.shift()! }),
+      },
     });
     const traced: Array<[string, Record<string, unknown> | undefined]> = [];
     const a = new S3Adapter({
@@ -744,7 +748,9 @@ describe('S3Adapter', () => {
       mountpoint: mount,
       backing: mkdtempSync(join(tmpdir(), 'vfs-trace-')),
       client,
-      trace: (message, params) => traced.push([message, params]),
+      trace: (message, params): void => {
+        traced.push([message, params]);
+      },
     });
     await expect(a.stat(`${mount}/missing.txt`)).rejects.toMatchObject({ errno: 2 });
     await a.stat(`${mount}/present.txt`);
