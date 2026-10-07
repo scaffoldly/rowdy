@@ -1,6 +1,14 @@
 import { Logger, Environment, Routes } from '@scaffoldly/rowdy';
 import { LambdaImageService } from '../../../src/aws/lambda/image';
-import { LambdaFunction } from '../../../src/aws/lambda/index';
+import {
+  fit,
+  isNotFound,
+  isPropagating,
+  isTransient,
+  LambdaFunction,
+  PROPAGATION,
+  waitForSuccess,
+} from '../../../src/aws/lambda/index';
 import { inspect } from 'util';
 import { lastValueFrom } from 'rxjs';
 import { Statement } from 'aws-lambda';
@@ -363,5 +371,168 @@ describe('aws lambda volumes', () => {
       .withRoutes(Routes.empty().withVolumes(['s3://example-bucket:/data']))
       .withRoutes(Routes.empty().withVolumes(['s3://example-bucket:/data']));
     expect(statements(fn)).toHaveLength(2);
+  });
+});
+
+describe('aws lambda names', () => {
+  // DEVNOTE: Exact strings on purpose. Role and function names identify existing deployments, so any
+  // change to these outputs is a breaking change.
+  const image = { namespace: 'acme', name: 'score' } as Parameters<typeof LambdaFunction.roleName>[0];
+  const LONG = 'acme-org/a-very-long-repository-name-for-the-secure-development-ctf';
+
+  it('keeps names that fit unchanged', () => {
+    expect(LambdaFunction.roleName(image)).toBe('acme+score@rowdy.run');
+    expect(LambdaFunction.roleName(image, 'acme/app')).toBe('acme+score@acme.app.rowdy.run');
+    expect(LambdaFunction.functionName('AROAEXAMPLEEXAMPLE12')).toBe('AROAEXAMPLEEXAMPLE12');
+    expect(LambdaFunction.functionName('AROAEXAMPLEEXAMPLE12', 'acme/app')).toBe('acme_app');
+  });
+
+  it('shortens role names over 64 characters', () => {
+    expect(LambdaFunction.roleName(image, LONG)).toBe(
+      'acme+score@acme-org.a-very-long-repository-na-3f032919.rowdy.run'
+    );
+    expect(LambdaFunction.roleName(image, `${LONG}-a`)).toBe(
+      'acme+score@acme-org.a-very-long-repository-na-b65aa1d8.rowdy.run'
+    );
+    expect(LambdaFunction.roleName(image, `${LONG}-b`)).toBe(
+      'acme+score@acme-org.a-very-long-repository-na-29249bf5.rowdy.run'
+    );
+  });
+
+  it('shortens function names over 64 characters', () => {
+    expect(LambdaFunction.functionName('AROAEXAMPLEEXAMPLE12', `${LONG}-and-then-some-more`)).toBe(
+      'acme-org_a-very-long-repository-name-for-the-secure-dev-ca1a9df8'
+    );
+  });
+
+  it('fits within the limit including the suffix', () => {
+    expect(fit('short', '.suffix')).toBe('short.suffix');
+    expect(fit('x'.repeat(100), '.suffix')).toBe('xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx-09ecb6eb.suffix');
+  });
+});
+
+describe('aws lambda errors', () => {
+  const environment = new Environment(new Logger());
+  const imageService = new LambdaImageService(environment);
+
+  const awsError = (name: string, $fault: 'client' | 'server', message = name): Error =>
+    Object.assign(new Error(message), { name, $fault, $metadata: {} });
+
+  type Send = (command: { constructor: { name: string } }) => Promise<unknown>;
+
+  const mockIam = (fn: LambdaFunction, respond: (name: string, calls: number) => unknown): string[] => {
+    const sent: string[] = [];
+    const send: Send = (command) => {
+      const name = command.constructor.name;
+      sent.push(name);
+      try {
+        return Promise.resolve(respond(name, sent.filter((n) => n === name).length));
+      } catch (error) {
+        return Promise.reject(error);
+      }
+    };
+    (fn['iam'] as unknown as { send: Send }).send = send;
+    return sent;
+  };
+
+  const ROLE = { Role: { Arn: 'arn:aws:iam::123456789012:role/acme+score@rowdy.run', RoleId: 'AROAEXAMPLE' } };
+
+  const timing = { ...PROPAGATION };
+  beforeAll(() => Object.assign(PROPAGATION, { minTimeout: 1, maxTimeout: 1 }));
+  afterAll(() => Object.assign(PROPAGATION, timing));
+
+  it('classifies errors', () => {
+    expect(isNotFound(awsError('NoSuchEntityException', 'client'))).toBe(true);
+    expect(isNotFound(awsError('ResourceNotFoundException', 'client'))).toBe(true);
+    expect(isNotFound(awsError('AccessDenied', 'client'))).toBe(false);
+
+    expect(isTransient(awsError('AccessDenied', 'client'))).toBe(false);
+    expect(isTransient(awsError('ValidationError', 'client'))).toBe(false);
+    expect(isTransient(awsError('ServiceException', 'server'))).toBe(true);
+    expect(isTransient(awsError('TooManyRequestsException', 'client'))).toBe(true);
+
+    expect(isPropagating(awsError('AccessDenied', 'client'))).toBe(true);
+    expect(isPropagating(awsError('AccessDeniedException', 'client'))).toBe(true);
+    expect(
+      isPropagating(
+        awsError(
+          'InvalidParameterValueException',
+          'client',
+          'The role defined for the function cannot be assumed by Lambda.'
+        )
+      )
+    ).toBe(true);
+    expect(isPropagating(awsError('InvalidParameterValueException', 'client', 'Bad memory'))).toBe(false);
+    expect(isPropagating(awsError('ValidationError', 'client'))).toBe(false);
+  });
+
+  it('retries AccessDenied until it flips', async () => {
+    const fn = new LambdaFunction('Container', imageService);
+    const sent = mockIam(fn, (name, calls) => {
+      if (name === 'UpdateRoleCommand' && calls <= 2) throw awsError('AccessDenied', 'client');
+      return name === 'GetRoleCommand' ? ROLE : {};
+    });
+
+    await expect(lastValueFrom(fn['prepare']().creates[0]!)).resolves.toEqual(ROLE);
+    expect(sent).toEqual([
+      'UpdateRoleCommand',
+      'UpdateRoleCommand',
+      'UpdateRoleCommand',
+      'UpdateAssumeRolePolicyCommand',
+      'GetRoleCommand',
+    ]);
+  });
+
+  it('fails the deploy when AccessDenied outlasts the propagation window', async () => {
+    const fn = new LambdaFunction('Container', imageService);
+    const sent = mockIam(fn, () => {
+      throw awsError('AccessDenied', 'client');
+    });
+
+    await expect(lastValueFrom(fn['prepare']().creates[0]!)).rejects.toMatchObject({ name: 'AccessDenied' });
+    expect(sent).toEqual(Array(PROPAGATION.retries + 1).fill('UpdateRoleCommand'));
+  });
+
+  it('fails the deploy on ValidationError without retrying', async () => {
+    const fn = new LambdaFunction('Container', imageService);
+    const sent = mockIam(fn, () => {
+      throw awsError('ValidationError', 'client');
+    });
+
+    await expect(lastValueFrom(fn['prepare']().creates[0]!)).rejects.toMatchObject({ name: 'ValidationError' });
+    expect(sent).toEqual(['UpdateRoleCommand']);
+  });
+
+  it('creates the role only when it does not exist', async () => {
+    const fn = new LambdaFunction('Container', imageService);
+    const sent = mockIam(fn, (name, calls) => {
+      if (name === 'UpdateRoleCommand' && calls === 1) throw awsError('NoSuchEntityException', 'client');
+      return name === 'GetRoleCommand' ? ROLE : {};
+    });
+
+    await expect(lastValueFrom(fn['prepare']().creates[0]!)).resolves.toEqual(ROLE);
+    expect(sent).toEqual([
+      'UpdateRoleCommand',
+      'CreateRoleCommand',
+      'UpdateRoleCommand',
+      'UpdateAssumeRolePolicyCommand',
+      'GetRoleCommand',
+    ]);
+  });
+
+  it('stops waiting when the function fails', async () => {
+    const lambda = { send: jest.fn() } as unknown as Parameters<typeof waitForSuccess>[0];
+    await expect(
+      waitForSuccess(lambda)({ $metadata: {}, FunctionName: 'f', State: 'Failed', StateReason: 'permission denied' })
+    ).rejects.toThrow('Function f failed: permission denied');
+    await expect(
+      waitForSuccess(lambda)({
+        $metadata: {},
+        FunctionName: 'f',
+        State: 'Active',
+        LastUpdateStatus: 'Failed',
+        LastUpdateStatusReason: 'bad image',
+      })
+    ).rejects.toThrow('Function f failed: bad image');
   });
 });
