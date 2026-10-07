@@ -57,6 +57,8 @@ type Args = yargs.ArgumentsCamelCase<
     registry: string | undefined;
   } & {
     port: number | undefined;
+  } & {
+    workdir: string | undefined;
   }
 >;
 
@@ -67,6 +69,8 @@ const entrypoint = <T>(
     routes: string | undefined;
   } & {
     registry: string | undefined;
+  } & {
+    workdir: string | undefined;
   }
 > => {
   const modified = argv
@@ -79,6 +83,12 @@ const entrypoint = <T>(
     .option('registry', {
       type: 'string',
       description: 'Image registry to use for pushing and serving images.',
+      global: false,
+      group: 'Entrypoint:',
+    })
+    .option('workdir', {
+      type: 'string',
+      description: 'Directory to run the command in. Stays in the current directory if it cannot be entered.',
       global: false,
       group: 'Entrypoint:',
     });
@@ -427,6 +437,9 @@ export class Environment implements ILoggable {
   }
 
   private setup(argv: Partial<Args>): void {
+    if (argv.workdir) {
+      this.chdir(argv.workdir);
+    }
     if (argv['--']) {
       this._command = argv['--'] as string[];
     }
@@ -438,6 +451,20 @@ export class Environment implements ILoggable {
     }
     if (argv.routes) {
       this._routes = Routes.fromURL(argv.routes);
+    }
+  }
+
+  private chdir(workdir: string): void {
+    try {
+      process.chdir(workdir);
+    } catch (error) {
+      this.log.warn('Working Directory Unavailable', {
+        workdir,
+        cwd: process.cwd(),
+        uid: process.getuid?.(),
+        error: (error as { code?: string }).code ?? `${error}`,
+        reason: 'not enterable by this user; Lambda does not run as the image USER',
+      });
     }
   }
 

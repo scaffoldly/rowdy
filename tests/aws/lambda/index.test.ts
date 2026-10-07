@@ -553,3 +553,54 @@ SENTRY_DSN=https://key@sentry.example.com/1
     expect(environment(fn)).not.toHaveProperty('github_token');
   });
 });
+
+describe('aws lambda working directory', () => {
+  const imageService = new LambdaImageService(new Environment(new Logger()));
+  const FUNCTION_ARN = 'arn:aws:lambda:us-east-1:123456789012:function:acme_app';
+  const IMAGE_URI = '123456789012.dkr.ecr.us-east-1.amazonaws.com/acme/app@sha256:abc';
+
+  type Sent = { name: string; input: Record<string, unknown> };
+
+  const deployConfiguration = async (workingDirectory?: string): Promise<Record<string, unknown>> => {
+    const fn = new LambdaFunction('Container', imageService);
+    fn['FunctionArn'].next(FUNCTION_ARN);
+    fn['Qualifier'].next('sha256-abc');
+    fn['ImageUri'].next(IMAGE_URI);
+    fn['Command'].next(['/app-binary']);
+    fn['WorkingDirectory'].next(workingDirectory);
+
+    const configuration = {
+      FunctionName: 'acme_app',
+      Version: '1',
+      State: 'Active',
+      LastUpdateStatus: 'Successful',
+      MemorySize: 128,
+      ImageConfigResponse: { ImageConfig: { EntryPoint: ['rowdy', '--'], Command: ['/app-binary'] } },
+      Environment: { Variables: {} },
+    };
+    const sent: Sent[] = [];
+    const send = (command: { constructor: { name: string }; input: Record<string, unknown> }): Promise<unknown> => {
+      sent.push({ name: command.constructor.name, input: command.input });
+      if (command.constructor.name === 'GetFunctionCommand') {
+        return Promise.resolve({ Code: { ImageUri: IMAGE_URI }, Configuration: { ...configuration } });
+      }
+      return Promise.resolve({ ...configuration, Version: '2' });
+    };
+    (fn['lambda'] as unknown as { send: typeof send }).send = send;
+
+    await lastValueFrom(fn['prepare']().updates[1]!);
+    return sent.find(({ name }) => name === 'UpdateFunctionConfigurationCommand')!.input;
+  };
+
+  it("starts Lambda in / and hands the image's WORKDIR to rowdy", async () => {
+    const input = await deployConfiguration('/home/nonroot');
+    expect((input.ImageConfig as Record<string, unknown>).WorkingDirectory).toBe('/');
+    expect((input.Environment as { Variables: Record<string, string> }).Variables.ROWDY_WORKDIR).toBe('/home/nonroot');
+  });
+
+  it('hands / to rowdy when the image has no WORKDIR', async () => {
+    const input = await deployConfiguration(undefined);
+    expect((input.ImageConfig as Record<string, unknown>).WorkingDirectory).toBe('/');
+    expect((input.Environment as { Variables: Record<string, string> }).Variables.ROWDY_WORKDIR).toBe('/');
+  });
+});
