@@ -160,22 +160,19 @@ export class Transfer implements ILoggable {
       registry = parts[0] || registry;
     }
 
-    let [nameAndTag = '', namespace = 'library'] = [...parts].reverse();
-    let [name, digest = 'latest', tag = null] = nameAndTag.split(':');
-
-    if (name?.endsWith('@sha256')) {
-      [name, digest = digest] = nameAndTag.split('@');
-      tag = null;
-    } else {
-      tag = digest;
-    }
+    // name[:tag][@sha256:digest]: the tag names the alias, the digest (when given) is what's pulled.
+    const [nameAndTag = '', namespace = 'library'] = [...parts].reverse();
+    const [reference = '', pinned] = nameAndTag.split('@');
+    const [name, given] = reference.split(':');
+    const tag = given || (pinned ? null : 'latest');
+    const digest = pinned || tag!;
 
     if (!name) {
       throw new Error(`Unable to normalize image: ${image}`);
     }
 
     if (parts.length <= 2) {
-      image = `${registry}/${namespace}/${name}${tag ? `:${tag}` : `@${digest}`}`;
+      image = `${registry}/${namespace}/${name}${tag ? `:${tag}` : ''}${pinned ? `@${pinned}` : ''}`;
     }
 
     let slug = `${namespace}/${name}`;
