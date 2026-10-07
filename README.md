@@ -152,7 +152,7 @@ across instances. The deploy grants the execution role access to the bucket and 
 Nothing is mounted in the kernel sense: rowdy preloads the
 [`@scaffoldly/rowdy-vfs`](https://github.com/scaffoldly/rowdy/tree/vfs) shim into the app, which
 rewrites libc path calls to a backing directory and speaks 9P2000.L to rowdy for the control plane.
-Only dynamically linked musl binaries see the mountpoint; `mmap` is not translated.
+Dynamically linked musl and glibc (2.34+) programs see the mountpoint; static binaries do not.
 
 Syntax, flags, sharing semantics, caching, limits and errors: [docs/volumes.md](docs/volumes.md).
 
