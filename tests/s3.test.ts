@@ -725,4 +725,39 @@ describe('S3Adapter', () => {
     await expect(adapter.stat(`${mount}/secret.txt`)).rejects.toBeInstanceOf(VfsError);
     await expect(adapter.stat(`${mount}/secret.txt`)).rejects.toMatchObject({ errno: 13 });
   });
+
+  it('traces each S3 round trip with its status, duration and response headers', async () => {
+    const empty = Buffer.from('<ListBucketResult><KeyCount>0</KeyCount></ListBucketResult>');
+    const responses = [
+      { statusCode: 404, headers: { 'x-amz-request-id': 'r1', 'x-amz-id-2': 'x1' } },
+      { statusCode: 200, headers: { 'content-type': 'application/xml' }, body: empty },
+      { statusCode: 200, headers: { etag: '"abc"', 'content-length': '5', 'x-amz-request-id': 'r2' } },
+    ];
+    const client = new S3Client({
+      region: 'us-east-1',
+      credentials: { accessKeyId: 'test', secretAccessKey: 'test' },
+      requestHandler: { handle: async () => ({ response: responses.shift()! }) },
+    });
+    const traced: Array<[string, Record<string, unknown> | undefined]> = [];
+    const a = new S3Adapter({
+      bucket: 'bucket',
+      mountpoint: mount,
+      backing: mkdtempSync(join(tmpdir(), 'vfs-trace-')),
+      client,
+      trace: (message, params) => traced.push([message, params]),
+    });
+    await expect(a.stat(`${mount}/missing.txt`)).rejects.toMatchObject({ errno: 2 });
+    await a.stat(`${mount}/present.txt`);
+    expect(traced.map(([op]) => op)).toEqual(['HeadObject', 'ListObjectsV2', 'HeadObject']);
+    expect(traced[0]).toEqual([
+      'HeadObject',
+      {
+        key: 'missing.txt',
+        status: 404,
+        duration: expect.stringMatching(/^\d+\.\d\d ms$/),
+        headers: { 'x-amz-request-id': 'r1', 'x-amz-id-2': 'x1' },
+      },
+    ]);
+    expect(traced[2]![1]).toMatchObject({ key: 'present.txt', status: 200, headers: { etag: '"abc"' } });
+  });
 });

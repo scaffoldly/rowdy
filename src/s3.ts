@@ -27,6 +27,8 @@ export type S3AdapterOptions = {
   backing: string;
   client?: S3Client;
   log?: (message: string, params?: Record<string, unknown>) => void;
+  /** One line per S3 round trip (each retry attempt separately): operation, key, status, duration, response headers. */
+  trace?: (message: string, params?: Record<string, unknown>) => void;
   /**
    * How long a local copy is trusted before a HEAD re-checks the object's ETag
    * (ms). Keeps stat-heavy callers from turning into HEAD storms. Default 2000.
@@ -201,9 +203,38 @@ export class S3Adapter implements VfsAdapter {
   constructor(private readonly options: S3AdapterOptions) {
     this.client = options.client ?? new S3Client({});
     this.log = options.log ?? (() => {});
+    if (options.trace) {
+      this.traceCalls(options.trace);
+    }
     this.owner = options.owner ?? randomUUID();
     this.localOnly = (options.localOnly ?? []).map((glob) => ({ re: globToRegExp(glob), pathy: glob.includes('/') }));
     mkdirSync(options.backing, { recursive: true });
+  }
+
+  /**
+   * Sits directly around the HTTP handler (inside the retry and deserializer middleware), so one
+   * line is one wire round trip with the raw status and headers, before the SDK turns a 404 or
+   * 412 into an exception.
+   */
+  private traceCalls(trace: NonNullable<S3AdapterOptions['trace']>): void {
+    this.client.middlewareStack?.add(
+      (next, context) => async (args) => {
+        const op = `${context.commandName ?? 'S3'}`.replace(/Command$/, '');
+        const key = (args.input as { Key?: string }).Key;
+        const started = performance.now();
+        const duration = () => `${(performance.now() - started).toFixed(2)} ms`;
+        try {
+          const result = await next(args);
+          const { statusCode, headers } = (result.response ?? {}) as { statusCode?: number; headers?: unknown };
+          trace(op, { key, status: statusCode, duration: duration(), headers });
+          return result;
+        } catch (e) {
+          trace(op, { key, duration: duration(), error: `${e}` });
+          throw e;
+        }
+      },
+      { step: 'deserialize', priority: 'low', name: 'rowdyVfsTrace' }
+    );
   }
 
   /** Path relative to the mountpoint without a leading slash ('' for the root), or undefined if outside it. */
