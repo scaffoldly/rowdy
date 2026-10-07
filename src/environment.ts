@@ -228,6 +228,11 @@ export class Environment implements ILoggable {
               description: 'Secrets (alpha feature)',
               group: 'Runtime:',
             })
+            .option('volumes', {
+              type: 'string',
+              description: 'Volumes to add to the Routes manifest: a YAML list, or one per line',
+              group: 'Runtime:',
+            })
             .demandCommand(1, 'Please specify a subcommand')
             .command({
               command: 'aws',
@@ -278,6 +283,9 @@ export class Environment implements ILoggable {
                     }
                     if (argv.routes) {
                       lambda = lambda.withRoutes(Routes.fromURL(argv.routes));
+                    }
+                    if (argv.volumes) {
+                      lambda = lambda.withRoutes(Routes.empty().withVolumes(Volume.list(argv.volumes)));
                     }
                     if (argv.secrets) {
                       lambda = lambda.withSecrets(argv.secrets);

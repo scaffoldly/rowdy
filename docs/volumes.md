@@ -11,6 +11,20 @@ spec:
     - 'file:///tmp/scratch:/scratch'
 ```
 
+In the GitHub Action, `volumes` is also an input of its own, one spec per line (or `--volumes` /
+`ROWDY_VOLUMES` on `rowdy create`). Those are added to the manifest's: an identical entry counts
+once, and two volumes on one mountpoint fail the deploy.
+
+```yaml
+- uses: scaffoldly/rowdy@github
+  with:
+    routes: |
+      default: "http://localhost:3000/"
+    volumes: |
+      s3://my-bucket:/data
+      file:///tmp/scratch:/scratch
+```
+
 Every entry is mounted. Nothing is mounted in the kernel sense, see [How it works](#how-it-works).
 
 ## Syntax
