@@ -13,7 +13,7 @@ import {
 import { inspect } from 'util';
 import { readFileSync } from 'fs';
 import { join } from 'path';
-import { lastValueFrom } from 'rxjs';
+import { lastValueFrom, of } from 'rxjs';
 import { Statement } from 'aws-lambda';
 
 describe('aws lambda', () => {
@@ -647,6 +647,98 @@ describe('aws lambda function url', () => {
     const create = sent.find(({ name }) => name === 'CreateFunctionUrlConfigCommand')!;
     expect(create.input.Qualifier).toBe('sha256-abc');
     expect(create.input).not.toHaveProperty('Cors');
+  });
+});
+
+describe('aws lambda alias pruning', () => {
+  const FUNCTION_ARN = 'arn:aws:lambda:us-east-1:123456789012:function:acme_app';
+
+  type Sent = { name: string; input: Record<string, unknown> };
+
+  const prune = async (
+    current: string,
+    pages: string[][],
+    fail: Record<string, Error> = {}
+  ): Promise<{ sent: Sent[]; deleted: string[] }> => {
+    const fn = new LambdaFunction('Container', new LambdaImageService(new Environment(new Logger())));
+    const sent: Sent[] = [];
+    const send = (command: { constructor: { name: string }; input: Record<string, unknown> }): Promise<unknown> => {
+      const { name } = command.constructor;
+      sent.push({ name, input: command.input });
+      if (fail[name]) {
+        return Promise.reject(fail[name]);
+      }
+      if (name === 'ListAliasesCommand') {
+        const page = command.input.Marker ? Number(command.input.Marker) : 0;
+        return Promise.resolve({
+          Aliases: pages[page]!.map((Name) => ({ Name, AliasArn: `${FUNCTION_ARN}:${Name}` })),
+          NextMarker: page + 1 < pages.length ? String(page + 1) : undefined,
+        });
+      }
+      return Promise.resolve({});
+    };
+    (fn['lambda'] as unknown as { send: typeof send }).send = send;
+
+    await lastValueFrom(fn['pruneAliases'](FUNCTION_ARN, `${FUNCTION_ARN}:${current}`));
+    const deleted = sent.filter(({ name }) => name === 'DeleteAliasCommand').map(({ input }) => input.Name as string);
+    return { sent, deleted };
+  };
+
+  it('deletes superseded untagged aliases and their function urls, across pages', async () => {
+    const { sent, deleted } = await prune('rowdy', [
+      ['rowdy', 'untagged-aaaaaaaa'],
+      ['staging', 'untagged-bbbbbbbb'],
+    ]);
+    expect(deleted).toEqual(['untagged-aaaaaaaa', 'untagged-bbbbbbbb']);
+    const urls = sent.filter(({ name }) => name === 'DeleteFunctionUrlConfigCommand').map(({ input }) => input);
+    expect(urls).toEqual([
+      { FunctionName: FUNCTION_ARN, Qualifier: 'untagged-aaaaaaaa' },
+      { FunctionName: FUNCTION_ARN, Qualifier: 'untagged-bbbbbbbb' },
+    ]);
+  });
+
+  it('keeps the alias being deployed even when it is untagged', async () => {
+    const { deleted } = await prune('untagged-cccccccc', [['untagged-aaaaaaaa', 'untagged-cccccccc']]);
+    expect(deleted).toEqual(['untagged-aaaaaaaa']);
+  });
+
+  it('never touches tagged aliases', async () => {
+    const { deleted } = await prune('rowdy', [['rowdy', 'latest', 'staging', 'untagged']]);
+    expect(deleted).toEqual([]);
+  });
+
+  it('deletes the alias when it has no function url', async () => {
+    const notFound = Object.assign(new Error('not found'), { name: 'ResourceNotFoundException' });
+    const { deleted } = await prune('rowdy', [['rowdy', 'untagged-aaaaaaaa']], {
+      DeleteFunctionUrlConfigCommand: notFound,
+    });
+    expect(deleted).toEqual(['untagged-aaaaaaaa']);
+  });
+
+  it('does not fail the deploy when pruning is denied', async () => {
+    const denied = Object.assign(new Error('denied'), { name: 'AccessDeniedException' });
+    await expect(prune('rowdy', [['rowdy', 'untagged-aaaaaaaa']], { ListAliasesCommand: denied })).resolves.toEqual({
+      sent: [expect.objectContaining({ name: 'ListAliasesCommand' })],
+      deleted: [],
+    });
+    const { deleted } = await prune('rowdy', [['rowdy', 'untagged-aaaaaaaa', 'untagged-bbbbbbbb']], {
+      DeleteAliasCommand: denied,
+    });
+    expect(deleted).toEqual(['untagged-aaaaaaaa', 'untagged-bbbbbbbb']);
+  });
+
+  it('runs as the last deploy update, against the alias just deployed', async () => {
+    const fn = new LambdaFunction('Container', new LambdaImageService(new Environment(new Logger())));
+    fn['FunctionArn'].next(FUNCTION_ARN);
+    fn['AliasArn'].next(`${FUNCTION_ARN}:rowdy`);
+    const pruned: string[][] = [];
+    (fn as unknown as { pruneAliases: (f: string, a: string) => unknown }).pruneAliases = (f, a) => {
+      pruned.push([f, a]);
+      return of({ $metadata: {} });
+    };
+    const { updates } = fn['prepare']();
+    await lastValueFrom(updates[updates.length - 1]!);
+    expect(pruned).toEqual([[FUNCTION_ARN, `${FUNCTION_ARN}:rowdy`]]);
   });
 });
 

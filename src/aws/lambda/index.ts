@@ -29,6 +29,7 @@ import {
   GetPolicyCommand,
   FunctionConfiguration,
   DeleteAliasCommand,
+  DeleteFunctionUrlConfigCommand,
   GetFunctionUrlConfigCommand,
   GetFunctionResponse,
   PublishVersionCommand,
@@ -56,6 +57,7 @@ import { LambdaImageService } from './image';
 import { Image, Transfer } from '../../api/internal/transfer';
 import {
   BehaviorSubject,
+  catchError,
   combineLatest,
   concat,
   defer,
@@ -1280,9 +1282,49 @@ export class LambdaFunction implements Logger {
           this.reconcileSchedules(FunctionArn!, AliasArn!, RoleArn!, Tags)
         )
       ),
+      // Superseded Aliases (after the schedules have moved to the new alias)
+      combineLatest({
+        FunctionArn: this.FunctionArn.pipe(take(1)),
+        AliasArn: this.AliasArn.pipe(take(1)),
+      }).pipe(switchMap(({ FunctionArn, AliasArn }) => this.pruneAliases(FunctionArn!, AliasArn!))),
     ];
 
     return { creates, updates, tags, deletes };
+  }
+
+  // DEVNOTE: An image deployed by digest alone gets an `untagged-<digest>` alias, and each one
+  // carries its own public Function URL. Delete every `untagged-*` alias but the one just deployed.
+  // Tagged aliases are left alone. Best effort: a denied or failed delete is logged, not fatal.
+  private pruneAliases(FunctionArn: string, AliasArn: string): Observable<MetadataBearer> {
+    const current = AliasArn.split(':').pop();
+    const list = (Marker?: string) => this.lambda.send(new ListAliasesCommand({ FunctionName: FunctionArn, Marker }));
+
+    return defer(() => list()).pipe(
+      expand((page) => (page.NextMarker ? from(list(page.NextMarker)) : EMPTY)),
+      mergeMap((page) => page.Aliases ?? []),
+      map(({ Name }) => Name!),
+      filter((Name) => Name.startsWith('untagged-') && Name !== current),
+      mergeMap(
+        (Name) =>
+          from(
+            this.lambda
+              .send(new DeleteFunctionUrlConfigCommand({ FunctionName: FunctionArn, Qualifier: Name }))
+              .catch((error) => {
+                if (!isNotFound(error)) throw error;
+              })
+              .then(() => this.lambda.send(new DeleteAliasCommand({ FunctionName: FunctionArn, Name })))
+              .then(() => this.log.info('Alias Pruned', { alias: Name }))
+              .catch((error) => this.log.warn('Alias Prune Failed', { alias: Name, error }))
+          ),
+        Environment.CONCURRENCY
+      ),
+      catchError((error) => {
+        this.log.warn('Alias Prune Skipped', { error });
+        return EMPTY;
+      }),
+      toArray(),
+      map(() => ({ $metadata: {} }))
+    );
   }
 
   debug = (..._content: unknown[]): void => {};
