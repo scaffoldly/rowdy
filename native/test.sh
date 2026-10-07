@@ -1,30 +1,47 @@
 #!/bin/sh
-# Integration test for the shim: compiles it inside node:22-alpine and drives it
-# through busybox, node (libuv) and a C fopen caller under LD_PRELOAD.
+# Integration test for the shim built by native/build.sh. Drives it through the image's own shell
+# and coreutils (busybox on alpine, GNU on debian), node (libuv), C callers, several mounts and the
+# package's 9P server, under LD_PRELOAD.
 #
-#   sh native/test.sh            # host architecture
-#   sh native/test.sh arm64      # or x64, via docker --platform
+#   sh native/test.sh x64|arm64 alpine|debian
 set -eu
 
 if [ -z "${VFS_STAGE:-}" ]; then
   if [ ! -f /.dockerenv ]; then
-    arch="${1:-}"
-    platform=""
+    arch="${1:-}"; flavour="${2:-}"
     case "$arch" in
-      x64)   platform="--platform linux/amd64" ;;
-      arm64) platform="--platform linux/arm64" ;;
+      x64)   platform=linux/amd64 ;;
+      arm64) platform=linux/arm64 ;;
+      *) echo "usage: $0 x64|arm64 alpine|debian" >&2; exit 2 ;;
+    esac
+    case "$flavour" in
+      alpine) image=node:22-alpine ;;
+      debian) image=node:22-bookworm-slim ;;
+      *) echo "usage: $0 x64|arm64 alpine|debian" >&2; exit 2 ;;
     esac
     root="$(cd "$(dirname "$0")/.." && pwd)"
     [ -f "$root/dist/index.js" ] || { echo "dist/index.js missing: run yarn build first (the test supervisor is the package's 9P server)" >&2; exit 2; }
-    exec docker run --rm $platform -v "$root:/w:ro" node:22-alpine sh /w/native/test.sh
+    [ -f "$root/lib/linux-$arch/vfspreload.so" ] || { echo "lib/linux-$arch/vfspreload.so missing: run native/build.sh $arch first" >&2; exit 2; }
+    exec docker run --rm --platform "$platform" -e FLAVOUR="$flavour" -e SHIM="/w/lib/linux-$arch/vfspreload.so" \
+      -v "$root:/w:ro" "$image" sh /w/native/test.sh
   fi
-  apk add --no-cache gcc musl-dev linux-headers >/dev/null 2>&1
-  gcc -O2 -shared -fPIC -Wall -Wextra -Werror /w/native/vfspreload.c -o /tmp/vfspreload.so
-  echo "compile: ok"
+  # C toolchain for the test callers only; the shim under test is the built artifact.
+  case "$FLAVOUR" in
+    alpine) apk add --no-cache gcc musl-dev linux-headers >/dev/null 2>&1 ;;
+    debian) { apt-get -qq update && apt-get -qq install -y --no-install-recommends gcc libc6-dev binutils; } >/dev/null 2>&1 ;;
+  esac
+  echo "shim: $SHIM on $FLAVOUR"
   # the shell performs redirections itself, so it must be preloaded too
-  exec env VFS_STAGE=1 LD_PRELOAD=/tmp/vfspreload.so VFS_MOUNTS=/vfs=/tmp/vfsstore sh "$0"
+  exec env VFS_STAGE=1 LD_PRELOAD="$SHIM" VFS_MOUNTS=/vfs=/tmp/vfsstore sh "$0"
 fi
 fail() { echo "FAIL: $*"; exit 1; }
+# in_order "log" "op" "op" …: each op appears in the log after the previous one
+in_order() {
+  rest="$1"; shift
+  for op in "$@"; do
+    case "$rest" in *"$op "*) rest="${rest#*"$op "}" ;; *) return 1 ;; esac
+  done
+}
 
 # busybox (dynamically linked against musl) path ops
 ls /vfs >/dev/null || fail "ls /vfs"
@@ -164,14 +181,18 @@ rmdir /vfs/d2
 echo x > /tmp/notvfs   # outside the prefix: must not reach the supervisor
 
 LOG=$(cat /tmp/ops.log | tr '\n' ' ')
-case "$LOG" in
-  *"stat /vfs/tracked stat /vfs/tracked fetch /vfs/tracked open /vfs/tracked flush /vfs/tracked stat /vfs list /vfs stat /vfs mkdir /vfs/d2 stat /vfs stat /vfs/d2 rename /vfs/tracked /vfs/d2/tracked2 stat /vfs stat /vfs/d2 stat /vfs/d2/tracked2 stat /vfs/d2 unlink /vfs/d2/tracked2 stat /vfs unlink /vfs/d2 "*)
-    :
-    ;;
-  *)
-    fail "log did not match: $LOG"
-    ;;
-esac
+if [ "$FLAVOUR" = alpine ]; then
+  # busybox's exact call sequence, pinned as before
+  case "$LOG" in
+    *"stat /vfs/tracked stat /vfs/tracked fetch /vfs/tracked open /vfs/tracked flush /vfs/tracked stat /vfs list /vfs stat /vfs mkdir /vfs/d2 stat /vfs stat /vfs/d2 rename /vfs/tracked /vfs/d2/tracked2 stat /vfs stat /vfs/d2 stat /vfs/d2/tracked2 stat /vfs/d2 unlink /vfs/d2/tracked2 stat /vfs unlink /vfs/d2 "*) ;;
+    *) fail "log did not match: $LOG" ;;
+  esac
+else
+  # GNU coreutils makes more calls; the operations must still arrive, in order
+  in_order "$LOG" "open /vfs/tracked" "flush /vfs/tracked" "list /vfs" "mkdir /vfs/d2" \
+    "rename /vfs/tracked /vfs/d2/tracked2" "unlink /vfs/d2/tracked2" "unlink /vfs/d2" ||
+    fail "log out of order: $LOG"
+fi
 
 if grep -q "/tmp/notvfs" /tmp/ops.log 2>/dev/null; then
   fail "logged non-/vfs path"
