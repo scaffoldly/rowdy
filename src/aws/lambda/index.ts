@@ -87,6 +87,10 @@ import { mask, maskJson } from '../../log';
 import { TPulledImage } from '../../api/types';
 import { parseSecrets } from '../../secrets';
 
+// DEVNOTE: Where the Dockerfile puts the binary in the layers appended to every deployed image.
+// Absolute, so the entrypoint does not depend on the image's PATH.
+export const ROWDY_BIN = '/usr/local/bin/rowdy';
+
 const TAG_KEY_REGEX = /^(?!aws:)[A-Za-z0-9 _.:\-=+@]{1,128}$/;
 const TAG_VALUE_REGEX = /^[\p{L}\p{Z}\p{N}_.:/=+\-@]{0,256}$/u;
 
@@ -242,7 +246,7 @@ export class LambdaFunction implements Logger {
   private MemorySize = new BehaviorSubject(128);
   private Environment = new BehaviorSubject<Record<string, string>>({});
   private Tags = new BehaviorSubject<Record<string, string>>({});
-  private EntryPoint = new BehaviorSubject<string[]>(['rowdy']);
+  private EntryPoint = new BehaviorSubject<string[]>([ROWDY_BIN]);
   private Command = new BehaviorSubject<string[] | undefined>(undefined);
   private WorkingDirectory = new BehaviorSubject<string | undefined>(undefined);
   private Routes = new BehaviorSubject<Routes>(Routes.empty());
