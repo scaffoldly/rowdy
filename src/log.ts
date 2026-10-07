@@ -1,4 +1,4 @@
-import { isObservable, Observable, tap } from 'rxjs';
+import { defer, finalize, isObservable, Observable, tap } from 'rxjs';
 
 export interface ILoggable {
   repr(): string;
@@ -357,46 +357,84 @@ export class Logger {
 
 export const log = new Logger();
 
+const ms = (since: number): string => `${(performance.now() - since).toFixed(2)} ms`;
+
+/**
+ * Traces a method that returns an Observable, on `logger` at trace level: one line when it is
+ * called (with its arguments), then one per emission, and one when the subscription ends, with
+ * the time since it was subscribed. Nothing is wrapped below trace.
+ *
+ *     TRACE RequestId: … Lambda LambdaResponse.into Called
+ *     TRACE RequestId: … Lambda LambdaResponse.into Emitted Duration: 2.12 ms Value: Result(…)
+ *     TRACE RequestId: … Lambda LambdaResponse.into Completed Duration: 2.15 ms Emissions: 1
+ *
+ * A subscription that ends with an error logs `Failed` with the error; one that is unsubscribed
+ * first (the loser of a `race`, an aborted request) logs `Unsubscribed`.
+ */
 export function Trace<This, Args extends ILoggable[], T extends Loggable>(
+  logger: Logger = log
+): (
   value: (this: This, ...args: Args) => Observable<T>,
   context: ClassMethodDecoratorContext<This, (this: This, ...args: Args) => Observable<T>>
-): (this: This, ...args: Args) => Observable<T> {
-  const name: string = String(context.name);
+) => (this: This, ...args: Args) => Observable<T> {
+  return (value, context) => {
+    const name = String(context.name);
 
-  const wrapped: (this: This, ...args: Args) => Observable<T> = function (this: This, ...args: Args): Observable<T> {
-    if (!log.isTracing) {
-      return value.apply(this, args);
-    }
-
-    for (const a of args) {
-      if (!isLoggable(a)) {
-        throw new TypeError(`@Trace ${name}: argument is not Loggable`);
+    return function (this: This, ...args: Args): Observable<T> {
+      if (!logger.isTracing) {
+        return value.apply(this, args);
       }
-    }
 
-    let thisName = name;
-    if (this && typeof this === 'object' && 'constructor' in this && this.constructor) {
-      thisName = `${this.constructor.name}.${name}`;
-    }
-
-    log.trace('Trace.call', { method: thisName, args });
-
-    const now = performance.now();
-    const result: unknown = value.apply(this, args);
-    if (!isObservable(result)) {
-      throw new TypeError(`@Trace ${name}: expected Observable<Loggable>`);
-    }
-
-    return (result as Observable<T>).pipe(
-      tap((emission: T): void => {
-        if (!isLoggable(emission)) {
-          throw new TypeError(`@Trace ${name}: emission is not Loggable`);
+      for (const a of args) {
+        if (!isLoggable(a)) {
+          throw new TypeError(`@Trace ${name}: argument is not Loggable`);
         }
-        const duration = performance.now() - now;
-        log.trace(`Trace.emit (${duration.toFixed(2)}ms)`, { method: thisName, value: emission });
-      })
-    );
-  };
+      }
 
-  return wrapped;
+      // The decorator output aliases a class that references itself statically as `_Name`.
+      const owner = (this as { constructor?: { name?: string } } | undefined)?.constructor?.name?.replace(/^_+/, '');
+      const method = owner ? `${owner}.${name}` : name;
+
+      logger.trace(`${method} Called`, args.length ? { args } : {});
+
+      const result: unknown = value.apply(this, args);
+      if (!isObservable(result)) {
+        throw new TypeError(`@Trace ${name}: expected Observable<Loggable>`);
+      }
+
+      return defer(() => {
+        const subscribed = performance.now();
+        let emissions = 0;
+        let settled = false;
+        return (result as Observable<T>).pipe(
+          tap({
+            next: (emission: T): void => {
+              if (!isLoggable(emission)) {
+                throw new TypeError(`@Trace ${name}: emission is not Loggable`);
+              }
+              emissions += 1;
+              logger.trace(`${method} Emitted`, { duration: ms(subscribed), value: emission });
+            },
+            error: (error: unknown): void => {
+              settled = true;
+              logger.trace(`${method} Failed`, {
+                duration: ms(subscribed),
+                emissions,
+                error: error instanceof Error ? error : String(error),
+              });
+            },
+            complete: (): void => {
+              settled = true;
+              logger.trace(`${method} Completed`, { duration: ms(subscribed), emissions });
+            },
+          }),
+          finalize((): void => {
+            if (!settled) {
+              logger.trace(`${method} Unsubscribed`, { duration: ms(subscribed), emissions });
+            }
+          })
+        );
+      });
+    };
+  };
 }

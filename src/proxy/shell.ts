@@ -42,7 +42,7 @@ export class ShellProxy<P extends Pipeline> extends Proxy<P, ShellResponse> {
     return this;
   }
 
-  @Trace
+  @Trace(log)
   override invoke(): Observable<ShellResponse> {
     const { bin, args = [] } = this;
     if (!bin) {

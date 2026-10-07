@@ -71,7 +71,7 @@ export class LambdaPipeline extends Pipeline {
     return this.constructor.name;
   }
 
-  @Trace
+  @Trace(log)
   override into(): Observable<Request<LambdaPipeline>> {
     if (!this.runtimeApi) {
       log.debug('Lambda Pipeline: DISABLED: No AWS_LAMBDA_RUNTIME_API environment variable');
@@ -115,12 +115,12 @@ export class LambdaRequest extends Request<LambdaPipeline> {
     super(pipeline);
   }
 
-  @Trace
+  @Trace(log)
   override into(): Observable<Proxy<LambdaPipeline, HttpResponse | ShellResponse>> {
     return race([this.intoHttp(), this.intoShell()]);
   }
 
-  @Trace
+  @Trace(log)
   protected intoHttp(): Observable<Proxy<LambdaPipeline, HttpResponse>> {
     let data: unknown;
 
@@ -264,7 +264,7 @@ export class LambdaRequest extends Request<LambdaPipeline> {
     );
   }
 
-  @Trace
+  @Trace(log)
   protected intoShell(): Observable<Proxy<LambdaPipeline, ShellResponse>> {
     return NEVER;
   }
@@ -317,7 +317,7 @@ export class LambdaRequest extends Request<LambdaPipeline> {
 }
 
 export class LambdaHttpProxy extends HttpProxy<LambdaPipeline> {
-  @Trace
+  @Trace(log)
   override into(): Observable<Response<LambdaPipeline>> {
     return this.invoke().pipe(
       map((http) => {
@@ -341,7 +341,7 @@ export class LambdaHttpProxy extends HttpProxy<LambdaPipeline> {
 }
 
 export class LambdaCronProxy extends LambdaHttpProxy {
-  @Trace
+  @Trace(log)
   override into(): Observable<Response<LambdaPipeline>> {
     return this.invoke().pipe(
       map((http) => {
@@ -385,7 +385,7 @@ export class LambdaResponse extends Response<LambdaPipeline> {
     return this;
   }
 
-  @Trace
+  @Trace(log)
   override into(): Observable<Result<LambdaPipeline>> {
     const result = new AsyncSubject<Result<LambdaPipeline>>();
 
