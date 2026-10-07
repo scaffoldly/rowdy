@@ -48,12 +48,16 @@ origin, a smoke test) learns where the function lives.
 ### Building the image
 
 With `dockerfile`, the Action builds the image for `linux/amd64` from the Dockerfile's directory,
-pushes it as `ghcr.io/<owner>/<repo>:rowdy`, and deploys it by digest, so the function runs exactly
-what was just built. The `:rowdy` tag is the Action's own and leaves the repository's other tags
-alone; the build cache lives in the GitHub Actions cache under the `rowdy` scope for the same reason.
+pushes it as `ghcr.io/<owner>/<repo>:rowdy`, and deploys it as `:rowdy@<digest>`. The function runs
+exactly what was just built. The Lambda alias, and the Function URL attached to it, are named after
+the tag, so the URL stays the same from one build to the next. The `:rowdy` tag belongs to the
+Action and leaves the repository's other tags alone. The build cache lives in the GitHub Actions
+cache under the `rowdy` scope for the same reason.
 
 A build that needs a different context, build arguments or another registry belongs in its own
-steps; pass the result as `image` instead (`image` is ignored when `dockerfile` is set):
+steps. Pass the result as `image` instead (`image` is ignored when `dockerfile` is set). Keep a tag
+in front of the digest: an image with only a digest gets a new alias, and a new Function URL, on
+every build.
 
 ```yaml
 - uses: docker/build-push-action@v7
@@ -68,7 +72,7 @@ steps; pass the result as `image` instead (`image` is ignored when `dockerfile` 
   with:
     cloud: aws
     compute: lambda
-    image: ghcr.io/${{ github.repository }}@${{ steps.build.outputs.digest }}
+    image: ghcr.io/${{ github.repository }}:main@${{ steps.build.outputs.digest }}
 ```
 
 Log verbosity comes from `ROWDY_LOG_LEVEL` in the environment (`error`, `warn`, `info`, `debug` or
@@ -91,7 +95,7 @@ the environment if set and `us-east-1` otherwise.
 | ------------ | -------- | ------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | `cloud`      | yes      |                          | Cloud provider. `aws` today.                                                                                                                                                                                                               |
 | `compute`    | yes      |                          | Compute type. `lambda` today.                                                                                                                                                                                                              |
-| `dockerfile` | one of   |                          | Dockerfile to build, push to `ghcr.io/<owner>/<repo>:rowdy` and deploy by digest. The build context is its directory. See [Building the image](#building-the-image).                                                                       |
+| `dockerfile` | one of   |                          | Dockerfile to build, push to `ghcr.io/<owner>/<repo>:rowdy` and deploy as `:rowdy@<digest>`. The build context is its directory. See [Building the image](#building-the-image).                                                                       |
 | `image`      | one of   |                          | Container image to deploy, such as `ghcr.io/owner/repo@sha256:…`. Ignored when `dockerfile` is set.                                                                                                                                        |
 | `name`       | no       | the execution role's id  | Application name. Becomes the function name, sanitized.                                                                                                                                                                                    |
 | `command`    | no       | image `ENTRYPOINT`+`CMD` | Override the command the container runs.                                                                                                                                                                                                   |
