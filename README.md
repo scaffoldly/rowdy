@@ -8,7 +8,7 @@ are documented on [`main`](https://github.com/scaffoldly/rowdy/blob/main/README.
 
 The Action needs an AWS role it can assume through OIDC, so the job requires `id-token: write` and
 an `AWS_ROLE_ARN` in its environment. Given a Dockerfile, it also builds and pushes the image to
-GitHub Packages, which needs `packages: write` and the repository checked out:
+GitHub Packages, which needs `packages: write`:
 
 ```yaml
 permissions:
@@ -23,8 +23,6 @@ jobs:
   deploy:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-
       - name: Rowdy Deploy
         id: rowdy
         uses: scaffoldly/rowdy@github
@@ -39,9 +37,11 @@ jobs:
       - run: echo "deployed to ${{ steps.rowdy.outputs.url }}"
 ```
 
-Change `default` to the port the container listens on. The deployed URL comes back as
-`steps.<id>.outputs.url`, which is how a downstream step (a DNS record, a CDN origin, a smoke test)
-learns where the function lives.
+Change `default` to the port the container listens on. When the job has not checked anything out,
+the Action checks out the commit that triggered the workflow, which is where `dockerfile` and a
+`routes` path are read from; a job that checked out on its own keeps its checkout. The deployed
+URL comes back as `steps.<id>.outputs.url`, which is how a downstream step (a DNS record, a CDN
+origin, a smoke test) learns where the function lives.
 
 ### Building the image
 
