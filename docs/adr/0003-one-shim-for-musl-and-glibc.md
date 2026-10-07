@@ -84,11 +84,11 @@ Unchanged: the 9P protocol, the supervisor, `applyVfs` (one `LD_PRELOAD` path,
   `-O2 -s -shared -fPIC -Wall -Wextra -Werror -ftls-model=initial-exec -fno-stack-protector -U_FORTIFY_SOURCE`.
   Output stays `lib/linux-<arch>/vfspreload.so`.
 - **Symbol gate** (`native/symbols.sh`, after every build, fails the job):
-  1. `DT_NEEDED` is exactly `libc.so.6`.
+  1. `DT_NEEDED` is exactly `libc.so.6` and `libdl.so.2` (see Consequences).
   2. Every strong undefined symbol is exported by musl, checked inside alpine against
      `/lib/ld-musl-<arch>.so.1`. Weak references (`__cxa_finalize`, `_ITM_*`, `__gmon_start__`) are
      allowed.
-  3. The highest `GLIBC_x.y` version required is at most `2.34`.
+  3. The highest `GLIBC_x.y` version required is at most `2.17`.
 - **Tests.** `native/test.sh` tests the built artifact rather than compiling its own, in two images:
   - `node:22-alpine`: the current suite (busybox, node/libuv, the C `fopen` caller, several mounts,
     the supervisor socket), plus the new hooks musl exports.
@@ -130,9 +130,9 @@ no corruption.
   the ELF interpreter. Rejected: detection code to maintain, and a child using a different libc than
   its parent gets the wrong object. The filesystem cannot decide it either: until scaffoldly/rowdy#81,
   rowdy's own layers put `ld-musl` into every image.
-- **A glibc floor below 2.34.** 2.28 adds Debian 10/11 and Ubuntu 20.04 but needs the pre-2.33
-  `__xstat` family and an older toolchain; 2.26 adds Amazon Linux 2 and needs `libdl` for `dlsym`.
-  No current distroless or Lambda base image needs it.
+- **A glibc floor below 2.34.** 2.28 adds Debian 10/11 and Ubuntu 20.04; 2.26 adds Amazon Linux 2,
+  the base of AWS's AL2 Lambda images. Not adopted as a supported floor (no test coverage beyond the
+  check below), but see Consequences: those libcs must not be broken.
 
 ## Consequences
 
@@ -141,6 +141,13 @@ no corruption.
   starting. The digest-pinned builder and the symbol gate make that a CI failure, not a deploy
   failure.
 - glibc apps from 2.34 on see volumes, including distroless `nodejs`, `cc` and `base`.
+- Below the floor, a preloaded process must still start. Binding `dlsym@GLIBC_2.34` would make glibc
+  older than 2.34 fail every preloaded process before `main` (`version 'GLIBC_2.34' not found`),
+  where the previous musl-only object was merely ignored. So `dlsym` is bound at its original
+  version and attributed to `libdl.so.2`, as in binaries built against older glibc (`build.sh` links
+  a stub to record that), the `__xstat` hooks call glibc's own `__xstat*` where it exports them, and
+  the symbol gate allows nothing newer than `GLIBC_2.17` (aarch64's baseline). `native/legacy.sh`
+  checks Debian 11 (2.31) and Amazon Linux 2 (2.26) in CI.
 - Static binaries (Go with `CGO_ENABLED=0`, distroless `static`) still cannot: there is no loader to
   preload into, and Lambda permits no kernel-mediated alternative.
 

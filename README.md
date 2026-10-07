@@ -54,8 +54,9 @@ the pre-2.33 `__xstat` family that binaries built against older glibc still call
 
 - Dynamically linked programs that go through libc see the VFS: musl (alpine) and glibc 2.34 or
   newer (debian 12, ubuntu 22.04+, Amazon Linux 2023, distroless `nodejs`/`cc`/`base`). One object
-  serves both ([ADR 0003](docs/adr/0003-one-shim-for-musl-and-glibc.md)). Static binaries and Go
-  programs that issue raw syscalls do not.
+  serves both ([ADR 0003](docs/adr/0003-one-shim-for-musl-and-glibc.md)). Older glibc (Debian 11,
+  Amazon Linux 2) still starts preloaded programs and passes basic file operations, but is not
+  otherwise tested. Static binaries and Go programs that issue raw syscalls do not see the VFS.
 - `mmap` works through the descriptor, which already refers to the backing file: shared-mapping
   writes upload on `close` or `fsync` like `write()`. `msync` alone does not upload.
 - Extended attributes are kept on the instance's backing file and are not stored in S3.

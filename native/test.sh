@@ -215,10 +215,15 @@ int main(void) {
   int (*lxstat64)(int, const char *, struct stat64 *) = dlsym(RTLD_DEFAULT, "__lxstat64");
   int (*xstat)(int, const char *, struct stat *) = dlsym(RTLD_DEFAULT, "__xstat");
   struct stat xs;
+#if defined(__x86_64__)
+  const int ver = 1;                          /* _STAT_VER_LINUX */
+#else
+  const int ver = 0;                          /* _STAT_VER_KERNEL on aarch64 */
+#endif
   if (!xstat64 || !lxstat64 || !xstat) return 35;
-  if (xstat64(1, "/vfs/h.txt", &s64) || s64.st_size != 2) return 36;
-  if (lxstat64(1, "/vfs/gl", &s64) || !S_ISLNK(s64.st_mode)) return 37;
-  if (xstat(1, "/vfs/h.txt", &xs) || xs.st_size != 2) return 38;
+  if (xstat64(ver, "/vfs/h.txt", &s64) || s64.st_size != 2) return 36;
+  if (lxstat64(ver, "/vfs/gl", &s64) || !S_ISLNK(s64.st_mode)) return 37;
+  if (xstat(ver, "/vfs/h.txt", &xs) || xs.st_size != 2) return 38;
 
   /* a fortified caller with an undersized buffer dies the way glibc makes it die */
   pid_t pid = fork();

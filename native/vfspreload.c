@@ -769,18 +769,45 @@ int scandir64(const char *path, struct dirent64 ***namelist,
 int mkstemp64(char *template) { return mkstemp(template); }
 
 /* Binaries built against glibc < 2.33 (official node builds among them) call stat through these
- * versioned wrappers, which newer glibc keeps for them. Since 2.33 glibc implements them with the
- * plain calls, so they delegate to the plain hooks; `ver` names the struct layout, which is the
- * plain one on LP64. */
-int __xstat(int ver, const char *path, struct stat *st) { (void)ver; return stat(path, st); }
-int __xstat64(int ver, const char *path, struct stat64 *st) { (void)ver; return stat(path, (struct stat *)st); }
-int __lxstat(int ver, const char *path, struct stat *st) { (void)ver; return lstat(path, st); }
-int __lxstat64(int ver, const char *path, struct stat64 *st) { (void)ver; return lstat(path, (struct stat *)st); }
+ * versioned wrappers. Below 2.33 they are the real functions (there is no exported stat), so the
+ * same name is called through; from 2.33 on they exist only for such binaries, and the plain hooks
+ * stand in. */
+typedef int (*xstat_fn)(int, const char *, struct stat *);
+typedef int (*fxstatat_fn)(int, int, const char *, struct stat *, int);
+
+int __xstat(int ver, const char *path, struct stat *st) {
+    REAL_T(__xstat, xstat_fn);
+    if (!real_) return stat(path, st);
+    XL(path); return real_(ver, rp_, st);
+}
+int __xstat64(int ver, const char *path, struct stat64 *st) {
+    REAL_T(__xstat64, xstat_fn);
+    if (!real_) return stat(path, (struct stat *)st);
+    XL(path); return real_(ver, rp_, (struct stat *)st);
+}
+int __lxstat(int ver, const char *path, struct stat *st) {
+    REAL_T(__lxstat, xstat_fn);
+    if (!real_) return lstat(path, st);
+    XL(path); return real_(ver, rp_, st);
+}
+int __lxstat64(int ver, const char *path, struct stat64 *st) {
+    REAL_T(__lxstat64, xstat_fn);
+    if (!real_) return lstat(path, (struct stat *)st);
+    XL(path); return real_(ver, rp_, (struct stat *)st);
+}
 int __fxstatat(int ver, int dirfd, const char *path, struct stat *st, int flags) {
-    (void)ver; return fstatat(dirfd, path, st, flags);
+    REAL_T(__fxstatat, fxstatat_fn);
+    if (!real_) return fstatat(dirfd, path, st, flags);
+    XL(path);
+    if (vf_ && notify("stat", path, NULL, 0) < 0) return -1;
+    return real_(ver, dirfd, rp_, st, flags);
 }
 int __fxstatat64(int ver, int dirfd, const char *path, struct stat64 *st, int flags) {
-    (void)ver; return fstatat(dirfd, path, (struct stat *)st, flags);
+    REAL_T(__fxstatat64, fxstatat_fn);
+    if (!real_) return fstatat(dirfd, path, (struct stat *)st, flags);
+    XL(path);
+    if (vf_ && notify("stat", path, NULL, 0) < 0) return -1;
+    return real_(ver, dirfd, rp_, (struct stat *)st, flags);
 }
 
 /* glibc 2.28+ binds fcntl to fcntl64 in programs built with _FILE_OFFSET_BITS=64, such as SQLite,
