@@ -882,10 +882,20 @@ export class S3Adapter implements VfsAdapter {
       // instance committed in between, writing on what was read would be stale: hand back EAGAIN
       // so the caller drops its read lock and re-reads; the next revalidate fetches the new base.
       const entry = this.entries.get(key);
-      if (entry?.etag && (await this.head(key))?.etag !== entry.etag) {
-        await this.releaseLease(key);
-        throw VfsError.code('EAGAIN', `${path}: changed by another writer since it was read; retry`);
+      if (!entry?.etag) {
+        return;
       }
+      const head = await this.head(key);
+      if (head?.etag === entry.etag) {
+        return;
+      }
+      // Fetch the new base now, while the lease still keeps other writers out, so the retry
+      // starts from it without another download and cannot be bounced by a further change.
+      if (head && entry.materialized && !(await this.modified(this.local(rel), entry))) {
+        await this.download(key, this.local(rel));
+      }
+      await this.releaseLease(key);
+      throw VfsError.code('EAGAIN', `${path}: changed by another writer since it was read; retry`);
     });
   }
 

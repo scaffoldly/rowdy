@@ -536,12 +536,17 @@ describe('S3Adapter', () => {
       await b.flush(`${mount}/db.sqlite`);
       await b.unlock(`${mount}/db.sqlite`);
       // alice's write lock must not succeed on the stale view...
+      s3.calls.length = 0;
       await expect(a.lock(`${mount}/db.sqlite`)).rejects.toMatchObject({ errno: 11 });
       expect(s3.objects.has('.rowdy/locks/db.sqlite')).toBe(false); // lease given back
-      // ...but after re-reading (what SQLite does on BUSY) it does
-      await a.revalidate(`${mount}/db.sqlite`);
+      // ...and the new base was fetched under the lease, so the retry (what SQLite does on BUSY)
+      // re-reads without another download
       expect(readFileSync(join(a['options'].backing, 'db.sqlite'), 'utf8')).toBe('v2 by bob');
+      expect(s3.calls.filter((c) => c === 'GetObjectCommand')).toHaveLength(1);
+      s3.calls.length = 0;
+      await a.revalidate(`${mount}/db.sqlite`);
       await expect(a.lock(`${mount}/db.sqlite`)).resolves.toBeUndefined();
+      expect(s3.calls.filter((c) => c === 'GetObjectCommand')).toHaveLength(0);
       await a.unlock(`${mount}/db.sqlite`);
     });
 
