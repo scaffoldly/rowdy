@@ -4,12 +4,20 @@ import { Readable } from 'stream';
 import { ILoggable, log as root, Logger, maskHeaders, maskQuery, maskUrl, Trace } from '../log';
 import axios, { AxiosHeaders, AxiosResponseHeaders, isAxiosError } from 'axios';
 import { Agent } from 'https';
+import { Agent as HttpAgent } from 'http';
 import { URI } from '../routes';
 import { APIGatewayProxyEventV2 } from 'aws-lambda';
 import { Rowdy } from '../api';
 import packageJson from '../../package.json';
 
 const log = root.child('http');
+
+// Node's global agents keep upstream sockets alive. The app closes an idle socket on its own
+// keep-alive timer, and when the sandbox thaws after a freeze that timer fires in the same tick
+// the next request is written, so the reused socket is reset (ECONNRESET / socket hang up).
+// Upstreams are local; a fresh connection per request costs nothing.
+const httpAgent = new HttpAgent({ keepAlive: false });
+const httpsAgent = new Agent({ keepAlive: false });
 
 export type Prelude = { statusCode: number; headers: Headers; cookies: string[] };
 
@@ -36,14 +44,15 @@ export abstract class HttpProxy<P extends Pipeline> extends Proxy<P, HttpRespons
     return this.pipeline.environment;
   }
 
-  get httpsAgent(): Agent | undefined {
+  get httpsAgent(): Agent {
     if (this.uri.insecure) {
       return new Agent({
+        keepAlive: false,
         checkServerIdentity: () => undefined,
         rejectUnauthorized: false,
       });
     }
-    return undefined;
+    return httpsAgent;
   }
 
   @Trace
@@ -468,6 +477,7 @@ class LocalHttpResponse extends HttpResponse {
               url: uri.toString(),
               headers,
               data: proxy.body,
+              httpAgent,
               httpsAgent: proxy.httpsAgent,
               timeout: 0,
               maxRedirects: 0,
