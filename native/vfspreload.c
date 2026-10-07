@@ -68,6 +68,8 @@
 #include <sys/types.h>
 #include <sys/syscall.h>
 #include <sys/un.h>
+#include <spawn.h>
+#include <sys/xattr.h>
 
 
 #include "vfs_transport.h"
@@ -731,4 +733,200 @@ int execvp(const char *file, char *const argv[]) {
     REAL(execvp); XL(file);
     if (vf_ && notify("fetch", file, NULL, 0) < 0) return -1;
     return real_(rp_, argv);
+}
+
+/* ---- glibc's alternative entry points ----------------------------------------
+ * One object serves musl and glibc (ADR 0003). glibc programs reach some calls under other names:
+ * the LFS "64" names, the _FORTIFY_SOURCE entry points and renameat2. On LP64 (the only targets
+ * built) the 64 types are the plain types, so each name delegates to the plain hook. glibc-only
+ * functions are only ever looked up with dlsym: a link-time reference would stop musl loading the
+ * object. */
+
+_Static_assert(sizeof(struct stat64) == sizeof(struct stat), "LP64: struct stat64 is struct stat");
+_Static_assert(sizeof(struct statfs64) == sizeof(struct statfs), "LP64: statfs64 is statfs");
+_Static_assert(sizeof(struct statvfs64) == sizeof(struct statvfs), "LP64: statvfs64 is statvfs");
+_Static_assert(sizeof(struct dirent64) == sizeof(struct dirent), "LP64: dirent64 is dirent");
+_Static_assert(sizeof(off64_t) == sizeof(off_t), "LP64: off64_t is off_t");
+
+int stat64(const char *path, struct stat64 *st) { return stat(path, (struct stat *)st); }
+int lstat64(const char *path, struct stat64 *st) { return lstat(path, (struct stat *)st); }
+int fstatat64(int dirfd, const char *path, struct stat64 *st, int flags) {
+    return fstatat(dirfd, path, (struct stat *)st, flags);
+}
+int statfs64(const char *path, struct statfs64 *buf) { return statfs(path, (struct statfs *)buf); }
+int statvfs64(const char *path, struct statvfs64 *buf) { return statvfs(path, (struct statvfs *)buf); }
+int truncate64(const char *path, off64_t length) { return truncate(path, (off_t)length); }
+int creat64(const char *path, mode_t mode) { return creat(path, mode); }
+FILE *fopen64(const char *path, const char *mode) { return fopen(path, mode); }
+FILE *freopen64(const char *path, const char *mode, FILE *stream) { return freopen(path, mode, stream); }
+int scandir64(const char *path, struct dirent64 ***namelist,
+              int (*filter)(const struct dirent64 *),
+              int (*compar)(const struct dirent64 **, const struct dirent64 **)) {
+    return scandir(path, (struct dirent ***)namelist,
+                   (int (*)(const struct dirent *))filter,
+                   (int (*)(const struct dirent **, const struct dirent **))compar);
+}
+int mkstemp64(char *template) { return mkstemp(template); }
+
+/* Binaries built against glibc < 2.33 (official node builds among them) call stat through these
+ * versioned wrappers. Below 2.33 they are the real functions (there is no exported stat), so the
+ * same name is called through; from 2.33 on they exist only for such binaries, and the plain hooks
+ * stand in. */
+typedef int (*xstat_fn)(int, const char *, struct stat *);
+typedef int (*fxstatat_fn)(int, int, const char *, struct stat *, int);
+
+int __xstat(int ver, const char *path, struct stat *st) {
+    REAL_T(__xstat, xstat_fn);
+    if (!real_) return stat(path, st);
+    XL(path); return real_(ver, rp_, st);
+}
+int __xstat64(int ver, const char *path, struct stat64 *st) {
+    REAL_T(__xstat64, xstat_fn);
+    if (!real_) return stat(path, (struct stat *)st);
+    XL(path); return real_(ver, rp_, (struct stat *)st);
+}
+int __lxstat(int ver, const char *path, struct stat *st) {
+    REAL_T(__lxstat, xstat_fn);
+    if (!real_) return lstat(path, st);
+    XL(path); return real_(ver, rp_, st);
+}
+int __lxstat64(int ver, const char *path, struct stat64 *st) {
+    REAL_T(__lxstat64, xstat_fn);
+    if (!real_) return lstat(path, (struct stat *)st);
+    XL(path); return real_(ver, rp_, (struct stat *)st);
+}
+int __fxstatat(int ver, int dirfd, const char *path, struct stat *st, int flags) {
+    REAL_T(__fxstatat, fxstatat_fn);
+    if (!real_) return fstatat(dirfd, path, st, flags);
+    XL(path);
+    if (vf_ && notify("stat", path, NULL, 0) < 0) return -1;
+    return real_(ver, dirfd, rp_, st, flags);
+}
+int __fxstatat64(int ver, int dirfd, const char *path, struct stat64 *st, int flags) {
+    REAL_T(__fxstatat64, fxstatat_fn);
+    if (!real_) return fstatat(dirfd, path, (struct stat *)st, flags);
+    XL(path);
+    if (vf_ && notify("stat", path, NULL, 0) < 0) return -1;
+    return real_(ver, dirfd, rp_, (struct stat *)st, flags);
+}
+
+/* glibc 2.28+ binds fcntl to fcntl64 in programs built with _FILE_OFFSET_BITS=64, such as SQLite,
+ * so advisory locks arrive here. */
+int fcntl64(int fd, int cmd, ...) {
+    va_list ap; va_start(ap, cmd);
+    void *arg = va_arg(ap, void *);
+    va_end(ap);
+    return fcntl(fd, cmd, arg);
+}
+
+/* Fortify. glibc calls these only for opens without O_CREAT/O_TMPFILE, so there is no mode. */
+int __open_2(const char *path, int flags) { return open(path, flags); }
+int __open64_2(const char *path, int flags) { return open64(path, flags); }
+int __openat_2(int dirfd, const char *path, int flags) { return openat(dirfd, path, flags); }
+int __openat64_2(int dirfd, const char *path, int flags) { return openat64(dirfd, path, flags); }
+
+/* The _chk entry points carry the caller's real buffer size; an overflow aborts as glibc would. */
+static void chk_fail(void) {
+    void (*fail)(void) = (void (*)(void))dlsym(RTLD_DEFAULT, "__chk_fail");
+    if (fail) fail();
+    abort();
+}
+char *__realpath_chk(const char *path, char *resolved, size_t resolvedlen) {
+    if (resolved && resolvedlen < PATH_MAX) chk_fail();
+    return realpath(path, resolved);
+}
+char *__getcwd_chk(char *buf, size_t size, size_t buflen) {
+    if (size > buflen) chk_fail();
+    return getcwd(buf, size);
+}
+ssize_t __readlink_chk(const char *path, char *buf, size_t len, size_t buflen) {
+    if (len > buflen) chk_fail();
+    return readlink(path, buf, len);
+}
+ssize_t __readlinkat_chk(int dirfd, const char *path, char *buf, size_t len, size_t buflen) {
+    if (len > buflen) chk_fail();
+    return readlinkat(dirfd, path, buf, len);
+}
+
+/* renameat2: the supervisor's rename is one-way, so EXCHANGE/WHITEOUT on a VFS path is refused. */
+int renameat2(int fromfd, const char *from, int tofd, const char *to, unsigned int flags) {
+    REAL(renameat2);
+    if (!real_) {
+        if (flags) { errno = ENOSYS; return -1; }
+        return renameat(fromfd, from, tofd, to);
+    }
+    XL2(from, to);
+    if ((va_ || vb_) && (flags & ~(unsigned int)RENAME_NOREPLACE)) { errno = EINVAL; return -1; }
+    int r = real_(fromfd, ra_, tofd, rb_, flags);
+    if (r == 0 && (va_ || vb_) && notify("rename", from, to, 0) < 0) return -1;
+    return r;
+}
+
+/* ---- hooks both libcs use ------------------------------------------------------ */
+
+/* Extended attributes live on the backing file; they are not carried to S3. */
+#define XATTR_STAT(path) if (vf_ && notify("stat", (path), NULL, 0) < 0) return -1
+#define REAL_OR_ENOSYS(name) REAL(name); if (!real_) { errno = ENOSYS; return -1; }
+
+ssize_t getxattr(const char *path, const char *name, void *value, size_t size) {
+    REAL_OR_ENOSYS(getxattr); XL(path); XATTR_STAT(path); return real_(rp_, name, value, size);
+}
+ssize_t lgetxattr(const char *path, const char *name, void *value, size_t size) {
+    REAL_OR_ENOSYS(lgetxattr); XL(path); XATTR_STAT(path); return real_(rp_, name, value, size);
+}
+int setxattr(const char *path, const char *name, const void *value, size_t size, int flags) {
+    REAL_OR_ENOSYS(setxattr); XL(path); XATTR_STAT(path); return real_(rp_, name, value, size, flags);
+}
+int lsetxattr(const char *path, const char *name, const void *value, size_t size, int flags) {
+    REAL_OR_ENOSYS(lsetxattr); XL(path); XATTR_STAT(path); return real_(rp_, name, value, size, flags);
+}
+ssize_t listxattr(const char *path, char *list, size_t size) {
+    REAL_OR_ENOSYS(listxattr); XL(path); XATTR_STAT(path); return real_(rp_, list, size);
+}
+ssize_t llistxattr(const char *path, char *list, size_t size) {
+    REAL_OR_ENOSYS(llistxattr); XL(path); XATTR_STAT(path); return real_(rp_, list, size);
+}
+int removexattr(const char *path, const char *name) {
+    REAL_OR_ENOSYS(removexattr); XL(path); XATTR_STAT(path); return real_(rp_, name);
+}
+int lremovexattr(const char *path, const char *name) {
+    REAL_OR_ENOSYS(lremovexattr); XL(path); XATTR_STAT(path); return real_(rp_, name);
+}
+
+typedef int (*scandirat_fn)(int, const char *, struct dirent ***,
+                            int (*)(const struct dirent *),
+                            int (*)(const struct dirent **, const struct dirent **));
+int scandirat(int dirfd, const char *path, struct dirent ***namelist,
+              int (*filter)(const struct dirent *),
+              int (*compar)(const struct dirent **, const struct dirent **)) {
+    REAL_T(scandirat, scandirat_fn);
+    if (!real_) { errno = ENOSYS; return -1; }
+    XL(path);
+    if (vf_ && notify("list", path, NULL, 0) < 0) return -1;
+    return real_(dirfd, rp_, namelist, filter, compar);
+}
+int scandirat64(int dirfd, const char *path, struct dirent64 ***namelist,
+                int (*filter)(const struct dirent64 *),
+                int (*compar)(const struct dirent64 **, const struct dirent64 **)) {
+    return scandirat(dirfd, path, (struct dirent ***)namelist,
+                     (int (*)(const struct dirent *))filter,
+                     (int (*)(const struct dirent **, const struct dirent **))compar);
+}
+
+/* glibc's posix_spawn execs internally, past the execve hook. Errors are returned, not set. */
+int posix_spawn(pid_t *pid, const char *path, const posix_spawn_file_actions_t *actions,
+                const posix_spawnattr_t *attr, char *const argv[], char *const envp[]) {
+    REAL(posix_spawn);
+    if (!real_) return ENOSYS;
+    XL(path);
+    if (vf_ && notify("fetch", path, NULL, 0) < 0) return errno;
+    return real_(pid, rp_, actions, attr, argv, envp);
+}
+int posix_spawnp(pid_t *pid, const char *file, const posix_spawn_file_actions_t *actions,
+                 const posix_spawnattr_t *attr, char *const argv[], char *const envp[]) {
+    REAL(posix_spawnp);
+    if (!real_) return ENOSYS;
+    XL(file);
+    if (vf_ && notify("fetch", file, NULL, 0) < 0) return errno;
+    return real_(pid, rp_, actions, attr, argv, envp);
 }

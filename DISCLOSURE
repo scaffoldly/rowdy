@@ -3,7 +3,7 @@ Dual-use disclosure for @scaffoldly/rowdy-vfs
 What this package contains
 
   lib/linux-x64/vfspreload.so and lib/linux-arm64/vfspreload.so are small
-  compiled shared objects (ELF, musl). The same two files are also inlined
+  compiled shared objects (ELF, built against glibc 2.36; loaded by musl and glibc). The same two files are also inlined
   into dist/index.js as base64 so a bundled consumer can write them to disk
   at runtime (materialize()). They are built in GitHub Actions from
   native/vfspreload.c (which includes native/vfs_core.h and

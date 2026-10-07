@@ -1,30 +1,47 @@
 #!/bin/sh
-# Integration test for the shim: compiles it inside node:22-alpine and drives it
-# through busybox, node (libuv) and a C fopen caller under LD_PRELOAD.
+# Integration test for the shim built by native/build.sh. Drives it through the image's own shell
+# and coreutils (busybox on alpine, GNU on debian), node (libuv), C callers, several mounts and the
+# package's 9P server, under LD_PRELOAD.
 #
-#   sh native/test.sh            # host architecture
-#   sh native/test.sh arm64      # or x64, via docker --platform
+#   sh native/test.sh x64|arm64 alpine|debian
 set -eu
 
 if [ -z "${VFS_STAGE:-}" ]; then
   if [ ! -f /.dockerenv ]; then
-    arch="${1:-}"
-    platform=""
+    arch="${1:-}"; flavour="${2:-}"
     case "$arch" in
-      x64)   platform="--platform linux/amd64" ;;
-      arm64) platform="--platform linux/arm64" ;;
+      x64)   platform=linux/amd64 ;;
+      arm64) platform=linux/arm64 ;;
+      *) echo "usage: $0 x64|arm64 alpine|debian" >&2; exit 2 ;;
+    esac
+    case "$flavour" in
+      alpine) image=node:22-alpine ;;
+      debian) image=node:22-bookworm-slim ;;
+      *) echo "usage: $0 x64|arm64 alpine|debian" >&2; exit 2 ;;
     esac
     root="$(cd "$(dirname "$0")/.." && pwd)"
     [ -f "$root/dist/index.js" ] || { echo "dist/index.js missing: run yarn build first (the test supervisor is the package's 9P server)" >&2; exit 2; }
-    exec docker run --rm $platform -v "$root:/w:ro" node:22-alpine sh /w/native/test.sh
+    [ -f "$root/lib/linux-$arch/vfspreload.so" ] || { echo "lib/linux-$arch/vfspreload.so missing: run native/build.sh $arch first" >&2; exit 2; }
+    exec docker run --rm --platform "$platform" -e FLAVOUR="$flavour" -e SHIM="/w/lib/linux-$arch/vfspreload.so" \
+      -v "$root:/w:ro" "$image" sh /w/native/test.sh
   fi
-  apk add --no-cache gcc musl-dev linux-headers >/dev/null 2>&1
-  gcc -O2 -shared -fPIC -Wall -Wextra -Werror /w/native/vfspreload.c -o /tmp/vfspreload.so
-  echo "compile: ok"
+  # C toolchain for the test callers only; the shim under test is the built artifact.
+  case "$FLAVOUR" in
+    alpine) apk add --no-cache gcc musl-dev linux-headers >/dev/null 2>&1 ;;
+    debian) { apt-get -qq update && apt-get -qq install -y --no-install-recommends gcc libc6-dev binutils; } >/dev/null 2>&1 ;;
+  esac
+  echo "shim: $SHIM on $FLAVOUR"
   # the shell performs redirections itself, so it must be preloaded too
-  exec env VFS_STAGE=1 LD_PRELOAD=/tmp/vfspreload.so VFS_MOUNTS=/vfs=/tmp/vfsstore sh "$0"
+  exec env VFS_STAGE=1 LD_PRELOAD="$SHIM" VFS_MOUNTS=/vfs=/tmp/vfsstore sh "$0"
 fi
 fail() { echo "FAIL: $*"; exit 1; }
+# in_order "log" "op" "op" …: each op appears in the log after the previous one
+in_order() {
+  rest="$1"; shift
+  for op in "$@"; do
+    case "$rest" in *"$op "*) rest="${rest#*"$op "}" ;; *) return 1 ;; esac
+  done
+}
 
 # busybox (dynamically linked against musl) path ops
 ls /vfs >/dev/null || fail "ls /vfs"
@@ -102,6 +119,144 @@ EOF
 gcc /tmp/f.c -o /tmp/f && /tmp/f || fail "fopen/remove (rc=$?)"
 echo "fopen: ok"
 
+# glibc entry points and the newer hooks, from C. Built fortified on debian so the __*_2 / __*_chk
+# entry points are the ones actually called.
+cat > /tmp/g.c <<'EOF'
+#define _GNU_SOURCE
+#include <dirent.h>
+#include <dlfcn.h>
+#include <errno.h>
+#include <fcntl.h>
+#include <limits.h>
+#include <signal.h>
+#include <spawn.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/stat.h>
+#include <sys/statfs.h>
+#include <sys/statvfs.h>
+#include <sys/wait.h>
+#include <sys/xattr.h>
+#include <unistd.h>
+extern char **environ;
+
+static int spawn_ok(const char *path) {
+  pid_t pid; int st; char *argv[] = { "true", NULL };
+  if (posix_spawn(&pid, path, NULL, NULL, argv, environ)) return 0;
+  return waitpid(pid, &st, 0) == pid && WIFEXITED(st) && WEXITSTATUS(st) == 0;
+}
+
+int main(void) {
+  volatile int rd = O_RDONLY;                 /* non-constant: fortify routes open() to __open_2 */
+  volatile size_t sz = PATH_MAX;              /* non-constant: getcwd/readlink go to __*_chk */
+  char buf[PATH_MAX];
+
+  int fd = open("/vfs/g.txt", O_CREAT | O_WRONLY | O_TRUNC, 0644);
+  if (fd < 0 || write(fd, "glibc", 5) != 5 || close(fd)) return 1;
+  if ((fd = open("/vfs/g.txt", rd)) < 0) return 2;
+  close(fd);
+  if (!realpath("/vfs/g.txt", buf) || strcmp(buf, "/vfs/g.txt")) return 3;
+  if (chdir("/vfs") || !getcwd(buf, sz) || strcmp(buf, "/vfs")) return 4;
+  if (chdir("/")) return 4;
+  if (symlink("/vfs/g.txt", "/vfs/gl")) return 5;
+  ssize_t n = readlink("/vfs/gl", buf, sz);
+  if (n != 10 || strncmp(buf, "/vfs/g.txt", 10)) return 6;
+
+  /* xattrs, unless the filesystem under /tmp refuses user xattrs outright */
+  int plain = open("/tmp/plain", O_CREAT | O_WRONLY, 0644); close(plain);
+  if (setxattr("/tmp/plain", "user.k", "v", 1, 0) == 0) {
+    char v[16];
+    if (setxattr("/vfs/g.txt", "user.k", "v", 1, 0)) return 10;
+    if (getxattr("/vfs/g.txt", "user.k", v, sizeof v) != 1 || v[0] != 'v') return 11;
+    if (lgetxattr("/vfs/g.txt", "user.k", v, sizeof v) != 1) return 11;
+    if (listxattr("/vfs/g.txt", v, sizeof v) <= 0 || llistxattr("/vfs/g.txt", v, sizeof v) <= 0) return 12;
+    if (removexattr("/vfs/g.txt", "user.k")) return 13;
+    if (getxattr("/tmp/vfsstore/g.txt", "user.k", v, sizeof v) != -1 || errno != ENODATA) return 13;
+  } else if (errno != ENOTSUP) {
+    return 14;
+  } else {
+    puts("xattr: skipped (ENOTSUP under /tmp)");
+  }
+
+  /* posix_spawn a program stored under the mount, and one outside it */
+  if (system("cp /bin/true /vfs/true")) return 16;
+  if (!spawn_ok("/vfs/true")) return 17;
+  if (!spawn_ok("/bin/true")) return 18;
+
+#ifdef __GLIBC__
+  struct dirent **list;
+  if (scandirat(AT_FDCWD, "/vfs", &list, NULL, alphasort) < 2) return 15;
+
+  struct stat64 s64; struct statfs64 f64; struct statvfs64 v64; struct dirent64 **l64;
+  if (stat64("/vfs/g.txt", &s64) || s64.st_size != 5) return 20;
+  if (lstat64("/vfs/gl", &s64) || !S_ISLNK(s64.st_mode)) return 21;
+  if (fstatat64(AT_FDCWD, "/vfs/g.txt", &s64, 0)) return 22;
+  if (statfs64("/vfs", &f64) || statvfs64("/vfs", &v64)) return 23;
+  if (truncate64("/vfs/g.txt", 2) || stat64("/tmp/vfsstore/g.txt", &s64) || s64.st_size != 2) return 24;
+  if ((fd = creat64("/vfs/c.txt", 0644)) < 0) return 25;
+  close(fd);
+  FILE *f = fopen64("/vfs/c.txt", "w");
+  if (!f || !(f = freopen64("/vfs/c.txt", "r", f))) return 26;
+  fclose(f);
+  if (scandir64("/vfs", &l64, NULL, alphasort64) < 2) return 27;
+  char tmpl[] = "/vfs/tmpXXXXXX";
+  if ((fd = mkstemp64(tmpl)) < 0 || strncmp(tmpl, "/vfs/tmp", 8)) return 28;
+  close(fd); unlink(tmpl);
+
+  if (renameat2(AT_FDCWD, "/vfs/g.txt", AT_FDCWD, "/vfs/h.txt", RENAME_NOREPLACE)) return 30;
+  if (access("/tmp/vfsstore/h.txt", F_OK) || !access("/tmp/vfsstore/g.txt", F_OK)) return 31;
+  if (renameat2(AT_FDCWD, "/vfs/h.txt", AT_FDCWD, "/vfs/c.txt", RENAME_EXCHANGE) != -1 || errno != EINVAL) return 32;
+  if (access("/tmp/vfsstore/h.txt", F_OK)) return 33;
+
+  /* binaries built against glibc < 2.33 (official node) stat through the __xstat family; the
+   * loader binds their versioned references to the shim's hooks (checked with LD_DEBUG below) */
+  int (*xstat64)(int, const char *, struct stat64 *) = dlsym(RTLD_DEFAULT, "__xstat64");
+  int (*lxstat64)(int, const char *, struct stat64 *) = dlsym(RTLD_DEFAULT, "__lxstat64");
+  int (*xstat)(int, const char *, struct stat *) = dlsym(RTLD_DEFAULT, "__xstat");
+  struct stat xs;
+#if defined(__x86_64__)
+  const int ver = 1;                          /* _STAT_VER_LINUX */
+#else
+  const int ver = 0;                          /* _STAT_VER_KERNEL on aarch64 */
+#endif
+  if (!xstat64 || !lxstat64 || !xstat) return 35;
+  if (xstat64(ver, "/vfs/h.txt", &s64) || s64.st_size != 2) return 36;
+  if (lxstat64(ver, "/vfs/gl", &s64) || !S_ISLNK(s64.st_mode)) return 37;
+  if (xstat(ver, "/vfs/h.txt", &xs) || xs.st_size != 2) return 38;
+
+  /* a fortified caller with an undersized buffer dies the way glibc makes it die */
+  pid_t pid = fork();
+  if (pid == 0) { volatile size_t big = PATH_MAX; char small[8]; getcwd(small, big); _exit(0); }
+  int st;
+  if (waitpid(pid, &st, 0) != pid || !WIFSIGNALED(st) || WTERMSIG(st) != SIGABRT) return 34;
+#endif
+  return 0;
+}
+EOF
+if [ "$FLAVOUR" = debian ]; then
+  gcc -O2 -D_FORTIFY_SOURCE=2 /tmp/g.c -o /tmp/g
+  for sym in __open_2 __realpath_chk __getcwd_chk __readlink_chk; do
+    nm -D /tmp/g | grep -q " $sym" || fail "test caller does not import $sym"
+  done
+else
+  gcc -O2 /tmp/g.c -o /tmp/g
+fi
+/tmp/g || fail "glibc entry points / new hooks (rc=$?)"
+if [ "$FLAVOUR" = debian ]; then
+  # node is built against an older glibc: its stat and lock calls must bind to the shim
+  for sym in __xstat64 __lxstat64 fcntl64; do
+    LD_DEBUG=bindings node -e 0 2>&1 | grep -q "binding file node .* to $SHIM .*\`$sym'" ||
+      fail "node's $sym does not bind to the shim"
+  done
+fi
+rm -f /vfs/h.txt /vfs/c.txt /vfs/gl /vfs/g.txt /vfs/true
+echo "hooks: ok"
+
+# the new hooks leave paths outside every mount alone
+echo outside > /tmp/outside.a
+mv /tmp/outside.a /tmp/outside.b && [ "$(cat /tmp/outside.b)" = outside ] || fail "mv outside the mount"
+
 # off switch: without the preload, /vfs does not exist
 env -u LD_PRELOAD sh -c '[ ! -e /vfs ]' || fail "/vfs visible without preload"
 env -u LD_PRELOAD sh -c '[ -d /tmp/vfsstore ]' || fail "backing dir missing"
@@ -164,14 +319,18 @@ rmdir /vfs/d2
 echo x > /tmp/notvfs   # outside the prefix: must not reach the supervisor
 
 LOG=$(cat /tmp/ops.log | tr '\n' ' ')
-case "$LOG" in
-  *"stat /vfs/tracked stat /vfs/tracked fetch /vfs/tracked open /vfs/tracked flush /vfs/tracked stat /vfs list /vfs stat /vfs mkdir /vfs/d2 stat /vfs stat /vfs/d2 rename /vfs/tracked /vfs/d2/tracked2 stat /vfs stat /vfs/d2 stat /vfs/d2/tracked2 stat /vfs/d2 unlink /vfs/d2/tracked2 stat /vfs unlink /vfs/d2 "*)
-    :
-    ;;
-  *)
-    fail "log did not match: $LOG"
-    ;;
-esac
+if [ "$FLAVOUR" = alpine ]; then
+  # busybox's exact call sequence, pinned as before
+  case "$LOG" in
+    *"stat /vfs/tracked stat /vfs/tracked fetch /vfs/tracked open /vfs/tracked flush /vfs/tracked stat /vfs list /vfs stat /vfs mkdir /vfs/d2 stat /vfs stat /vfs/d2 rename /vfs/tracked /vfs/d2/tracked2 stat /vfs stat /vfs/d2 stat /vfs/d2/tracked2 stat /vfs/d2 unlink /vfs/d2/tracked2 stat /vfs unlink /vfs/d2 "*) ;;
+    *) fail "log did not match: $LOG" ;;
+  esac
+else
+  # GNU coreutils makes more calls; the operations must still arrive, in order
+  in_order "$LOG" "open /vfs/tracked" "flush /vfs/tracked" "list /vfs" "mkdir /vfs/d2" \
+    "rename /vfs/tracked /vfs/d2/tracked2" "unlink /vfs/d2/tracked2" "unlink /vfs/d2" ||
+    fail "log out of order: $LOG"
+fi
 
 if grep -q "/tmp/notvfs" /tmp/ops.log 2>/dev/null; then
   fail "logged non-/vfs path"

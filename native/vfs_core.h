@@ -14,6 +14,16 @@
 #ifndef VFS_CORE_H
 #define VFS_CORE_H
 
+/* Bind dlsym's original symbol version. glibc 2.34 moved dlsym from libdl into libc under a new
+ * version; requiring it makes older glibc fail every preloaded process before main. The original
+ * version is still exported by libc.so.6 on 2.34+, and by libdl.so.2 (a dependency, see build.sh)
+ * below it. musl ignores symbol versions. */
+#if defined(__x86_64__)
+__asm__(".symver dlsym,dlsym@GLIBC_2.2.5");
+#elif defined(__aarch64__)
+__asm__(".symver dlsym,dlsym@GLIBC_2.17");
+#endif
+
 /* ---- mount table (read once) ---------------------------------------------- */
 
 /* A virtual prefix (e.g. "/vfs") served from a real directory (e.g.
@@ -182,6 +192,11 @@ static int unxlate(char *buf, size_t bufsz) {
 #define REAL(name) \
     static typeof(&name) real_; \
     if (!real_) real_ = (typeof(&name))dlsym(RTLD_NEXT, #name)
+
+/* REAL for a function with no public prototype (glibc's fortify entry points). */
+#define REAL_T(name, type) \
+    static type real_; \
+    if (!real_) real_ = (type)dlsym(RTLD_NEXT, #name)
 
 /* ---- the supervisor's say ----------------------------------------------------
  * Each path operation is walk, operation, clunk. The walk already runs the
