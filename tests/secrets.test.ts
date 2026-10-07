@@ -27,6 +27,11 @@ BUILD_ID=20261007.1
     expect(parseSecrets(`${repo}\nAPI_KEY=from-line`).API_KEY).toBe('from-line');
   });
 
+  it('keeps the repo secret when a line for it expands to nothing', () => {
+    // DATABASE_URL=${{ secrets.DATABASE_ULR }}: misspelled, so GitHub expands it to nothing
+    expect(parseSecrets(`DATABASE_URL=\n${repo}`).DATABASE_URL).toBe('postgres://db.example.com/app');
+  });
+
   it('reports overridden names, never values', () => {
     const overridden: string[] = [];
     parseSecrets(`API_KEY=from-line\n${repo}`, { onOverride: (name) => overridden.push(name) });
@@ -79,8 +84,16 @@ API_KEY=abc123
       expect(parseSecrets('QUOTE="say \\"hi\\" #1 \\\\ ok"')).toEqual({ QUOTE: 'say "hi" #1 \\ ok' });
     });
 
-    it('sets an empty value, which is what an unset secret expands to', () => {
-      expect(parseSecrets('API_KEY=')).toEqual({ API_KEY: '' });
+    it('skips an empty value, which is what a missing secret expands to', () => {
+      const skipped: string[] = [];
+      expect(parseSecrets('API_KEY=\nCOMMENTED= # rotated monthly', { onEmpty: (name) => skipped.push(name) })).toEqual(
+        {}
+      );
+      expect(skipped).toEqual(['API_KEY', 'COMMENTED']);
+    });
+
+    it('sets an empty value when it is quoted', () => {
+      expect(parseSecrets(`DOUBLE=""\nSINGLE=''`)).toEqual({ DOUBLE: '', SINGLE: '' });
     });
 
     it('skips blank lines and comments', () => {

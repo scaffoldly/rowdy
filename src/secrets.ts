@@ -11,7 +11,8 @@ const invalidObject = (line: number) => new Error(`secrets: line ${line} starts 
 // DEVNOTE: A value that is a whole JSON string, as `${{ toJSON(secrets.X) }}` expands to, is decoded
 // as JSON so every escape round-trips. Other quoted values go through dotenv. An unquoted value ends
 // at ` #` (a comment) but keeps a bare `#`, which dotenv would cut at, silently truncating a secret.
-const dotenvValue = (name: string, line: string, raw: string): string => {
+// An empty unquoted value is undefined: it is what a missing `${{ secrets.X }}` expands to.
+const dotenvValue = (name: string, line: string, raw: string): string | undefined => {
   const value = raw.trim();
   if (value.length >= 2 && value.startsWith('"') && value.endsWith('"')) {
     try {
@@ -21,7 +22,7 @@ const dotenvValue = (name: string, line: string, raw: string): string => {
     }
   }
   if (/^["'`]/.test(value)) return dotenv.parse(line.trim())[name] ?? '';
-  return value.replace(/\s+#.*$/, '');
+  return raw.replace(/\s+#.*$/, '').trim() || undefined;
 };
 
 /** The index just past the `}` closing the object that opens at `start`, or -1. */
@@ -93,9 +94,13 @@ const objects = (text: string): Secrets[] => {
 
 /**
  * Secrets from `NAME=value` lines and JSON objects (such as `${{ toJSON(secrets) }}`), in any mix.
- * JSON objects apply in order, then `NAME=value` lines on top, so a line always wins.
+ * JSON objects apply in order, then `NAME=value` lines on top, so a line always wins. A line whose
+ * unquoted value is empty is skipped (reported to `onEmpty`); `NAME=""` sets an empty value.
  */
-export const parseSecrets = (input: string, options: { onOverride?: (name: string) => void } = {}): Secrets => {
+export const parseSecrets = (
+  input: string,
+  options: { onOverride?: (name: string) => void; onEmpty?: (name: string) => void } = {}
+): Secrets => {
   const lines: Secrets[] = [];
   // DEVNOTE: Matched lines are blanked rather than removed, so JSON errors keep their line numbers.
   const remaining = input
@@ -103,7 +108,9 @@ export const parseSecrets = (input: string, options: { onOverride?: (name: strin
     .map((line) => {
       const match = DOTENV.exec(line);
       if (!match) return line;
-      lines.push({ [match[1]!]: dotenvValue(match[1]!, line, match[2]!) });
+      const value = dotenvValue(match[1]!, line, match[2]!);
+      if (value === undefined) options.onEmpty?.(match[1]!);
+      else lines.push({ [match[1]!]: value });
       return '';
     })
     .join('\n');

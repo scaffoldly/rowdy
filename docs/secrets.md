@@ -76,14 +76,17 @@ A value is everything after the first `=`, trimmed.
 | `PASSWORD="abc #123" # rotated monthly`    | `abc #123`                        |
 | `PASSWORD='abc #123'`                      | `abc #123`                        |
 | `export API_KEY=abc123`                    | `abc123`                          |
-| `API_KEY=`                                 | empty string                      |
+| `API_KEY=`                                 | skipped, with a warning           |
+| `API_KEY=""`                               | empty string                      |
 
 - **Comments.** In an unquoted value, a space followed by `#` starts a comment. A `#` with no space
   before it is part of the value, so a generated password or a URL fragment is never cut short.
 - **Quotes.** A quoted value is read by [dotenv](https://github.com/motdotla/dotenv): the quotes are
   removed and anything after the closing quote is a comment. Quote a value that contains ` #`.
-- **Empty.** `API_KEY=` sets `API_KEY` to the empty string. An unset `${{ secrets.X }}` expands to
-  nothing, so it sets an empty variable rather than leaving the name out.
+- **Empty.** An unset or misspelled `${{ secrets.X }}` expands to nothing, so `API_KEY=` is skipped
+  rather than setting an empty variable that would override the real value from
+  `${{ toJSON(secrets) }}`. rowdy logs `Secret Skipped` at `warn` with the name (never a value). To
+  set a variable to the empty string on purpose, quote it: `API_KEY=""`.
 
 ## Multi-line and quoted secrets
 
