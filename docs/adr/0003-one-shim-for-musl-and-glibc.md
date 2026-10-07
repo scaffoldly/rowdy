@@ -1,6 +1,6 @@
 # ADR 0003: One shim for musl and glibc
 
-- Status: Proposed (2026-10-07)
+- Status: Accepted (2026-10-07)
 - Scope: `@scaffoldly/rowdy-vfs` (`native/`, CI), rowdy docs, nuss-io
 - Relates to: [ADR 0002](0002-handle-based-core-and-9p-control-plane.md), scaffoldly/rowdy#7
 
@@ -46,6 +46,20 @@ translation and supervisor notification, calling the real symbol of the same nam
 | Extended attributes  | `getxattr` `lgetxattr` `setxattr` `lsetxattr` `listxattr` `llistxattr` `removexattr` `lremovexattr`                        | path translation only; attributes live on the backing file and are not carried to S3                                                                                      |
 | Directory            | `scandirat` `scandirat64`                                                                                                  | the `scandir` hook, with a directory descriptor (as `fstatat` does)                                                                                                       |
 | Spawn                | `posix_spawn` `posix_spawnp`                                                                                               | translate the program path; glibc's implementation execs internally, past the `execve` hook                                                                               |
+
+Found while implementing, and added:
+
+- **`fcntl64`.** glibc 2.28+ binds `fcntl` to `fcntl64` in programs built with
+  `_FILE_OFFSET_BITS=64`. SQLite is one, so its advisory locks (the leases of
+  [ADR 0001](0001-multi-writer-leases.md)) arrive there.
+- **The pre-2.33 `__xstat` family** (`__xstat`, `__xstat64`, `__lxstat`, `__lxstat64`, `__fxstatat`,
+  `__fxstatat64`). The 2.34 floor is the glibc an app runs on, not the one it was built against:
+  official node builds target glibc 2.28 and call these, and newer glibc keeps them for such
+  binaries. Without them SQLite's path `stat` bypassed the VFS (`SQLITE_IOERR_FSTAT`).
+
+On LP64, the only targets built, the 64-bit types are the plain types, so the 64-bit names and the
+`__xstat` family delegate to the plain hooks rather than resolving their own real symbols;
+`_Static_assert`s pin the layouts. `scandirat` is glibc-only (musl does not provide it).
 
 The new hooks apply to musl callers too wherever musl exports the name.
 

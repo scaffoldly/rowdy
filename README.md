@@ -44,17 +44,23 @@ leaks into the app's view. `syscall(2)` is interposed for the single-path syscal
 `dup*`, `fclose`, `fcntl` locks and `flock` are hooked on descriptors the shim opened so the
 supervisor hears about writes and advisory-lock transitions; the real calls still run.
 
-Each entry point is hooked on its own: musl binds libc-internal cross-calls (`fopen` → `open`,
-`scandir` → `opendir`) internally, so one wrapper never covers another.
+Each entry point is hooked on its own: libc binds its own internal cross-calls (`fopen` → `open`,
+`scandir` → `opendir`), musl and glibc alike, so one wrapper never covers another. glibc programs
+also reach some calls under other names: the 64-bit names (`stat64`, `fopen64`, `scandir64`, …),
+the `_FORTIFY_SOURCE` entry points (`__open_2`, `__realpath_chk`, …), `renameat2`, `fcntl64`, and
+the pre-2.33 `__xstat` family that binaries built against older glibc still call.
 
 ## Limits
 
-- Only dynamically linked musl (alpine) binaries that go through libc see the VFS. Static
-  binaries and Go programs that issue raw syscalls do not.
-- `mmap` of a `/vfs` file is not translated; neither are `nftw`, `glob` or `posix_spawn` paths.
+- Dynamically linked programs that go through libc see the VFS: musl (alpine) and glibc 2.34 or
+  newer (debian 12, ubuntu 22.04+, Amazon Linux 2023, distroless `nodejs`/`cc`/`base`). One object
+  serves both ([ADR 0003](docs/adr/0003-one-shim-for-musl-and-glibc.md)). Static binaries and Go
+  programs that issue raw syscalls do not.
+- `mmap` works through the descriptor, which already refers to the backing file: shared-mapping
+  writes upload on `close` or `fsync` like `write()`. `msync` alone does not upload.
+- Extended attributes are kept on the instance's backing file and are not stored in S3.
+- `glob` and `nftw` paths are not translated.
 - It is not a mountpoint. A process started outside the preload cannot see it.
-- Preloading the musl shim into a glibc child fails to load (ld.so warning), and the app runs
-  without the VFS.
 
 ## Development
 
