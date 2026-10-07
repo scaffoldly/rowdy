@@ -76,6 +76,7 @@ import {
   take,
   takeUntil,
   tap,
+  timer,
   toArray,
 } from 'rxjs';
 import promiseRetry from 'promise-retry';
@@ -124,11 +125,21 @@ export const isTransient = (error: unknown): boolean => {
   return !!$retryable || $fault === 'server' || ['ThrottlingException', 'TooManyRequestsException'].includes(`${name}`);
 };
 
-// DEVNOTE: A role created moments ago is not yet assumable by Lambda.
-export const isRoleNotReady = (error: unknown): boolean => {
+// DEVNOTE: IAM is eventually consistent. A role or policy created moments ago can be denied, or not
+// yet assumable by Lambda, for a few seconds before it takes effect.
+export const isPropagating = (error: unknown): boolean => {
   const { name, message } = (error as AwsError) ?? {};
-  return name === 'InvalidParameterValueException' && /cannot be assumed/i.test(`${message}`);
+  return (
+    ['AccessDenied', 'AccessDeniedException'].includes(`${name}`) ||
+    (name === 'InvalidParameterValueException' && /cannot be assumed/i.test(`${message}`))
+  );
 };
+
+// DEVNOTE: Bounds retries of propagating errors: about a minute, then the error fails the deploy.
+export const PROPAGATION = { retries: 8, minTimeout: 1_000, maxTimeout: 10_000 };
+
+const backoff = (attempt: number): number =>
+  Math.min(PROPAGATION.minTimeout * 2 ** (attempt - 1), PROPAGATION.maxTimeout);
 
 const isSubset = (subset: Record<string, string>, superset: Record<string, string>): boolean => {
   for (const key of Object.keys(subset)) {
@@ -145,15 +156,17 @@ const isEqual = <T extends number | string | string[]>(a?: T, b?: T): boolean =>
     !!b &&
     (Array.isArray(a) && Array.isArray(b) ? a.length === b.length && !a.some((v, i) => v !== b[i]) : a === b));
 
-// DEVNOTE: Only a missing resource is created. Any other read error (AccessDenied, ValidationError)
-// fails the deploy.
+// DEVNOTE: A missing resource is created, a propagating error re-reads after a backoff, and anything
+// else (ValidationError, or a propagating error past PROPAGATION.retries) fails the deploy.
 const _create = <T>(read: () => Promise<T>, write: () => Promise<unknown>, cb?: (res: T) => void): Observable<T> => {
+  let attempt = 0;
   return defer(() => read())
     .pipe(
       retry({
         delay: (error) => {
-          if (!isNotFound(error)) throw error;
-          return write();
+          if (isNotFound(error)) return write();
+          if (isPropagating(error) && ++attempt <= PROPAGATION.retries) return timer(backoff(attempt));
+          throw error;
         },
       })
     )
@@ -885,10 +898,10 @@ export class LambdaFunction implements Logger {
                     )
                     .then(waitForSuccess(this.lambda))
                     .catch((error) => {
-                      if (isRoleNotReady(error) || isTransient(error)) return retry(error);
+                      if (isPropagating(error) || isTransient(error)) return retry(error);
                       throw error;
                     }),
-                { retries: 10, maxTimeout: 10_000 }
+                PROPAGATION
               ),
             (fn) => {
               this._status.Configuration = fn.Configuration;

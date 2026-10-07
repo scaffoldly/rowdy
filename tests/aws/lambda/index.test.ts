@@ -3,9 +3,10 @@ import { LambdaImageService } from '../../../src/aws/lambda/image';
 import {
   fit,
   isNotFound,
-  isRoleNotReady,
+  isPropagating,
   isTransient,
   LambdaFunction,
+  PROPAGATION,
   waitForSuccess,
 } from '../../../src/aws/lambda/index';
 import { inspect } from 'util';
@@ -436,6 +437,10 @@ describe('aws lambda errors', () => {
 
   const ROLE = { Role: { Arn: 'arn:aws:iam::123456789012:role/acme+score@rowdy.run', RoleId: 'AROAEXAMPLE' } };
 
+  const timing = { ...PROPAGATION };
+  beforeAll(() => Object.assign(PROPAGATION, { minTimeout: 1, maxTimeout: 1 }));
+  afterAll(() => Object.assign(PROPAGATION, timing));
+
   it('classifies errors', () => {
     expect(isNotFound(awsError('NoSuchEntityException', 'client'))).toBe(true);
     expect(isNotFound(awsError('ResourceNotFoundException', 'client'))).toBe(true);
@@ -446,8 +451,10 @@ describe('aws lambda errors', () => {
     expect(isTransient(awsError('ServiceException', 'server'))).toBe(true);
     expect(isTransient(awsError('TooManyRequestsException', 'client'))).toBe(true);
 
+    expect(isPropagating(awsError('AccessDenied', 'client'))).toBe(true);
+    expect(isPropagating(awsError('AccessDeniedException', 'client'))).toBe(true);
     expect(
-      isRoleNotReady(
+      isPropagating(
         awsError(
           'InvalidParameterValueException',
           'client',
@@ -455,16 +462,44 @@ describe('aws lambda errors', () => {
         )
       )
     ).toBe(true);
-    expect(isRoleNotReady(awsError('InvalidParameterValueException', 'client', 'Bad memory'))).toBe(false);
+    expect(isPropagating(awsError('InvalidParameterValueException', 'client', 'Bad memory'))).toBe(false);
+    expect(isPropagating(awsError('ValidationError', 'client'))).toBe(false);
   });
 
-  it('fails the deploy on AccessDenied instead of trying to create the role', async () => {
+  it('retries AccessDenied until it flips', async () => {
+    const fn = new LambdaFunction('Container', imageService);
+    const sent = mockIam(fn, (name, calls) => {
+      if (name === 'UpdateRoleCommand' && calls <= 2) throw awsError('AccessDenied', 'client');
+      return name === 'GetRoleCommand' ? ROLE : {};
+    });
+
+    await expect(lastValueFrom(fn['prepare']().creates[0]!)).resolves.toEqual(ROLE);
+    expect(sent).toEqual([
+      'UpdateRoleCommand',
+      'UpdateRoleCommand',
+      'UpdateRoleCommand',
+      'UpdateAssumeRolePolicyCommand',
+      'GetRoleCommand',
+    ]);
+  });
+
+  it('fails the deploy when AccessDenied outlasts the propagation window', async () => {
     const fn = new LambdaFunction('Container', imageService);
     const sent = mockIam(fn, () => {
       throw awsError('AccessDenied', 'client');
     });
 
     await expect(lastValueFrom(fn['prepare']().creates[0]!)).rejects.toMatchObject({ name: 'AccessDenied' });
+    expect(sent).toEqual(Array(PROPAGATION.retries + 1).fill('UpdateRoleCommand'));
+  });
+
+  it('fails the deploy on ValidationError without retrying', async () => {
+    const fn = new LambdaFunction('Container', imageService);
+    const sent = mockIam(fn, () => {
+      throw awsError('ValidationError', 'client');
+    });
+
+    await expect(lastValueFrom(fn['prepare']().creates[0]!)).rejects.toMatchObject({ name: 'ValidationError' });
     expect(sent).toEqual(['UpdateRoleCommand']);
   });
 
