@@ -106,7 +106,29 @@ export const tagify = (prefix: string, map?: object) =>
 // reconciled away. Schedule names are limited to 64 characters.
 const scheduleName = (line: string): string => createHash('sha256').update(line).digest('hex').slice(0, 16);
 
-const isNotFound = (error: unknown): boolean => (error as { name?: string })?.name === 'ResourceNotFoundException';
+// DEVNOTE: IAM role names and Lambda function names are limited to 64 characters. A longer value
+// keeps its head and suffix, with a hash of the full value so distinct names stay distinct.
+export const fit = (value: string, suffix = '', max = 64): string => {
+  if (value.length + suffix.length <= max) return `${value}${suffix}`;
+  const hash = createHash('sha256').update(value).digest('hex').slice(0, 8);
+  return `${value.slice(0, max - suffix.length - hash.length - 1)}-${hash}${suffix}`;
+};
+
+type AwsError = { name?: string; message?: string; $fault?: string; $retryable?: unknown };
+
+export const isNotFound = (error: unknown): boolean =>
+  ['ResourceNotFoundException', 'NoSuchEntityException'].includes(`${(error as AwsError)?.name}`);
+
+export const isTransient = (error: unknown): boolean => {
+  const { name, $fault, $retryable } = (error as AwsError) ?? {};
+  return !!$retryable || $fault === 'server' || ['ThrottlingException', 'TooManyRequestsException'].includes(`${name}`);
+};
+
+// DEVNOTE: A role created moments ago is not yet assumable by Lambda.
+export const isRoleNotReady = (error: unknown): boolean => {
+  const { name, message } = (error as AwsError) ?? {};
+  return name === 'InvalidParameterValueException' && /cannot be assumed/i.test(`${message}`);
+};
 
 const isSubset = (subset: Record<string, string>, superset: Record<string, string>): boolean => {
   for (const key of Object.keys(subset)) {
@@ -123,27 +145,29 @@ const isEqual = <T extends number | string | string[]>(a?: T, b?: T): boolean =>
     !!b &&
     (Array.isArray(a) && Array.isArray(b) ? a.length === b.length && !a.some((v, i) => v !== b[i]) : a === b));
 
+// DEVNOTE: Only a missing resource is created. Any other read error (AccessDenied, ValidationError)
+// fails the deploy.
 const _create = <T>(read: () => Promise<T>, write: () => Promise<unknown>, cb?: (res: T) => void): Observable<T> => {
-  return defer(() =>
-    read().catch((err) => {
-      throw err;
-    })
-  )
+  return defer(() => read())
     .pipe(
       retry({
-        delay: () =>
-          write().catch((err) => {
-            throw err;
-          }),
+        delay: (error) => {
+          if (!isNotFound(error)) throw error;
+          return write();
+        },
       })
     )
     .pipe(tap((res) => cb?.(res)));
 };
 
-const waitForSuccess = (lambda: LambdaClient) => (res: GetFunctionConfigurationCommandOutput) =>
+export const waitForSuccess = (lambda: LambdaClient) => (res: GetFunctionConfigurationCommandOutput) =>
   new Promise<GetFunctionConfigurationCommandOutput>((resolve, reject) => {
     if (res.LastUpdateStatus === 'Successful' && res.State === 'Active') {
       return resolve(res);
+    }
+    if (res.State === 'Failed' || res.LastUpdateStatus === 'Failed') {
+      const reason = res.State === 'Failed' ? res.StateReason : res.LastUpdateStatusReason;
+      return reject(new Error(`Function ${res.FunctionName} failed: ${reason ?? 'no reason given'}`));
     }
     setTimeout(
       () =>
@@ -178,6 +202,16 @@ const pullImage = (
 };
 
 export class LambdaFunction implements Logger {
+  static functionName(roleId: string, name?: string): string {
+    return fit((name || roleId).replace(/[^a-zA-Z0-9_-]/g, '_'));
+  }
+
+  static roleName(image: Image, name?: string): string {
+    return name
+      ? fit(`${image.namespace}+${image.name}@${name.replace(/[^a-zA-Z0-9._-]/g, '.')}`, '.rowdy.run')
+      : fit(`${image.namespace}+${image.name}`, '@rowdy.run');
+  }
+
   private iam = new IAMClient({ logger: this });
   private lambda = new LambdaClient({ logger: this });
   private scheduler = new SchedulerClient({ logger: this });
@@ -756,18 +790,6 @@ export class LambdaFunction implements Logger {
     const crontab = this.Crontab.map((cron) => cron.expression);
     this.log.debug(`prepare(crontab=${crontab.length})`);
 
-    const _functionName = (roleId: string, name?: string) => {
-      const _sanitize = (s: string) => s.replace(/[^a-zA-Z0-9_-]/g, '_');
-      return _sanitize(name || roleId);
-    };
-
-    const _roleName = (image: Image, name?: string) => {
-      const _sanitize = (s: string) => s.replace(/[^a-zA-Z0-9._-]/g, '.');
-      return name
-        ? `${image.namespace}+${image.name}@${_sanitize(name)}.rowdy.run`
-        : `${image.namespace}+${image.name}@rowdy.run`;
-    };
-
     const _qualifier = (image: Image) => {
       const _sanitize = (s: string) => s.replace(/[^a-zA-Z0-9_-]/g, '_');
       if (this.isSandbox()) {
@@ -786,7 +808,7 @@ export class LambdaFunction implements Logger {
           this.withTag('run.rowdy.name', Name);
         }),
         map(([{ normalized: Image }, Name]) => ({
-          RoleName: _roleName(Image, Name),
+          RoleName: LambdaFunction.roleName(Image, Name),
           Description: `Execution role to run ${Image.namespace}/${Image.name} in AWS Lambda`,
           Qualifier: _qualifier(Image),
         })),
@@ -831,7 +853,7 @@ export class LambdaFunction implements Logger {
         WorkingDirectory: this.WorkingDirectory.pipe(take(1)),
       }).pipe(
         map(({ Name, Qualifier, RoleArn, RoleId, PulledImage, Command, WorkingDirectory }) => ({
-          FunctionName: _functionName(RoleId!, Name),
+          FunctionName: LambdaFunction.functionName(RoleId!, Name),
           Qualifier,
           Description: `A function to run the ${PulledImage.Image} container in AWS Lambda`,
           Role: RoleArn,
@@ -846,22 +868,27 @@ export class LambdaFunction implements Logger {
                 .send(new GetFunctionCommand({ FunctionName, Qualifier }))
                 .catch(() => this.lambda.send(new GetFunctionCommand({ FunctionName }))),
             () =>
-              promiseRetry((retry) =>
-                this.lambda
-                  .send(
-                    new CreateFunctionCommand({
-                      FunctionName,
-                      Role,
-                      Code: { ImageUri: PulledImage.ImageUri },
-                      PackageType: 'Image',
-                      // TODO: Support for platform annotation
-                      Architectures: ['x86_64'],
-                      Timeout: 900,
-                      Publish: false,
-                    })
-                  )
-                  .then(waitForSuccess(this.lambda))
-                  .catch(retry)
+              promiseRetry(
+                (retry) =>
+                  this.lambda
+                    .send(
+                      new CreateFunctionCommand({
+                        FunctionName,
+                        Role,
+                        Code: { ImageUri: PulledImage.ImageUri },
+                        PackageType: 'Image',
+                        // TODO: Support for platform annotation
+                        Architectures: ['x86_64'],
+                        Timeout: 900,
+                        Publish: false,
+                      })
+                    )
+                    .then(waitForSuccess(this.lambda))
+                    .catch((error) => {
+                      if (isRoleNotReady(error) || isTransient(error)) return retry(error);
+                      throw error;
+                    }),
+                { retries: 10, maxTimeout: 10_000 }
               ),
             (fn) => {
               this._status.Configuration = fn.Configuration;

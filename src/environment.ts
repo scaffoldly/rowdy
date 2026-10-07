@@ -297,6 +297,14 @@ export class Environment implements ILoggable {
                     this._subscriptions.push(
                       lambda.observe().subscribe({
                         next: (fn) => this.log.info('State Updated', Environment.flat(fn.State)),
+                        error: (error: Error) => {
+                          this.log.error('Lambda Function Installation Failed', {
+                            name: error.name,
+                            error: error.message,
+                          });
+                          process.exitCode = 1;
+                          this.abort.abort('Installation failed');
+                        },
                         complete: () => {
                           this.log.info('Lambda Function Installation Complete');
                           writeGithubOutput('url', lambda.State.FunctionUrl);
