@@ -43,6 +43,10 @@ inputs:
     description: "Secrets (alpha feature)."
     required: false
     default: ""
+  volumes:
+    description: "Volumes to mount, one per line: <scheme>://<locator>:<mountpoint>[:<flags>]. Added to any in routes."
+    required: false
+    default: ""
 outputs:
   url:
     description: The URL of the deployed application.
@@ -149,3 +153,4 @@ runs:
         ROWDY_CRI: "${{ inputs.cri }}"
         ROWDY_ROUTES: "${{ inputs.routes }}"
         ROWDY_SECRETS: "${{ inputs.secrets }}"
+        ROWDY_VOLUMES: "${{ inputs.volumes }}"
