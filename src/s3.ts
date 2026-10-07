@@ -101,6 +101,8 @@ type Entry = {
   synced?: { mtimeMs: number; size: number };
   /** Digest of the base version's bytes, to tell "touched" from "changed" without trusting mtime. */
   checksum?: Checksum;
+  /** Created with O_EXCL: the first upload must find no object, or the create loses with EEXIST. */
+  exclusive?: boolean;
   /** Descriptors currently open on it: a materialized copy in use is never evicted. */
   opens?: number;
   /** Last time the local copy was asked for, for eviction order. */
@@ -159,6 +161,8 @@ const digest = async (local: string, algo: Checksum['algo']): Promise<string | u
     return undefined;
   }
 };
+
+const O_EXCL = 0o200; // open(2) flags cross the protocol with their Linux values
 
 const snapshot = (local: string): { mtimeMs: number; size: number } | undefined => {
   try {
@@ -597,7 +601,7 @@ export class S3Adapter implements VfsAdapter {
     return rel.replace(/\/+$/, '');
   }
 
-  async open(path: string, _flags: number): Promise<void> {
+  async open(path: string, flags: number): Promise<void> {
     const rel = this.rel(path);
     if (rel === undefined || rel === '' || this.isLocal(rel)) {
       return;
@@ -613,7 +617,12 @@ export class S3Adapter implements VfsAdapter {
       if (!entry) {
         // Brand-new local file: no synced snapshot, so revalidation leaves it alone until flushed.
         const head = await this.head(key);
-        this.entries.set(key, { etag: head?.etag, size: head?.size, materialized: true });
+        this.entries.set(key, {
+          etag: head?.etag,
+          size: head?.size,
+          materialized: true,
+          exclusive: !head && (flags & O_EXCL) !== 0,
+        });
       } else {
         this.entries.set(key, { ...entry, materialized: true });
       }
@@ -657,7 +666,7 @@ export class S3Adapter implements VfsAdapter {
       // unlock-time flush, or a rollback that restored them): nothing to upload.
       return;
     }
-    const base = current?.etag;
+    let base = current?.etag;
     for (let attempt = 1; ; attempt++) {
       const body = createReadStream(local);
       body.on('error', () => {}); // the SDK consumes read errors; a destroyed stream must not throw
@@ -685,10 +694,20 @@ export class S3Adapter implements VfsAdapter {
       } catch (e) {
         body.destroy();
         if (isPreconditionFailed(e)) {
-          throw VfsError.code(
-            'ESTALE',
-            `${path}: object changed in S3 since it was opened (expected ETag ${base ?? 'none'})`
-          );
+          if (base) {
+            throw VfsError.code('ESTALE', `${path}: object changed in S3 since it was opened (expected ETag ${base})`);
+          }
+          // Our create found an object: another instance created it first. The conditional PUT is
+          // what makes O_EXCL atomic across instances; a plain create is last writer wins.
+          if (current?.exclusive) {
+            throw VfsError.code('EEXIST', `${path}: created elsewhere first`);
+          }
+          const head = await this.head(key);
+          if (head?.etag && attempt < 3) {
+            base = head.etag;
+            continue;
+          }
+          throw VfsError.code('ESTALE', `${path}: object appeared and vanished during the create`);
         }
         if (isConditionalConflict(e) && attempt < 3) {
           // Collided with another conditional write in flight; the condition was never evaluated.
@@ -700,8 +719,27 @@ export class S3Adapter implements VfsAdapter {
     }
   }
 
-  async mkdir(): Promise<void> {
-    // S3 has no directories; one appears as soon as an object is flushed under it.
+  /**
+   * S3 has no directories: one appears as soon as an object is flushed under it. Until then it
+   * would exist on this instance only, so an empty marker object `<key>/` records it, the same
+   * convention the S3 console uses. Listings and `isDir` already understand it.
+   */
+  async mkdir(path: string): Promise<void> {
+    const rel = this.rel(path);
+    if (rel === undefined || rel === '' || this.isLocal(rel)) {
+      return;
+    }
+    const marker = `${this.key(rel)}/`;
+    await this.serial(marker, async () => {
+      try {
+        await this.client.send(
+          new PutObjectCommand({ Bucket: this.options.bucket, Key: marker, Body: '', ContentLength: 0 })
+        );
+        this.log(`marked`, { key: marker });
+      } catch (e) {
+        throw toVfsError(e);
+      }
+    });
   }
 
   /* ---- leases (ADR 0001) -------------------------------------------------
@@ -871,11 +909,15 @@ export class S3Adapter implements VfsAdapter {
     }
     const key = this.key(rel);
     await this.serial(key, async () => {
-      try {
-        await this.client.send(new DeleteObjectCommand({ Bucket: this.options.bucket, Key: key }));
-      } catch (e) {
-        if (!isNotFound(e)) {
-          throw toVfsError(e);
+      // A file has an entry; anything else may have been a directory, whose marker goes too.
+      const keys = this.entries.has(key) ? [key] : [key, `${key}/`];
+      for (const k of keys) {
+        try {
+          await this.client.send(new DeleteObjectCommand({ Bucket: this.options.bucket, Key: k }));
+        } catch (e) {
+          if (!isNotFound(e)) {
+            throw toVfsError(e);
+          }
         }
       }
       this.entries.delete(key);
@@ -919,7 +961,8 @@ export class S3Adapter implements VfsAdapter {
           if (!object.Key) {
             continue;
           }
-          const newKey = this.key(join(relTo, object.Key.slice(oldPrefix.length)));
+          const tail = object.Key.slice(oldPrefix.length);
+          const newKey = tail ? this.key(join(relTo, tail)) : `${this.key(relTo)}/`; // the marker itself
           await this.move(object.Key, newKey);
         }
         token = out.IsTruncated ? out.NextContinuationToken : undefined;

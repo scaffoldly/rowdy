@@ -339,7 +339,7 @@ static int pre_open(const char *vp, int flags) {
     if (ensure_connected() < 0) return -1;
     uint32_t fid;
     if (walk_to(m, rel_of(m, vp), &fid) < 0) return (flags & O_CREAT) && errno == ENOENT ? 0 : -1;
-    if (p9_lopen(fid, (uint32_t)flags & ~(uint32_t)(O_CREAT | O_EXCL)) < 0) {
+    if (p9_lopen(fid, (uint32_t)flags & ~(uint32_t)O_CREAT) < 0) {
         int e = errno; p9_clunk(fid); errno = e; return -1;
     }
     g_pending = fid;
@@ -360,7 +360,7 @@ static int post_open(int fd, const char *vp, int flags) {
     if (!m) return fd;
     if (fid == P9_NOFID) {
         if (ensure_connected() < 0 || walk_to(m, rel_of(m, vp), &fid) < 0 ||
-            p9_lopen(fid, (uint32_t)flags & ~(uint32_t)(O_CREAT | O_EXCL)) < 0) {
+            p9_lopen(fid, (uint32_t)flags & ~(uint32_t)O_CREAT) < 0) {
             int e = errno; real_close_(fd); errno = e; return -1;
         }
     }

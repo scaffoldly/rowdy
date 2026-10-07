@@ -127,7 +127,8 @@ unix-domain socket (one JSON object per line, paths and metadata only; the proto
   `PutObject If-Match: <etag the copy was based on>` (or `If-None-Match: *` for a new object), so a
   concurrent writer fails the close with `ESTALE` instead of being overwritten. `unlink` deletes,
   `rename` copies server-side then deletes (a renamed directory moves every key under it). S3 has
-  no directories: an empty directory exists only locally until something is flushed under it.
+  no directories: `mkdir` writes a `<key>/` marker object (the S3 console's convention) so an empty
+  directory exists on every instance; `rmdir` removes it.
   Credentials come from the default provider chain of the process running the server.
   Multi-writer behaviour follows [ADR 0001](docs/adr/0001-multi-writer-leases.md): a trusted local
   copy is re-checked against the object's ETag at most every `revalidateMs` (default 2 s) and

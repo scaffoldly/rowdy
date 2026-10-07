@@ -269,11 +269,29 @@ describe('S3Adapter', () => {
       expect(s3.objects.get('shared.txt')?.body.toString()).toBe('someone else');
     });
 
-    it('fails with ESTALE when a "new" object appeared before the first flush', async () => {
+    it('a plain create that loses the race to another instance overwrites: last writer wins', async () => {
       writeFileSync(join(backing, 'race.txt'), 'mine');
-      await adapter.open(`${mount}/race.txt`, 0); // HEAD: nothing there
+      await adapter.open(`${mount}/race.txt`, 0o101); // O_WRONLY|O_CREAT; HEAD: nothing there
       s3.put('race.txt', 'theirs');
-      await expect(adapter.flush(`${mount}/race.txt`)).rejects.toMatchObject({ errno: 116 });
+      await adapter.flush(`${mount}/race.txt`);
+      expect(s3.objects.get('race.txt')?.body.toString()).toBe('mine');
+      expect(s3.calls.filter((c) => c === 'PutObjectCommand')).toHaveLength(2); // If-None-Match: *, then If-Match
+    });
+
+    it('an O_EXCL create that loses the race fails with EEXIST at flush: the conditional PUT decides', async () => {
+      writeFileSync(join(backing, 'excl.txt'), 'mine');
+      await adapter.open(`${mount}/excl.txt`, 0o301); // O_WRONLY|O_CREAT|O_EXCL
+      s3.put('excl.txt', 'theirs');
+      await expect(adapter.flush(`${mount}/excl.txt`)).rejects.toMatchObject({ errno: 17 });
+      expect(s3.objects.get('excl.txt')?.body.toString()).toBe('theirs');
+    });
+
+    it('an O_EXCL create of an object that already exists is refused before any write', async () => {
+      s3.put('taken.txt', 'theirs');
+      await adapter.open(`${mount}/taken.txt`, 0o301); // HEAD finds it: not exclusive-new
+      writeFileSync(join(backing, 'taken.txt'), 'mine');
+      await adapter.flush(`${mount}/taken.txt`); // If-Match on the known ETag: an ordinary overwrite
+      expect(s3.objects.get('taken.txt')?.body.toString()).toBe('mine');
     });
 
     it('retries a flush that S3 turned away with 409 ConditionalRequestConflict', async () => {
@@ -290,6 +308,32 @@ describe('S3Adapter', () => {
     it('ignores a flush for a file that is already gone', async () => {
       await expect(adapter.flush(`${mount}/vanished.txt`)).resolves.toBeUndefined();
       expect(s3.calls).toEqual([]);
+    });
+  });
+
+  describe('directories', () => {
+    it('mkdir writes a marker so an empty directory exists on every instance', async () => {
+      await adapter.mkdir(`${mount}/photos`);
+      expect([...s3.objects.keys()]).toEqual(['photos/']);
+      const fresh = new S3Adapter({
+        bucket: 'example-bucket',
+        mountpoint: mount,
+        backing: mkdtempSync(join(tmpdir(), 'rowdy-vfs-fresh-')),
+        client: s3 as unknown as S3Client,
+      });
+      await fresh.stat(`${mount}/photos`); // another instance sees it
+      expect(statSync(join(fresh['options'].backing, 'photos')).isDirectory()).toBe(true);
+      await fresh.list(mount);
+      expect(readdirSync(fresh['options'].backing)).toEqual(['photos']);
+    });
+
+    it('rmdir removes the marker, and renaming a directory moves it', async () => {
+      await adapter.mkdir(`${mount}/photos`);
+      mkdirSync(join(backing, 'albums'));
+      await adapter.rename(`${mount}/photos`, `${mount}/albums`);
+      expect([...s3.objects.keys()]).toEqual(['albums/']);
+      await adapter.unlink(`${mount}/albums`);
+      expect(s3.objects.size).toBe(0);
     });
   });
 
