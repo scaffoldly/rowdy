@@ -254,59 +254,22 @@ entry is `<scheme>://<locator>:<mountpoint>[:<flags>]`:
 spec:
   default: 'http://localhost:3000/'
   volumes:
-    - 'file:///tmp/vfsstore:/vfs'
+    - 's3://my-bucket:/s3:local=*-{journal,wal,shm}'
+    - 'file:///tmp/scratch:/scratch'
 ```
 
-`file://<dir>` backs the mountpoint with a directory on the function's `/tmp` (persists across warm
-invocations of one execution environment). `s3://<bucket>[/<prefix>]` backs it with a bucket: objects
-are downloaded into `/tmp/vfsstore` the first time the app opens them, directory listings come from
-the bucket, and files are uploaded when the app closes or fsyncs them. The upload is conditional on
-the object's ETag, so if something else changed the object meanwhile the app's `close()` fails with
-`ESTALE` instead of overwriting it. The deploy grants the execution role `s3:ListBucket` on the
-bucket and `Get`/`Put`/`DeleteObject` on the prefix; the bucket itself must already exist.
+`file://<dir>` backs the mountpoint with a directory on the function's `/tmp`; `s3://<bucket>[/<prefix>]`
+backs it with a bucket, fetching objects on first open and uploading them on close or fsync. Several
+instances can share an `s3://` volume: uploads are conditional (`ESTALE` on a lost race), and
+programs that take advisory locks (SQLite) get a lease in the bucket so their transactions serialize
+across instances. The deploy grants the execution role access to the bucket and prefix.
 
-Every entry is mounted. Mountpoints must be distinct; one may sit inside another, in which case the
-inner volume owns its subtree. A rename from one volume to another fails with `EXDEV`, as it does
-across filesystems, and tools such as `mv` fall back to copy and delete.
+Nothing is mounted in the kernel sense: rowdy preloads the
+[`@scaffoldly/rowdy-vfs`](https://github.com/scaffoldly/rowdy/tree/vfs) shim into the app, which
+rewrites libc path calls to a backing directory and speaks 9P2000.L to rowdy for the control plane.
+Only dynamically linked musl binaries see the mountpoint; `mmap` is not translated.
 
-Several function instances can share an `s3://` volume. Reads re-check the object's ETag (at most
-every 2 s) and pick up other instances' writes; programs that take advisory locks (SQLite, lockfile
-libraries) get a lease in the bucket for the duration of the lock, so their transactions serialize
-across instances and a contended lock shows up as `EAGAIN`/`SQLITE_BUSY` to retry. For plain files
-the lease is opt-in: the `lock` flag (`s3://<bucket>:/mnt:lock`) holds it across each
-open-for-write/close window; without it a conflicting write fails `close()` with `ESTALE` instead
-of waiting. Design and trade-offs:
-[ADR 0001](https://github.com/scaffoldly/rowdy/blob/vfs/docs/adr/0001-multi-writer-leases.md).
-
-Flags follow the mountpoint, docker `-v` style, separated by commas (outside braces):
-
-- `lock` — lease every open-for-write/close window (above).
-- `local=<glob>` — files matching the glob (relative to the mountpoint; a glob without `/` matches a
-  file name at any depth) stay in the backing directory and never reach the store. For scratch and
-  sidecar files that must not be shared, e.g. SQLite's rollback journal:
-  `s3://<bucket>:/s3:local=*-{journal,wal,shm}`. Repeat the flag for more globs.
-
-`@scaffoldly/rowdy-vfs` is pinned by commit, not by registry version: `package.json` points at the
-`rowdy-vfs-<sha>.tgz` asset that the `vfs` branch's CI uploads to the rolling `vfs-builds` release
-on every push, so a shim change reaches rowdy without waiting on the registry's review of the
-binary. The npm release of the package is the reviewed, attested one for other consumers.
-
-Nothing is mounted in the kernel sense. The Lambda sandbox denies every kernel-mediated option
-(`/dev/fuse`, `mount(2)`, namespaces, ptrace, seccomp-notify), so rowdy writes the
-[`@scaffoldly/rowdy-vfs`](https://github.com/scaffoldly/rowdy/tree/vfs) shim to
-`/tmp/rowdy/vfspreload.so` and prepends it to the app's `LD_PRELOAD`. The libc path calls the app
-makes (`open`, `stat`, `opendir`, `rename`, `getcwd`, `realpath`, …) are rewritten in-process to the
-backing directory, and the shim reports what it does to rowdy over a local unix socket
-(`VFS_SOCKET`) so the backing store can be populated and persisted. Rowdy's own process is never
-preloaded; an existing `LD_PRELOAD` is kept.
-
-Limits of the preload model:
-
-- Only dynamically linked musl (alpine) binaries that go through libc see the mountpoint. Static
-  binaries and Go programs that issue raw syscalls do not.
-- `mmap` of a file under the mountpoint is not translated; neither are `nftw`, `glob`, or
-  `posix_spawn` paths.
-- It is not a mountpoint, so a process started outside rowdy cannot see it.
+Syntax, flags, sharing semantics, caching, limits and errors: [docs/volumes.md](docs/volumes.md).
 
 ## Logging
 
