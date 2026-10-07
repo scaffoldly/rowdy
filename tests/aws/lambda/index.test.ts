@@ -536,3 +536,20 @@ describe('aws lambda errors', () => {
     ).rejects.toThrow('Function f failed: bad image');
   });
 });
+
+describe('aws lambda secrets', () => {
+  const imageService = new LambdaImageService(new Environment(new Logger()));
+  const environment = (fn: LambdaFunction): Record<string, string> => fn['Environment'].getValue();
+
+  it('sets each secret as an environment variable, without the github_token Actions adds', () => {
+    const fn = new LambdaFunction('Container', imageService).withSecrets(`
+SENTRY_DSN=https://key@sentry.example.com/1
+{
+  "github_token": "ghs_example",
+  "API_KEY": "abc123"
+}
+`);
+    expect(environment(fn)).toMatchObject({ SENTRY_DSN: 'https://key@sentry.example.com/1', API_KEY: 'abc123' });
+    expect(environment(fn)).not.toHaveProperty('github_token');
+  });
+});

@@ -85,6 +85,7 @@ import { Environment, Routes } from '../..';
 import { Crontab } from '../../routes';
 import { mask, maskJson } from '../../log';
 import { TPulledImage } from '../../api/types';
+import { parseSecrets } from '../../secrets';
 
 const TAG_KEY_REGEX = /^(?!aws:)[A-Za-z0-9 _.:\-=+@]{1,128}$/;
 const TAG_VALUE_REGEX = /^[\p{L}\p{Z}\p{N}_.:/=+\-@]{0,256}$/u;
@@ -593,12 +594,14 @@ export class LambdaFunction implements Logger {
 
   withSecrets(secrets: unknown): this {
     if (!secrets || typeof secrets !== 'string') {
-      this.log.warn('Secrets Skipped', { reason: 'not a JSON string', type: typeof secrets });
+      this.log.warn('Secrets Skipped', { reason: 'not a string', type: typeof secrets });
       return this;
     }
-    return Object.entries(JSON.parse(secrets))
+    return Object.entries(
+      parseSecrets(secrets, { onOverride: (name) => this.log.debug(`withSecrets(overridden=${name})`) })
+    )
       .filter(([key]) => key !== 'github_token') // DEVNOTE: Excluding "github_token" added by default in GH Actions
-      .reduce((fn, [key, value]) => fn.withEnvironment(key, String(value)), this);
+      .reduce((fn, [key, value]) => fn.withEnvironment(key, value), this);
   }
 
   withCRI(): this {

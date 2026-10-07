@@ -55,7 +55,7 @@ the environment if set and `us-east-1` otherwise.
 | `memory`  | no       | `256`                    | Memory for the container, in megabytes.                                                                                                                         |
 | `cri`     | no       | `false`                  | Enable the Container Runtime Interface.                                                                                                                         |
 | `routes`  | no       |                          | Path to, or inline YAML/JSON of, a Routes manifest. Accepts a path, `file://`, `data:`, or the manifest inline. A bare spec is accepted. See [Routes](#routes). |
-| `secrets` | no       |                          | Secrets to inject as environment variables. `${{ toJSON(secrets) }}` passes the repository's, minus `github_token`. Alpha.                                      |
+| `secrets` | no       |                          | Environment variables for the function: `NAME=value` lines and JSON objects such as `${{ toJSON(secrets) }}`. See [Secrets](#secrets).                          |
 
 | Output | Description                |
 | ------ | -------------------------- |
@@ -133,6 +133,27 @@ rewrites libc path calls to a backing directory and speaks 9P2000.L to rowdy for
 Only dynamically linked musl binaries see the mountpoint; `mmap` is not translated.
 
 Syntax, flags, sharing semantics, caching, limits and errors: [docs/volumes.md](docs/volumes.md).
+
+## Secrets
+
+`--secrets` (or `ROWDY_SECRETS`, or `with.secrets` in the GitHub Action) sets environment variables on
+the function. It takes `NAME=value` lines and JSON objects, in any mix:
+
+```yaml
+secrets: |
+  SENTRY_DSN=${{ vars.SENTRY_DSN }}
+  ${{ toJSON(secrets) }}
+  BUILD_ID=${{ github.run_id }}
+```
+
+- JSON objects, such as `${{ toJSON(secrets) }}`, apply in order; `NAME=value` lines apply on top, so
+  a line overrides a repository secret wherever it sits. `github_token` is dropped.
+- A value runs to the end of the line. ` #` starts a comment; a `#` with no space before it is part
+  of the value. Quote a value to keep a ` #`: `PASSWORD="abc #123"`.
+- A secret that spans lines (a PEM key) or holds quotes goes in as JSON:
+  `KEY=${{ toJSON(secrets.KEY) }}`. Pasting it raw breaks the line format.
+- Blank lines and `#` lines are skipped. Any other line fails the deploy with its line number; the
+  line itself is never printed.
 
 ## Logging
 
