@@ -19,6 +19,13 @@ RUN --mount=type=cache,id=pkg,target=/usr/local/share/.cache/pkg \
     yarn build:exe --debug && \
     /work/bin/rowdy --version
 
-FROM alpine:latest
+# DEVNOTE: The final stage is scratch because its layers are appended to every deployed image. The
+# binary must therefore be static: an interpreter would have to come from the user's image.
+RUN apk add --no-cache binutils && \
+    if readelf -lW /work/bin/rowdy | grep -q 'program interpreter'; then \
+      echo 'bin/rowdy is dynamically linked; it must be static to run from scratch' >&2; exit 1; \
+    fi
+
+FROM scratch
 COPY --from=build /work/bin/rowdy /usr/local/bin/rowdy
 ENTRYPOINT [ "/usr/local/bin/rowdy" ]
