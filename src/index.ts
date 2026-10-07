@@ -38,6 +38,8 @@ if (require.main === module) {
 
 export { Environment };
 export { Crontab, Routes, URI, Volume } from './routes';
+export { Cors } from './cors';
+export type { CorsPaths, CorsPolicy, CorsSpec } from './cors';
 export { Logger, isLevel, mask, maskEnv, maskHeaders, maskJson, maskQuery, maskUrl } from './log';
 export type { Format, Level } from './log';
 export { Rowdy } from './api';
