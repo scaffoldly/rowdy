@@ -20,7 +20,7 @@ inputs:
     required: false
     default: ""
   dockerfile:
-    description: "Path to a Dockerfile to build and push to ghcr.io/<owner>/<repo>:rowdy, then deploy by digest. The build context is the Dockerfile's directory."
+    description: "Path to a Dockerfile to build and push to ghcr.io/<owner>/<repo>:rowdy, then deploy as :rowdy@<digest> (pinned to the build, with a stable alias and Function URL). The build context is the Dockerfile's directory."
     required: false
     default: ""
   command:
@@ -147,7 +147,7 @@ runs:
         echo "image=$IMAGE" >> "$GITHUB_OUTPUT"
         npx @scaffoldly/rowdy@beta create ${{ inputs.cloud }} ${{ inputs.compute }} "$IMAGE" ${{ inputs.command }}
       env:
-        IMAGE: ${{ inputs.dockerfile != '' && format('{0}@{1}', steps.image.outputs.name, steps.build.outputs.digest) || steps.image.outputs.ref }}
+        IMAGE: ${{ inputs.dockerfile != '' && format('{0}:rowdy@{1}', steps.image.outputs.name, steps.build.outputs.digest) || steps.image.outputs.ref }}
         ROWDY_NAME: "${{ inputs.name }}"
         ROWDY_MEMORY: "${{ inputs.memory }}"
         ROWDY_CRI: "${{ inputs.cri }}"
