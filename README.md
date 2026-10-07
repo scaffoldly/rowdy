@@ -203,7 +203,21 @@ reworded, and a line that is already JSON is passed through untouched.
 `ROWDY_DEBUG=true` / `--debug` and `ROWDY_TRACE=true` / `--trace` still work as aliases for the
 `debug` and `trace` levels; an explicit `ROWDY_LOG_LEVEL` wins over them. `ROWDY_LOG_FORMAT=json` is for
 machines: the text format is meant to be read, not parsed. `rowdy create` deploys the
-function at the level it was run with, and the GitHub Action takes it as the `log-level` input.
+function at the level it was run with; in the GitHub Action, set `ROWDY_LOG_LEVEL` under `env:`.
+
+Levels mean the same thing everywhere, so `warn` and `error` can be alerted on:
+
+| Level   | Used for                                                                                     |
+| ------- | -------------------------------------------------------------------------------------------- |
+| `error` | rowdy could not do what was asked: a failed deploy, a command that failed, a lost response   |
+| `warn`  | degraded or unexpected, but handled: an unreadable routes file, a skipped secret, a deadline |
+| `info`  | lifecycle, and one line per request and per result                                           |
+| `debug` | decisions and upstream calls: routing, VFS operations, AWS calls, headers (masked)           |
+| `trace` | per-call detail, including every traced method's arguments and timing                        |
+
+Conditions that are expected in normal operation, such as the health probe failing before the app
+listens or a file missing just before it is created, are `debug`, so a healthy cold start and a
+request emit no `warn` or `error`.
 
 Values that look like credentials are never written in full, at any level: environment values,
 headers and query parameters with credential-like names, URL passwords and AWS SDK payloads are
