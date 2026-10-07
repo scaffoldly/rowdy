@@ -445,8 +445,10 @@ export class LambdaFunction implements Logger {
             this.EntryPoint.next(Configuration?.ImageConfigResponse?.ImageConfig?.EntryPoint);
           if (Configuration?.ImageConfigResponse?.ImageConfig?.Command)
             this.Command.next(Configuration?.ImageConfigResponse?.ImageConfig?.Command);
-          if (Configuration?.ImageConfigResponse?.ImageConfig?.WorkingDirectory)
-            this.WorkingDirectory.next(Configuration?.ImageConfigResponse?.ImageConfig?.WorkingDirectory);
+          const workdir =
+            Configuration?.Environment?.Variables?.ROWDY_WORKDIR ??
+            Configuration?.ImageConfigResponse?.ImageConfig?.WorkingDirectory;
+          if (workdir) this.WorkingDirectory.next(workdir);
           if (Configuration?.Environment?.Variables?.ROWDY_ROUTES)
             this.Routes.next(Routes.fromDataURL(Configuration.Environment.Variables.ROWDY_ROUTES));
           if (Policy?.PolicyDocument) {
@@ -1056,11 +1058,14 @@ export class LambdaFunction implements Logger {
               map((Function) => ({
                 Function,
                 MemorySize,
-                Environment,
+                // DEVNOTE: Lambda runs the entrypoint as its own user, not the image USER, so it cannot
+                // start in a WORKDIR only that user can enter (distroless :nonroot's /home/nonroot is
+                // 0700). Lambda starts rowdy in `/`, and rowdy changes to ROWDY_WORKDIR itself.
+                Environment: { ...Environment, ROWDY_WORKDIR: WorkingDirectory || '/' },
                 ImageUri,
                 EntryPoint: [...EntryPoint, '--'], // TODO: add the "--" before this
                 Command,
-                WorkingDirectory,
+                WorkingDirectory: '/',
               }))
             )
         ),
