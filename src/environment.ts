@@ -45,7 +45,7 @@ import { cpus } from 'os';
 import { internalIpV4Sync } from 'internal-ip';
 import { writeGithubOutput } from './util/github';
 
-export type Secrets = Record<string, string>;
+export type { Secrets } from './secrets';
 type Args = yargs.ArgumentsCamelCase<
   {
     debug: boolean;
@@ -225,7 +225,7 @@ export class Environment implements ILoggable {
             })
             .option('secrets', {
               type: 'string',
-              description: 'Secrets (alpha feature)',
+              description: 'Secrets: NAME=value lines and JSON objects, in any mix; NAME=value lines win',
               group: 'Runtime:',
             })
             .option('volumes', {

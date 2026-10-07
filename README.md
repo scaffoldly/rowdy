@@ -55,7 +55,7 @@ the environment if set and `us-east-1` otherwise.
 | `memory`  | no       | `256`                    | Memory for the container, in megabytes.                                                                                                                         |
 | `cri`     | no       | `false`                  | Enable the Container Runtime Interface.                                                                                                                         |
 | `routes`  | no       |                          | Path to, or inline YAML/JSON of, a Routes manifest. Accepts a path, `file://`, `data:`, or the manifest inline. A bare spec is accepted. See [Routes](#routes). |
-| `secrets` | no       |                          | Secrets to inject as environment variables. `${{ toJSON(secrets) }}` passes the repository's, minus `github_token`. Alpha.                                      |
+| `secrets` | no       |                          | Environment variables for the function: `NAME=value` lines and JSON objects such as `${{ toJSON(secrets) }}`. See [Secrets](#secrets).                          |
 
 | Output | Description                |
 | ------ | -------------------------- |
@@ -133,6 +133,22 @@ rewrites libc path calls to a backing directory and speaks 9P2000.L to rowdy for
 Only dynamically linked musl binaries see the mountpoint; `mmap` is not translated.
 
 Syntax, flags, sharing semantics, caching, limits and errors: [docs/volumes.md](docs/volumes.md).
+
+## Secrets
+
+`--secrets` (or `ROWDY_SECRETS`, or `with.secrets` in the GitHub Action) sets environment variables on
+the function. It takes `NAME=value` lines and JSON objects, in any mix, and a line always overrides
+the JSON:
+
+```yaml
+secrets: |
+  SENTRY_DSN=${{ vars.SENTRY_DSN }}
+  ${{ toJSON(secrets) }}
+  BUILD_ID=${{ github.run_id }}
+```
+
+Syntax, precedence, comments and quoting, multi-line secrets and errors:
+[docs/secrets.md](docs/secrets.md).
 
 ## Logging
 
