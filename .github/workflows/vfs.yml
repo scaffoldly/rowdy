@@ -163,6 +163,11 @@ jobs:
       contents: write
       id-token: write
 
+    # DEVNOTE: setup-node's registry-url writes an .npmrc that references ${NODE_AUTH_TOKEN}, and
+    # yarn fails on an unset reference. The stage step sets the real token.
+    env:
+      NODE_AUTH_TOKEN: unused
+
     steps:
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
