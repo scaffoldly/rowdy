@@ -155,7 +155,8 @@ contended lock) is logged at `warn` with its path and errno. `debug` (`--log-lev
 
 ## Versioning
 
-`@scaffoldly/rowdy-vfs` is pinned by commit, not by registry version: `package.json` points at the
-`rowdy-vfs-<sha>.tgz` asset that the `vfs` branch's CI uploads to the rolling `vfs-builds` release
-on every push, so a shim change reaches rowdy without waiting on the registry's review of the
-binary. The npm release of the package is the reviewed, attested one for other consumers.
+`@scaffoldly/rowdy-vfs` is pinned to an npm pre-release whose version names the `vfs` commit it was
+built from, `0.1.0-beta.<timestamp>.<sha>`. The `vfs` branch's CI stages that version with a
+provenance attestation on every push; because the package ships a native `LD_PRELOAD` library, npm
+only lets a maintainer with 2FA publish it (`npm stage approve`), and `package.json` is bumped to it
+once it is public.
