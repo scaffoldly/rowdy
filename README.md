@@ -137,7 +137,8 @@ Syntax, flags, sharing semantics, caching, limits and errors: [docs/volumes.md](
 ## Secrets
 
 `--secrets` (or `ROWDY_SECRETS`, or `with.secrets` in the GitHub Action) sets environment variables on
-the function. It takes `NAME=value` lines and JSON objects, in any mix:
+the function. It takes `NAME=value` lines and JSON objects, in any mix, and a line always overrides
+the JSON:
 
 ```yaml
 secrets: |
@@ -146,14 +147,8 @@ secrets: |
   BUILD_ID=${{ github.run_id }}
 ```
 
-- JSON objects, such as `${{ toJSON(secrets) }}`, apply in order; `NAME=value` lines apply on top, so
-  a line overrides a repository secret wherever it sits. `github_token` is dropped.
-- A value runs to the end of the line. ` #` starts a comment; a `#` with no space before it is part
-  of the value. Quote a value to keep a ` #`: `PASSWORD="abc #123"`.
-- A secret that spans lines (a PEM key) or holds quotes goes in as JSON:
-  `KEY=${{ toJSON(secrets.KEY) }}`. Pasting it raw breaks the line format.
-- Blank lines and `#` lines are skipped. Any other line fails the deploy with its line number; the
-  line itself is never printed.
+Syntax, precedence, comments and quoting, multi-line secrets and errors:
+[docs/secrets.md](docs/secrets.md).
 
 ## Logging
 
