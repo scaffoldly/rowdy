@@ -1334,9 +1334,9 @@
   dependencies:
     openapi-types "^12.1.3"
 
-"@scaffoldly/rowdy-vfs@https://github.com/scaffoldly/rowdy/releases/download/vfs-builds/rowdy-vfs-4d72898.tgz":
-  version "0.1.0-beta.20261007015827.4d72898"
-  resolved "https://github.com/scaffoldly/rowdy/releases/download/vfs-builds/rowdy-vfs-4d72898.tgz#512a3ed7fea7aba82b055f5f110793c96a18e598"
+"@scaffoldly/rowdy-vfs@https://github.com/scaffoldly/rowdy/releases/download/vfs-builds/rowdy-vfs-4f793d3.tgz":
+  version "0.1.0-beta.20261007021049.4f793d3"
+  resolved "https://github.com/scaffoldly/rowdy/releases/download/vfs-builds/rowdy-vfs-4f793d3.tgz#f86ac1d355eb853aa686baf44dcd9e129f37e9d0"
   dependencies:
     "@aws-sdk/client-s3" "^3.1144.0"
 
