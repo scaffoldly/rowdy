@@ -43,10 +43,6 @@ inputs:
     description: "Secrets (alpha feature)."
     required: false
     default: ""
-  log-level:
-    description: "Log verbosity for the deploy and for the deployed function: error, warn, info, debug or trace. (Default: info)"
-    required: false
-    default: "info"
 outputs:
   url:
     description: The URL of the deployed application.
@@ -133,7 +129,6 @@ runs:
         npx @scaffoldly/rowdy@beta create ${{ inputs.cloud }} ${{ inputs.compute }} "$IMAGE" ${{ inputs.command }}
       env:
         IMAGE: ${{ inputs.dockerfile != '' && format('{0}@{1}', steps.image.outputs.name, steps.build.outputs.digest) || steps.image.outputs.ref }}
-        ROWDY_LOG_LEVEL: "${{ inputs.log-level }}"
         ROWDY_NAME: "${{ inputs.name }}"
         ROWDY_MEMORY: "${{ inputs.memory }}"
         ROWDY_CRI: "${{ inputs.cri }}"

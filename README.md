@@ -69,6 +69,17 @@ steps; pass the result as `image` instead (`image` is ignored when `dockerfile` 
     image: ghcr.io/${{ github.repository }}@${{ steps.build.outputs.digest }}
 ```
 
+Log verbosity comes from `ROWDY_LOG_LEVEL` in the environment (`error`, `warn`, `info`, `debug` or
+`trace`; `info` when unset), set on the job or on the step. It applies to the deploy and is carried
+into the deployed function:
+
+```yaml
+- uses: scaffoldly/rowdy@github
+  env:
+    ROWDY_LOG_LEVEL: debug
+  with: …
+```
+
 The Action assumes the role with `aws-actions/configure-aws-credentials`, using `AWS_REGION` from
 the environment if set and `us-east-1` otherwise.
 
@@ -86,7 +97,6 @@ the environment if set and `us-east-1` otherwise.
 | `cri`        | no       | `false`                  | Enable the Container Runtime Interface.                                                                                                                                                                                          |
 | `routes`     | no       |                          | Path to, or inline YAML/JSON of, a Routes manifest. Accepts a path, `file://`, `data:`, or the manifest inline. A bare spec is accepted. See [Routes](https://github.com/scaffoldly/rowdy/blob/main/README.md#routes) on `main`. |
 | `secrets`    | no       |                          | Secrets to inject as environment variables. `${{ toJSON(secrets) }}` passes the repository's, minus `github_token`. Alpha.                                                                                                       |
-| `log-level`  | no       | `info`                   | Log verbosity for the deploy and for the deployed function: `error`, `warn`, `info`, `debug` or `trace`.                                                                                                                         |
 
 | Output  | Description                            |
 | ------- | -------------------------------------- |
