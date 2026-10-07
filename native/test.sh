@@ -119,6 +119,139 @@ EOF
 gcc /tmp/f.c -o /tmp/f && /tmp/f || fail "fopen/remove (rc=$?)"
 echo "fopen: ok"
 
+# glibc entry points and the newer hooks, from C. Built fortified on debian so the __*_2 / __*_chk
+# entry points are the ones actually called.
+cat > /tmp/g.c <<'EOF'
+#define _GNU_SOURCE
+#include <dirent.h>
+#include <dlfcn.h>
+#include <errno.h>
+#include <fcntl.h>
+#include <limits.h>
+#include <signal.h>
+#include <spawn.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/stat.h>
+#include <sys/statfs.h>
+#include <sys/statvfs.h>
+#include <sys/wait.h>
+#include <sys/xattr.h>
+#include <unistd.h>
+extern char **environ;
+
+static int spawn_ok(const char *path) {
+  pid_t pid; int st; char *argv[] = { "true", NULL };
+  if (posix_spawn(&pid, path, NULL, NULL, argv, environ)) return 0;
+  return waitpid(pid, &st, 0) == pid && WIFEXITED(st) && WEXITSTATUS(st) == 0;
+}
+
+int main(void) {
+  volatile int rd = O_RDONLY;                 /* non-constant: fortify routes open() to __open_2 */
+  volatile size_t sz = PATH_MAX;              /* non-constant: getcwd/readlink go to __*_chk */
+  char buf[PATH_MAX];
+
+  int fd = open("/vfs/g.txt", O_CREAT | O_WRONLY | O_TRUNC, 0644);
+  if (fd < 0 || write(fd, "glibc", 5) != 5 || close(fd)) return 1;
+  if ((fd = open("/vfs/g.txt", rd)) < 0) return 2;
+  close(fd);
+  if (!realpath("/vfs/g.txt", buf) || strcmp(buf, "/vfs/g.txt")) return 3;
+  if (chdir("/vfs") || !getcwd(buf, sz) || strcmp(buf, "/vfs")) return 4;
+  if (chdir("/")) return 4;
+  if (symlink("/vfs/g.txt", "/vfs/gl")) return 5;
+  ssize_t n = readlink("/vfs/gl", buf, sz);
+  if (n != 10 || strncmp(buf, "/vfs/g.txt", 10)) return 6;
+
+  /* xattrs, unless the filesystem under /tmp refuses user xattrs outright */
+  int plain = open("/tmp/plain", O_CREAT | O_WRONLY, 0644); close(plain);
+  if (setxattr("/tmp/plain", "user.k", "v", 1, 0) == 0) {
+    char v[16];
+    if (setxattr("/vfs/g.txt", "user.k", "v", 1, 0)) return 10;
+    if (getxattr("/vfs/g.txt", "user.k", v, sizeof v) != 1 || v[0] != 'v') return 11;
+    if (lgetxattr("/vfs/g.txt", "user.k", v, sizeof v) != 1) return 11;
+    if (listxattr("/vfs/g.txt", v, sizeof v) <= 0 || llistxattr("/vfs/g.txt", v, sizeof v) <= 0) return 12;
+    if (removexattr("/vfs/g.txt", "user.k")) return 13;
+    if (getxattr("/tmp/vfsstore/g.txt", "user.k", v, sizeof v) != -1 || errno != ENODATA) return 13;
+  } else if (errno != ENOTSUP) {
+    return 14;
+  } else {
+    puts("xattr: skipped (ENOTSUP under /tmp)");
+  }
+
+  /* posix_spawn a program stored under the mount, and one outside it */
+  if (system("cp /bin/true /vfs/true")) return 16;
+  if (!spawn_ok("/vfs/true")) return 17;
+  if (!spawn_ok("/bin/true")) return 18;
+
+#ifdef __GLIBC__
+  struct dirent **list;
+  if (scandirat(AT_FDCWD, "/vfs", &list, NULL, alphasort) < 2) return 15;
+
+  struct stat64 s64; struct statfs64 f64; struct statvfs64 v64; struct dirent64 **l64;
+  if (stat64("/vfs/g.txt", &s64) || s64.st_size != 5) return 20;
+  if (lstat64("/vfs/gl", &s64) || !S_ISLNK(s64.st_mode)) return 21;
+  if (fstatat64(AT_FDCWD, "/vfs/g.txt", &s64, 0)) return 22;
+  if (statfs64("/vfs", &f64) || statvfs64("/vfs", &v64)) return 23;
+  if (truncate64("/vfs/g.txt", 2) || stat64("/tmp/vfsstore/g.txt", &s64) || s64.st_size != 2) return 24;
+  if ((fd = creat64("/vfs/c.txt", 0644)) < 0) return 25;
+  close(fd);
+  FILE *f = fopen64("/vfs/c.txt", "w");
+  if (!f || !(f = freopen64("/vfs/c.txt", "r", f))) return 26;
+  fclose(f);
+  if (scandir64("/vfs", &l64, NULL, alphasort64) < 2) return 27;
+  char tmpl[] = "/vfs/tmpXXXXXX";
+  if ((fd = mkstemp64(tmpl)) < 0 || strncmp(tmpl, "/vfs/tmp", 8)) return 28;
+  close(fd); unlink(tmpl);
+
+  if (renameat2(AT_FDCWD, "/vfs/g.txt", AT_FDCWD, "/vfs/h.txt", RENAME_NOREPLACE)) return 30;
+  if (access("/tmp/vfsstore/h.txt", F_OK) || !access("/tmp/vfsstore/g.txt", F_OK)) return 31;
+  if (renameat2(AT_FDCWD, "/vfs/h.txt", AT_FDCWD, "/vfs/c.txt", RENAME_EXCHANGE) != -1 || errno != EINVAL) return 32;
+  if (access("/tmp/vfsstore/h.txt", F_OK)) return 33;
+
+  /* binaries built against glibc < 2.33 (official node) stat through the __xstat family; the
+   * loader binds their versioned references to the shim's hooks (checked with LD_DEBUG below) */
+  int (*xstat64)(int, const char *, struct stat64 *) = dlsym(RTLD_DEFAULT, "__xstat64");
+  int (*lxstat64)(int, const char *, struct stat64 *) = dlsym(RTLD_DEFAULT, "__lxstat64");
+  int (*xstat)(int, const char *, struct stat *) = dlsym(RTLD_DEFAULT, "__xstat");
+  struct stat xs;
+  if (!xstat64 || !lxstat64 || !xstat) return 35;
+  if (xstat64(1, "/vfs/h.txt", &s64) || s64.st_size != 2) return 36;
+  if (lxstat64(1, "/vfs/gl", &s64) || !S_ISLNK(s64.st_mode)) return 37;
+  if (xstat(1, "/vfs/h.txt", &xs) || xs.st_size != 2) return 38;
+
+  /* a fortified caller with an undersized buffer dies the way glibc makes it die */
+  pid_t pid = fork();
+  if (pid == 0) { volatile size_t big = PATH_MAX; char small[8]; getcwd(small, big); _exit(0); }
+  int st;
+  if (waitpid(pid, &st, 0) != pid || !WIFSIGNALED(st) || WTERMSIG(st) != SIGABRT) return 34;
+#endif
+  return 0;
+}
+EOF
+if [ "$FLAVOUR" = debian ]; then
+  gcc -O2 -D_FORTIFY_SOURCE=2 /tmp/g.c -o /tmp/g
+  for sym in __open_2 __realpath_chk __getcwd_chk __readlink_chk; do
+    nm -D /tmp/g | grep -q " $sym" || fail "test caller does not import $sym"
+  done
+else
+  gcc -O2 /tmp/g.c -o /tmp/g
+fi
+/tmp/g || fail "glibc entry points / new hooks (rc=$?)"
+if [ "$FLAVOUR" = debian ]; then
+  # node is built against an older glibc: its stat and lock calls must bind to the shim
+  for sym in __xstat64 __lxstat64 fcntl64; do
+    LD_DEBUG=bindings node -e 0 2>&1 | grep -q "binding file node .* to $SHIM .*\`$sym'" ||
+      fail "node's $sym does not bind to the shim"
+  done
+fi
+rm -f /vfs/h.txt /vfs/c.txt /vfs/gl /vfs/g.txt /vfs/true
+echo "hooks: ok"
+
+# the new hooks leave paths outside every mount alone
+echo outside > /tmp/outside.a
+mv /tmp/outside.a /tmp/outside.b && [ "$(cat /tmp/outside.b)" = outside ] || fail "mv outside the mount"
+
 # off switch: without the preload, /vfs does not exist
 env -u LD_PRELOAD sh -c '[ ! -e /vfs ]' || fail "/vfs visible without preload"
 env -u LD_PRELOAD sh -c '[ -d /tmp/vfsstore ]' || fail "backing dir missing"

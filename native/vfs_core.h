@@ -183,6 +183,11 @@ static int unxlate(char *buf, size_t bufsz) {
     static typeof(&name) real_; \
     if (!real_) real_ = (typeof(&name))dlsym(RTLD_NEXT, #name)
 
+/* REAL for a function with no public prototype (glibc's fortify entry points). */
+#define REAL_T(name, type) \
+    static type real_; \
+    if (!real_) real_ = (type)dlsym(RTLD_NEXT, #name)
+
 /* ---- the supervisor's say ----------------------------------------------------
  * Each path operation is walk, operation, clunk. The walk already runs the
  * store's stat hook for the path; lopen runs fetch (read), open (write) or
