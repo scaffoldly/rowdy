@@ -472,9 +472,7 @@ export class P9Server {
         }
         const vpath = this.vpath(fid);
         let st = await this.lstat(fid);
-        if (st.isDirectory()) {
-          fid.dir = await this.entries(fid); // entries present before the client lists them
-        } else {
+        if (!st.isDirectory()) {
           if (!(req.flags & O_TRUNC)) {
             await fid.mount.adapter.fetch(vpath); // contents present before the first read
           }
@@ -583,8 +581,10 @@ export class P9Server {
 
       case T.Treaddir: {
         const fid = this.fid(session, req.fid);
+        // The store is listed on the first readdir of the fid, not at open: a directory opened to
+        // be fsynced costs nothing. A rewind re-reads the directory, not the store.
         if (!fid.dir || req.offset === 0n) {
-          fid.dir = await this.entries(fid, !!fid.dir); // a rewind re-reads the directory, not the store
+          fid.dir = await this.entries(fid, !!fid.dir);
         }
         const rest = fid.dir.filter((e) => e.offset > req.offset);
         return R.readdir(req.tag, rest, Math.min(req.count, session.msize - 11));

@@ -31,7 +31,7 @@ static uint32_t g_nextfid = 1;  /* 0 is never handed out; NOFID is 0xffffffff */
 #define P9_MAXWELEM 16
 
 enum {
-    Rlerror = 7, Tlopen = 12, Tfsync = 50, Tlock = 52, Tmkdir = 72,
+    Rlerror = 7, Tlopen = 12, Treaddir = 40, Tfsync = 50, Tlock = 52, Tmkdir = 72,
     Trenameat = 74, Tunlinkat = 76, Tversion = 100, Tattach = 104, Twalk = 110, Tclunk = 120,
 };
 
@@ -255,6 +255,17 @@ static int p9_clunk(uint32_t fid) {
 static int p9_fsync(uint32_t fid) {
     unsigned char reply[16]; struct fid_args a = { fid };
     return p9_call(Tfsync, fill_fid, &a, reply, sizeof reply);
+}
+
+/* Treaddir from offset 0 for one entry's worth: the server lists the directory into the
+ * backing store on the first readdir, and the entries themselves are read there. */
+#define READDIR_REPLY (11 + 24 + NAME_MAX + 1)
+static void fill_readdir(struct p9buf *b, void *v) {
+    fill_fid(b, v); put64(b, 0); put32(b, READDIR_REPLY - 11);
+}
+static int p9_readdir(uint32_t fid) {
+    unsigned char reply[READDIR_REPLY]; struct fid_args a = { fid };
+    return p9_call(Treaddir, fill_readdir, &a, reply, sizeof reply);
 }
 
 struct lopen_args { uint32_t fid, flags; };

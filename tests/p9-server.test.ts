@@ -233,7 +233,10 @@ describe('P9Server', () => {
       writeFileSync(join(dir, 's3', `file-${String(i).padStart(2, '0')}.txt`), 'x');
     }
     const { fid } = await client.walk(root, []);
+    s3.calls = [];
     await client.lopen(fid, O_RDONLY);
+    await client.fsync(fid);
+    expect(s3.calls.filter((c) => c.startsWith('list'))).toEqual([]); // open + fsync of a directory: no listing
     const page = await client.readdir(fid, 0n, 300);
     expect(page.length).toBeGreaterThan(2);
     expect(page.length).toBeLessThan(44);
@@ -249,7 +252,7 @@ describe('P9Server', () => {
       ].sort()
     );
     expect(all.find((e) => e.name === 'db')?.qid.type).toBe(QTDIR);
-    expect(s3.calls.filter((c) => c.startsWith('list'))).toEqual(['list /s3']); // once, at lopen; rewinds re-read the directory only
+    expect(s3.calls.filter((c) => c.startsWith('list'))).toEqual(['list /s3']); // once, at the first readdir; rewinds re-read the directory only
     await client.clunk(fid);
   });
 

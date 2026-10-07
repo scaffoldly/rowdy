@@ -208,11 +208,13 @@ static int walk_parent(const struct vfs_mount *m, const char *rel, uint32_t *fid
     return walk_to(m, parent, fid);
 }
 
-/* Walk, lopen with `flags`, clunk: the store populates (or registers) `rel`. */
+/* Walk, lopen with `flags`, clunk: the store populates (or registers) `rel`.
+ * A directory is listed by readdir, not by open: fsync(dirfd) must not cost a listing. */
 static int touch(const struct vfs_mount *m, const char *rel, uint32_t flags) {
     uint32_t fid;
     if (walk_to(m, rel, &fid) < 0) return -1;
     int r = p9_lopen(fid, flags);
+    if (r == 0 && (flags & O_DIRECTORY)) r = p9_readdir(fid);
     int e = errno;
     p9_clunk(fid);
     errno = e;
@@ -283,6 +285,7 @@ struct vfs_file {
     int     *refs;          /* shared by every descriptor dup'd from this one; NULL when not ours */
     unsigned char wlock;    /* 1 while the program holds a write lock (fcntl F_WRLCK / flock LOCK_EX),
                              * i.e. while the supervisor holds the lease */
+    unsigned char rlock;    /* 1 while the program holds a read lock: the copy was made current once */
 };
 
 #define FD_MAX 65536
@@ -296,6 +299,7 @@ static void fd_track(int fd, uint32_t fid) {
     g_files[fd].fid = fid;
     g_files[fd].refs = refs;
     g_files[fd].wlock = 0;
+    g_files[fd].rlock = 0;
     pthread_mutex_unlock(&g_lock);
 }
 
@@ -307,6 +311,7 @@ static void fd_copy(int from, int to) {
         (*g_files[from].refs)++;
         g_files[to] = g_files[from];
         g_files[to].wlock = 0;
+        g_files[to].rlock = 0;
     } else {
         g_files[to].refs = NULL;
     }
@@ -380,6 +385,7 @@ static int flush_fd(int fd, int take) {
         if (last) free(g_files[fd].refs);
         g_files[fd].refs = NULL;
         g_files[fd].wlock = 0;
+        g_files[fd].rlock = 0;
     }
     pthread_mutex_unlock(&g_lock);
     if (!take) return p9_fsync(fid);
@@ -387,8 +393,9 @@ static int flush_fd(int fd, int take) {
 }
 
 /* Forward the program's advisory lock transitions to the supervisor:
- *   read lock   -> Tlock RDLCK (the store makes the local copy current), unless
- *                  this fd already holds the write lock (a downgrade, not a new read)
+ *   read lock   -> Tlock RDLCK (the store makes the local copy current), once per
+ *                  held read lock (SQLite locks two byte ranges for one SHARED), and
+ *                  not while this fd holds the write lock (a downgrade, not a new read)
  *   write lock  -> Tlock WRLCK (the store takes the lease; BLOCKED is EAGAIN)
  *   unlock      -> Tlock UNLCK (persist, give the lease back), only after a write lock
  * Plain POSIX semantics, no knowledge of any program. Returns 0 to proceed with
@@ -403,8 +410,12 @@ static int lock_transition(int fd, int type) {
             if (r == 0) g_files[fd].wlock = 1;
         }
     } else if (type == F_RDLCK) {
-        if (!g_files[fd].wlock) r = p9_lock(fid, P9_LOCK_RDLCK);
+        if (!g_files[fd].wlock && !g_files[fd].rlock) {
+            r = p9_lock(fid, P9_LOCK_RDLCK);
+            if (r == 0) g_files[fd].rlock = 1;
+        }
     } else if (type == F_UNLCK) {
+        g_files[fd].rlock = 0;
         if (g_files[fd].wlock) {
             g_files[fd].wlock = 0;
             r = p9_lock(fid, P9_LOCK_UNLCK);
