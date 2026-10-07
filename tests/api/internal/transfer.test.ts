@@ -157,6 +157,46 @@ describe('transfers', () => {
           url: 'https://mirror.gcr.io/v2/library/ubuntu/manifests/noble-20251001',
         },
       },
+      {
+        image: 'ubuntu:noble@sha256:4cb780d50443fc4463f1f9360c03ca46512e4fdd8fd97c5ce7e69c8758924575',
+        normalized: {
+          image:
+            'mirror.gcr.io/library/ubuntu:noble@sha256:4cb780d50443fc4463f1f9360c03ca46512e4fdd8fd97c5ce7e69c8758924575',
+          registry: 'mirror.gcr.io',
+          slug: 'library/ubuntu',
+          namespace: 'library',
+          name: 'ubuntu',
+          digest: 'sha256:4cb780d50443fc4463f1f9360c03ca46512e4fdd8fd97c5ce7e69c8758924575',
+          tags: ['noble'],
+          url: 'https://mirror.gcr.io/v2/library/ubuntu/manifests/sha256:4cb780d50443fc4463f1f9360c03ca46512e4fdd8fd97c5ce7e69c8758924575',
+        },
+      },
+      {
+        image: 'ghcr.io/cnuss/nuss-io:rowdy@sha256:4cb780d50443fc4463f1f9360c03ca46512e4fdd8fd97c5ce7e69c8758924575',
+        normalized: {
+          image: 'ghcr.io/cnuss/nuss-io:rowdy@sha256:4cb780d50443fc4463f1f9360c03ca46512e4fdd8fd97c5ce7e69c8758924575',
+          registry: 'ghcr.io',
+          slug: 'cnuss/nuss-io',
+          namespace: 'cnuss',
+          name: 'nuss-io',
+          digest: 'sha256:4cb780d50443fc4463f1f9360c03ca46512e4fdd8fd97c5ce7e69c8758924575',
+          tags: ['rowdy'],
+          url: 'https://ghcr.io/v2/cnuss/nuss-io/manifests/sha256:4cb780d50443fc4463f1f9360c03ca46512e4fdd8fd97c5ce7e69c8758924575',
+        },
+      },
+      {
+        image: 'localhost:5000/acme/app:v1@sha256:4cb780d50443fc4463f1f9360c03ca46512e4fdd8fd97c5ce7e69c8758924575',
+        normalized: {
+          image: 'localhost:5000/acme/app:v1@sha256:4cb780d50443fc4463f1f9360c03ca46512e4fdd8fd97c5ce7e69c8758924575',
+          registry: 'localhost:5000',
+          slug: 'acme/app',
+          namespace: 'acme',
+          name: 'app',
+          digest: 'sha256:4cb780d50443fc4463f1f9360c03ca46512e4fdd8fd97c5ce7e69c8758924575',
+          tags: ['v1'],
+          url: 'https://localhost:5000/v2/acme/app/manifests/sha256:4cb780d50443fc4463f1f9360c03ca46512e4fdd8fd97c5ce7e69c8758924575',
+        },
+      },
     ];
 
     tests.forEach(({ image, normalized }) => {
