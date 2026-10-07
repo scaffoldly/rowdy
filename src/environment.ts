@@ -599,6 +599,7 @@ export class Environment implements ILoggable {
         owner: process.env.AWS_LAMBDA_LOG_STREAM_NAME,
         backing,
         log: (message, params) => this.log.child('vfs').debug(message, Environment.flat(params)),
+        trace: (message, params) => this.log.child('vfs').trace(message, Environment.flat(params)),
       });
     }
     return new LocalAdapter();
