@@ -40,7 +40,7 @@ inputs:
     required: false
     default: ""
   secrets:
-    description: "Secrets (alpha feature)."
+    description: "Environment variables: NAME=value lines and JSON objects such as the output of toJSON(secrets), in any mix."
     required: false
     default: ""
   volumes:
