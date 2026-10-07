@@ -124,7 +124,7 @@ describe('aws lambda runtime', () => {
           containers[0]!.imageRef.split('@sha256:')[1]
         );
         expect(containers[0]!.annotations['com.amazonaws.lambda.ImageConfigResponse']).toBe(
-          `{"ImageConfig":{"Command":["${command}","${args.join('","')}"],"EntryPoint":["rowdy","--"]}}`
+          `{"ImageConfig":{"Command":["${command}","${args.join('","')}"],"EntryPoint":["/usr/local/bin/rowdy","--"]}}`
         );
         expect(containers[0]!.labels['random-id']).toEqual(labels['random-id']);
         expect(containers[0]!.labels['run.rowdy.user.agent']).toBeDefined();

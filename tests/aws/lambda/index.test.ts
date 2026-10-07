@@ -7,9 +7,12 @@ import {
   isTransient,
   LambdaFunction,
   PROPAGATION,
+  ROWDY_BIN,
   waitForSuccess,
 } from '../../../src/aws/lambda/index';
 import { inspect } from 'util';
+import { readFileSync } from 'fs';
+import { join } from 'path';
 import { lastValueFrom } from 'rxjs';
 import { Statement } from 'aws-lambda';
 
@@ -165,7 +168,10 @@ describe('aws lambda', () => {
 
           // Status
           expect(fn.Status.Configuration?.MemorySize).toBe(256);
-          expect(fn.Status.Configuration?.ImageConfigResponse?.ImageConfig?.EntryPoint).toEqual(['rowdy', '--']);
+          expect(fn.Status.Configuration?.ImageConfigResponse?.ImageConfig?.EntryPoint).toEqual([
+            '/usr/local/bin/rowdy',
+            '--',
+          ]);
           expect(fn.Status.Configuration?.ImageConfigResponse?.ImageConfig?.Command).toEqual([
             'python3',
             '-m',
@@ -575,7 +581,7 @@ describe('aws lambda working directory', () => {
       State: 'Active',
       LastUpdateStatus: 'Successful',
       MemorySize: 128,
-      ImageConfigResponse: { ImageConfig: { EntryPoint: ['rowdy', '--'], Command: ['/app-binary'] } },
+      ImageConfigResponse: { ImageConfig: { EntryPoint: [ROWDY_BIN, '--'], Command: ['/app-binary'] } },
       Environment: { Variables: {} },
     };
     const sent: Sent[] = [];
@@ -602,5 +608,16 @@ describe('aws lambda working directory', () => {
     const input = await deployConfiguration(undefined);
     expect((input.ImageConfig as Record<string, unknown>).WorkingDirectory).toBe('/');
     expect((input.Environment as { Variables: Record<string, string> }).Variables.ROWDY_WORKDIR).toBe('/');
+  });
+});
+
+describe('aws lambda entrypoint', () => {
+  it('starts the binary by the absolute path the Dockerfile copies it to', () => {
+    const dockerfile = readFileSync(join(__dirname, '../../../Dockerfile'), 'utf8');
+    expect(dockerfile).toMatch(new RegExp(`^COPY --from=build /work/bin/rowdy ${ROWDY_BIN}$`, 'm'));
+    expect(dockerfile).toMatch(new RegExp(`^ENTRYPOINT \\[ "${ROWDY_BIN}" \\]$`, 'm'));
+
+    const fn = new LambdaFunction('Container', new LambdaImageService(new Environment(new Logger())));
+    expect(fn['EntryPoint'].getValue()).toEqual([ROWDY_BIN]);
   });
 });
