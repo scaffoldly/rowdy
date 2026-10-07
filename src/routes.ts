@@ -490,6 +490,20 @@ export class Volume {
     return options;
   }
 
+  /** The specs in a `--volumes` value: a YAML list, or one spec per line with `#` comments. */
+  static list(value: string): Array<string> {
+    let parsed: unknown;
+    try {
+      parsed = YAML.parse(value);
+    } catch {
+      parsed = undefined;
+    }
+    const entries = Array.isArray(parsed)
+      ? parsed.map((entry) => String(entry))
+      : value.split(/\r?\n/).filter((line) => !line.trim().startsWith('#'));
+    return entries.map((entry) => entry.trim()).filter(Boolean);
+  }
+
   static parse(spec: string): Volume {
     const original = spec;
     spec = spec.trim();
