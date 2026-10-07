@@ -57,10 +57,40 @@ export abstract class HttpProxy<P extends Pipeline> extends Proxy<P, HttpRespons
 
   @Trace(log)
   override invoke(): Observable<HttpResponse> {
-    return race([
+    const cors = this.pipeline.routes.intoCors(this.source.uri.pathname);
+    const origin = this.header('origin');
+
+    if (cors && this.method === 'OPTIONS' && origin && this.header('access-control-request-method')) {
+      return of(
+        new RowdyHttpResponse(this.environment)
+          .withStatus(204)
+          .withHeaders(
+            HttpHeaders.from(
+              cors.preflight(
+                origin,
+                this.header('access-control-request-method'),
+                this.header('access-control-request-headers')
+              )
+            )
+          )
+      );
+    }
+
+    const response$ = race([
       new LocalHttpResponse(this.environment).handle(this),
       new RowdyHttpResponse(this.environment).handle(this),
     ]).pipe(catchError((error) => new RowdyHttpResponse(this.environment).catch(error)));
+
+    if (!cors) {
+      return response$;
+    }
+
+    return response$.pipe(map((response) => response.withCors(cors.response(origin))));
+  }
+
+  private header(name: string): string | undefined {
+    const value = this.headers.get(name);
+    return Array.isArray(value) ? value.join(', ') : value;
   }
 
   override repr(): string {
@@ -209,6 +239,12 @@ export class HttpHeaders implements ILoggable {
     return this;
   }
 
+  without(predicate: (key: string) => boolean): HttpHeaders {
+    const instance = new HttpHeaders();
+    instance.headers = Object.fromEntries(Object.entries(this.headers).filter(([key]) => !predicate(key)));
+    return instance;
+  }
+
   with(key: string, value: string | string[] | undefined | null): HttpHeaders {
     const instance = HttpHeaders.from(this.headers);
     instance.override(key, value);
@@ -279,6 +315,23 @@ export abstract class HttpResponse implements ILoggable {
 
   withHeaders(headers: HttpHeaders): this {
     this._headers = headers;
+    return this;
+  }
+
+  /** Replaces every Access-Control-* header with `cors` and adds its Vary to the upstream's. */
+  withCors(cors: Record<string, string>): this {
+    const { vary, ...headers } = cors;
+    this._headers = this._headers.without((key) => key.startsWith('access-control-'));
+    for (const [key, value] of Object.entries(headers)) {
+      this._headers.override(key, value);
+    }
+    if (vary) {
+      const existing = this._headers.get('vary');
+      this._headers.override(
+        'vary',
+        existing ? `${Array.isArray(existing) ? existing.join(', ') : existing}, ${vary}` : vary
+      );
+    }
     return this;
   }
 

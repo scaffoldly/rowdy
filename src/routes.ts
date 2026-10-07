@@ -26,9 +26,16 @@ import { ABORT } from './abort';
 import { Rowdy } from './api';
 import { ApiVersion, ApiSchema } from './api/types';
 import { join } from 'path';
+import { Cors, CorsPaths } from './cors';
 
 export type RoutePaths = { [key: string]: string | undefined };
-export type RoutesSpec = { paths?: RoutePaths; default?: string; crontab?: string[]; volumes?: string[] };
+export type RoutesSpec = {
+  paths?: RoutePaths;
+  default?: string;
+  crontab?: string[];
+  volumes?: string[];
+  cors?: CorsPaths;
+};
 
 export type RoutesSchema = ApiSchema<RoutesSpec, undefined>;
 
@@ -542,6 +549,7 @@ export class Routes implements IRoutes, ILoggable {
   readonly rules: Array<RouteRule> = [];
   readonly crontab: Array<string> = [];
   readonly volumes: Array<string> = [];
+  readonly cors: CorsPaths = {};
 
   private constructor() {}
 
@@ -613,7 +621,7 @@ export class Routes implements IRoutes, ILoggable {
     );
   }
 
-  private static readonly SPEC_KEYS: Array<keyof RoutesSpec> = ['default', 'paths', 'crontab', 'volumes'];
+  private static readonly SPEC_KEYS: Array<keyof RoutesSpec> = ['default', 'paths', 'crontab', 'volumes', 'cors'];
 
   // A document with no apiVersion / kind / spec, but at least one spec field, is a bare spec.
   private static isSpec(obj: object): obj is RoutesSpec {
@@ -644,7 +652,8 @@ export class Routes implements IRoutes, ILoggable {
       .withPaths(routes.spec?.paths || {})
       .withDefault(routes.spec?.default || '')
       .withCrontab(routes.spec?.crontab || [])
-      .withVolumes(routes.spec?.volumes || []);
+      .withVolumes(routes.spec?.volumes || [])
+      .withCors(routes.spec?.cors || {});
   }
 
   static fromPath(path: string): Routes {
@@ -745,6 +754,24 @@ export class Routes implements IRoutes, ILoggable {
     return this;
   }
 
+  // DEVNOTE: Validated on the way in, like volumes. A later entry for the same pattern replaces
+  // the earlier one but keeps its position.
+  withCors(cors: CorsPaths): this {
+    if (!cors || typeof cors !== 'object' || Array.isArray(cors)) {
+      throw new Error(`Invalid cors, expected a map of path patterns to 'none' or a policy`);
+    }
+    Object.entries(cors).forEach(([pattern, spec]) => {
+      try {
+        pathToRegexp(pattern);
+      } catch (e) {
+        throw new Error(`Invalid CORS path '${pattern}': ${e instanceof Error ? e.message : String(e)}`);
+      }
+      const policy = Cors.parse(pattern, spec);
+      this.cors[pattern] = policy ? policy.spec : 'none';
+    });
+    return this;
+  }
+
   withPaths(paths: RoutePaths): this {
     Object.entries(paths).forEach(([path, target]) => {
       if (target) {
@@ -787,6 +814,7 @@ export class Routes implements IRoutes, ILoggable {
         default: this.intoDefault(),
         crontab: this.crontab.length ? this.crontab : undefined,
         volumes: this.volumes.length ? this.volumes : undefined,
+        cors: Object.keys(this.cors).length ? this.cors : undefined,
       },
       status: undefined,
     };
@@ -828,6 +856,13 @@ export class Routes implements IRoutes, ILoggable {
 
   intoVolumes(): Array<Volume> {
     return this.volumes.map((spec) => Volume.parse(spec));
+  }
+
+  /** The CORS policy for `path`: the first matching pattern's, or undefined to leave CORS to the upstream. */
+  intoCors(path: string): Cors | undefined {
+    path = URI.from(`no://thing${path}`).pathname;
+    const pattern = Object.keys(this.cors).find((pattern) => pathMatch(pattern)(path));
+    return pattern ? Cors.parse(pattern, this.cors[pattern]) : undefined;
   }
 
   intoURI(path: string): URI {
@@ -912,6 +947,7 @@ export class Routes implements IRoutes, ILoggable {
   merge(other: Routes): this {
     this.withCrontab(other.crontab);
     this.withVolumes(other.volumes);
+    this.withCors(other.cors);
     other.rules.forEach((rule) => {
       rule.backendRefs?.forEach((ref) => {
         rule.matches?.forEach((match) => {
@@ -940,6 +976,6 @@ export class Routes implements IRoutes, ILoggable {
   }
 
   repr(): string {
-    return `Routes(version=${this.version}, rules=${JSON.stringify(this.rules)}, crontab=${JSON.stringify(this.crontab)})`;
+    return `Routes(version=${this.version}, rules=${JSON.stringify(this.rules)}, crontab=${JSON.stringify(this.crontab)}, cors=${JSON.stringify(this.cors)})`;
   }
 }

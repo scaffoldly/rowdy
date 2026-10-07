@@ -108,6 +108,28 @@ came from one of the deployment's own schedules. A response `>= 400` fails the i
 Syntax, EventBridge mapping, deployer permissions, trusting the header, and a worked example:
 [docs/crontab.md](docs/crontab.md).
 
+## CORS
+
+`spec.cors` maps path patterns to `none` or a CORS policy. The first pattern that matches wins,
+and a path no pattern matches is treated as `none`:
+
+```yaml
+spec:
+  default: 'http://localhost:3000/'
+  cors:
+    '/oauth{/*path}': none
+    '/api{/*path}':
+      origins: ['https://app.example']
+      credentials: true
+```
+
+With `none`, rowdy leaves the app's own CORS headers alone. With a policy, rowdy answers
+preflights itself and replaces the app's `Access-Control-*` headers. The Function URL is deployed
+with no CORS configuration.
+
+Policy keys, `*` with credentials, and migrating from the old any-origin default:
+[docs/cors.md](docs/cors.md).
+
 ## Volumes (experimental)
 
 `spec.volumes` gives the app a writable, persistent directory that is not part of the image. Each

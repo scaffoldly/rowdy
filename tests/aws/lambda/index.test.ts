@@ -611,6 +611,45 @@ describe('aws lambda working directory', () => {
   });
 });
 
+describe('aws lambda function url', () => {
+  const FUNCTION_ARN = 'arn:aws:lambda:us-east-1:123456789012:function:acme_app';
+
+  type Sent = { name: string; input: Record<string, unknown> };
+
+  const deployUrl = async (exists: boolean): Promise<Sent[]> => {
+    const fn = new LambdaFunction('Container', new LambdaImageService(new Environment(new Logger())));
+    fn['FunctionArn'].next(FUNCTION_ARN);
+    fn['AliasArn'].next(`${FUNCTION_ARN}:sha256-abc`);
+
+    const sent: Sent[] = [];
+    const send = (command: { constructor: { name: string }; input: Record<string, unknown> }): Promise<unknown> => {
+      sent.push({ name: command.constructor.name, input: command.input });
+      if (command.constructor.name === 'UpdateFunctionUrlConfigCommand' && !exists) {
+        return Promise.reject(new Error('ResourceNotFoundException'));
+      }
+      return Promise.resolve({ FunctionUrl: 'https://abc.lambda-url.us-east-1.on.aws/' });
+    };
+    (fn['lambda'] as unknown as { send: typeof send }).send = send;
+
+    await lastValueFrom(fn['prepare']().updates[3]!);
+    return sent;
+  };
+
+  it('clears the CORS config on an existing function url, leaving CORS to the routes', async () => {
+    const sent = await deployUrl(true);
+    const update = sent.find(({ name }) => name === 'UpdateFunctionUrlConfigCommand')!;
+    expect(update.input.Qualifier).toBe('sha256-abc');
+    expect(update.input.Cors).toEqual({});
+  });
+
+  it('creates a function url without a CORS config', async () => {
+    const sent = await deployUrl(false);
+    const create = sent.find(({ name }) => name === 'CreateFunctionUrlConfigCommand')!;
+    expect(create.input.Qualifier).toBe('sha256-abc');
+    expect(create.input).not.toHaveProperty('Cors');
+  });
+});
+
 describe('aws lambda entrypoint', () => {
   it('starts the binary by the absolute path the Dockerfile copies it to', () => {
     const dockerfile = readFileSync(join(__dirname, '../../../Dockerfile'), 'utf8');

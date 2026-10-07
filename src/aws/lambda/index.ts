@@ -1201,14 +1201,9 @@ export class LambdaFunction implements Logger {
                 Qualifier,
                 AuthType: 'NONE',
                 InvokeMode: 'RESPONSE_STREAM',
-                Cors: {
-                  AllowCredentials: true,
-                  AllowHeaders: ['*'],
-                  AllowMethods: ['*'],
-                  AllowOrigins: ['*'],
-                  ExposeHeaders: ['*'],
-                  MaxAge: 3600,
-                },
+                // DEVNOTE: Function URL CORS is per URL and Lambda appends it to the app's own CORS
+                // headers. CORS is per route in the manifest instead; an empty config clears it.
+                Cors: {},
               })
             )
             .catch(() =>
@@ -1218,14 +1213,6 @@ export class LambdaFunction implements Logger {
                   Qualifier,
                   InvokeMode: 'RESPONSE_STREAM',
                   AuthType: 'NONE',
-                  Cors: {
-                    AllowCredentials: true,
-                    AllowOrigins: ['*'],
-                    AllowMethods: ['*'],
-                    AllowHeaders: ['*'],
-                    ExposeHeaders: ['*'],
-                    MaxAge: 3600,
-                  },
                 })
               )
             )
