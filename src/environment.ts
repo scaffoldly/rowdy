@@ -512,7 +512,7 @@ export class Environment implements ILoggable {
     return this;
   }
 
-  @Trace
+  @Trace(log)
   public poll(): Observable<Result<Pipeline>> {
     let delay = 0;
 

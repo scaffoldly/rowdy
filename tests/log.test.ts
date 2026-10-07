@@ -1,4 +1,5 @@
-import { Logger, mask, maskEnv, maskHeaders, maskJson, maskQuery, maskUrl } from '../src/log';
+import { Observable, of, throwError, race, timer, map, NEVER } from 'rxjs';
+import { ILoggable, Logger, mask, maskEnv, maskHeaders, maskJson, maskQuery, maskUrl, Trace } from '../src/log';
 
 describe('log masking', () => {
   describe('mask', () => {
@@ -334,5 +335,104 @@ describe('Logger', () => {
     const log = new Logger();
     expect(log.child('vfs')).toBe(log.child('vfs'));
     expect(log.child('vfs').component).toBe('vfs');
+  });
+
+  describe('@Trace', () => {
+    const log = new Logger().child('lambda');
+    class Arg implements ILoggable {
+      constructor(private readonly n: number) {}
+      repr(): string {
+        return `Arg(${this.n})`;
+      }
+    }
+    class Thing {
+      @Trace(log)
+      into(arg: Arg): Observable<string> {
+        return of(`got ${arg.repr()}`);
+      }
+
+      @Trace(log)
+      fail(): Observable<string> {
+        return throwError(() => new Error('boom'));
+      }
+
+      @Trace(log)
+      slow(): Observable<string> {
+        return NEVER;
+      }
+
+      @Trace(log)
+      fast(): Observable<string> {
+        return timer(1).pipe(map(() => 'fast'));
+      }
+    }
+    const duration = expect.stringMatching(/^\d+\.\d\d ms$/);
+
+    it('is silent below trace', () => {
+      new Logger().withLevel('debug');
+      expect(new Thing().into(new Arg(1)).subscribe()).toBeDefined();
+      expect(text()).toEqual([]);
+    });
+
+    it('logs the call, each emission and the completion, with the component and the duration', (done) => {
+      new Logger().withLevel('trace');
+      new Thing().into(new Arg(1)).subscribe({
+        complete: () => {
+          expect(text()).toEqual([
+            'TRACE Lambda Thing.into Called Args: [Arg(1)]',
+            expect.stringMatching(/^TRACE Lambda Thing.into Emitted Duration: \d+\.\d\d ms Value: got Arg\(1\)$/),
+            expect.stringMatching(/^TRACE Lambda Thing.into Completed Duration: \d+\.\d\d ms Emissions: 1$/),
+          ]);
+          done();
+        },
+      });
+    });
+
+    it('logs a failure with the error', (done) => {
+      new Logger().withLevel('trace');
+      new Thing().fail().subscribe({
+        error: () => {
+          expect(text()[0]).toBe('TRACE Lambda Thing.fail Called');
+          expect(text()[1]).toMatch(
+            /^TRACE Lambda Thing.fail Failed Duration: \d+\.\d\d ms Emissions: 0 Error: Error: boom/
+          );
+          expect(text()).toHaveLength(2);
+          done();
+        },
+      });
+    });
+
+    it('logs the loser of a race as unsubscribed', (done) => {
+      new Logger().withLevel('trace');
+      const thing = new Thing();
+      race([thing.slow(), thing.fast()]).subscribe({
+        complete: () => {
+          expect(text()).toEqual([
+            'TRACE Lambda Thing.slow Called',
+            'TRACE Lambda Thing.fast Called',
+            expect.stringMatching(/^TRACE Lambda Thing.fast Emitted Duration: .* Value: fast$/),
+            expect.stringMatching(/^TRACE Lambda Thing.slow Unsubscribed Duration: .* Emissions: 0$/),
+            expect.stringMatching(/^TRACE Lambda Thing.fast Completed Duration: .* Emissions: 1$/),
+          ]);
+          done();
+        },
+      });
+    });
+
+    it('is JSON like any other line', (done) => {
+      new Logger().withLevel('trace').withFormat('json');
+      new Thing().into(new Arg(2)).subscribe({
+        complete: () => {
+          expect(JSON.parse(text()[1]!)).toEqual({
+            level: 'trace',
+            component: 'lambda',
+            msg: 'Thing.into Emitted',
+            duration,
+            value: 'got Arg(2)',
+          });
+          done();
+        },
+      });
+    });
   });
 });

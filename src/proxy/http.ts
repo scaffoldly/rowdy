@@ -55,7 +55,7 @@ export abstract class HttpProxy<P extends Pipeline> extends Proxy<P, HttpRespons
     return httpsAgent;
   }
 
-  @Trace
+  @Trace(log)
   override invoke(): Observable<HttpResponse> {
     return race([
       new LocalHttpResponse(this.environment).handle(this),
@@ -333,7 +333,7 @@ class RowdyHttpResponse extends HttpResponse {
     );
   }
 
-  @Trace
+  @Trace(log)
   override handle<P extends Pipeline>(proxy: HttpProxy<P>): Observable<HttpResponse> {
     if (proxy.uri.protocol !== 'rowdy:') {
       return NEVER;
@@ -453,7 +453,7 @@ class LocalHttpResponse extends HttpResponse {
     super(environment, 404, HttpHeaders.from({}), [], Readable.from(''));
   }
 
-  @Trace
+  @Trace(log)
   override handle<P extends Pipeline>(proxy: HttpProxy<P>): Observable<HttpResponse> {
     if (proxy.uri.protocol !== 'http:' && proxy.uri.protocol !== 'https:') {
       return NEVER;
