@@ -793,7 +793,9 @@ export class S3Adapter implements VfsAdapter {
     }
     const lockKey = this.lockKey(key);
     const deadline = Date.now() + (this.options.lockWaitMs ?? 5000);
-    let delay = 50;
+    // A holder keeps the lease for one commit, ~100 ms. Polling settles near that with jitter so
+    // waiters do not retry in step; doubling to a second here made the queue cost ~1 s per writer.
+    let delay = 25;
     for (;;) {
       // 412: someone holds it. 409: we collided with another taker inside S3; treat it the same
       // way (read the lease, back off, retry) rather than as an I/O error.
@@ -823,8 +825,8 @@ export class S3Adapter implements VfsAdapter {
       if (Date.now() >= deadline) {
         throw VfsError.code('EAGAIN', `${path}: locked by ${current?.body.owner ?? 'another writer'}`);
       }
-      await backoff(delay);
-      delay = Math.min(delay * 2, 1000);
+      await backoff(delay + Math.random() * delay);
+      delay = Math.min(delay * 2, 100);
     }
   }
 
