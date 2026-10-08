@@ -375,6 +375,13 @@ if grep -q "/tmp/notvfs" /tmp/ops.log 2>/dev/null; then
   fail "logged non-/vfs path"
 fi
 
+# dup2 onto a descriptor open on a VFS file closes that file: it is flushed then, while the
+# process lives, not when its session ends
+rm -f /tmp/ops.log
+sh -c 'exec 3>/vfs/dupped; echo x >&3; exec 3>/dev/null; grep -q "flush /vfs/dupped" /tmp/ops.log' ||
+  fail "dup2 over a VFS descriptor did not flush: $(tr '\n' ' ' < /tmp/ops.log)"
+rm -f /vfs/dupped
+
 # a second mount reaches the supervisor under its own virtual path
 rm -f /tmp/ops.log
 env VFS_MOUNTS=/vfs=/tmp/vfsstore:/b=/tmp/store/b sh -c 'echo x > /b/reported' || fail "mounts: write to second mount with a supervisor"
