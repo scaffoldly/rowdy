@@ -185,6 +185,65 @@ int main(void) {
   if (!spawn_ok("/vfs/true")) return 17;
   if (!spawn_ok("/bin/true")) return 18;
 
+  /* euidaccess / eaccess (GNU test -r) */
+  if (euidaccess("/vfs/g.txt", R_OK) || eaccess("/vfs/g.txt", R_OK)) return 50;
+
+  /* get_current_dir_name never shows the backing directory, with or without a matching $PWD */
+  if (chdir("/vfs")) return 51;
+  char *cwd = get_current_dir_name();
+  if (!cwd || strcmp(cwd, "/vfs")) return 51;
+  free(cwd);
+  setenv("PWD", "/vfs", 1);
+  if (!(cwd = get_current_dir_name()) || strcmp(cwd, "/vfs")) return 51;
+  free(cwd);
+  unsetenv("PWD");
+  if (chdir("/")) return 51;
+
+  /* the mkstemp variants with flags and suffixes */
+  char t1[] = "/vfs/oXXXXXX", t2[] = "/vfs/sXXXXXX.txt", t3[] = "/vfs/pXXXXXX.txt";
+  int t;
+  if ((t = mkostemp(t1, O_CLOEXEC)) < 0 || strncmp(t1, "/vfs/o", 6)) return 52;
+  close(t);
+  if ((t = mkostemps(t2, 4, O_CLOEXEC)) < 0 || strncmp(t2, "/vfs/s", 6) || strcmp(t2 + 12, ".txt")) return 53;
+  close(t);
+  if ((t = mkstemps(t3, 4)) < 0 || strncmp(t3, "/vfs/p", 6) || strcmp(t3 + 12, ".txt")) return 54;
+  close(t);
+  char bk[PATH_MAX];
+  snprintf(bk, sizeof bk, "/tmp/vfsstore/%s", t2 + 5);
+  if (access(bk, F_OK)) return 54;
+  unlink(t1); unlink(t2); unlink(t3);
+
+  /* spawn file actions name VFS paths: the child opens and changes into the backing directory */
+  pid_t sp; int sst;
+  posix_spawn_file_actions_t fa;
+  char *cat_argv[] = { "sh", "-c", "test \"$(cat)\" = glibc", NULL };
+  posix_spawn_file_actions_init(&fa);
+  if (posix_spawn_file_actions_addopen(&fa, 0, "/vfs/g.txt", O_RDONLY, 0)) return 55;
+  if (posix_spawn(&sp, "/bin/sh", &fa, NULL, cat_argv, environ) || waitpid(sp, &sst, 0) != sp ||
+      !WIFEXITED(sst) || WEXITSTATUS(sst)) return 55;
+  posix_spawn_file_actions_destroy(&fa);
+  posix_spawn_file_actions_init(&fa);
+  if (posix_spawn_file_actions_addopen(&fa, 1, "/vfs/out.txt", O_WRONLY | O_CREAT, 0644) != ENOTSUP) return 56;
+  posix_spawn_file_actions_destroy(&fa);
+  char *cd_argv[] = { "sh", "-c", "test -f g.txt", NULL };
+  posix_spawn_file_actions_init(&fa);
+  if (posix_spawn_file_actions_addchdir_np(&fa, "/vfs")) return 57;
+  if (posix_spawn(&sp, "/bin/sh", &fa, NULL, cd_argv, environ) || waitpid(sp, &sst, 0) != sp ||
+      !WIFEXITED(sst) || WEXITSTATUS(sst)) return 57;
+  posix_spawn_file_actions_destroy(&fa);
+
+  /* posix_spawnp finds a program in a PATH entry under the mount */
+  if (mkdir("/vfs/bin", 0755) || system("cp /bin/true /vfs/bin/vfstrue")) return 58;
+  char *oldpath = strdup(getenv("PATH"));
+  char newpath[PATH_MAX];
+  snprintf(newpath, sizeof newpath, "/vfs/bin:%s", oldpath);
+  setenv("PATH", newpath, 1);
+  char *vt_argv[] = { "vfstrue", NULL };
+  int spr = posix_spawnp(&sp, "vfstrue", NULL, NULL, vt_argv, environ);
+  setenv("PATH", oldpath, 1);
+  free(oldpath);
+  if (spr || waitpid(sp, &sst, 0) != sp || !WIFEXITED(sst) || WEXITSTATUS(sst)) return 58;
+
 #ifdef __GLIBC__
   struct dirent **list;
   if (scandirat(AT_FDCWD, "/vfs", &list, NULL, alphasort) < 2) return 15;
@@ -226,6 +285,25 @@ int main(void) {
   if (lxstat64(ver, "/vfs/gl", &s64) || !S_ISLNK(s64.st_mode)) return 37;
   if (xstat(ver, "/vfs/h.txt", &xs) || xs.st_size != 2) return 38;
   if (xstat64(99, "/vfs/h.txt", &s64) != -1 || errno != EINVAL) return 39;
+
+  /* mknod through the pre-2.33 wrappers lands in the backing directory */
+  int (*xmknod)(int, const char *, mode_t, dev_t *) = dlsym(RTLD_DEFAULT, "__xmknod");
+  int (*xmknodat)(int, int, const char *, mode_t, dev_t *) = dlsym(RTLD_DEFAULT, "__xmknodat");
+  dev_t nodev = 0;
+  if (!xmknod || !xmknodat) return 59;
+  if (xmknod(0, "/vfs/fifo1", S_IFIFO | 0644, &nodev) || xmknodat(0, AT_FDCWD, "/vfs/fifo2", S_IFIFO | 0644, &nodev)) return 59;
+  if (stat("/tmp/vfsstore/fifo1", &xs) || !S_ISFIFO(xs.st_mode) || stat("/tmp/vfsstore/fifo2", &xs) || !S_ISFIFO(xs.st_mode)) return 59;
+  unlink("/tmp/vfsstore/fifo1"); unlink("/tmp/vfsstore/fifo2");
+
+  /* the LFS names of the mkstemp variants */
+  char t4[] = "/vfs/qXXXXXX", t5[] = "/vfs/rXXXXXX.txt", t6[] = "/vfs/uXXXXXX.txt";
+  if ((fd = mkostemp64(t4, O_CLOEXEC)) < 0 || strncmp(t4, "/vfs/q", 6)) return 60;
+  close(fd);
+  if ((fd = mkostemps64(t5, 4, 0)) < 0 || strncmp(t5, "/vfs/r", 6)) return 60;
+  close(fd);
+  if ((fd = mkstemps64(t6, 4)) < 0 || strncmp(t6, "/vfs/u", 6)) return 60;
+  close(fd);
+  unlink(t4); unlink(t5); unlink(t6);
 
   /* the remaining fortified and LFS entry points */
   if ((fd = openat(AT_FDCWD, "/vfs/h.txt", rd)) < 0) return 40;
@@ -289,7 +367,7 @@ if [ "$FLAVOUR" = debian ]; then
       fail "node's $sym does not bind to the shim"
   done
 fi
-rm -f /vfs/h.txt /vfs/c.txt /vfs/gl /vfs/g.txt /vfs/true
+rm -rf /vfs/h.txt /vfs/c.txt /vfs/gl /vfs/g.txt /vfs/true /vfs/bin
 echo "hooks: ok"
 
 # the new hooks leave paths outside every mount alone
