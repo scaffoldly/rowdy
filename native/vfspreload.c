@@ -771,9 +771,9 @@ int scandir64(const char *path, struct dirent64 ***namelist,
 int mkstemp64(char *template) { return mkstemp(template); }
 
 /* Binaries built against glibc < 2.33 (official node builds among them) call stat through these
- * versioned wrappers. Below 2.33 they are the real functions (there is no exported stat), so the
- * same name is called through; from 2.33 on they exist only for such binaries, and the plain hooks
- * stand in. */
+ * versioned wrappers. The same name is called through: below 2.33 they are the real functions
+ * (there is no exported stat), and from 2.33 on they remain as compat symbols that dlsym still finds,
+ * so glibc checks ver itself. The plain hooks stand in only for a libc with neither. */
 typedef int (*xstat_fn)(int, const char *, struct stat *);
 typedef int (*fxstatat_fn)(int, int, const char *, struct stat *, int);
 
@@ -821,11 +821,22 @@ int fcntl64(int fd, int cmd, ...) {
     return fcntl(fd, cmd, arg);
 }
 
-/* Fortify. glibc calls these only for opens without O_CREAT/O_TMPFILE, so there is no mode. */
-int __open_2(const char *path, int flags) { return open(path, flags); }
-int __open64_2(const char *path, int flags) { return open64(path, flags); }
-int __openat_2(int dirfd, const char *path, int flags) { return openat(dirfd, path, flags); }
-int __openat64_2(int dirfd, const char *path, int flags) { return openat64(dirfd, path, flags); }
+/* Fortify. The caller passed no mode, so O_CREAT/O_TMPFILE is a bug glibc aborts on. */
+#ifndef __OPEN_NEEDS_MODE
+#define __OPEN_NEEDS_MODE(f) (((f) & O_CREAT) != 0 || ((f) & O_TMPFILE) == O_TMPFILE)
+#endif
+static int open_mode(int flags) {
+    static const char msg[] = "*** invalid open call: O_CREAT or O_TMPFILE without mode ***: terminated\n";
+    if (__OPEN_NEEDS_MODE(flags)) {
+        if (write(2, msg, sizeof msg - 1) < 0) abort();
+        abort();
+    }
+    return flags;
+}
+int __open_2(const char *path, int flags) { return open(path, open_mode(flags)); }
+int __open64_2(const char *path, int flags) { return open64(path, open_mode(flags)); }
+int __openat_2(int dirfd, const char *path, int flags) { return openat(dirfd, path, open_mode(flags)); }
+int __openat64_2(int dirfd, const char *path, int flags) { return openat64(dirfd, path, open_mode(flags)); }
 
 /* The _chk entry points carry the caller's real buffer size; an overflow aborts as glibc would. */
 static void chk_fail(void) {
@@ -921,7 +932,7 @@ int posix_spawn(pid_t *pid, const char *path, const posix_spawn_file_actions_t *
     REAL(posix_spawn);
     if (!real_) return ENOSYS;
     XL(path);
-    if (vf_ && notify("fetch", path, NULL, 0) < 0) return errno;
+    if (vf_ && notify("fetch", path, NULL, 0) < 0) return errno ? errno : EIO;
     return real_(pid, rp_, actions, attr, argv, envp);
 }
 int posix_spawnp(pid_t *pid, const char *file, const posix_spawn_file_actions_t *actions,
@@ -929,6 +940,6 @@ int posix_spawnp(pid_t *pid, const char *file, const posix_spawn_file_actions_t 
     REAL(posix_spawnp);
     if (!real_) return ENOSYS;
     XL(file);
-    if (vf_ && notify("fetch", file, NULL, 0) < 0) return errno;
+    if (vf_ && notify("fetch", file, NULL, 0) < 0) return errno ? errno : EIO;
     return real_(pid, rp_, actions, attr, argv, envp);
 }
