@@ -62,7 +62,7 @@ type Args = yargs.ArgumentsCamelCase<
   } & {
     volumes: string | undefined;
   } & {
-    volume: Array<string> | undefined;
+    volume: string | Array<string> | undefined;
   }
 >;
 
@@ -78,7 +78,7 @@ const entrypoint = <T>(
   } & {
     volumes: string | undefined;
   } & {
-    volume: Array<string> | undefined;
+    volume: string | Array<string> | undefined;
   }
 > => {
   const modified = argv
@@ -109,7 +109,6 @@ const entrypoint = <T>(
     .option('volume', {
       alias: 'v',
       type: 'string',
-      array: true,
       description:
         'A volume, as in docker run -v: <scheme>://<locator>:<mountpoint>[:<flags>], or /host/path:<mountpoint>. Repeatable',
       global: false,
@@ -269,7 +268,6 @@ export class Environment implements ILoggable {
             .option('volume', {
               alias: 'v',
               type: 'string',
-              array: true,
               description:
                 'A volume, as in docker run -v: <scheme>://<locator>:<mountpoint>[:<flags>], or /host/path:<mountpoint>. Repeatable',
               group: 'Runtime:',

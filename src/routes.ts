@@ -498,8 +498,8 @@ export class Volume {
   }
 
   /** The specs from `--volumes` and each `-v`; as in `docker run -v`, a bare host path is `file://`. */
-  static fromArgs({ volumes, volume = [] }: { volumes?: string; volume?: Array<string> }): Array<string> {
-    const flags = volume.map((spec) => (spec.startsWith('/') ? `file://${spec}` : spec));
+  static fromArgs({ volumes, volume = [] }: { volumes?: string; volume?: string | Array<string> }): Array<string> {
+    const flags = [volume].flat().map((spec) => (spec.startsWith('/') ? `file://${spec}` : spec));
     return [...(volumes ? Volume.list(volumes) : []), ...flags];
   }
 

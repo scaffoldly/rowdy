@@ -402,19 +402,18 @@ spec:
     it('takes one spec per line, skipping blank lines and comments', () => {
       expect(
         Volume.list(`
-          s3://nuss-io:/s3:local=*-{journal,wal,shm}
+          s3://example-bucket:/s3:local=*-{journal,wal,shm}
 
           # scratch space
           file:///tmp/scratch:/scratch
         `)
-      ).toEqual(['s3://nuss-io:/s3:local=*-{journal,wal,shm}', 'file:///tmp/scratch:/scratch']);
+      ).toEqual(['s3://example-bucket:/s3:local=*-{journal,wal,shm}', 'file:///tmp/scratch:/scratch']);
     });
 
     it('takes a YAML list, quoted or not', () => {
-      expect(Volume.list('- "s3://nuss-io:/s3:local=*-{journal,wal,shm}"\n- file:///tmp/scratch:/scratch\n')).toEqual([
-        's3://nuss-io:/s3:local=*-{journal,wal,shm}',
-        'file:///tmp/scratch:/scratch',
-      ]);
+      expect(
+        Volume.list('- "s3://example-bucket:/s3:local=*-{journal,wal,shm}"\n- file:///tmp/scratch:/scratch\n')
+      ).toEqual(['s3://example-bucket:/s3:local=*-{journal,wal,shm}', 'file:///tmp/scratch:/scratch']);
     });
 
     it('takes a single spec', () => {

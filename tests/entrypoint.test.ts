@@ -79,6 +79,25 @@ describe('entrypoint --volumes', () => {
     }
   });
 
+  it('takes a single -v', () => {
+    const env = setup({ volume: 's3://example-bucket:/data' });
+
+    expect(env.routes.volumes).toEqual(['s3://example-bucket:/data']);
+  });
+
+  it('does not take the next argument after a -v value', () => {
+    const argv = process.argv;
+    process.argv = ['node', 'rowdy', '-v', '/tmp/scratch:/scratch', 'serve', '--', 'true'];
+    try {
+      const env = new Environment(new Logger());
+
+      expect(env.routes.volumes).toEqual(['file:///tmp/scratch:/scratch']);
+      expect(env.command).toEqual(['true']);
+    } finally {
+      process.argv = argv;
+    }
+  });
+
   it('rejects a docker named volume', () => {
     expect(() => setup({ volume: ['data:/data'] })).toThrow('data:/data');
   });
