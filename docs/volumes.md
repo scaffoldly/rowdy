@@ -160,7 +160,8 @@ Rowdy's own process is never preloaded; an existing `LD_PRELOAD` is kept.
   serves both ([ADR 0003](https://github.com/scaffoldly/rowdy/blob/vfs/docs/adr/0003-one-shim-for-musl-and-glibc.md)).
   Older glibc (Debian 11, Amazon Linux 2) still starts preloaded programs and passes basic file
   operations, but is not otherwise tested. Static binaries and Go programs that issue raw syscalls
-  do not see the mountpoint.
+  do not see the mountpoint. When the command (or a script's `#!` interpreter) is a static ELF,
+  rowdy logs a `Static Program` warning at startup rather than leaving it to surface as `ENOENT`.
 - `mmap` works through the descriptor, which already refers to the backing file: shared-mapping
   writes upload on `close` or `fsync` like `write()`. `msync` alone does not upload.
 - Extended attributes are kept on the instance's backing file and are not stored in S3.

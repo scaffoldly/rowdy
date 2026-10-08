@@ -44,6 +44,7 @@ import { LambdaImageService } from './aws/lambda/image';
 import { cpus } from 'os';
 import { internalIpV4Sync } from 'internal-ip';
 import { deployFailedSummary, deploySummary, writeGithubOutput, writeGithubSummary } from './util/github';
+import { isStaticElf, programOf } from './util/elf';
 
 export type { Secrets } from './secrets';
 type Args = yargs.ArgumentsCamelCase<
@@ -769,6 +770,13 @@ export class Environment implements ILoggable {
                 preload: vfs?.preload,
                 socket: vfs?.socket,
               });
+              const program = this._command?.[0] && programOf(this._command[0], process.env.PATH);
+              if (program && isStaticElf(program)) {
+                this.log.child('vfs').warn('Static Program', {
+                  program,
+                  reason: 'statically linked: LD_PRELOAD never loads, so it cannot see the volumes',
+                });
+              }
             }
           } catch (err) {
             subscriber.error(err);
