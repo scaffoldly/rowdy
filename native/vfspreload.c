@@ -488,17 +488,25 @@ int dup(int oldfd) {
     return newfd;
 }
 
+/* dup2/dup3 onto an open descriptor closed its file, so release it as close() does: end the
+ * lease, and flush on the last reference. Like the kernel's implicit close, errors go unreported. */
+static void fd_replaced(int oldfd, int newfd) {
+    if (oldfd == newfd || !fd_tracked(newfd)) return;
+    if (fd_wlocked(newfd)) lock_transition(newfd, F_UNLCK);
+    flush_fd(newfd, 1);
+}
+
 int dup2(int oldfd, int newfd) {
     REAL(dup2);
     int r = real_(oldfd, newfd);
-    if (r >= 0) fd_copy(oldfd, r);
+    if (r >= 0) { fd_replaced(oldfd, r); fd_copy(oldfd, r); }
     return r;
 }
 
 int dup3(int oldfd, int newfd, int flags) {
     REAL(dup3);
     int r = real_(oldfd, newfd, flags);
-    if (r >= 0) fd_copy(oldfd, r);
+    if (r >= 0) { fd_replaced(oldfd, r); fd_copy(oldfd, r); }
     return r;
 }
 
