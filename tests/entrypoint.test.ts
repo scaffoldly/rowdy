@@ -40,6 +40,49 @@ describe('entrypoint --volumes', () => {
     ).toThrow("Volume mountpoint '/data' is used by both 'file:///tmp/scratch:/data' and 's3://example-bucket:/data'");
   });
 
+  it('takes one volume per -v, like docker run', () => {
+    const env = setup({ volume: ['s3://example-bucket:/data', 'file:///tmp/scratch:/scratch'] });
+
+    expect(env.routes.volumes).toEqual(['s3://example-bucket:/data', 'file:///tmp/scratch:/scratch']);
+  });
+
+  it('reads a bare host path in -v as file://, like docker run', () => {
+    const env = setup({ volume: ['/tmp/scratch:/scratch'] });
+
+    expect(env.routes.volumes).toEqual(['file:///tmp/scratch:/scratch']);
+  });
+
+  it('adds -v after --volumes and the routes manifest', () => {
+    const env = setup({
+      routes: 'volumes:\n  - file:///tmp/scratch:/scratch\n',
+      volumes: 's3://example-bucket:/data',
+      volume: ['/tmp/cache:/cache'],
+    });
+
+    expect(env.routes.volumes).toEqual([
+      'file:///tmp/scratch:/scratch',
+      's3://example-bucket:/data',
+      'file:///tmp/cache:/cache',
+    ]);
+  });
+
+  it('parses repeated -v from the command line', () => {
+    const argv = process.argv;
+    process.argv = ['node', 'rowdy', '-v', '/tmp/scratch:/scratch', '-v', 's3://example-bucket:/data', '--', 'true'];
+    try {
+      const env = new Environment(new Logger());
+
+      expect(env.routes.volumes).toEqual(['file:///tmp/scratch:/scratch', 's3://example-bucket:/data']);
+      expect(env.command).toEqual(['true']);
+    } finally {
+      process.argv = argv;
+    }
+  });
+
+  it('rejects a docker named volume', () => {
+    expect(() => setup({ volume: ['data:/data'] })).toThrow('data:/data');
+  });
+
   it('keeps the routes manifest when no volumes are given', () => {
     const env = setup({ routes: 'volumes:\n  - file:///tmp/scratch:/scratch\n' });
 
