@@ -460,14 +460,66 @@ describe('S3Adapter', () => {
   });
 
   describe('revalidation', () => {
-    const fresh = (revalidateMs: number): S3Adapter =>
+    // A read lock re-checks on every call here (no debounce), so a remote change is seen at once.
+    const fresh = (revalidateMs: number, revalidateDebounceMs = 0): S3Adapter =>
       new S3Adapter({
         bucket: 'example-bucket',
         mountpoint: mount,
         backing,
         client: s3 as unknown as S3Client,
         revalidateMs,
+        revalidateDebounceMs,
       });
+
+    it('revalidate() trusts a check from the last revalidateDebounceMs: a burst of read locks costs no HEAD', async () => {
+      const a = fresh(60_000, 60_000);
+      s3.put('burst.sqlite', 'v1');
+      await a.fetch(`${mount}/burst.sqlite`);
+      s3.calls.length = 0;
+      for (let i = 0; i < 100; i++) {
+        await a.revalidate(`${mount}/burst.sqlite`);
+      }
+      expect(s3.calls).toEqual([]);
+    });
+
+    it('revalidate() checks again once the debounce window has passed', async () => {
+      const a = fresh(60_000, 20);
+      s3.put('later.sqlite', 'v1');
+      await a.fetch(`${mount}/later.sqlite`);
+      s3.put('later.sqlite', 'v2');
+      await a.revalidate(`${mount}/later.sqlite`);
+      expect(readFileSync(join(backing, 'later.sqlite'), 'utf8')).toBe('v1'); // inside the window
+      await new Promise((r) => setTimeout(r, 30));
+      await a.revalidate(`${mount}/later.sqlite`);
+      expect(readFileSync(join(backing, 'later.sqlite'), 'utf8')).toBe('v2');
+    });
+
+    it('revalidate() shares one HEAD among concurrent read locks on a key', async () => {
+      const a = fresh(60_000, 20);
+      s3.put('shared.sqlite', 'v1');
+      await a.fetch(`${mount}/shared.sqlite`);
+      await new Promise((r) => setTimeout(r, 30));
+      s3.calls.length = 0;
+      await Promise.all(Array.from({ length: 10 }, () => a.revalidate(`${mount}/shared.sqlite`)));
+      expect(s3.calls).toEqual(['HeadObjectCommand']);
+    });
+
+    it('debounces read locks by 250 ms by default', async () => {
+      const a = new S3Adapter({
+        bucket: 'example-bucket',
+        mountpoint: mount,
+        backing,
+        client: s3 as unknown as S3Client,
+      });
+      s3.put('default.sqlite', 'v1');
+      await a.fetch(`${mount}/default.sqlite`);
+      s3.calls.length = 0;
+      await a.revalidate(`${mount}/default.sqlite`);
+      expect(s3.calls).toEqual([]);
+      await new Promise((r) => setTimeout(r, 260));
+      await a.revalidate(`${mount}/default.sqlite`);
+      expect(s3.calls).toEqual(['HeadObjectCommand']);
+    });
 
     it('refetches in place when the object changed', async () => {
       const a = fresh(0);

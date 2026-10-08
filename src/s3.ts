@@ -34,6 +34,13 @@ export type S3AdapterOptions = {
    * (ms). Keeps stat-heavy callers from turning into HEAD storms. Default 2000.
    */
   revalidateMs?: number;
+  /**
+   * How long a read lock (revalidate) trusts the last ETag check of an object (ms) before a HEAD
+   * re-checks it, so a burst of read transactions (SQLite: one per statement) costs one HEAD, not
+   * one each; concurrent ones share it. A reader may see another instance's commit this much
+   * later. Writes are unaffected: the write lock re-checks on its own. Default 250.
+   */
+  revalidateDebounceMs?: number;
   /** Lease time-to-live (ms); renewed at half-life while held. Default 30000. */
   leaseMs?: number;
   /** How long a contended lock waits before EAGAIN (ms). Default 5000. */
@@ -470,8 +477,9 @@ export class S3Adapter implements VfsAdapter {
     if (await this.modified(local, entry)) {
       return;
     }
-    const ttl = this.options.revalidateMs ?? 2000;
-    if (!force && entry.checkedAt !== undefined && Date.now() - entry.checkedAt < ttl) {
+    // Callers are serialized per key, so concurrent read locks wait for one HEAD and then find it fresh.
+    const ttl = force ? (this.options.revalidateDebounceMs ?? 250) : (this.options.revalidateMs ?? 2000);
+    if (entry.checkedAt !== undefined && Date.now() - entry.checkedAt < ttl) {
       return;
     }
     const head = await this.head(key);
