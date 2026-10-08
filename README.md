@@ -38,7 +38,9 @@ jobs:
 
 Change `image` to a container the runner can pull, and `default` to the port the container listens
 on. The deployed URL comes back as `steps.<id>.outputs.url`, which is how a downstream step (a DNS
-record, a CDN origin, a smoke test) learns where the function lives.
+record, a CDN origin, a smoke test) learns where the function lives. The run's summary page shows
+the URL, image, region, alias, memory and volumes; a failed deploy shows the image and the error.
+Secrets never appear there.
 
 The Action assumes the role with `aws-actions/configure-aws-credentials`, using `AWS_REGION` from
 the environment if set and `us-east-1` otherwise.

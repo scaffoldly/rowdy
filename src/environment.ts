@@ -43,7 +43,7 @@ import { Volume } from './routes';
 import { LambdaImageService } from './aws/lambda/image';
 import { cpus } from 'os';
 import { internalIpV4Sync } from 'internal-ip';
-import { writeGithubOutput } from './util/github';
+import { deployFailedSummary, deploySummary, writeGithubOutput, writeGithubSummary } from './util/github';
 
 export type { Secrets } from './secrets';
 type Args = yargs.ArgumentsCamelCase<
@@ -312,12 +312,23 @@ export class Environment implements ILoggable {
                             name: error.name,
                             error: error.message,
                           });
+                          writeGithubSummary(deployFailedSummary(argv.image, error));
                           process.exitCode = 1;
                           this.abort.abort('Installation failed');
                         },
                         complete: () => {
                           this.log.info('Lambda Function Installation Complete');
                           writeGithubOutput('url', lambda.State.FunctionUrl);
+                          writeGithubSummary(
+                            deploySummary({
+                              url: lambda.State.FunctionUrl,
+                              image: argv.image,
+                              functionArn: lambda.State.FunctionArn,
+                              alias: lambda.State.Qualifier,
+                              memory: lambda.Status.Configuration?.MemorySize,
+                              volumes: lambda.volumes,
+                            })
+                          );
                         },
                       })
                     );
