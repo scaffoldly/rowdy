@@ -7,6 +7,10 @@ const path = require('path');
 const { P9Server, LocalAdapter, S3Adapter } = require(path.join(__dirname, '..', 'dist', 'index.js'));
 
 const { S3_BUCKET, S3_PREFIX } = process.env;
+
+// Every adapter decision and S3 round trip, for the report when an /s3 run fails.
+const record = (message, params) =>
+  fs.appendFileSync('/tmp/s3-adapter.log', `${new Date().toISOString()} ${message} ${JSON.stringify(params ?? {})}\n`);
 const mounts = [{ mountpoint: '/vfs', backing: '/tmp/vfsstore', adapter: new LocalAdapter() }];
 
 let sdk, client;
@@ -23,6 +27,8 @@ if (S3_BUCKET) {
       backing: '/tmp/s3store',
       client,
       localOnly: ['*-{journal,wal,shm}'],
+      log: record,
+      trace: (op, { headers, ...rest } = {}) => record(op, { ...rest, etag: headers?.etag }),
     }),
   });
 }

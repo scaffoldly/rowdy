@@ -96,6 +96,7 @@ for script in config01 config02 crash01 multiwrite01; do
     log="/tmp/mp-$script-${m#/}.log"
     start=$(date +%s)
     status=0
+    : > /tmp/s3-adapter.log
     timeout 900 ./mptest "$db" --quiet --timeout 30000 "$script.test" > "$log" 2>&1 || status=$?
     took=$(( $(date +%s) - start ))
     ran=$((ran + 1))
@@ -108,17 +109,30 @@ for script in config01 config02 crash01 multiwrite01; do
       [ "$status" -ne 124 ] || summary="timed out after 900s"
       row="$row ❌ ${summary:-exit $status} |"
       {
-        echo "<details><summary>❌ <code>$script</code> on <code>$m</code>: last 40 lines</summary>"
+        echo "<details><summary>❌ <code>$script</code> on <code>$m</code>: first and last errors</summary>"
         echo
         echo '```'
-        tail -40 "$log"
+        grep -m 30 'ERROR' "$log" || :
+        echo '...'
+        tail -30 "$log"
         echo '```'
+        if [ "$m" = /s3 ] && [ -s /tmp/s3-adapter.log ]; then
+          echo
+          echo "Adapter decisions (everything but per-request trace), then the last 60 lines:"
+          echo
+          echo '```'
+          grep -v '"duration"' /tmp/s3-adapter.log | head -60 || :
+          echo '...'
+          tail -60 /tmp/s3-adapter.log
+          echo '```'
+        fi
         echo
         echo "</details>"
         echo
       } >> "$logs"
       echo "---- mptest $script on $m" >&2
-      tail -40 "$log" >&2
+      grep -m 30 'ERROR' "$log" >&2 || :
+      [ "$m" != /s3 ] || { echo "---- adapter" >&2; tail -200 /tmp/s3-adapter.log >&2; }
     fi
     rm -f "$db" "$db-journal" "$db-wal" "$db-shm"
   done
