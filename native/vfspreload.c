@@ -39,8 +39,8 @@
  *     symbols; a static binary never loads the preload;
  *   - it is not a kernel mountpoint — unrelated processes cannot see /vfs;
  *   - nftw and glob are not translated (mmap needs none: it takes a descriptor);
- *   - only absolute VFS_PREFIX paths are reported to the supervisor; relative
- *     paths after chdir() resolve locally.
+ *   - a relative path (to a directory descriptor, or to a cwd under a mount) is
+ *     passed to libc as is and reported to the supervisor by its virtual path.
  *
  * Build:  sh native/build.sh x64|arm64   (one object for musl and glibc, ADR 0003;
  *         its flags are what native/symbols.sh requires, a plain gcc build fails it)
@@ -89,9 +89,9 @@ int open64(const char *path, int flags, ...) {
             va_list ap; va_start(ap, flags); mode = va_arg(ap, int); va_end(ap);
         }
         XL(path);
-        if (vf_ && pre_open(path, flags) < 0) return -1;
+        if (vf_ && pre_open(vp_, flags) < 0) return -1;
         int fd = fallback(rp_, flags, mode);
-        if (vf_) return post_open(fd, path, flags);
+        if (vf_) return post_open(fd, vp_, flags);
         return fd;
     }
     mode_t mode = 0;
@@ -99,9 +99,9 @@ int open64(const char *path, int flags, ...) {
         va_list ap; va_start(ap, flags); mode = va_arg(ap, int); va_end(ap);
     }
     XL(path);
-    if (vf_ && pre_open(path, flags) < 0) return -1;
+    if (vf_ && pre_open(vp_, flags) < 0) return -1;
     int fd = real_(rp_, flags, mode);
-    if (vf_) return post_open(fd, path, flags);
+    if (vf_) return post_open(fd, vp_, flags);
     return fd;
 }
 
@@ -112,9 +112,9 @@ int open(const char *path, int flags, ...) {
         va_list ap; va_start(ap, flags); mode = va_arg(ap, int); va_end(ap);
     }
     XL(path);
-    if (vf_ && pre_open(path, flags) < 0) return -1;
+    if (vf_ && pre_open(vp_, flags) < 0) return -1;
     int fd = real_(rp_, flags, mode);
-    if (vf_) return post_open(fd, path, flags);
+    if (vf_) return post_open(fd, vp_, flags);
     return fd;
 }
 
@@ -126,20 +126,20 @@ int openat64(int dirfd, const char *path, int flags, ...) {
         if (flags & (O_CREAT | O_TMPFILE)) {
             va_list ap; va_start(ap, flags); mode = va_arg(ap, int); va_end(ap);
         }
-        XL(path);
-        if (vf_ && pre_open(path, flags) < 0) return -1;
+        XLAT(dirfd, path);
+        if (vf_ && pre_open(vp_, flags) < 0) return -1;
         int fd = fallback(dirfd, rp_, flags, mode);
-        if (vf_) return post_open(fd, path, flags);
+        if (vf_) return post_open(fd, vp_, flags);
         return fd;
     }
     mode_t mode = 0;
     if (flags & (O_CREAT | O_TMPFILE)) {
         va_list ap; va_start(ap, flags); mode = va_arg(ap, int); va_end(ap);
     }
-    XL(path);
-    if (vf_ && pre_open(path, flags) < 0) return -1;
+    XLAT(dirfd, path);
+    if (vf_ && pre_open(vp_, flags) < 0) return -1;
     int fd = real_(dirfd, rp_, flags, mode);
-    if (vf_) return post_open(fd, path, flags);
+    if (vf_) return post_open(fd, vp_, flags);
     return fd;
 }
 
@@ -149,19 +149,19 @@ int openat(int dirfd, const char *path, int flags, ...) {
     if (flags & (O_CREAT | O_TMPFILE)) {
         va_list ap; va_start(ap, flags); mode = va_arg(ap, int); va_end(ap);
     }
-    XL(path);
-    if (vf_ && pre_open(path, flags) < 0) return -1;
+    XLAT(dirfd, path);
+    if (vf_ && pre_open(vp_, flags) < 0) return -1;
     int fd = real_(dirfd, rp_, flags, mode);
-    if (vf_) return post_open(fd, path, flags);
+    if (vf_) return post_open(fd, vp_, flags);
     return fd;
 }
 
 int creat(const char *path, mode_t mode) {
     REAL(creat); XL(path);
     int flags = O_CREAT | O_WRONLY | O_TRUNC;
-    if (vf_ && pre_open(path, flags) < 0) return -1;
+    if (vf_ && pre_open(vp_, flags) < 0) return -1;
     int fd = real_(rp_, mode);
-    if (vf_) return post_open(fd, path, flags);
+    if (vf_) return post_open(fd, vp_, flags);
     return fd;
 }
 
@@ -181,7 +181,7 @@ static int mode_to_flags(const char *mode) {
 FILE *fopen(const char *path, const char *mode) {
     REAL(fopen); XL(path);
     int flags = mode_to_flags(mode);
-    if (vf_ && pre_open(path, flags) < 0) return NULL;
+    if (vf_ && pre_open(vp_, flags) < 0) return NULL;
     FILE *f = real_(rp_, mode);
     if (f && vf_ && post_open(fileno(f), path, flags) < 0) return NULL;
     return f;
@@ -189,7 +189,7 @@ FILE *fopen(const char *path, const char *mode) {
 FILE *freopen(const char *path, const char *mode, FILE *stream) {
     REAL(freopen); XL(path);
     int flags = mode_to_flags(mode);
-    if (vf_ && pre_open(path, flags) < 0) return NULL;
+    if (vf_ && pre_open(vp_, flags) < 0) return NULL;
     FILE *f = real_(rp_, mode, stream);
     if (f && vf_ && post_open(fileno(f), path, flags) < 0) return NULL;
     return f;
@@ -204,43 +204,43 @@ int lstat(const char *path, struct stat *st) {
     REAL(lstat); XL(path);  return real_(rp_, st);
 }
 int fstatat(int dirfd, const char *path, struct stat *st, int flags) {
-    REAL(fstatat); XL(path);
-    if (vf_ && notify("stat", path, NULL, 0) < 0) return -1;
+    REAL(fstatat); XLAT(dirfd, path);
+    if (vf_ && notify("stat", vp_, NULL, 0) < 0) return -1;
     return real_(dirfd, rp_, st, flags);
 }
 int access(const char *path, int mode) {
     REAL(access); XL(path);
-    if (vf_ && notify("stat", path, NULL, 0) < 0) return -1;
+    if (vf_ && notify("stat", vp_, NULL, 0) < 0) return -1;
     return real_(rp_, mode);
 }
 int faccessat(int dirfd, const char *path, int mode, int flags) {
-    REAL(faccessat); XL(path);
-    if (vf_ && notify("stat", path, NULL, 0) < 0) return -1;
+    REAL(faccessat); XLAT(dirfd, path);
+    if (vf_ && notify("stat", vp_, NULL, 0) < 0) return -1;
     return real_(dirfd, rp_, mode, flags);
 }
 int euidaccess(const char *path, int mode) {
     REAL(euidaccess); XL(path);
-    if (vf_ && notify("stat", path, NULL, 0) < 0) return -1;
+    if (vf_ && notify("stat", vp_, NULL, 0) < 0) return -1;
     return real_(rp_, mode);
 }
 int eaccess(const char *path, int mode) {
     REAL(eaccess); XL(path);
-    if (vf_ && notify("stat", path, NULL, 0) < 0) return -1;
+    if (vf_ && notify("stat", vp_, NULL, 0) < 0) return -1;
     return real_(rp_, mode);
 }
 int statx(int dirfd, const char *path, int flags, unsigned mask, struct statx *buf) {
-    REAL(statx); XL(path);
-    if (vf_ && notify("stat", path, NULL, 0) < 0) return -1;
+    REAL(statx); XLAT(dirfd, path);
+    if (vf_ && notify("stat", vp_, NULL, 0) < 0) return -1;
     return real_(dirfd, rp_, flags, mask, buf);
 }
 int statfs(const char *path, struct statfs *buf) {
     REAL(statfs); XL(path);
-    if (vf_ && notify("stat", path, NULL, 0) < 0) return -1;
+    if (vf_ && notify("stat", vp_, NULL, 0) < 0) return -1;
     return real_(rp_, buf);
 }
 int statvfs(const char *path, struct statvfs *buf) {
     REAL(statvfs); XL(path);
-    if (vf_ && notify("stat", path, NULL, 0) < 0) return -1;
+    if (vf_ && notify("stat", vp_, NULL, 0) < 0) return -1;
     return real_(rp_, buf);
 }
 
@@ -250,7 +250,7 @@ int chmod(const char *path, mode_t mode) {
     REAL(chmod); XL(path); return real_(rp_, mode);
 }
 int fchmodat(int dirfd, const char *path, mode_t mode, int flags) {
-    REAL(fchmodat); XL(path); return real_(dirfd, rp_, mode, flags);
+    REAL(fchmodat); XLAT(dirfd, path); return real_(dirfd, rp_, mode, flags);
 }
 int chown(const char *path, uid_t uid, gid_t gid) {
     REAL(chown); XL(path); return real_(rp_, uid, gid);
@@ -259,16 +259,16 @@ int lchown(const char *path, uid_t uid, gid_t gid) {
     REAL(lchown); XL(path); return real_(rp_, uid, gid);
 }
 int fchownat(int dirfd, const char *path, uid_t uid, gid_t gid, int flags) {
-    REAL(fchownat); XL(path); return real_(dirfd, rp_, uid, gid, flags);
+    REAL(fchownat); XLAT(dirfd, path); return real_(dirfd, rp_, uid, gid, flags);
 }
 int truncate(const char *path, off_t length) {
     REAL(truncate); XL(path);
     int r = real_(rp_, length);
-    if (r == 0 && vf_ && notify("flush", path, NULL, 0) < 0) return -1;
+    if (r == 0 && vf_ && notify("flush", vp_, NULL, 0) < 0) return -1;
     return r;
 }
 int utimensat(int dirfd, const char *path, const struct timespec times[2], int flags) {
-    REAL(utimensat); XL(path); return real_(dirfd, rp_, times, flags);
+    REAL(utimensat); XLAT(dirfd, path); return real_(dirfd, rp_, times, flags);
 }
 int utimes(const char *path, const struct timeval times[2]) {
     REAL(utimes); XL(path); return real_(rp_, times);
@@ -281,14 +281,14 @@ int utime(const char *path, const struct utimbuf *times) {
 
 DIR *opendir(const char *path) {
     REAL(opendir); XL(path);
-    if (vf_ && notify("list", path, NULL, 0) < 0) return NULL;
+    if (vf_ && notify("list", vp_, NULL, 0) < 0) return NULL;
     return real_(rp_);
 }
 int scandir(const char *path, struct dirent ***namelist,
             int (*filter)(const struct dirent *),
             int (*compar)(const struct dirent **, const struct dirent **)) {
     REAL(scandir); XL(path);
-    if (vf_ && notify("list", path, NULL, 0) < 0) return -1;
+    if (vf_ && notify("list", vp_, NULL, 0) < 0) return -1;
     return real_(rp_, namelist, filter, compar);
 }
 
@@ -297,37 +297,37 @@ int scandir(const char *path, struct dirent ***namelist,
 int mkdir(const char *path, mode_t mode) {
     REAL(mkdir); XL(path);
     int r = real_(rp_, mode);
-    if (r == 0 && vf_ && notify("mkdir", path, NULL, 0) < 0) return -1;
+    if (r == 0 && vf_ && notify("mkdir", vp_, NULL, 0) < 0) return -1;
     return r;
 }
 int mkdirat(int dirfd, const char *path, mode_t mode) {
-    REAL(mkdirat); XL(path);
+    REAL(mkdirat); XLAT(dirfd, path);
     int r = real_(dirfd, rp_, mode);
-    if (r == 0 && vf_ && notify("mkdir", path, NULL, 0) < 0) return -1;
+    if (r == 0 && vf_ && notify("mkdir", vp_, NULL, 0) < 0) return -1;
     return r;
 }
 int rmdir(const char *path) {
     REAL(rmdir); XL(path);
     int r = real_(rp_);
-    if (r == 0 && vf_ && notify("unlink", path, NULL, 0) < 0) return -1;
+    if (r == 0 && vf_ && notify("unlink", vp_, NULL, 0) < 0) return -1;
     return r;
 }
 int unlink(const char *path) {
     REAL(unlink); XL(path);
     int r = real_(rp_);
-    if (r == 0 && vf_ && notify("unlink", path, NULL, 0) < 0) return -1;
+    if (r == 0 && vf_ && notify("unlink", vp_, NULL, 0) < 0) return -1;
     return r;
 }
 int unlinkat(int dirfd, const char *path, int flags) {
-    REAL(unlinkat); XL(path);
+    REAL(unlinkat); XLAT(dirfd, path);
     int r = real_(dirfd, rp_, flags);
-    if (r == 0 && vf_ && notify("unlink", path, NULL, 0) < 0) return -1;
+    if (r == 0 && vf_ && notify("unlink", vp_, NULL, 0) < 0) return -1;
     return r;
 }
 int remove(const char *path) {
     REAL(remove); XL(path);
     int r = real_(rp_);
-    if (r == 0 && vf_ && notify("unlink", path, NULL, 0) < 0) return -1;
+    if (r == 0 && vf_ && notify("unlink", vp_, NULL, 0) < 0) return -1;
     return r;
 }
 int mkfifo(const char *path, mode_t mode) {
@@ -343,37 +343,37 @@ int mknod(const char *path, mode_t mode, dev_t dev) {
 int rename(const char *from, const char *to) {
     REAL(rename); XL2(from, to);
     int r = real_(ra_, rb_);
-    if (r == 0 && (va_ || vb_) && notify("rename", from, to, 0) < 0) return -1;
+    if (r == 0 && (va_ || vb_) && notify("rename", vpa_, vpb_, 0) < 0) return -1;
     return r;
 }
 int renameat(int fromfd, const char *from, int tofd, const char *to) {
-    REAL(renameat); XL2(from, to);
+    REAL(renameat); XL2AT(fromfd, from, tofd, to);
     int r = real_(fromfd, ra_, tofd, rb_);
-    if (r == 0 && (va_ || vb_) && notify("rename", from, to, 0) < 0) return -1;
+    if (r == 0 && (va_ || vb_) && notify("rename", vpa_, vpb_, 0) < 0) return -1;
     return r;
 }
 int link(const char *from, const char *to) {
     REAL(link); XL2(from, to);
     int r = real_(ra_, rb_);
-    if (r == 0 && vb_ && notify("flush", to, NULL, 0) < 0) return -1;
+    if (r == 0 && vb_ && notify("flush", vpb_, NULL, 0) < 0) return -1;
     return r;
 }
 int linkat(int fromfd, const char *from, int tofd, const char *to, int flags) {
-    REAL(linkat); XL2(from, to);
+    REAL(linkat); XL2AT(fromfd, from, tofd, to);
     int r = real_(fromfd, ra_, tofd, rb_, flags);
-    if (r == 0 && vb_ && notify("flush", to, NULL, 0) < 0) return -1;
+    if (r == 0 && vb_ && notify("flush", vpb_, NULL, 0) < 0) return -1;
     return r;
 }
 int symlink(const char *target, const char *linkpath) {
-    REAL(symlink); XL2(target, linkpath);
+    REAL(symlink); XL2AT(-1, target, AT_FDCWD, linkpath);
     int r = real_(ra_, rb_);
-    if (r == 0 && vb_ && notify("flush", linkpath, NULL, 0) < 0) return -1;
+    if (r == 0 && vb_ && notify("flush", vpb_, NULL, 0) < 0) return -1;
     return r;
 }
 int symlinkat(const char *target, int dirfd, const char *linkpath) {
-    REAL(symlinkat); XL2(target, linkpath);
+    REAL(symlinkat); XL2AT(-1, target, dirfd, linkpath);
     int r = real_(ra_, dirfd, rb_);
-    if (r == 0 && vb_ && notify("flush", linkpath, NULL, 0) < 0) return -1;
+    if (r == 0 && vb_ && notify("flush", vpb_, NULL, 0) < 0) return -1;
     return r;
 }
 
@@ -448,7 +448,7 @@ char *get_current_dir_name(void) {
 
 char *realpath(const char *path, char *resolved) {
     REAL(realpath); XL(path);
-    if (vf_ && notify("stat", path, NULL, 0) < 0) return NULL;
+    if (vf_ && notify("stat", vp_, NULL, 0) < 0) return NULL;
     char tmp[PATH_MAX];
     if (!real_(rp_, tmp)) return NULL;
     unxlate(tmp, sizeof tmp);
@@ -466,7 +466,7 @@ static ssize_t copy_link(const char *tmp, char *buf, size_t bufsz) {
 
 ssize_t readlink(const char *path, char *buf, size_t bufsz) {
     REAL(readlink); XL(path);
-    if (vf_ && notify("stat", path, NULL, 0) < 0) return -1;
+    if (vf_ && notify("stat", vp_, NULL, 0) < 0) return -1;
     char tmp[PATH_MAX];
     ssize_t n = real_(rp_, tmp, sizeof tmp - 1);
     if (n < 0) return n;
@@ -475,8 +475,8 @@ ssize_t readlink(const char *path, char *buf, size_t bufsz) {
     return copy_link(tmp, buf, bufsz);
 }
 ssize_t readlinkat(int dirfd, const char *path, char *buf, size_t bufsz) {
-    REAL(readlinkat); XL(path);
-    if (vf_ && notify("stat", path, NULL, 0) < 0) return -1;
+    REAL(readlinkat); XLAT(dirfd, path);
+    if (vf_ && notify("stat", vp_, NULL, 0) < 0) return -1;
     char tmp[PATH_MAX];
     ssize_t n = real_(dirfd, rp_, tmp, sizeof tmp - 1);
     if (n < 0) return n;
@@ -769,17 +769,17 @@ long syscall(long n, ...) {
 
 int execve(const char *path, char *const argv[], char *const envp[]) {
     REAL(execve); XL(path);
-    if (vf_ && notify("fetch", path, NULL, 0) < 0) return -1;
+    if (vf_ && notify("fetch", vp_, NULL, 0) < 0) return -1;
     return real_(rp_, argv, envp);
 }
 int execv(const char *path, char *const argv[]) {
     REAL(execv); XL(path);
-    if (vf_ && notify("fetch", path, NULL, 0) < 0) return -1;
+    if (vf_ && notify("fetch", vp_, NULL, 0) < 0) return -1;
     return real_(rp_, argv);
 }
 int execvp(const char *file, char *const argv[]) {
     REAL(execvp); XL(file);
-    if (vf_ && notify("fetch", file, NULL, 0) < 0) return -1;
+    if (vf_ && notify("fetch", vp_, NULL, 0) < 0) return -1;
     return real_(rp_, argv);
 }
 
@@ -849,15 +849,15 @@ int __lxstat64(int ver, const char *path, struct stat64 *st) {
 int __fxstatat(int ver, int dirfd, const char *path, struct stat *st, int flags) {
     REAL_T(__fxstatat, fxstatat_fn);
     if (!real_) return fstatat(dirfd, path, st, flags);
-    XL(path);
-    if (vf_ && notify("stat", path, NULL, 0) < 0) return -1;
+    XLAT(dirfd, path);
+    if (vf_ && notify("stat", vp_, NULL, 0) < 0) return -1;
     return real_(ver, dirfd, rp_, st, flags);
 }
 int __fxstatat64(int ver, int dirfd, const char *path, struct stat64 *st, int flags) {
     REAL_T(__fxstatat64, fxstatat_fn);
     if (!real_) return fstatat(dirfd, path, (struct stat *)st, flags);
-    XL(path);
-    if (vf_ && notify("stat", path, NULL, 0) < 0) return -1;
+    XLAT(dirfd, path);
+    if (vf_ && notify("stat", vp_, NULL, 0) < 0) return -1;
     return real_(ver, dirfd, rp_, (struct stat *)st, flags);
 }
 
@@ -871,7 +871,7 @@ int __xmknod(int ver, const char *path, mode_t mode, dev_t *dev) {
 }
 int __xmknodat(int ver, int dirfd, const char *path, mode_t mode, dev_t *dev) {
     REAL_T(__xmknodat, xmknodat_fn);
-    XL(path);
+    XLAT(dirfd, path);
     if (!real_) { REAL(mknodat); return real_(dirfd, rp_, mode, *dev); }
     return real_(ver, dirfd, rp_, mode, dev);
 }
@@ -932,10 +932,10 @@ int renameat2(int fromfd, const char *from, int tofd, const char *to, unsigned i
         if (flags) { errno = ENOSYS; return -1; }
         return renameat(fromfd, from, tofd, to);
     }
-    XL2(from, to);
+    XL2AT(fromfd, from, tofd, to);
     if ((va_ || vb_) && (flags & ~(unsigned int)RENAME_NOREPLACE)) { errno = EINVAL; return -1; }
     int r = real_(fromfd, ra_, tofd, rb_, flags);
-    if (r == 0 && (va_ || vb_) && notify("rename", from, to, 0) < 0) return -1;
+    if (r == 0 && (va_ || vb_) && notify("rename", vpa_, vpb_, 0) < 0) return -1;
     return r;
 }
 
@@ -946,28 +946,28 @@ int renameat2(int fromfd, const char *from, int tofd, const char *to, unsigned i
 #define REAL_OR_ENOSYS(name) REAL(name); if (!real_) { errno = ENOSYS; return -1; }
 
 ssize_t getxattr(const char *path, const char *name, void *value, size_t size) {
-    REAL_OR_ENOSYS(getxattr); XL(path); XATTR_STAT(path); return real_(rp_, name, value, size);
+    REAL_OR_ENOSYS(getxattr); XL(path); XATTR_STAT(vp_); return real_(rp_, name, value, size);
 }
 ssize_t lgetxattr(const char *path, const char *name, void *value, size_t size) {
-    REAL_OR_ENOSYS(lgetxattr); XL(path); XATTR_STAT(path); return real_(rp_, name, value, size);
+    REAL_OR_ENOSYS(lgetxattr); XL(path); XATTR_STAT(vp_); return real_(rp_, name, value, size);
 }
 int setxattr(const char *path, const char *name, const void *value, size_t size, int flags) {
-    REAL_OR_ENOSYS(setxattr); XL(path); XATTR_STAT(path); return real_(rp_, name, value, size, flags);
+    REAL_OR_ENOSYS(setxattr); XL(path); XATTR_STAT(vp_); return real_(rp_, name, value, size, flags);
 }
 int lsetxattr(const char *path, const char *name, const void *value, size_t size, int flags) {
-    REAL_OR_ENOSYS(lsetxattr); XL(path); XATTR_STAT(path); return real_(rp_, name, value, size, flags);
+    REAL_OR_ENOSYS(lsetxattr); XL(path); XATTR_STAT(vp_); return real_(rp_, name, value, size, flags);
 }
 ssize_t listxattr(const char *path, char *list, size_t size) {
-    REAL_OR_ENOSYS(listxattr); XL(path); XATTR_STAT(path); return real_(rp_, list, size);
+    REAL_OR_ENOSYS(listxattr); XL(path); XATTR_STAT(vp_); return real_(rp_, list, size);
 }
 ssize_t llistxattr(const char *path, char *list, size_t size) {
-    REAL_OR_ENOSYS(llistxattr); XL(path); XATTR_STAT(path); return real_(rp_, list, size);
+    REAL_OR_ENOSYS(llistxattr); XL(path); XATTR_STAT(vp_); return real_(rp_, list, size);
 }
 int removexattr(const char *path, const char *name) {
-    REAL_OR_ENOSYS(removexattr); XL(path); XATTR_STAT(path); return real_(rp_, name);
+    REAL_OR_ENOSYS(removexattr); XL(path); XATTR_STAT(vp_); return real_(rp_, name);
 }
 int lremovexattr(const char *path, const char *name) {
-    REAL_OR_ENOSYS(lremovexattr); XL(path); XATTR_STAT(path); return real_(rp_, name);
+    REAL_OR_ENOSYS(lremovexattr); XL(path); XATTR_STAT(vp_); return real_(rp_, name);
 }
 
 typedef int (*scandirat_fn)(int, const char *, struct dirent ***,
@@ -978,8 +978,8 @@ int scandirat(int dirfd, const char *path, struct dirent ***namelist,
               int (*compar)(const struct dirent **, const struct dirent **)) {
     REAL_T(scandirat, scandirat_fn);
     if (!real_) { errno = ENOSYS; return -1; }
-    XL(path);
-    if (vf_ && notify("list", path, NULL, 0) < 0) return -1;
+    XLAT(dirfd, path);
+    if (vf_ && notify("list", vp_, NULL, 0) < 0) return -1;
     return real_(dirfd, rp_, namelist, filter, compar);
 }
 int scandirat64(int dirfd, const char *path, struct dirent64 ***namelist,
@@ -996,7 +996,7 @@ int posix_spawn(pid_t *pid, const char *path, const posix_spawn_file_actions_t *
     REAL(posix_spawn);
     if (!real_) return ENOSYS;
     XL(path);
-    if (vf_ && notify("fetch", path, NULL, 0) < 0) return errno ? errno : EIO;
+    if (vf_ && notify("fetch", vp_, NULL, 0) < 0) return errno ? errno : EIO;
     return real_(pid, rp_, actions, attr, argv, envp);
 }
 /* libc searches PATH past the hooks. When the first PATH entry holding an executable `file` is under
@@ -1030,7 +1030,7 @@ int posix_spawnp(pid_t *pid, const char *file, const posix_spawn_file_actions_t 
         return real_(pid, file, actions, attr, argv, envp);
     }
     XL(file);
-    if (vf_ && notify("fetch", file, NULL, 0) < 0) return errno ? errno : EIO;
+    if (vf_ && notify("fetch", vp_, NULL, 0) < 0) return errno ? errno : EIO;
     return real_(pid, rp_, actions, attr, argv, envp);
 }
 
@@ -1043,7 +1043,7 @@ int posix_spawn_file_actions_addopen(posix_spawn_file_actions_t *fa, int fd, con
     XL(path);
     if (vf_) {
         if ((oflag & O_ACCMODE) != O_RDONLY || (oflag & (O_CREAT | O_TRUNC))) return ENOTSUP;
-        if (notify("fetch", path, NULL, 0) < 0 && errno != ENOENT) return errno ? errno : EIO;
+        if (notify("fetch", vp_, NULL, 0) < 0 && errno != ENOENT) return errno ? errno : EIO;
     }
     return real_(fa, fd, rp_, oflag, mode);
 }

@@ -177,17 +177,74 @@ static int unxlate(char *buf, size_t bufsz) {
     return 1;
 }
 
-/* XL: rp_ is the real path; vf_ is non-zero when p was a virtual path. */
-#define XL(p) \
-    const char *rp_; char xb_[PATH_MAX]; \
-    rp_ = xlate((p), xb_, sizeof xb_); \
-    int vf_ = (rp_ != (p)); (void)vf_
+/*
+ * A relative `path` resolves against `dirfd` (the cwd for AT_FDCWD) inside the backing directory on
+ * its own, but the supervisor must still hear about it: when that base is under a mount, write the
+ * virtual path into `out` and return 1. The base comes back virtual from our own readlink and getcwd
+ * hooks. A negative dirfd other than AT_FDCWD never resolves (a symlink target is not a path here).
+ */
+static int virtual_of_relative(int dirfd, const char *path, char *out, size_t outsz) {
+    if (!path || !*path || *path == '/' || (dirfd < 0 && dirfd != AT_FDCWD)) return 0;
+    if (!g_init) vfs_init();
+    if (!g_nmounts) return 0;
+    char base[PATH_MAX];
+    if (dirfd == AT_FDCWD) {
+        if (!getcwd(base, sizeof base)) return 0;
+    } else {
+        char link[32];
+        snprintf(link, sizeof link, "/proc/self/fd/%d", dirfd);
+        ssize_t n = readlink(link, base, sizeof base - 1);
+        if (n <= 0) return 0;
+        base[n] = '\0';
+    }
+    if (!mount_of(base)) return 0;
+    /* base + "/" + path, with "." and ".." folded lexically */
+    size_t len = strlen(base);
+    if (len >= outsz) return 0;
+    memcpy(out, base, len + 1);
+    for (const char *p = path; *p;) {
+        const char *end = strchr(p, '/');
+        size_t n = end ? (size_t)(end - p) : strlen(p);
+        if (n == 0 || (n == 1 && p[0] == '.')) {
+            /* nothing */
+        } else if (n == 2 && p[0] == '.' && p[1] == '.') {
+            char *slash = strrchr(out, '/');
+            len = slash && slash != out ? (size_t)(slash - out) : 1;
+            out[len] = '\0';
+        } else {
+            if (len + 1 + n + 1 > outsz) return 0;
+            if (len > 1) out[len++] = '/';
+            memcpy(out + len, p, n);
+            len += n;
+            out[len] = '\0';
+        }
+        if (!end) break;
+        p = end + 1;
+    }
+    return mount_of(out) != NULL;
+}
 
-#define XL2(a, b) \
-    char ab_[PATH_MAX], bb_[PATH_MAX]; \
+/* XL: rp_ is the real path, vp_ the virtual one to report; vf_ is non-zero when p is under a mount,
+ * absolute or relative to dfd (XLAT) or to the cwd (XL). A relative path is passed on unchanged. */
+#define XLAT(dfd, p) \
+    const char *rp_; char xb_[PATH_MAX], xv_[PATH_MAX]; \
+    rp_ = xlate((p), xb_, sizeof xb_); \
+    const char *vp_ = (p); \
+    int vf_ = (rp_ != (p)); \
+    if (!vf_ && virtual_of_relative((dfd), (p), xv_, sizeof xv_)) { vf_ = 1; vp_ = xv_; } \
+    (void)vf_; (void)vp_
+#define XL(p) XLAT(AT_FDCWD, p)
+
+#define XL2AT(fa, a, fb, b) \
+    char ab_[PATH_MAX], bb_[PATH_MAX], av_[PATH_MAX], bv_[PATH_MAX]; \
     const char *ra_ = xlate((a), ab_, sizeof ab_); \
     const char *rb_ = xlate((b), bb_, sizeof bb_); \
-    int va_ = (ra_ != (a)), vb_ = (rb_ != (b)); (void)va_; (void)vb_
+    const char *vpa_ = (a), *vpb_ = (b); \
+    int va_ = (ra_ != (a)), vb_ = (rb_ != (b)); \
+    if (!va_ && virtual_of_relative((fa), (a), av_, sizeof av_)) { va_ = 1; vpa_ = av_; } \
+    if (!vb_ && virtual_of_relative((fb), (b), bv_, sizeof bv_)) { vb_ = 1; vpb_ = bv_; } \
+    (void)va_; (void)vb_; (void)vpa_; (void)vpb_
+#define XL2(a, b) XL2AT(AT_FDCWD, a, AT_FDCWD, b)
 
 #define REAL(name) \
     static typeof(&name) real_; \
@@ -239,13 +296,25 @@ static int touch(const struct vfs_mount *m, const char *rel, uint32_t flags) {
 /* Tell the supervisor about `op` on virtual path `p` (and `p2` for rename).
  * `flags` are the open(2) flags for "open". 0 without VFS_SOCKET, or when the
  * path is not under a mount. */
+/* `rel` without trailing slashes ("dir/" names "dir", as POSIX has it for a directory). */
+static const char *trimmed(const char *rel, char *buf, size_t bufsz) {
+    size_t n = strlen(rel);
+    if (!n || rel[n - 1] != '/') return rel;
+    while (n && rel[n - 1] == '/') n--;
+    if (n >= bufsz) return rel;
+    memcpy(buf, rel, n);
+    buf[n] = '\0';
+    return buf;
+}
+
 static int notify(const char *op, const char *p, const char *p2, int flags) {
     (void)flags;
     if (!g_socket) return 0;
     const struct vfs_mount *m = mount_of(p);
     if (!m) return 0;
     if (ensure_connected() < 0) return -1;   /* root fids exist only once attached */
-    const char *rel = rel_of(m, p);
+    char relb[PATH_MAX], rel2b[PATH_MAX];
+    const char *rel = trimmed(rel_of(m, p), relb, sizeof relb);
     uint32_t fid;
     const char *name;
     int r, e;
@@ -278,7 +347,7 @@ static int notify(const char *op, const char *p, const char *p2, int flags) {
             if (notify("unlink", p, NULL, 0) < 0) return -1;
             return m2 ? notify("flush", p2, NULL, 0) : 0;
         }
-        const char *rel2 = rel_of(m2, p2), *name2;
+        const char *rel2 = trimmed(rel_of(m2, p2), rel2b, sizeof rel2b), *name2;
         uint32_t fid2;
         if (walk_parent(m, rel, &fid, &name) < 0) return -1;
         if (walk_parent(m2, rel2, &fid2, &name2) < 0) { e = errno; p9_clunk(fid); errno = e; return -1; }
@@ -374,6 +443,15 @@ static int post_open(int fd, const char *vp, int flags) {
     if (fd < 0) {
         if (fid != P9_NOFID) { int e = errno; p9_clunk(fid); errno = e; }
         return fd;
+    }
+    /* A directory opened by descriptor (openat + fdopendir: find, du, rm -r) is listed as opendir is,
+     * after the open so a missing directory still fails. */
+    if ((flags & O_DIRECTORY) && notify("list", vp, NULL, 0) < 0) {
+        int e = errno;
+        if (fid != P9_NOFID) p9_clunk(fid);
+        real_close_(fd);
+        errno = e;
+        return -1;
     }
     if (!g_socket) return fd;
     const struct vfs_mount *m = mount_of(vp);
