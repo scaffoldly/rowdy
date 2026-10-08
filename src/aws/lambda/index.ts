@@ -606,7 +606,11 @@ export class LambdaFunction implements Logger {
       return this;
     }
     return Object.entries(
-      parseSecrets(secrets, { onOverride: (name) => this.log.debug(`withSecrets(overridden=${name})`) })
+      parseSecrets(secrets, {
+        onOverride: (name) => this.log.debug(`withSecrets(overridden=${name})`),
+        onEmpty: (name) =>
+          this.log.warn('Secret Skipped', { name, reason: 'empty value (a missing secret?); NAME="" sets it empty' }),
+      })
     )
       .filter(([key]) => key !== 'github_token') // DEVNOTE: Excluding "github_token" added by default in GH Actions
       .reduce((fn, [key, value]) => fn.withEnvironment(key, value), this);

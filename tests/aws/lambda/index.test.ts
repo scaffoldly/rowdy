@@ -558,6 +558,16 @@ SENTRY_DSN=https://key@sentry.example.com/1
     expect(environment(fn)).toMatchObject({ SENTRY_DSN: 'https://key@sentry.example.com/1', API_KEY: 'abc123' });
     expect(environment(fn)).not.toHaveProperty('github_token');
   });
+
+  it('warns with the name, never a value, when a line expands to nothing', () => {
+    const fn = new LambdaFunction('Container', imageService);
+    const warn = jest.spyOn(fn['log'], 'warn');
+    fn.withSecrets('DB_PASSWORD=\n{"DB_PASSWORD": "from-repo"}');
+
+    expect(environment(fn).DB_PASSWORD).toBe('from-repo');
+    expect(warn).toHaveBeenCalledWith('Secret Skipped', expect.objectContaining({ name: 'DB_PASSWORD' }));
+    expect(JSON.stringify(warn.mock.calls)).not.toContain('from-repo');
+  });
 });
 
 describe('aws lambda working directory', () => {
