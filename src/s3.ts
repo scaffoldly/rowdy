@@ -699,6 +699,7 @@ export class S3Adapter implements VfsAdapter {
       return;
     }
     let base = current?.etag;
+    let inTransit = 0; // attempts that failed on the way, which may or may not have landed
     for (let attempt = 1; ; attempt++) {
       const body = createReadStream(local);
       body.on('error', () => {}); // the SDK consumes read errors; a destroyed stream must not throw
@@ -726,6 +727,12 @@ export class S3Adapter implements VfsAdapter {
       } catch (e) {
         body.destroy();
         if (isPreconditionFailed(e)) {
+          // An attempt that failed in transit may have landed with only its response lost, and the
+          // retry is then refused because of it. Nothing is written here: the object counts as ours
+          // only if it holds exactly these bytes.
+          if (inTransit > 0 && (await this.landed(key, local, size, mtimeMs, base))) {
+            return;
+          }
           if (base) {
             throw VfsError.code('ESTALE', `${path}: object changed in S3 since it was opened (expected ETag ${base})`);
           }
@@ -746,9 +753,36 @@ export class S3Adapter implements VfsAdapter {
           await backoff(50 * attempt);
           continue;
         }
+        if (isInTransit(e) && inTransit < 3) {
+          // The SDK cannot retry a streamed body itself; a fresh stream can.
+          inTransit++;
+          await backoff(100 * 2 ** (inTransit - 1));
+          continue;
+        }
         throw toVfsError(e);
       }
     }
+  }
+
+  /** Whether the object holds exactly `local`'s bytes (size and checksum); if so, it is the new base. */
+  private async landed(key: string, local: string, size: number, mtimeMs: number, base?: string): Promise<boolean> {
+    const head = await this.head(key);
+    if (!head?.checksum || head.size !== size) {
+      return false;
+    }
+    if ((await digest(local, head.checksum.algo)) !== head.checksum.value) {
+      return false;
+    }
+    this.entries.set(key, {
+      etag: head.etag,
+      size,
+      materialized: true,
+      checkedAt: Date.now(),
+      synced: { mtimeMs, size },
+      checksum: head.checksum,
+    });
+    this.log(`flushed`, { key, size, base, landed: 'response lost, object matches' });
+    return true;
   }
 
   /**
@@ -1071,6 +1105,22 @@ const isPreconditionFailed = (e: unknown): boolean => {
 const isConditionalConflict = (e: unknown): boolean => {
   const err = e as S3Error;
   return err?.$metadata?.httpStatusCode === 409 || err?.name === 'ConditionalRequestConflict';
+};
+
+/**
+ * A failure on the way: no response (a dropped or timed-out connection, which the SDK cannot
+ * retry for a streamed body), a 5xx, or throttling. The request may or may not have landed.
+ */
+const isInTransit = (e: unknown): boolean => {
+  if (e instanceof VfsError) {
+    return false;
+  }
+  const err = e as S3Error & { code?: string; $retryable?: unknown };
+  const status = err?.$metadata?.httpStatusCode;
+  if (status === undefined) {
+    return !['ENOENT', 'EACCES', 'EISDIR'].includes(err?.code ?? ''); // not the local file's own errors
+  }
+  return status >= 500 || status === 429 || err.$retryable !== undefined;
 };
 
 const backoff = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
