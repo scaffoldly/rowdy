@@ -459,6 +459,8 @@ ssize_t readlinkat(int dirfd, const char *path, char *buf, size_t bufsz) {
 
 int close(int fd) {
     if (!real_close_) vfs_init();
+    /* the supervisor socket is the shim's, whatever the program thinks it is closing */
+    if (ipc_owns(fd)) return 0;
     /* Closing drops any advisory lock the program still held: end the lease too. */
     int l = fd_wlocked(fd) ? lock_transition(fd, F_UNLCK) : 0;
     int r = real_close_(fd);
@@ -498,6 +500,7 @@ static void fd_replaced(int oldfd, int newfd) {
 
 int dup2(int oldfd, int newfd) {
     REAL(dup2);
+    if (oldfd != newfd) ipc_vacate(newfd);
     int r = real_(oldfd, newfd);
     if (r >= 0) { fd_replaced(oldfd, r); fd_copy(oldfd, r); }
     return r;
@@ -505,6 +508,7 @@ int dup2(int oldfd, int newfd) {
 
 int dup3(int oldfd, int newfd, int flags) {
     REAL(dup3);
+    if (oldfd != newfd) ipc_vacate(newfd);
     int r = real_(oldfd, newfd, flags);
     if (r >= 0) { fd_replaced(oldfd, r); fd_copy(oldfd, r); }
     return r;
@@ -540,7 +544,10 @@ int fcntl(int fd, int cmd, ...) {
     }
     void *arg = va_arg(ap, void *);
     va_end(ap);
-    return real_(fd, cmd, arg);
+    int r = real_(fd, cmd, arg);
+    /* a duplicate, like dup(): the file is released when its last descriptor closes */
+    if (r >= 0 && (cmd == F_DUPFD || cmd == F_DUPFD_CLOEXEC)) fd_copy(fd, r);
+    return r;
 }
 
 int flock(int fd, int op) {
