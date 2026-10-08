@@ -38,8 +38,10 @@ docker run --rm --platform "$platform" -v "$root:/w" -w /w \
   gcc -shared -fPIC -Wl,-soname,libdl.so.2 -Wl,--version-script=/tmp/stub/dl.map /tmp/stub/dl.c -o /tmp/stub/libdl.so.2
   link='-L/tmp/stub -Wl,--no-as-needed -l:libdl.so.2'
 
-  # Global-dynamic TLS: __tls_get_addr puts ld-linux in DT_NEEDED.
-  gcc -O2 -s -shared -fPIC -fno-stack-protector -U_FORTIFY_SOURCE \
+  # Global-dynamic TLS through __tls_get_addr, which puts ld-linux in DT_NEEDED. aarch64 defaults
+  # to TLS descriptors, which need no such call, so it is asked for the traditional dialect.
+  case \$(uname -m) in x86_64) dialect= ;; *) dialect=-mtls-dialect=trad ;; esac
+  gcc -O2 -s -shared -fPIC \$dialect -fno-stack-protector -U_FORTIFY_SOURCE \
     native/vfspreload.c \$link -o $out/tls.so
 
   # Fortified: glibc-only __*_chk calls that musl does not export.
