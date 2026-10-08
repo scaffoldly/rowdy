@@ -497,24 +497,9 @@ export class Volume {
     return options;
   }
 
-  /** The specs from `--volumes` and each `-v`; as in `docker run -v`, a bare host path is `file://`. */
-  static fromArgs({ volumes, volume = [] }: { volumes?: string; volume?: Array<string> }): Array<string> {
-    const flags = volume.map((spec) => (spec.startsWith('/') ? `file://${spec}` : spec));
-    return [...(volumes ? Volume.list(volumes) : []), ...flags];
-  }
-
-  /** The specs in a `--volumes` value: a YAML list, or one spec per line with `#` comments. */
-  static list(value: string): Array<string> {
-    let parsed: unknown;
-    try {
-      parsed = YAML.parse(value);
-    } catch {
-      parsed = undefined;
-    }
-    const entries = Array.isArray(parsed)
-      ? parsed.map((entry) => String(entry))
-      : value.split(/\r?\n/).filter((line) => !line.trim().startsWith('#'));
-    return entries.map((entry) => entry.trim()).filter(Boolean);
+  /** The specs from each `-v`; as in `docker run -v`, a bare host path is `file://`. */
+  static fromArgs({ volume = [] }: { volume?: string | Array<string> }): Array<string> {
+    return [volume].flat().map((spec) => (spec.startsWith('/') ? `file://${spec}` : spec));
   }
 
   static parse(spec: string): Volume {
