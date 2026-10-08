@@ -25,6 +25,14 @@ once, and two volumes on one mountpoint fail the deploy.
       file:///tmp/scratch:/scratch
 ```
 
+The entrypoint takes the same option, so a local run needs no manifest. The volumes merge into any
+`--routes` / `ROWDY_ROUTES` the same way, and two volumes on one mountpoint fail the start:
+
+```sh
+rowdy --volumes 's3://my-bucket:/data' -- node server.js
+ROWDY_VOLUMES=$'s3://my-bucket:/data\nfile:///tmp/scratch:/scratch' rowdy -- node server.js
+```
+
 Every entry is mounted. Nothing is mounted in the kernel sense, see [How it works](#how-it-works).
 
 ## Syntax

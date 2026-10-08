@@ -59,6 +59,8 @@ type Args = yargs.ArgumentsCamelCase<
     port: number | undefined;
   } & {
     workdir: string | undefined;
+  } & {
+    volumes: string | undefined;
   }
 >;
 
@@ -71,6 +73,8 @@ const entrypoint = <T>(
     registry: string | undefined;
   } & {
     workdir: string | undefined;
+  } & {
+    volumes: string | undefined;
   }
 > => {
   const modified = argv
@@ -89,6 +93,12 @@ const entrypoint = <T>(
     .option('workdir', {
       type: 'string',
       description: 'Directory to run the command in. Stays in the current directory if it cannot be entered.',
+      global: false,
+      group: 'Entrypoint:',
+    })
+    .option('volumes', {
+      type: 'string',
+      description: 'Volumes to add to the Routes manifest: a YAML list, or one per line',
       global: false,
       group: 'Entrypoint:',
     });
@@ -451,6 +461,9 @@ export class Environment implements ILoggable {
     }
     if (argv.routes) {
       this._routes = Routes.fromURL(argv.routes);
+    }
+    if (argv.volumes) {
+      this._routes.withVolumes(Volume.list(argv.volumes));
     }
   }
 
