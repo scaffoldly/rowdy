@@ -230,7 +230,7 @@ int main(void) {
   if ((fd = openat(AT_FDCWD, "/vfs/h.txt", rd)) < 0) return 40;
   close(fd);
   if ((fd = open64("/vfs/h.txt", rd)) < 0) return 41;
-  struct flock fl = { .l_type = F_WRLCK, .l_whence = SEEK_SET };
+  struct flock fl = { .l_type = F_RDLCK, .l_whence = SEEK_SET };
   if (fcntl64(fd, F_SETLK, &fl)) return 42;
   fl.l_type = F_UNLCK;
   if (fcntl64(fd, F_SETLK, &fl)) return 42;
