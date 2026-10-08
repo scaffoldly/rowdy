@@ -59,6 +59,10 @@ type Args = yargs.ArgumentsCamelCase<
     port: number | undefined;
   } & {
     workdir: string | undefined;
+  } & {
+    volumes: string | undefined;
+  } & {
+    volume: string | Array<string> | undefined;
   }
 >;
 
@@ -71,6 +75,10 @@ const entrypoint = <T>(
     registry: string | undefined;
   } & {
     workdir: string | undefined;
+  } & {
+    volumes: string | undefined;
+  } & {
+    volume: string | Array<string> | undefined;
   }
 > => {
   const modified = argv
@@ -89,6 +97,20 @@ const entrypoint = <T>(
     .option('workdir', {
       type: 'string',
       description: 'Directory to run the command in. Stays in the current directory if it cannot be entered.',
+      global: false,
+      group: 'Entrypoint:',
+    })
+    .option('volumes', {
+      type: 'string',
+      description: 'Volumes to add to the Routes manifest: a YAML list, or one per line',
+      global: false,
+      group: 'Entrypoint:',
+    })
+    .option('volume', {
+      alias: 'v',
+      type: 'string',
+      description:
+        'A volume, as in docker run -v: <scheme>://<locator>:<mountpoint>[:<flags>], or /host/path:<mountpoint>. Repeatable',
       global: false,
       group: 'Entrypoint:',
     });
@@ -243,6 +265,13 @@ export class Environment implements ILoggable {
               description: 'Volumes to add to the Routes manifest: a YAML list, or one per line',
               group: 'Runtime:',
             })
+            .option('volume', {
+              alias: 'v',
+              type: 'string',
+              description:
+                'A volume, as in docker run -v: <scheme>://<locator>:<mountpoint>[:<flags>], or /host/path:<mountpoint>. Repeatable',
+              group: 'Runtime:',
+            })
             .demandCommand(1, 'Please specify a subcommand')
             .command({
               command: 'aws',
@@ -294,8 +323,9 @@ export class Environment implements ILoggable {
                     if (argv.routes) {
                       lambda = lambda.withRoutes(Routes.fromURL(argv.routes));
                     }
-                    if (argv.volumes) {
-                      lambda = lambda.withRoutes(Routes.empty().withVolumes(Volume.list(argv.volumes)));
+                    const volumes = Volume.fromArgs(argv);
+                    if (volumes.length) {
+                      lambda = lambda.withRoutes(Routes.empty().withVolumes(volumes));
                     }
                     if (argv.secrets) {
                       lambda = lambda.withSecrets(argv.secrets);
@@ -463,6 +493,7 @@ export class Environment implements ILoggable {
     if (argv.routes) {
       this._routes = Routes.fromURL(argv.routes);
     }
+    this._routes.withVolumes(Volume.fromArgs(argv));
   }
 
   private chdir(workdir: string): void {

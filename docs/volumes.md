@@ -25,6 +25,18 @@ once, and two volumes on one mountpoint fail the deploy.
       file:///tmp/scratch:/scratch
 ```
 
+On the command line, `-v` / `--volume` takes one spec per flag, as `docker run -v` does, and a bare
+host path means `file://`. It works on `rowdy`, `rowdy serve` and `rowdy create`, so a local run
+needs no manifest. Every source merges into any `--routes` / `ROWDY_ROUTES` the same way, and two
+volumes on one mountpoint fail the start:
+
+```sh
+rowdy -v s3://my-bucket:/data -v /tmp/scratch:/scratch -- node server.js
+ROWDY_VOLUMES=$'s3://my-bucket:/data\nfile:///tmp/scratch:/scratch' rowdy -- node server.js
+```
+
+Docker's named volumes (`data:/data`) and `:ro` have no equivalent here and are rejected.
+
 Every entry is mounted. Nothing is mounted in the kernel sense, see [How it works](#how-it-works).
 
 ## Syntax
