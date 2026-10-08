@@ -215,6 +215,39 @@ describe('P9Server', () => {
     });
   });
 
+  it('holds one lease for every write lock on a file: the last holder to unlock gives it back', async () => {
+    // Two processes on one instance: B's write lock is granted while A holds the lease, and A's
+    // unlock must not give the lease back from under B.
+    const a = (await client.walk(root, ['db', 'nuss.sqlite'])).fid;
+    const b = (await client.walk(root, ['db', 'nuss.sqlite'])).fid;
+    await client.lopen(a, O_RDWR);
+    await client.lopen(b, O_RDWR);
+    s3.calls = [];
+    expect(await client.lock(a, LOCK_TYPE.WRLCK)).toBe(LOCK_STATUS.SUCCESS);
+    expect(await client.lock(b, LOCK_TYPE.WRLCK)).toBe(LOCK_STATUS.SUCCESS);
+    expect(await client.lock(a, LOCK_TYPE.UNLCK)).toBe(LOCK_STATUS.SUCCESS);
+    expect(s3.calls).toEqual(['lock /s3/db/nuss.sqlite', 'flush /s3/db/nuss.sqlite']);
+    expect(await client.lock(b, LOCK_TYPE.UNLCK)).toBe(LOCK_STATUS.SUCCESS);
+    expect(s3.calls).toEqual([
+      'lock /s3/db/nuss.sqlite',
+      'flush /s3/db/nuss.sqlite',
+      'flush /s3/db/nuss.sqlite',
+      'unlock /s3/db/nuss.sqlite',
+    ]);
+
+    // and a clunk with a write lock held counts as that holder's unlock
+    s3.calls = [];
+    await client.lock(a, LOCK_TYPE.WRLCK);
+    await client.lock(b, LOCK_TYPE.WRLCK);
+    await client.clunk(a);
+    expect(s3.calls.filter((c) => /^(lock|unlock)/.test(c))).toEqual(['lock /s3/db/nuss.sqlite']);
+    await client.clunk(b);
+    expect(s3.calls.filter((c) => /^(lock|unlock)/.test(c))).toEqual([
+      'lock /s3/db/nuss.sqlite',
+      'unlock /s3/db/nuss.sqlite',
+    ]);
+  });
+
   it('gives the lease back when a client vanishes with a write lock held', async () => {
     const c = await new P9Client(server.socket).connect();
     await c.version();

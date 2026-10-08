@@ -88,7 +88,7 @@ type Fid = {
   fd?: fs.FileHandle;
   /** The adapter was told about a write through this fid; flush on fsync and clunk. */
   dirty?: boolean;
-  /** This fid holds the write lock (the adapter's lease). */
+  /** This fid is one of the holders of the file's write lock (the adapter's lease). */
   wlock?: boolean;
   /** Directory listing taken at the start of a readdir sequence. */
   dir?: Dirent[];
@@ -147,9 +147,13 @@ const applied = async (op: () => Promise<unknown>, ...codes: Array<keyof typeof 
 const direntType = (d: FsDirent): number =>
   d.isDirectory() ? 4 : d.isSymbolicLink() ? 10 : d.isFile() ? 8 : d.isFIFO() ? 1 : d.isSocket() ? 12 : 0;
 
+/** One lease per file, however many fids (processes on this instance) hold its write lock. */
+type Lease = { holders: number; ready: Promise<void> };
+
 export class P9Server {
   private server?: Server;
   private readonly _mounts: P9Mount[];
+  private readonly leases = new Map<string, Lease>();
   readonly socket: string;
 
   constructor(
@@ -332,6 +336,41 @@ export class P9Server {
     await fid.mount.adapter.flush(this.vpath(fid));
   }
 
+  private leaseKey(fid: Fid): string {
+    return `${fid.mount.mountpoint}\0${this.vpath(fid)}`;
+  }
+
+  /** Join the file's write lock: the first holder takes the adapter's lease, the others share it. */
+  private async writeLock(fid: Fid): Promise<void> {
+    const key = this.leaseKey(fid);
+    let lease = this.leases.get(key);
+    if (!lease) {
+      const ready = Promise.resolve(fid.mount.adapter.lock?.(this.vpath(fid)));
+      lease = { holders: 0, ready };
+      this.leases.set(key, lease);
+      ready.catch(() => {
+        if (this.leases.get(key) === lease) this.leases.delete(key);
+      });
+    }
+    await lease.ready;
+    lease.holders++;
+    fid.wlock = true;
+  }
+
+  /** Leave it: this holder's writes are persisted, and the last holder gives the lease back. */
+  private async writeUnlock(fid: Fid): Promise<void> {
+    fid.wlock = false;
+    await this.flush(fid);
+    fid.dirty = false;
+    const key = this.leaseKey(fid);
+    const lease = this.leases.get(key);
+    if (lease && --lease.holders > 0) {
+      return;
+    }
+    this.leases.delete(key);
+    await fid.mount.adapter.unlock?.(this.vpath(fid));
+  }
+
   private async clunk(fid: Fid): Promise<void> {
     try {
       if (fid.fd) {
@@ -339,9 +378,7 @@ export class P9Server {
         fid.fd = undefined;
       }
       if (fid.wlock) {
-        fid.wlock = false;
-        await this.flush(fid);
-        await fid.mount.adapter.unlock?.(this.vpath(fid));
+        await this.writeUnlock(fid);
       } else {
         await this.flush(fid);
       }
@@ -607,8 +644,7 @@ export class P9Server {
         try {
           if (req.lock.type === LOCK_TYPE.WRLCK) {
             if (!fid.wlock) {
-              await adapter.lock?.(vpath);
-              fid.wlock = true;
+              await this.writeLock(fid);
               fid.dirty = fid.dirty || !!adapter.lock; // a write will follow; the unlock flushes it
             }
           } else if (req.lock.type === LOCK_TYPE.RDLCK) {
@@ -616,10 +652,7 @@ export class P9Server {
               await adapter.revalidate?.(vpath);
             }
           } else if (fid.wlock) {
-            fid.wlock = false;
-            await this.flush(fid);
-            fid.dirty = false;
-            await adapter.unlock?.(vpath);
+            await this.writeUnlock(fid);
           }
         } catch (e) {
           if (errnoOf(e) === LINUX_ERRNO.EAGAIN) {
