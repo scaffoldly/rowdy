@@ -157,3 +157,10 @@ no corruption.
   rewrite the pattern or root to the backing directory, rewrite every result back, and notify a
   listing for each directory not yet fetched from S3.
 - A startup warning in rowdy when the app binary is static, so a volume it cannot see is reported.
+
+## Addendum (2026-10-08): the musl floor
+
+The oldest supported musl is **1.2.3 (Alpine 3.17)**, alongside the glibc 2.34 floor above. musl
+only ever adds exported symbols, so `native/symbols.sh` checks the shim's undefined symbols
+against that one pinned image (`alpine:3.17`) and every newer musl is covered by it. The suites
+in `native/test.sh` keep running on the current `node:22-alpine`.

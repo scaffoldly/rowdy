@@ -1,6 +1,7 @@
 #!/bin/sh
 # Gate for the shim (ADR 0003): the object is built against glibc but must also load under musl,
-# whose loader refuses to start a process whose preload has an unresolved symbol.
+# whose loader refuses to start a process whose preload has an unresolved symbol. The musl checked
+# is the supported floor, 1.2.3 (Alpine 3.17): musl only ever adds exports, so newer ones pass too.
 #
 #   sh native/symbols.sh x64|arm64 [path]
 #
@@ -23,7 +24,7 @@ so="${2:-lib/linux-$arch/vfspreload.so}"
 [ -f "$root/$so" ] || { echo "$so missing: run native/build.sh $arch first" >&2; exit 2; }
 
 docker run --rm --platform "$platform" -v "$root:/w:ro" -w /w \
-  alpine:3@sha256:294b683cb724975bec92580e1e685676bd4b50bda910ddb8c51d4cabeaec77e6 sh -euc '
+  alpine:3.17@sha256:8fc3dacfb6d69da8d44e42390de777e48577085db99aa4e4af35f483eb08b989 sh -euc '
   apk add --no-cache binutils >/dev/null
   so="$1"
   musl=$(ls /lib/ld-musl-*.so.1)
