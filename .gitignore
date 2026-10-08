@@ -145,3 +145,5 @@ bin/
 lib/
 # Objects the gate must reject (built by native/negative.sh)
 .negative/
+# Pinned SQLite sources and results (native/sqlite.sh)
+.sqlite/

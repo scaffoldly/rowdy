@@ -72,6 +72,12 @@ jobs:
           S3_BUCKET: ${{ steps.aws.outcome == 'success' && vars.S3_BUCKET_CI || '' }}
           S3_PREFIX: ${{ github.repository }}/${{ github.run_id }}-${{ github.run_attempt }}/${{ matrix.arch }}
 
+      - name: SQLite mptest and speedtest1
+        run: sh native/sqlite.sh ${{ matrix.arch }}
+        env:
+          S3_BUCKET: ${{ steps.aws.outcome == 'success' && vars.S3_BUCKET_CI || '' }}
+          S3_PREFIX: ${{ github.repository }}/${{ github.run_id }}-${{ github.run_attempt }}/${{ matrix.arch }}-sqlite
+
       - name: Test shim (glibc below 2.34)
         run: sh native/legacy.sh ${{ matrix.arch }}
 
