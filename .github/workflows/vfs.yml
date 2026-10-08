@@ -57,6 +57,9 @@ jobs:
       - name: Test shim (glibc, debian)
         run: sh native/test.sh ${{ matrix.arch }} debian
 
+      - name: Test shim (distroless node, nonroot)
+        run: sh native/distroless.sh ${{ matrix.arch }}
+
       - name: Test shim (glibc below 2.34)
         run: sh native/legacy.sh ${{ matrix.arch }}
 
