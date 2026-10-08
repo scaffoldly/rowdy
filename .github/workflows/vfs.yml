@@ -57,8 +57,20 @@ jobs:
       - name: Test shim (glibc, debian)
         run: sh native/test.sh ${{ matrix.arch }} debian
 
+      # A fork's pull request gets no OIDC token, so the bucket half runs only for this repository.
+      - name: Configure AWS Credentials
+        id: aws
+        if: ${{ vars.S3_BUCKET_CI != '' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          aws-region: us-east-1
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+
       - name: Test shim (distroless node, nonroot)
         run: sh native/distroless.sh ${{ matrix.arch }}
+        env:
+          S3_BUCKET: ${{ steps.aws.outcome == 'success' && vars.S3_BUCKET_CI || '' }}
+          S3_PREFIX: ${{ github.repository }}/${{ github.run_id }}-${{ github.run_attempt }}/${{ matrix.arch }}
 
       - name: Test shim (glibc below 2.34)
         run: sh native/legacy.sh ${{ matrix.arch }}

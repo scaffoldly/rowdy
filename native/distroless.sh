@@ -15,7 +15,10 @@ root="$(cd "$(dirname "$0")/.." && pwd)"
 [ -f "$root/dist/index.js" ] || { echo "dist/index.js missing: run yarn build first (the test supervisor is the package's 9P server)" >&2; exit 2; }
 [ -f "$root/lib/linux-$arch/vfspreload.so" ] || { echo "lib/linux-$arch/vfspreload.so missing: run native/build.sh $arch first" >&2; exit 2; }
 
+# S3_BUCKET, S3_PREFIX and the AWS credentials pass through when set: the bucket half of the test.
 exec docker run --rm --platform "$platform" --user 65532:65532 -e SHIM="/w/lib/linux-$arch/vfspreload.so" \
+  -e S3_BUCKET -e S3_PREFIX -e AWS_REGION -e AWS_DEFAULT_REGION \
+  -e AWS_ACCESS_KEY_ID -e AWS_SECRET_ACCESS_KEY -e AWS_SESSION_TOKEN \
   -v "$root:/w:ro" \
   gcr.io/distroless/nodejs22-debian12:nonroot@sha256:13593b7570658e8477de39e2f4a1dd25db2f836d68a0ba771251572d23bb4f8e \
   /w/native/test-distroless.js
