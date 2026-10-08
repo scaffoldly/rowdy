@@ -455,6 +455,62 @@ if grep -q "/tmp/notvfs" /tmp/ops.log 2>/dev/null; then
   fail "logged non-/vfs path"
 fi
 
+# dup2 onto a descriptor open on a VFS file closes that file: it is flushed then, while the
+# process lives, not when its session ends
+rm -f /tmp/ops.log
+sh -c 'exec 3>/vfs/dupped; echo x >&3; exec 3>/dev/null; grep -q "flush /vfs/dupped" /tmp/ops.log' ||
+  fail "dup2 over a VFS descriptor did not flush: $(tr '\n' ' ' < /tmp/ops.log)"
+rm -f /vfs/dupped
+
+# the supervisor socket sits above the descriptors programs pick, and survives a program closing,
+# or dup2-ing onto, its number (in C: dash only redirects descriptors 0-9)
+cat > /tmp/sock.c <<'EOF'
+#include <dirent.h>
+#include <fcntl.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+static int socket_fd(void) {
+  DIR *d = opendir("/proc/self/fd");
+  struct dirent *e;
+  char p[64], l[64];
+  int n = -1;
+  while (d && (e = readdir(d))) {
+    snprintf(p, sizeof p, "/proc/self/fd/%s", e->d_name);
+    ssize_t k = readlink(p, l, sizeof l - 1);
+    if (k > 0) { l[k] = 0; if (!strncmp(l, "socket:", 7)) n = atoi(e->d_name); }
+  }
+  if (d) closedir(d);
+  return n;
+}
+static int probe(void) {
+  int fd = open("/vfs/sockprobe", O_WRONLY | O_CREAT | O_TRUNC, 0644);
+  if (fd < 0 || write(fd, "x", 1) != 1 || close(fd)) return 0;
+  FILE *f = fopen("/tmp/ops.log", "r");
+  char line[512];
+  int flushed = 0;
+  while (f && fgets(line, sizeof line, f)) flushed |= strstr(line, "flush /vfs/sockprobe") != NULL;
+  if (f) fclose(f);
+  unlink("/tmp/ops.log");
+  return flushed;
+}
+int main(void) {
+  if (!probe()) { puts("no flush before"); return 1; }
+  int n = socket_fd();
+  if (n < 256) { printf("socket at fd %d\n", n); return 2; }
+  close(n);
+  if (!probe()) { printf("lost after close(%d)\n", n); return 3; }
+  if (dup2(open("/dev/null", O_WRONLY), n) != n) { printf("dup2 onto %d failed\n", n); return 4; }
+  if (!probe()) { printf("lost after dup2 onto %d\n", n); return 5; }
+  return 0;
+}
+EOF
+gcc -O2 /tmp/sock.c -o /tmp/sock
+rm -f /tmp/ops.log
+/tmp/sock || fail "supervisor socket"
+rm -f /vfs/sockprobe
+
 # a second mount reaches the supervisor under its own virtual path
 rm -f /tmp/ops.log
 env VFS_MOUNTS=/vfs=/tmp/vfsstore:/b=/tmp/store/b sh -c 'echo x > /b/reported' || fail "mounts: write to second mount with a supervisor"

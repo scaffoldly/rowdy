@@ -14,8 +14,13 @@
 
 static const char *g_socket;    /* supervisor socket path, or NULL */
 
-/* libc's close, resolved past our own hook */
+/* libc's close and fcntl, resolved past our own hooks */
 static int (*real_close_)(int);
+static int (*real_fcntl_)(int, int, ...);
+
+/* The socket's lowest descriptor: above what programs pick (shells use 3-9, save at 10 and up,
+ * bash keeps 255). A program may still close or dup2 onto it: see ipc_owns / ipc_vacate. */
+#define VFS_IPC_FD 256
 
 static pthread_mutex_t g_lock = PTHREAD_MUTEX_INITIALIZER;
 static int      g_ipc = -1;     /* connected socket, owned by g_ipc_pid */
@@ -43,6 +48,7 @@ static void transport_init(void) {
     const char *s = getenv("VFS_SOCKET");
     g_socket = (s && *s) ? s : NULL;
     real_close_ = (int (*)(int))dlsym(RTLD_NEXT, "close");
+    real_fcntl_ = (int (*)(int, int, ...))dlsym(RTLD_NEXT, "fcntl");
 }
 
 /* ---- message building ---------------------------------------------------- */
@@ -139,6 +145,8 @@ static int connect_locked(void) {
     if (strlen(g_socket) >= sizeof addr.sun_path) { errno = ENAMETOOLONG; return -1; }
     int fd = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
     if (fd < 0) return -1;
+    int high = real_fcntl_(fd, F_DUPFD_CLOEXEC, VFS_IPC_FD);
+    if (high >= 0) { real_close_(fd); fd = high; }
     memset(&addr, 0, sizeof addr);
     addr.sun_family = AF_UNIX;
     strcpy(addr.sun_path, g_socket);
@@ -161,6 +169,24 @@ static int connect_locked(void) {
         return -1;
     }
     return g_on_connect ? g_on_connect() : 0;
+}
+
+/* Whether `fd` is this process's supervisor socket. */
+static int ipc_owns(int fd) {
+    pthread_mutex_lock(&g_lock);
+    int own = fd >= 0 && fd == g_ipc && g_ipc_pid == getpid();
+    pthread_mutex_unlock(&g_lock);
+    return own;
+}
+
+/* About to be replaced by a dup2 onto its number: move the socket to another descriptor first. */
+static void ipc_vacate(int fd) {
+    pthread_mutex_lock(&g_lock);
+    if (fd >= 0 && fd == g_ipc && g_ipc_pid == getpid()) {
+        int moved = real_fcntl_(g_ipc, F_DUPFD_CLOEXEC, VFS_IPC_FD);
+        if (moved >= 0) g_ipc = moved;
+    }
+    pthread_mutex_unlock(&g_lock);
 }
 
 /* A request built by `fill`, answered into `reply`. Locks, (re)connects, and keeps
