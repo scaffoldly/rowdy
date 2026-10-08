@@ -15,8 +15,8 @@ if [ -z "${VFS_STAGE:-}" ]; then
       *) echo "usage: $0 x64|arm64 alpine|debian" >&2; exit 2 ;;
     esac
     case "$flavour" in
-      alpine) image=node:22-alpine ;;
-      debian) image=node:22-bookworm-slim ;;
+      alpine) image=node:22-alpine@sha256:0a7108bf6c7bf5de370ffb1a3ed6be93d405b43ff159f681a8d18c0e2bc2e402 ;;
+      debian) image=node:22-bookworm-slim@sha256:c3de60bf2f9dd0ac6370e6117950ff62d6e339527e7472301c9c78a017978392 ;;
       *) echo "usage: $0 x64|arm64 alpine|debian" >&2; exit 2 ;;
     esac
     root="$(cd "$(dirname "$0")/.." && pwd)"

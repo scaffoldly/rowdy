@@ -48,6 +48,11 @@ docker run --rm --platform "$platform" -v "$root:/w" -w /w \
   gcc -O2 -s -shared -fPIC -ftls-model=initial-exec -fno-stack-protector -D_FORTIFY_SOURCE=2 \
     native/vfspreload.c \$link -o $out/fortify.so
 
+  # GNU strerror_r and basename: musl exports both names with the POSIX ABI.
+  printf '%s\\n' '#define _GNU_SOURCE' '#include <string.h>' \\
+    'char *vfs_abi(int e, char *b, const char *p) { (void)basename(p); return strerror_r(e, b, 64); }' > /tmp/abi.c
+  gcc -O2 -s -shared -fPIC /tmp/abi.c -Wl,--no-as-needed -lc \$link -o $out/abi.so
+
   # Nothing undefined: the gate must not pass vacuously.
   echo 'int vfs_empty(void) { return 0; }' > /tmp/empty.c
   gcc -O2 -s -shared -fPIC /tmp/empty.c -Wl,--no-as-needed -lc \$link -o $out/empty.so
@@ -70,6 +75,7 @@ expect() {
 expect musl 'DT_NEEDED must be exactly'
 expect tls 'DT_NEEDED must be exactly'
 expect fortify 'not exported by musl: .*_chk'
+expect abi 'different ABI under musl: basename strerror_r'
 expect empty 'no undefined symbols'
 
 exit "$failed"
