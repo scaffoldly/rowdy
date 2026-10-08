@@ -218,6 +218,16 @@ int faccessat(int dirfd, const char *path, int mode, int flags) {
     if (vf_ && notify("stat", path, NULL, 0) < 0) return -1;
     return real_(dirfd, rp_, mode, flags);
 }
+int euidaccess(const char *path, int mode) {
+    REAL(euidaccess); XL(path);
+    if (vf_ && notify("stat", path, NULL, 0) < 0) return -1;
+    return real_(rp_, mode);
+}
+int eaccess(const char *path, int mode) {
+    REAL(eaccess); XL(path);
+    if (vf_ && notify("stat", path, NULL, 0) < 0) return -1;
+    return real_(rp_, mode);
+}
 int statx(int dirfd, const char *path, int flags, unsigned mask, struct statx *buf) {
     REAL(statx); XL(path);
     if (vf_ && notify("stat", path, NULL, 0) < 0) return -1;
@@ -369,16 +379,28 @@ int symlinkat(const char *target, int dirfd, const char *linkpath) {
 
 /* ---- temp files: the template is rewritten in place by libc --------------- */
 
-int mkstemp(char *template) {
-    REAL(mkstemp);
+/* The six chosen characters sit just before any suffix; they are copied back from the backing name. */
+typedef int (*temp_fn)(char *, int, int);
+static int temp_open(char *template, int suffixlen, int flags, temp_fn fn) {
     char tb[PATH_MAX];
     const char *rp = xlate(template, tb, sizeof tb);
-    int vf_ = (rp != template);
-    if (vf_ && pre_open(template, O_RDWR | O_CREAT) < 0) return -1;
-    int fd = real_(rp == template ? template : tb);
-    if (fd >= 0 && rp != template) memcpy(template + strlen(template) - 6, tb + strlen(tb) - 6, 6);
-    if (vf_ && fd >= 0) return post_open(fd, template, O_RDWR | O_CREAT);
-    return fd;
+    if (rp == template) return fn(template, suffixlen, flags);
+    int oflags = O_RDWR | O_CREAT | flags;
+    if (pre_open(template, oflags) < 0) return -1;
+    int fd = fn(tb, suffixlen, flags);
+    if (fd >= 0)
+        memcpy(template + strlen(template) - suffixlen - 6, tb + strlen(tb) - suffixlen - 6, 6);
+    return post_open(fd, template, oflags);
+}
+static int real_mkstemp_(char *t, int s, int f) { REAL(mkstemp); (void)s; (void)f; return real_(t); }
+static int real_mkostemp_(char *t, int s, int f) { REAL(mkostemp); (void)s; return real_(t, f); }
+static int real_mkstemps_(char *t, int s, int f) { REAL(mkstemps); (void)f; return real_(t, s); }
+static int real_mkostemps_(char *t, int s, int f) { REAL(mkostemps); return real_(t, s, f); }
+int mkstemp(char *template) { return temp_open(template, 0, 0, real_mkstemp_); }
+int mkostemp(char *template, int flags) { return temp_open(template, 0, flags, real_mkostemp_); }
+int mkstemps(char *template, int suffixlen) { return temp_open(template, suffixlen, 0, real_mkstemps_); }
+int mkostemps(char *template, int suffixlen, int flags) {
+    return temp_open(template, suffixlen, flags, real_mkostemps_);
 }
 char *mkdtemp(char *template) {
     REAL(mkdtemp);
@@ -411,6 +433,15 @@ char *getcwd(char *buf, size_t size) {
     if (len > size) { errno = ERANGE; return NULL; }
     memcpy(buf, tmp, len);
     return buf;
+}
+
+/* glibc returns $PWD when it names the current directory, else getcwd; both go through the hooks. */
+char *get_current_dir_name(void) {
+    const char *pwd = getenv("PWD");
+    struct stat a, b;
+    if (pwd && stat(pwd, &a) == 0 && stat(".", &b) == 0 && a.st_dev == b.st_dev && a.st_ino == b.st_ino)
+        return strdup(pwd);
+    return getcwd(NULL, 0);
 }
 
 /* ---- paths handed back to the program are mapped to the virtual view ------ */
@@ -459,6 +490,8 @@ ssize_t readlinkat(int dirfd, const char *path, char *buf, size_t bufsz) {
 
 int close(int fd) {
     if (!real_close_) vfs_init();
+    /* the supervisor socket is the shim's, whatever the program thinks it is closing */
+    if (ipc_owns(fd)) return 0;
     /* Closing drops any advisory lock the program still held: end the lease too. */
     int l = fd_wlocked(fd) ? lock_transition(fd, F_UNLCK) : 0;
     int r = real_close_(fd);
@@ -488,17 +521,27 @@ int dup(int oldfd) {
     return newfd;
 }
 
+/* dup2/dup3 onto an open descriptor closed its file, so release it as close() does: end the
+ * lease, and flush on the last reference. Like the kernel's implicit close, errors go unreported. */
+static void fd_replaced(int oldfd, int newfd) {
+    if (oldfd == newfd || !fd_tracked(newfd)) return;
+    if (fd_wlocked(newfd)) lock_transition(newfd, F_UNLCK);
+    flush_fd(newfd, 1);
+}
+
 int dup2(int oldfd, int newfd) {
     REAL(dup2);
+    if (oldfd != newfd) ipc_vacate(newfd);
     int r = real_(oldfd, newfd);
-    if (r >= 0) fd_copy(oldfd, r);
+    if (r >= 0) { fd_replaced(oldfd, r); fd_copy(oldfd, r); }
     return r;
 }
 
 int dup3(int oldfd, int newfd, int flags) {
     REAL(dup3);
+    if (oldfd != newfd) ipc_vacate(newfd);
     int r = real_(oldfd, newfd, flags);
-    if (r >= 0) fd_copy(oldfd, r);
+    if (r >= 0) { fd_replaced(oldfd, r); fd_copy(oldfd, r); }
     return r;
 }
 
@@ -532,7 +575,10 @@ int fcntl(int fd, int cmd, ...) {
     }
     void *arg = va_arg(ap, void *);
     va_end(ap);
-    return real_(fd, cmd, arg);
+    int r = real_(fd, cmd, arg);
+    /* a duplicate, like dup(): the file is released when its last descriptor closes */
+    if (r >= 0 && (cmd == F_DUPFD || cmd == F_DUPFD_CLOEXEC)) fd_copy(fd, r);
+    return r;
 }
 
 int flock(int fd, int op) {
@@ -769,6 +815,9 @@ int scandir64(const char *path, struct dirent64 ***namelist,
                    (int (*)(const struct dirent **, const struct dirent **))compar);
 }
 int mkstemp64(char *template) { return mkstemp(template); }
+int mkostemp64(char *template, int flags) { return mkostemp(template, flags); }
+int mkstemps64(char *template, int suffixlen) { return mkstemps(template, suffixlen); }
+int mkostemps64(char *template, int suffixlen, int flags) { return mkostemps(template, suffixlen, flags); }
 
 /* Binaries built against glibc < 2.33 (official node builds among them) call stat through these
  * versioned wrappers. The same name is called through: below 2.33 they are the real functions
@@ -810,6 +859,21 @@ int __fxstatat64(int ver, int dirfd, const char *path, struct stat64 *st, int fl
     XL(path);
     if (vf_ && notify("stat", path, NULL, 0) < 0) return -1;
     return real_(ver, dirfd, rp_, (struct stat *)st, flags);
+}
+
+/* mknod's pre-2.33 wrappers, called through like the __xstat family. */
+typedef int (*xmknod_fn)(int, const char *, mode_t, dev_t *);
+typedef int (*xmknodat_fn)(int, int, const char *, mode_t, dev_t *);
+int __xmknod(int ver, const char *path, mode_t mode, dev_t *dev) {
+    REAL_T(__xmknod, xmknod_fn);
+    if (!real_) return mknod(path, mode, *dev);
+    XL(path); return real_(ver, rp_, mode, dev);
+}
+int __xmknodat(int ver, int dirfd, const char *path, mode_t mode, dev_t *dev) {
+    REAL_T(__xmknodat, xmknodat_fn);
+    XL(path);
+    if (!real_) { REAL(mknodat); return real_(dirfd, rp_, mode, *dev); }
+    return real_(ver, dirfd, rp_, mode, dev);
 }
 
 /* glibc 2.28+ binds fcntl to fcntl64 in programs built with _FILE_OFFSET_BITS=64, such as SQLite,
@@ -935,11 +999,57 @@ int posix_spawn(pid_t *pid, const char *path, const posix_spawn_file_actions_t *
     if (vf_ && notify("fetch", path, NULL, 0) < 0) return errno ? errno : EIO;
     return real_(pid, rp_, actions, attr, argv, envp);
 }
+/* libc searches PATH past the hooks. When the first PATH entry holding an executable `file` is under
+ * a mount, that virtual path is put in `out` and 1 returned; otherwise libc's own search runs. */
+static int path_under_mount(const char *file, char *out, size_t outsz) {
+    if (!g_init) vfs_init();
+    const char *path = getenv("PATH");
+    if (!path) path = "/bin:/usr/bin";
+    size_t flen = strlen(file);
+    for (const char *p = path;; ) {
+        const char *end = strchr(p, ':');
+        size_t dlen = end ? (size_t)(end - p) : strlen(p);
+        if (dlen && p[0] == '/' && dlen + 1 + flen + 1 <= outsz) {
+            memcpy(out, p, dlen);
+            out[dlen] = '/';
+            memcpy(out + dlen + 1, file, flen + 1);
+            int under = mount_of(out) != NULL;
+            if ((!under || notify("fetch", out, NULL, 0) == 0) && access(out, X_OK) == 0) return under;
+        }
+        if (!end) return 0;
+        p = end + 1;
+    }
+}
 int posix_spawnp(pid_t *pid, const char *file, const posix_spawn_file_actions_t *actions,
                  const posix_spawnattr_t *attr, char *const argv[], char *const envp[]) {
     REAL(posix_spawnp);
     if (!real_) return ENOSYS;
+    if (!strchr(file, '/')) {
+        char found[PATH_MAX];
+        if (path_under_mount(file, found, sizeof found)) return posix_spawn(pid, found, actions, attr, argv, envp);
+        return real_(pid, file, actions, attr, argv, envp);
+    }
     XL(file);
     if (vf_ && notify("fetch", file, NULL, 0) < 0) return errno ? errno : EIO;
     return real_(pid, rp_, actions, attr, argv, envp);
+}
+
+/* Both libcs copy the path when the action is added, and the child acts on it past every hook. A
+ * read is fetched and pointed at the backing file now; a write could never be persisted. */
+int posix_spawn_file_actions_addopen(posix_spawn_file_actions_t *fa, int fd, const char *path, int oflag,
+                                     mode_t mode) {
+    REAL(posix_spawn_file_actions_addopen);
+    if (!real_) return ENOSYS;
+    XL(path);
+    if (vf_) {
+        if ((oflag & O_ACCMODE) != O_RDONLY || (oflag & (O_CREAT | O_TRUNC))) return ENOTSUP;
+        if (notify("fetch", path, NULL, 0) < 0 && errno != ENOENT) return errno ? errno : EIO;
+    }
+    return real_(fa, fd, rp_, oflag, mode);
+}
+int posix_spawn_file_actions_addchdir_np(posix_spawn_file_actions_t *fa, const char *path) {
+    REAL(posix_spawn_file_actions_addchdir_np);
+    if (!real_) return ENOSYS;
+    XL(path);
+    return real_(fa, rp_);
 }
