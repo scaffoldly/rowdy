@@ -382,6 +382,24 @@ sh -c 'exec 3>/vfs/dupped; echo x >&3; exec 3>/dev/null; grep -q "flush /vfs/dup
   fail "dup2 over a VFS descriptor did not flush: $(tr '\n' ' ' < /tmp/ops.log)"
 rm -f /vfs/dupped
 
+# the supervisor socket sits above the descriptors programs pick, and survives a program closing,
+# or dup2-ing onto, its number
+rm -f /tmp/ops.log
+sh -c '
+  : > /vfs/sockprobe
+  n=
+  for f in /proc/$$/fd/*; do case "$(readlink "$f")" in socket:*) n=${f##*/} ;; esac; done
+  [ -n "$n" ] && [ "$n" -ge 256 ] || { echo "socket at fd ${n:-none}"; exit 1; }
+  eval "exec $n>&-"
+  echo y > /vfs/sockprobe
+  grep -q "flush /vfs/sockprobe" /tmp/ops.log || { echo "lost after close($n)"; exit 1; }
+  rm -f /tmp/ops.log
+  eval "exec $n>/dev/null"
+  echo z > /vfs/sockprobe
+  grep -q "flush /vfs/sockprobe" /tmp/ops.log || { echo "lost after dup2 onto $n"; exit 1; }
+' || fail "supervisor socket"
+rm -f /vfs/sockprobe
+
 # a second mount reaches the supervisor under its own virtual path
 rm -f /tmp/ops.log
 env VFS_MOUNTS=/vfs=/tmp/vfsstore:/b=/tmp/store/b sh -c 'echo x > /b/reported' || fail "mounts: write to second mount with a supervisor"
