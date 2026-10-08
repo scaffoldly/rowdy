@@ -378,6 +378,12 @@ fi
 # dup2 onto a descriptor open on a VFS file closes that file: it is flushed then, while the
 # process lives, not when its session ends
 rm -f /tmp/ops.log
+if [ "$FLAVOUR" = alpine ]; then  # DIAGNOSTIC, to be removed
+  apk add --no-cache strace >/dev/null 2>&1
+  strace -f -e trace=open,openat,dup,dup2,dup3,fcntl,close sh -c 'exec 3>/vfs/dupdiag; echo x >&3; exec 3>/dev/null' 2>&1 | grep -v ENOENT | tail -60
+  echo "DIAG ops: $(tr '\n' ' ' < /tmp/ops.log)"
+  rm -f /tmp/ops.log /vfs/dupdiag
+fi
 sh -c 'exec 3>/vfs/dupped; echo x >&3; exec 3>/dev/null; grep -q "flush /vfs/dupped" /tmp/ops.log' ||
   fail "dup2 over a VFS descriptor did not flush: $(tr '\n' ' ' < /tmp/ops.log)"
 rm -f /vfs/dupped
