@@ -9,7 +9,7 @@ import {
   VFS_SOCKET,
   wire,
 } from '@scaffoldly/rowdy-vfs';
-import { existsSync, mkdtempSync, rmSync } from 'fs';
+import { chmodSync, existsSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { lastValueFrom, ReplaySubject } from 'rxjs';
@@ -105,6 +105,57 @@ describe('environment', () => {
       const env = await finalize(environment);
       expect(env.LD_PRELOAD).toBeUndefined();
       expect(environment['_vfs']).toBeUndefined();
+    });
+
+    describe('a program LD_PRELOAD cannot reach', () => {
+      // A minimal ELF64 executable whose program headers are `types` (3 = PT_INTERP).
+      const program = (name: string, types: number[]): string => {
+        const buf = Buffer.alloc(64 + 56 * types.length);
+        buf.writeUInt32BE(0x7f454c46, 0);
+        buf[4] = 2;
+        buf[5] = 1;
+        buf.writeBigUInt64LE(64n, 0x20);
+        buf.writeUInt16LE(56, 0x36);
+        buf.writeUInt16LE(types.length, 0x38);
+        types.forEach((type, i) => buf.writeUInt32LE(type, 64 + i * 56));
+        const path = join(mkdtempSync(join(tmpdir(), 'rowdy-program-')), name);
+        writeFileSync(path, buf);
+        chmodSync(path, 0o755);
+        return path;
+      };
+      const warned = async (environment: Environment): Promise<string> => {
+        const lines: string[] = [];
+        const spy = jest.spyOn(console, 'warn').mockImplementation((...args: unknown[]) => {
+          lines.push(args.join(' '));
+        });
+        try {
+          await finalize(environment);
+          return lines.join('\n');
+        } finally {
+          spy.mockRestore();
+        }
+      };
+
+      it('warns when the program is statically linked: its volumes are invisible to it', async () => {
+        const server = program('static-server', [1]);
+        const environment = withVolumes([`file://${backing}:/data`]);
+        environment['_command'] = [server, '--port', '8080'];
+        const output = await warned(environment);
+        expect(output).toContain('Static Program');
+        expect(output).toContain(server);
+      });
+
+      it('says nothing for a dynamically linked program', async () => {
+        const environment = withVolumes([`file://${backing}:/data`]);
+        environment['_command'] = [program('dynamic-server', [3, 1])];
+        expect(await warned(environment)).not.toContain('Static Program');
+      });
+
+      it('says nothing without volumes', async () => {
+        const environment = new Environment(logger);
+        environment['_command'] = [program('static-server', [1])];
+        expect(await warned(environment)).not.toContain('Static Program');
+      });
     });
 
     it('mounts a file volume: preload, prefix, backing, supervisor socket', async () => {
