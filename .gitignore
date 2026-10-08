@@ -143,3 +143,5 @@ dist/
 bin/
 # Compiled shims (built by native/build.sh, shipped in the package)
 lib/
+# Objects the gate must reject (built by native/negative.sh)
+.negative/
