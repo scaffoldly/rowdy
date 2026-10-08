@@ -72,12 +72,6 @@ jobs:
           S3_BUCKET: ${{ steps.aws.outcome == 'success' && vars.S3_BUCKET_CI || '' }}
           S3_PREFIX: ${{ github.repository }}/${{ github.run_id }}-${{ github.run_attempt }}/${{ matrix.arch }}
 
-      - name: SQLite mptest and speedtest1
-        run: sh native/sqlite.sh ${{ matrix.arch }}
-        env:
-          S3_BUCKET: ${{ steps.aws.outcome == 'success' && vars.S3_BUCKET_CI || '' }}
-          S3_PREFIX: ${{ github.repository }}/${{ github.run_id }}-${{ github.run_attempt }}/${{ matrix.arch }}-sqlite
-
       - name: Test shim (glibc below 2.34)
         run: sh native/legacy.sh ${{ matrix.arch }}
 
@@ -137,6 +131,62 @@ jobs:
             mv lib/vfspreload-linux-$arch/vfspreload.so lib/linux-$arch/vfspreload.so
           done
           yarn && yarn build && yarn test
+
+  # SQLite's own mptest and speedtest1 through the shim, each suite and architecture its own job.
+  sqlite:
+    strategy:
+      fail-fast: false
+      matrix:
+        suite: [mptest, speedtest1]
+        arch: [x64, arm64]
+        include:
+          - arch: x64
+            runner: ubuntu-24.04
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    needs: [native]
+    name: SQLite ${{ matrix.suite }} (${{ matrix.arch }})
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Use Node.js 22.x
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22.x
+          cache: 'yarn'
+
+      - name: Download shims
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: vfspreload-linux-*
+          path: lib
+          merge-multiple: false
+
+      - name: Build package
+        run: |
+          for arch in x64 arm64; do
+            mkdir -p lib/linux-$arch
+            mv lib/vfspreload-linux-$arch/vfspreload.so lib/linux-$arch/vfspreload.so
+          done
+          yarn --frozen-lockfile && yarn build
+
+      # A fork's pull request gets no OIDC token, so the bucket half runs only for this repository.
+      - name: Configure AWS Credentials
+        id: aws
+        if: ${{ vars.S3_BUCKET_CI != '' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          aws-region: us-east-1
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+
+      - name: SQLite ${{ matrix.suite }}
+        run: sh native/sqlite.sh ${{ matrix.arch }} ${{ matrix.suite }}
+        env:
+          S3_BUCKET: ${{ steps.aws.outcome == 'success' && vars.S3_BUCKET_CI || '' }}
+          S3_PREFIX: ${{ github.repository }}/${{ github.run_id }}-${{ github.run_attempt }}/${{ matrix.arch }}-${{ matrix.suite }}
 
   # Step 4 of ADR 0002: the kernel's own 9P client mounts the server. It needs the 9p modules on
   # the runner's kernel, which is not guaranteed, so a missing module is reported, not failed on.

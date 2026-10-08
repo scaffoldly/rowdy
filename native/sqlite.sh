@@ -1,10 +1,10 @@
 #!/bin/sh
-# SQLite's own multi-process stress test (mptest) and benchmark (speedtest1) through the shim, built
+# SQLite's own multi-process stress test (mptest) or benchmark (speedtest1) through the shim, built
 # from a pinned SQLite release against glibc. Every mptest script must report no errors on /vfs, and
-# on /s3 when S3_BUCKET is set. speedtest1's totals are reported as ratios, not gated. The report
-# is printed, and appended to $GITHUB_STEP_SUMMARY when it is set.
+# on /s3 when S3_BUCKET is set; speedtest1 must complete everywhere, its timings reported as ratios,
+# not gated. The report is printed, and appended to $GITHUB_STEP_SUMMARY when it is set.
 #
-#   sh native/sqlite.sh x64|arm64
+#   sh native/sqlite.sh x64|arm64 mptest|speedtest1
 set -eu
 
 VERSION=3530400
@@ -14,11 +14,15 @@ AMALGAMATION_SHA3=628a44cfe82c66aed1ccbbe85a562d2e33ebe64b3288981ed7628561222793
 SPEEDTEST_SIZE=10
 
 if [ ! -f /.dockerenv ]; then
-  arch="${1:-}"
+  arch="${1:-}" suite="${2:-}"
   case "$arch" in
     x64)   platform=linux/amd64 ;;
     arm64) platform=linux/arm64 ;;
-    *) echo "usage: $0 x64|arm64" >&2; exit 2 ;;
+    *) echo "usage: $0 x64|arm64 mptest|speedtest1" >&2; exit 2 ;;
+  esac
+  case "$suite" in
+    mptest|speedtest1) ;;
+    *) echo "usage: $0 x64|arm64 mptest|speedtest1" >&2; exit 2 ;;
   esac
   root="$(cd "$(dirname "$0")/.." && pwd)"
   [ -f "$root/dist/index.js" ] || { echo "dist/index.js missing: run yarn build first (the supervisor is the package's 9P server)" >&2; exit 2; }
@@ -38,7 +42,7 @@ if [ ! -f /.dockerenv ]; then
   unzip -qjo "$cache/sqlite-amalgamation-$VERSION.zip" "*/sqlite3.c" "*/sqlite3.h" -d "$cache/src"
 
   rc=0
-  docker run --rm --platform "$platform" -e ARCH="$arch" -e SHIM="/w/lib/linux-$arch/vfspreload.so" \
+  docker run --rm --platform "$platform" -e ARCH="$arch" -e SUITE="$suite" -e SHIM="/w/lib/linux-$arch/vfspreload.so" \
     -e S3_BUCKET -e S3_PREFIX -e AWS_REGION -e AWS_DEFAULT_REGION \
     -e AWS_ACCESS_KEY_ID -e AWS_SECRET_ACCESS_KEY -e AWS_SESSION_TOKEN \
     -v "$root:/w:ro" -v "$cache/out:/out" \
@@ -59,7 +63,7 @@ S3_SCRIPTS="multiwrite01"
 say() { echo "[$(date +%H:%M:%S)] $*"; }
 say "installing gcc"
 { apt-get -qq update && apt-get -qq install -y --no-install-recommends gcc libc6-dev; } >/dev/null 2>&1
-say "compiling SQLite $VERSION, mptest and speedtest1"
+say "compiling SQLite $VERSION and $SUITE"
 src=/w/.sqlite/src
 b=/tmp/sq
 mkdir -p "$b" /tmp/speed
@@ -68,10 +72,14 @@ cp -r "$src/sqlite-src-$VERSION/mptest" "$b/mptest"
 # not yet written. An hour each, so a slow store is slow, not wrong (the step's timeout still bounds it).
 sed -i 's/^--wait all$/--wait all 3600000/; s/^--wait \([0-9][0-9]*\)$/--wait \1 3600000/' \
   "$b"/mptest/*.test "$b"/mptest/*.subtest
-opts="-O2 -DSQLITE_THREADSAFE=0 -DHAVE_USLEEP -I$src"
+# R-Tree for speedtest1's rtree testset; mptest is indifferent
+opts="-O2 -DSQLITE_THREADSAFE=0 -DHAVE_USLEEP -DSQLITE_ENABLE_RTREE -I$src"
 gcc $opts -c "$src/sqlite3.c" -o "$b/sqlite3.o"
-gcc $opts "$b/mptest/mptest.c" "$b/sqlite3.o" -o "$b/mptest/mptest" -lm -ldl
-gcc $opts "$src/sqlite-src-$VERSION/test/speedtest1.c" "$b/sqlite3.o" -o "$b/speedtest1" -lm -ldl -lpthread
+if [ "$SUITE" = mptest ]; then
+  gcc $opts "$b/mptest/mptest.c" "$b/sqlite3.o" -o "$b/mptest/mptest" -lm -ldl
+else
+  gcc $opts "$src/sqlite-src-$VERSION/test/speedtest1.c" "$b/sqlite3.o" -o "$b/speedtest1" -lm -ldl -lpthread
+fi
 
 say "starting the supervisor (mounts: /vfs${S3_BUCKET:+ /s3})"
 node /w/native/sqlite-server.js &
@@ -101,7 +109,8 @@ describe() {
   esac
 }
 cd "$b/mptest"
-for script in config01 config02 crash01 multiwrite01; do
+[ "$SUITE" = mptest ] && scripts="config01 config02 crash01 multiwrite01" || scripts=
+for script in $scripts; do
   row="| \`$script\` | $(describe "$script") |"
   for m in $mounts; do
     if [ "$m" = /s3 ]; then
@@ -166,23 +175,45 @@ speed() { # speed KEY LABEL DIR [no]
   db="$3/speed.db"
   run=
   [ "${4:-}" != no ] || run="env -u LD_PRELOAD"
-  $run "$b/speedtest1" --size "$SPEEDTEST_SIZE" "$db" > "/tmp/speed/$1.log" 2>&1 || failed=1
+  say "speedtest1 on $2 ..."
+  status=0
+  $run timeout "$MPTEST_TIMEOUT" "$b/speedtest1" --size "$SPEEDTEST_SIZE" "$db" > "/tmp/speed/$1.log" 2>&1 || status=$?
   $run rm -f "$db" "$db-journal" "$db-wal"
-  # one "NNN - name....... 0.071s" line per test, then a TOTAL line
-  awk '/^ *[0-9]+ - / { n = $1; t = $NF; sub(/s$/, "", t); sub(/^ *[0-9]+ - /, ""); sub(/[. ]+[0-9.]+s$/, ""); print n "\t" $0 "\t" t }' \
+  # one "NNN - name....... 0.071s" line per test (numbers repeat across testsets), then a TOTAL line
+  awk '/^ *[0-9]+ - / { n = $1; t = $NF; sub(/s$/, "", t); sub(/^ *[0-9]+ - /, ""); sub(/[. ]+[0-9.]+s$/, ""); print n " " $0 "\t" t }' \
     "/tmp/speed/$1.log" > "/tmp/speed/$1.tests"
   awk '/TOTAL/ { t = $NF; sub(/s$/, "", t); print t }' "/tmp/speed/$1.log" > "/tmp/speed/$1.total"
-  [ -s "/tmp/speed/$1.total" ] || { failed=1; echo "?" > "/tmp/speed/$1.total"; tail -20 "/tmp/speed/$1.log" >&2; }
+  if [ "$status" -ne 0 ] || [ ! -s "/tmp/speed/$1.total" ]; then
+    failed=1
+    reason=$(grep -m1 -iE 'error|fail' "/tmp/speed/$1.log" || :)
+    [ "$status" -ne 124 ] || reason="timed out after ${MPTEST_TIMEOUT}s"
+    echo "❌ ${reason:-exit $status}" > "/tmp/speed/$1.total"
+    {
+      echo "<details><summary>❌ speedtest1 on <code>$2</code>: last 30 lines</summary>"
+      echo
+      echo '```'
+      tail -30 "/tmp/speed/$1.log"
+      echo '```'
+      echo
+      echo "</details>"
+      echo
+    } >> "$logs"
+    say "speedtest1 on $2: FAILED (${reason:-exit $status})"
+    tail -30 "/tmp/speed/$1.log" >&2
+  else
+    say "speedtest1 on $2: $(cat "/tmp/speed/$1.total")s"
+  fi
   echo "$2" > "/tmp/speed/$1.label"
   places="$places $1"
-  say "speedtest1 on $2: $(cat "/tmp/speed/$1.total")s"
 }
-speed tmp-plain "/tmp, no preload" /tmp no
-speed tmp "/tmp, preloaded" /tmp
-for m in $mounts; do speed "${m#/}" "$m" "$m"; done
+if [ "$SUITE" = speedtest1 ]; then
+  speed tmp-plain "/tmp, no preload" /tmp no
+  speed tmp "/tmp, preloaded" /tmp
+  for m in $mounts; do speed "${m#/}" "$m" "$m"; done
+fi
 
-ratio() { awk -v t="$1" -v b="$2" 'BEGIN { if (t + 0 > 0 && b + 0 > 0) printf "%.2f×", t / b; else print "?" }'; }
-base=$(cat /tmp/speed/tmp-plain.total)
+ratio() { awk -v t="$1" -v b="$2" 'BEGIN { if (t + 0 > 0 && b + 0 > 0) printf "%.2f×", t / b; else print "–" }'; }
+base=$(cat /tmp/speed/tmp-plain.total 2>/dev/null || :)
 
 # ---- the report ----
 out=/out/summary.md
@@ -191,30 +222,33 @@ mpsep="---|"
 [ -z "${S3_BUCKET:-}" ] || { mpcols="| /vfs | /s3 |"; mpsep="---|---|"; }
 {
   if [ "$failed" -eq 0 ]; then
-    echo "### ✅ SQLite $release through the shim · $ARCH"
+    echo "### ✅ SQLite $release $SUITE through the shim · $ARCH"
   else
-    echo "### ❌ SQLite $release through the shim · $ARCH"
+    echo "### ❌ SQLite $release $SUITE through the shim · $ARCH"
   fi
   echo
-  echo "**mptest** $passed/$ran passed: SQLite's multi-process stress test, each client a separate preloaded process on one database."
   [ -n "${S3_BUCKET:-}" ] || echo "_/s3 skipped: no S3_BUCKET._"
-  [ -z "${S3_BUCKET:-}" ] || echo "_On /s3 only $S3_SCRIPTS runs: every commit there is a lease, an upload and a release in S3._"
-  echo
-  echo "| script | what it exercises $mpcols"
-  echo "|---|---|$mpsep"
-  cat "$rows"
-  echo
-  cat "$logs"
-  echo "**speedtest1** \`--size $SPEEDTEST_SIZE\`: SQLite's benchmark workload. Reported, not gated."
-  echo
-  echo "| where | total | vs /tmp, no preload |"
-  echo "|---|---:|---:|"
-  for k in $places; do
-    t=$(cat "/tmp/speed/$k.total")
-    echo "| $(cat "/tmp/speed/$k.label") | ${t}s | $(ratio "$t" "$base") |"
-  done
-  echo
-  echo "<details><summary>speedtest1 per test, seconds</summary>"
+  if [ "$SUITE" = mptest ]; then
+    echo "**mptest** $passed/$ran passed: SQLite's multi-process stress test, each client a separate preloaded process on one database."
+    [ -z "${S3_BUCKET:-}" ] || echo "_On /s3 only $S3_SCRIPTS runs: every commit there is a lease, an upload and a release in S3._"
+    echo
+    echo "| script | what it exercises $mpcols"
+    echo "|---|---|$mpsep"
+    cat "$rows"
+    echo
+    cat "$logs"
+  else
+    echo "**speedtest1** \`--size $SPEEDTEST_SIZE\`, every testset: SQLite's benchmark workload. Must complete; timings reported, not gated."
+    echo
+    echo "| where | total | vs /tmp, no preload |"
+    echo "|---|---:|---:|"
+    for k in $places; do
+      t=$(cat "/tmp/speed/$k.total")
+      case "$t" in ❌*) echo "| $(cat "/tmp/speed/$k.label") | $t | – |" ;; *) echo "| $(cat "/tmp/speed/$k.label") | ${t}s | $(ratio "$t" "$base") |" ;; esac
+    done
+    echo
+    cat "$logs"
+    echo "<details><summary>speedtest1 per test, seconds</summary>"
   echo
   printf '| test |'
   for k in $places; do printf ' %s |' "$(cat "/tmp/speed/$k.label")"; done
@@ -234,8 +268,9 @@ mpsep="---|"
         print line
       }
     }' $(for k in $places; do echo "/tmp/speed/$k.tests"; done)
-  echo
-  echo "</details>"
+    echo
+    echo "</details>"
+  fi
 } > "$out"
 
 kill -TERM "$srv"
