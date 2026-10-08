@@ -41,6 +41,11 @@ class FakeS3 {
   readonly calls: string[] = [];
   /** Keys whose next conditional PutObject is turned away with 409 ConditionalRequestConflict. */
   readonly conflictNext = new Set<string>();
+  /**
+   * Keys whose next PutObject fails in transit: `network` never reaches S3 (no response), `server`
+   * gets a 500, and `lost` is stored but its response never arrives.
+   */
+  readonly failNext = new Map<string, Array<'network' | 'server' | 'lost'>>();
   private version = 0;
 
   put(key: string, body: string): Stored {
@@ -75,9 +80,13 @@ class FakeS3 {
       if ((command.input.IfNoneMatch || command.input.IfMatch) && this.conflictNext.delete(key)) throw conflict();
       if (command.input.IfNoneMatch === '*' && existing) throw precondition();
       if (command.input.IfMatch && existing?.etag !== command.input.IfMatch) throw precondition();
+      const failure = this.failNext.get(key)?.shift();
+      if (failure === 'network') throw dropped();
+      if (failure === 'server') throw internal();
       const chunks: Buffer[] = [];
       for await (const chunk of command.input.Body as Readable) chunks.push(Buffer.from(chunk));
       const stored = this.put(key, Buffer.concat(chunks).toString());
+      if (failure === 'lost') throw dropped();
       return {
         ETag: stored.etag,
         ...(command.input.ChecksumAlgorithm === 'CRC32' ? { ChecksumCRC32: stored.crc32 } : {}),
@@ -125,6 +134,18 @@ const notFound = (name = 'NotFound'): S3Error =>
   Object.assign(new Error(name), { name, $metadata: { httpStatusCode: 404 } });
 const precondition = (): S3Error =>
   Object.assign(new Error('PreconditionFailed'), { name: 'PreconditionFailed', $metadata: { httpStatusCode: 412 } });
+const dropped = (): Error =>
+  Object.assign(new Error('An error was encountered in a non-retryable streaming request.'), {
+    name: 'Error',
+    code: 'ECONNRESET',
+    $metadata: {},
+  });
+const internal = (): S3Error =>
+  Object.assign(new Error('We encountered an internal error. Please try again.'), {
+    name: 'InternalError',
+    $fault: 'server',
+    $metadata: { httpStatusCode: 500 },
+  });
 const conflict = (): S3Error =>
   Object.assign(
     new Error('The conditional request cannot succeed due to a conflicting operation against this resource.'),
@@ -305,6 +326,69 @@ describe('S3Adapter', () => {
       await adapter.flush(`${mount}/busy.txt`);
       expect(s3.objects.get('busy.txt')?.body.toString()).toBe('v2');
       expect(s3.calls.filter((c) => c === 'PutObjectCommand')).toHaveLength(2);
+    });
+
+    describe('a flush that fails in transit', () => {
+      const edited = async (key: string, body: string): Promise<void> => {
+        s3.put(key, 'v1');
+        await adapter.fetch(`${mount}/${key}`);
+        await adapter.open(`${mount}/${key}`, 1);
+        writeFileSync(join(backing, key), body);
+      };
+      const puts = (): number => s3.calls.filter((c) => c === 'PutObjectCommand').length;
+
+      it('is retried with a fresh stream when the connection drops', async () => {
+        await edited('net.txt', 'v2');
+        s3.failNext.set('net.txt', ['network', 'network']);
+        await adapter.flush(`${mount}/net.txt`);
+        expect(s3.objects.get('net.txt')?.body.toString()).toBe('v2');
+        expect(puts()).toBe(3);
+      });
+
+      it('is retried on a 5xx', async () => {
+        await edited('five.txt', 'v2');
+        s3.failNext.set('five.txt', ['server']);
+        await adapter.flush(`${mount}/five.txt`);
+        expect(s3.objects.get('five.txt')?.body.toString()).toBe('v2');
+        expect(puts()).toBe(2);
+      });
+
+      it('succeeds when the upload landed and only its response was lost (the retry sees 412)', async () => {
+        await edited('lost.txt', 'v2');
+        s3.failNext.set('lost.txt', ['lost']);
+        await adapter.flush(`${mount}/lost.txt`);
+        expect(s3.objects.get('lost.txt')?.body.toString()).toBe('v2');
+        // the next write builds on the ETag of what landed, not the base before it
+        writeFileSync(join(backing, 'lost.txt'), 'v3');
+        await adapter.flush(`${mount}/lost.txt`);
+        expect(s3.objects.get('lost.txt')?.body.toString()).toBe('v3');
+      });
+
+      it('is still ESTALE when the object the retry finds is not ours', async () => {
+        await edited('race.txt', 'mine');
+        s3.failNext.set('race.txt', ['network']);
+        const send = s3.send.bind(s3);
+        let raced = false;
+        jest.spyOn(s3, 'send').mockImplementation(async (command: unknown) => {
+          const out = send(command);
+          if (!raced && command instanceof PutObjectCommand) {
+            raced = true;
+            await out.catch(() => {});
+            s3.put('race.txt', 'theirs'); // another instance commits between our attempts
+          }
+          return out;
+        });
+        await expect(adapter.flush(`${mount}/race.txt`)).rejects.toMatchObject({ errno: 116 });
+        expect(s3.objects.get('race.txt')?.body.toString()).toBe('theirs');
+      });
+
+      it('gives up with EIO after 4 attempts', async () => {
+        await edited('down.txt', 'v2');
+        s3.failNext.set('down.txt', ['network', 'network', 'network', 'network', 'network']);
+        await expect(adapter.flush(`${mount}/down.txt`)).rejects.toMatchObject({ errno: 5 });
+        expect(puts()).toBe(4);
+        expect(s3.objects.get('down.txt')?.body.toString()).toBe('v1');
+      });
     });
 
     it('ignores a flush for a file that is already gone', async () => {
