@@ -397,6 +397,39 @@ describe('S3Adapter', () => {
     });
   });
 
+  describe('the .rowdy/ lease namespace at the mount root', () => {
+    const O_WRONLY = 1;
+
+    it('is not there for the app: stat and fetch are ENOENT', async () => {
+      s3.put('.rowdy/locks/db.sqlite', '{"owner":"someone","expiresAt":0}');
+      await expect(adapter.stat(`${mount}/.rowdy`)).rejects.toMatchObject({ errno: 2 });
+      await expect(adapter.stat(`${mount}/.rowdy/locks/db.sqlite`)).rejects.toMatchObject({ errno: 2 });
+      await expect(adapter.fetch(`${mount}/.rowdy/locks/db.sqlite`)).rejects.toMatchObject({ errno: 2 });
+      expect(s3.calls).toEqual([]); // not even asked
+    });
+
+    it('cannot be written, removed or renamed into: EACCES', async () => {
+      const lease = s3.put('.rowdy/locks/db.sqlite', '{"owner":"someone","expiresAt":0}');
+      const path = `${mount}/.rowdy/locks/db.sqlite`;
+      await expect(adapter.open(path, O_WRONLY)).rejects.toMatchObject({ errno: 13 });
+      mkdirSync(join(backing, '.rowdy', 'locks'), { recursive: true });
+      writeFileSync(join(backing, '.rowdy', 'locks', 'db.sqlite'), 'forged');
+      await expect(adapter.flush(path)).rejects.toMatchObject({ errno: 13 });
+      await expect(adapter.unlink(path)).rejects.toMatchObject({ errno: 13 });
+      await expect(adapter.mkdir(`${mount}/.rowdy/other`)).rejects.toMatchObject({ errno: 13 });
+      s3.put('a.txt', 'a');
+      await expect(adapter.rename(`${mount}/a.txt`, path)).rejects.toMatchObject({ errno: 13 });
+      await expect(adapter.rename(path, `${mount}/b.txt`)).rejects.toMatchObject({ errno: 13 });
+      expect(s3.objects.get('.rowdy/locks/db.sqlite')).toBe(lease);
+    });
+
+    it('is ordinary below the mount root', async () => {
+      s3.put('sub/.rowdy/note.txt', 'mine');
+      await adapter.fetch(`${mount}/sub/.rowdy/note.txt`);
+      expect(readFileSync(join(backing, 'sub', '.rowdy', 'note.txt'), 'utf8')).toBe('mine');
+    });
+  });
+
   describe('directories', () => {
     it('mkdir writes a marker so an empty directory exists on every instance', async () => {
       await adapter.mkdir(`${mount}/photos`);
@@ -641,6 +674,24 @@ describe('S3Adapter', () => {
         leaseMs: 10_000,
         ...extra,
       });
+
+    it('renews a held lease, so it does not expire while held, and stops renewing at unlock', async () => {
+      const a = leased('alice', { leaseMs: 1000 }); // renewed every 500 ms
+      const b = leased('bob', { leaseMs: 1000, lockWaitMs: 100 });
+      await a.lock(`${mount}/db.sqlite`);
+      const lease = (): { owner: string; expiresAt: number } =>
+        JSON.parse(s3.objects.get('.rowdy/locks/db.sqlite')!.body.toString());
+      const first = lease().expiresAt;
+      await new Promise((r) => setTimeout(r, 1300)); // past the first expiry
+      expect(lease().owner).toBe('alice');
+      expect(lease().expiresAt).toBeGreaterThan(first);
+      await expect(b.lock(`${mount}/db.sqlite`)).rejects.toMatchObject({ errno: 11 }); // not taken over
+      await a.unlock(`${mount}/db.sqlite`);
+      s3.calls.length = 0;
+      await new Promise((r) => setTimeout(r, 600));
+      expect(s3.calls).toEqual([]); // no renewal after the release
+      expect(s3.objects.has('.rowdy/locks/db.sqlite')).toBe(false);
+    });
 
     it('creates and deletes a lease object under .rowdy/locks', async () => {
       const a = leased('alice');

@@ -29,6 +29,7 @@ int vfs_musl(void) { return puts(\"musl\"); }' > /tmp/musl.c
 # The release flags of native/build.sh, each with one rule broken.
 docker run --rm --platform "$platform" -v "$root:/w" -w /w \
   debian:12@sha256:2c037a04925515fdd6ea85ea14a682d0e79931f5e9f5d07b6dbfc6ba12f9e858 sh -euc "
+  sh /w/native/apt-snapshot.sh
   apt-get -qq update >/dev/null
   apt-get -qq install -y --no-install-recommends gcc libc6-dev >/dev/null
   case \$(uname -m) in x86_64) dlver=GLIBC_2.2.5 ;; *) dlver=GLIBC_2.17 ;; esac

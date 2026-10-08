@@ -246,6 +246,16 @@ export class S3Adapter implements VfsAdapter {
   }
 
   /** Path relative to the mountpoint without a leading slash ('' for the root), or undefined if outside it. */
+  /**
+   * The mount root's `.rowdy/` holds the leases (ADR 0001): hidden from listings, missing to a
+   * reader, and refused to a writer, so the app can neither forge nor remove one.
+   */
+  private reserve(path: string, rel: string | undefined, errno: 'ENOENT' | 'EACCES'): void {
+    if (rel === '.rowdy' || rel?.startsWith('.rowdy/')) {
+      throw VfsError.code(errno, `${path}: reserved for rowdy's leases`);
+    }
+  }
+
   private rel(path: string): string | undefined {
     const { mountpoint } = this.options;
     if (path === mountpoint) {
@@ -440,6 +450,7 @@ export class S3Adapter implements VfsAdapter {
   /** Protocol op: a descriptor was opened on `path`; its copy stays materialized until released. */
   async acquire(path: string): Promise<void> {
     const rel = this.rel(path);
+    this.reserve(path, rel, 'ENOENT');
     if (rel === undefined || rel === '' || this.isLocal(rel)) {
       return;
     }
@@ -522,6 +533,7 @@ export class S3Adapter implements VfsAdapter {
   /** Protocol op: make the local copy of `path` current before a read (bypasses the TTL). */
   async revalidate(path: string): Promise<void> {
     const rel = this.rel(path);
+    this.reserve(path, rel, 'ENOENT');
     if (rel === undefined || rel === '' || this.isLocal(rel)) {
       return;
     }
@@ -531,6 +543,7 @@ export class S3Adapter implements VfsAdapter {
 
   async stat(path: string): Promise<void> {
     const rel = this.rel(path);
+    this.reserve(path, rel, 'ENOENT');
     if (rel === undefined) {
       return;
     }
@@ -565,6 +578,7 @@ export class S3Adapter implements VfsAdapter {
 
   async fetch(path: string): Promise<void> {
     const rel = this.rel(path);
+    this.reserve(path, rel, 'ENOENT');
     if (rel === undefined || rel === '' || this.isLocal(rel)) {
       return;
     }
@@ -594,6 +608,7 @@ export class S3Adapter implements VfsAdapter {
 
   async list(path: string): Promise<void> {
     const rel = this.rel(path);
+    this.reserve(path, rel, 'ENOENT');
     if (rel === undefined) {
       return;
     }
@@ -643,6 +658,7 @@ export class S3Adapter implements VfsAdapter {
 
   async open(path: string, flags: number): Promise<void> {
     const rel = this.rel(path);
+    this.reserve(path, rel, 'EACCES');
     if (rel === undefined || rel === '' || this.isLocal(rel)) {
       return;
     }
@@ -671,6 +687,7 @@ export class S3Adapter implements VfsAdapter {
 
   async flush(path: string): Promise<void> {
     const rel = this.rel(path);
+    this.reserve(path, rel, 'EACCES');
     if (rel === undefined || rel === '' || this.isLocal(rel)) {
       return;
     }
@@ -800,6 +817,7 @@ export class S3Adapter implements VfsAdapter {
    */
   async mkdir(path: string): Promise<void> {
     const rel = this.rel(path);
+    this.reserve(path, rel, 'EACCES');
     if (rel === undefined || rel === '' || this.isLocal(rel)) {
       return;
     }
@@ -946,6 +964,7 @@ export class S3Adapter implements VfsAdapter {
   /** Protocol op: hold the lease for `path` until unlock (SQLite's write transaction). */
   async lock(path: string): Promise<void> {
     const rel = this.rel(path);
+    this.reserve(path, rel, 'EACCES');
     if (rel === undefined || rel === '' || this.isLocal(rel)) {
       return;
     }
@@ -990,6 +1009,7 @@ export class S3Adapter implements VfsAdapter {
 
   async unlink(path: string): Promise<void> {
     const rel = this.rel(path);
+    this.reserve(path, rel, 'EACCES');
     if (rel === undefined || rel === '' || this.isLocal(rel)) {
       return;
     }
@@ -1013,6 +1033,8 @@ export class S3Adapter implements VfsAdapter {
   async rename(from: string, to: string): Promise<void> {
     const relFrom = this.rel(from);
     const relTo = this.rel(to);
+    this.reserve(from, relFrom, 'EACCES');
+    this.reserve(to, relTo, 'EACCES');
     if (relFrom === undefined || relTo === undefined || relFrom === '' || relTo === '') {
       throw VfsError.code('EXDEV', `${from} -> ${to}: rename across the mountpoint boundary`);
     }
