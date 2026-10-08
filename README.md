@@ -66,7 +66,7 @@ the pre-2.33 `__xstat` family that binaries built against older glibc still call
 ## Development
 
 ```sh
-yarn build:native   # compiles native/vfspreload.c for x64 and arm64 in alpine (docker)
+yarn build:native   # compiles native/vfspreload.c for x64 and arm64 on Debian 12 (docker), then gates it
 ```
 
 Every push to `vfs` also uploads the packed build as an asset of the rolling `vfs-builds` pre-release
@@ -74,7 +74,7 @@ Every push to `vfs` also uploads the packed build as an asset of the rolling `vf
 registry's review of the shim. The npm release stays the reviewed, attested one for everyone else.
 
 ```sh
-yarn test:native    # drives the shim through busybox, node and a C caller under LD_PRELOAD
+yarn test:native    # drives the host-arch shim through busybox, node and a C caller, on alpine and debian
 yarn build          # bundles src/ with lib/linux-*/vfspreload.so inlined
 yarn test
 ```
