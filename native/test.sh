@@ -232,17 +232,19 @@ int main(void) {
       !WIFEXITED(sst) || WEXITSTATUS(sst)) return 57;
   posix_spawn_file_actions_destroy(&fa);
 
-  /* posix_spawnp finds a program in a PATH entry under the mount */
+  /* posix_spawnp finds a program in a PATH entry under the mount. argv[0] stays "true": on alpine
+   * the copy is busybox, which picks its applet by that name. */
   if (mkdir("/vfs/bin", 0755) || system("cp /bin/true /vfs/bin/vfstrue")) return 58;
   char *oldpath = strdup(getenv("PATH"));
   char newpath[PATH_MAX];
   snprintf(newpath, sizeof newpath, "/vfs/bin:%s", oldpath);
   setenv("PATH", newpath, 1);
-  char *vt_argv[] = { "vfstrue", NULL };
+  char *vt_argv[] = { "true", NULL };
   int spr = posix_spawnp(&sp, "vfstrue", NULL, NULL, vt_argv, environ);
   setenv("PATH", oldpath, 1);
   free(oldpath);
-  if (spr || waitpid(sp, &sst, 0) != sp || !WIFEXITED(sst) || WEXITSTATUS(sst)) return 58;
+  if (spr) return 61;
+  if (waitpid(sp, &sst, 0) != sp || !WIFEXITED(sst) || WEXITSTATUS(sst)) return 62;
 
 #ifdef __GLIBC__
   struct dirent **list;
