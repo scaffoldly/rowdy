@@ -572,6 +572,10 @@ export class LambdaFunction implements Logger {
     return this.withEnvironment('ROWDY_ROUTES', routes.intoDataURL());
   }
 
+  get volumes(): Array<string> {
+    return [...this.Routes.getValue().volumes];
+  }
+
   withRoutes(routes: Routes): this {
     this.log.debug(`withRoutes(routes=${routes.repr()})`);
     const existing = this.Routes.getValue();
