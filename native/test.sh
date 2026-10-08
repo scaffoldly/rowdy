@@ -511,6 +511,59 @@ rm -f /tmp/ops.log
 /tmp/sock || fail "supervisor socket"
 rm -f /vfs/sockprobe
 
+# paths relative to a directory descriptor or to a cwd under the mount reach the supervisor under
+# their virtual path, as absolute ones do (directory walkers: rm -r, find, tar -x, shutil.rmtree)
+cat > /tmp/rel.c <<'EOF'
+#define _GNU_SOURCE
+#include <fcntl.h>
+#include <stdio.h>
+#include <sys/stat.h>
+#include <unistd.h>
+int main(void) {
+  if (mkdir("/vfs/rel", 0755)) return 1;
+  int d = open("/vfs/rel", O_RDONLY | O_DIRECTORY);
+  if (d < 0) return 2;
+  int fd = openat(d, "made.txt", O_WRONLY | O_CREAT | O_TRUNC, 0644);
+  if (fd < 0 || write(fd, "x", 1) != 1 || close(fd)) return 3;
+  if (mkdirat(d, "sub", 0755)) return 4;
+  if (renameat(d, "made.txt", d, "sub/moved.txt")) return 5;
+  struct stat st;
+  if (fstatat(d, "sub/moved.txt", &st, 0)) return 6;
+  if (unlinkat(d, "sub/moved.txt", 0) || unlinkat(d, "sub", AT_REMOVEDIR)) return 7;
+  if (chdir("/vfs/rel")) return 8;
+  fd = open("cwd.txt", O_WRONLY | O_CREAT | O_TRUNC, 0644);
+  if (fd < 0 || write(fd, "y", 1) != 1 || close(fd)) return 9;
+  if (mkdir("cwdsub", 0755) || rename("cwd.txt", "cwdsub/cwd2.txt")) return 10;
+  if (unlink("cwdsub/cwd2.txt") || rmdir("cwdsub") || chdir("/")) return 11;
+  close(d);
+  return rmdir("/vfs/rel") ? 12 : 0;
+}
+EOF
+gcc -O2 /tmp/rel.c -o /tmp/rel
+rm -f /tmp/ops.log
+/tmp/rel || fail "relative paths: rel.c (rc=$?)"
+LOG=$(tr '\n' ' ' < /tmp/ops.log)
+for op in "open /vfs/rel/made.txt" "flush /vfs/rel/made.txt" "mkdir /vfs/rel/sub" \
+  "rename /vfs/rel/made.txt /vfs/rel/sub/moved.txt" "stat /vfs/rel/sub/moved.txt" \
+  "unlink /vfs/rel/sub/moved.txt" "unlink /vfs/rel/sub" "open /vfs/rel/cwd.txt" "flush /vfs/rel/cwd.txt" \
+  "mkdir /vfs/rel/cwdsub" "rename /vfs/rel/cwd.txt /vfs/rel/cwdsub/cwd2.txt" "unlink /vfs/rel/cwdsub/cwd2.txt" \
+  "unlink /vfs/rel/cwdsub"; do
+  case "$LOG" in *"$op "*) ;; *) fail "relative paths: supervisor never saw '$op' in: $LOG" ;; esac
+done
+
+# rm -r walks with descriptor-relative unlinkat (coreutils fts) or full paths (busybox): either way
+# every object is deleted at the supervisor, not just its local copy
+mkdir -p /vfs/tree/a/b
+echo 1 > /vfs/tree/a/one
+echo 2 > /vfs/tree/a/b/two
+rm -f /tmp/ops.log
+rm -r /vfs/tree || fail "rm -r /vfs/tree"
+LOG=$(tr '\n' ' ' < /tmp/ops.log)
+for op in "unlink /vfs/tree/a/b/two" "unlink /vfs/tree/a/one" "unlink /vfs/tree/a/b" "unlink /vfs/tree/a" "unlink /vfs/tree"; do
+  case "$LOG" in *"$op "*) ;; *) fail "rm -r: supervisor never saw '$op' in: $LOG" ;; esac
+done
+echo "relative paths: ok"
+
 # a second mount reaches the supervisor under its own virtual path
 rm -f /tmp/ops.log
 env VFS_MOUNTS=/vfs=/tmp/vfsstore:/b=/tmp/store/b sh -c 'echo x > /b/reported' || fail "mounts: write to second mount with a supervisor"
