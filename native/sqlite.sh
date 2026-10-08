@@ -52,7 +52,10 @@ if [ ! -f /.dockerenv ]; then
 fi
 
 # ---- in the container ----------------------------------------------------------------------------
-MPTEST_TIMEOUT=300
+MPTEST_TIMEOUT=900
+# The scripts run on /s3 too. Every commit there is a lease, an upload and a release in S3, so the
+# five-writer contention script alone takes minutes; the others run on /vfs only.
+S3_SCRIPTS="multiwrite01"
 say() { echo "[$(date +%H:%M:%S)] $*"; }
 say "installing gcc"
 { apt-get -qq update && apt-get -qq install -y --no-install-recommends gcc libc6-dev; } >/dev/null 2>&1
@@ -61,6 +64,10 @@ src=/w/.sqlite/src
 b=/tmp/sq
 mkdir -p "$b" /tmp/speed
 cp -r "$src/sqlite-src-$VERSION/mptest" "$b/mptest"
+# mptest's --wait gives up after 10 s, sized for a local disk; then every later check fails on rows
+# not yet written. An hour each, so a slow store is slow, not wrong (the step's timeout still bounds it).
+sed -i 's/^--wait all$/--wait all 3600000/; s/^--wait \([0-9][0-9]*\)$/--wait \1 3600000/' \
+  "$b"/mptest/*.test "$b"/mptest/*.subtest
 opts="-O2 -DSQLITE_THREADSAFE=0 -DHAVE_USLEEP -I$src"
 gcc $opts -c "$src/sqlite3.c" -o "$b/sqlite3.o"
 gcc $opts "$b/mptest/mptest.c" "$b/sqlite3.o" -o "$b/mptest/mptest" -lm -ldl
@@ -97,6 +104,12 @@ cd "$b/mptest"
 for script in config01 config02 crash01 multiwrite01; do
   row="| \`$script\` | $(describe "$script") |"
   for m in $mounts; do
+    if [ "$m" = /s3 ]; then
+      case " $S3_SCRIPTS " in
+        *" $script "*) ;;
+        *) row="$row – |"; continue ;;
+      esac
+    fi
     db="$m/mp-$script.db"
     log="/tmp/mp-$script-${m#/}.log"
     start=$(date +%s)
@@ -185,6 +198,7 @@ mpsep="---|"
   echo
   echo "**mptest** $passed/$ran passed: SQLite's multi-process stress test, each client a separate preloaded process on one database."
   [ -n "${S3_BUCKET:-}" ] || echo "_/s3 skipped: no S3_BUCKET._"
+  [ -z "${S3_BUCKET:-}" ] || echo "_On /s3 only $S3_SCRIPTS runs: every commit there is a lease, an upload and a release in S3._"
   echo
   echo "| script | what it exercises $mpcols"
   echo "|---|---|$mpsep"
