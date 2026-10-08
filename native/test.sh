@@ -244,8 +244,12 @@ else
 fi
 /tmp/g || fail "glibc entry points / new hooks (rc=$?)"
 if [ "$FLAVOUR" = debian ]; then
-  # node is built against an older glibc: its stat and lock calls must bind to the shim
+  # node built against an older glibc imports these: its stat and lock calls must bind to the shim
   for sym in __xstat64 __lxstat64 fcntl64; do
+    if ! nm -D --undefined-only "$(command -v node)" | grep -qE " $sym(@|\$)"; then
+      echo "hooks: node does not import $sym, binding not checked"
+      continue
+    fi
     LD_DEBUG=bindings node -e 0 2>&1 | grep -q "binding file node .* to $SHIM .*\`$sym'" ||
       fail "node's $sym does not bind to the shim"
   done
