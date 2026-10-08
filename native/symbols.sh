@@ -4,9 +4,11 @@
 #
 #   sh native/symbols.sh x64|arm64 [path]
 #
-# Fails unless DT_NEEDED is exactly libc.so.6 and libdl.so.2, every strong undefined symbol is
-# exported by musl, and no GLIBC_ version newer than 2.17 is required: older glibc must still start a
-# preloaded process (native/legacy.sh), even below the 2.34 floor where volumes are supported.
+# Fails unless DT_NEEDED is exactly libc.so.6 and libdl.so.2, there are undefined symbols to check
+# (an empty list means the parse failed), every strong undefined symbol is exported by musl, and no
+# GLIBC_ version newer than 2.17 is required: older glibc must still start a preloaded process
+# (native/legacy.sh), even below the 2.34 floor where volumes are supported. native/negative.sh
+# checks that each rule rejects a build that breaks it.
 set -eu
 
 arch="${1:-}"
@@ -31,6 +33,7 @@ docker run --rm --platform "$platform" -v "$root:/w:ro" -w /w \
 
   nm -D --defined-only "$musl" | awk "{print \$NF}" | sort -u > /tmp/musl
   nm -D --undefined-only "$so" | awk "\$1 == \"U\" {sub(/@.*/, \"\", \$2); print \$2}" | sort -u > /tmp/need
+  [ -s /tmp/need ] || { echo "symbols: no undefined symbols found in $so" >&2; exit 1; }
   missing=$(comm -23 /tmp/need /tmp/musl | tr "\n" " ")
   [ -z "$missing" ] || { echo "symbols: not exported by musl: $missing" >&2; exit 1; }
 
