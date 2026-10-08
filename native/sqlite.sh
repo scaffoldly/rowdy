@@ -57,10 +57,10 @@ src=/w/.sqlite/src
 b=/tmp/sq
 mkdir -p "$b" /tmp/speed
 cp -r "$src/sqlite-src-$VERSION/mptest" "$b/mptest"
-opts="-O2 -DSQLITE_THREADSAFE=0 -DHAVE_USLEEP -DSQLITE_OMIT_LOAD_EXTENSION -I$src"
+opts="-O2 -DSQLITE_THREADSAFE=0 -DHAVE_USLEEP -I$src"
 gcc $opts -c "$src/sqlite3.c" -o "$b/sqlite3.o"
-gcc $opts "$b/mptest/mptest.c" "$b/sqlite3.o" -o "$b/mptest/mptest" -lm
-gcc $opts "$src/sqlite-src-$VERSION/test/speedtest1.c" "$b/sqlite3.o" -o "$b/speedtest1" -lm -lpthread
+gcc $opts "$b/mptest/mptest.c" "$b/sqlite3.o" -o "$b/mptest/mptest" -lm -ldl
+gcc $opts "$src/sqlite-src-$VERSION/test/speedtest1.c" "$b/sqlite3.o" -o "$b/speedtest1" -lm -ldl -lpthread
 
 node /w/native/sqlite-server.js &
 srv=$!
