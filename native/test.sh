@@ -225,6 +225,7 @@ int main(void) {
   if (xstat64(ver, "/vfs/h.txt", &s64) || s64.st_size != 2) return 36;
   if (lxstat64(ver, "/vfs/gl", &s64) || !S_ISLNK(s64.st_mode)) return 37;
   if (xstat(ver, "/vfs/h.txt", &xs) || xs.st_size != 2) return 38;
+  if (xstat64(99, "/vfs/h.txt", &s64) != -1 || errno != EINVAL) return 39;
 
   /* the remaining fortified and LFS entry points */
   if ((fd = openat(AT_FDCWD, "/vfs/h.txt", rd)) < 0) return 40;
@@ -248,6 +249,16 @@ int main(void) {
   char c = 0;
   if ((xa = open("/tmp/xa", O_RDONLY)) < 0 || read(xa, &c, 1) != 1 || c != 'a') return 47;
   close(xa); unlink("/tmp/xa"); unlink("/tmp/xb");
+
+  /* O_CREAT through __open_2/__openat_2 has no mode: glibc aborts rather than invent one */
+  volatile int cr = O_CREAT | O_WRONLY;
+  for (int at = 0; at < 2; at++) {
+    pid_t child = fork();
+    if (child == 0) { if (at) openat(AT_FDCWD, "/vfs/nomode", cr); else open("/vfs/nomode", cr); _exit(0); }
+    int cst;
+    if (waitpid(child, &cst, 0) != child || !WIFSIGNALED(cst) || WTERMSIG(cst) != SIGABRT) return 48;
+    if (!access("/tmp/vfsstore/nomode", F_OK)) return 49;
+  }
 
   /* a fortified caller with an undersized buffer dies the way glibc makes it die */
   pid_t pid = fork();
