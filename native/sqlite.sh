@@ -52,7 +52,11 @@ if [ ! -f /.dockerenv ]; then
 fi
 
 # ---- in the container ----------------------------------------------------------------------------
+MPTEST_TIMEOUT=300
+say() { echo "[$(date +%H:%M:%S)] $*"; }
+say "installing gcc"
 { apt-get -qq update && apt-get -qq install -y --no-install-recommends gcc libc6-dev; } >/dev/null 2>&1
+say "compiling SQLite $VERSION, mptest and speedtest1"
 src=/w/.sqlite/src
 b=/tmp/sq
 mkdir -p "$b" /tmp/speed
@@ -62,6 +66,7 @@ gcc $opts -c "$src/sqlite3.c" -o "$b/sqlite3.o"
 gcc $opts "$b/mptest/mptest.c" "$b/sqlite3.o" -o "$b/mptest/mptest" -lm -ldl
 gcc $opts "$src/sqlite-src-$VERSION/test/speedtest1.c" "$b/sqlite3.o" -o "$b/speedtest1" -lm -ldl -lpthread
 
+say "starting the supervisor (mounts: /vfs${S3_BUCKET:+ /s3})"
 node /w/native/sqlite-server.js &
 srv=$!
 for i in $(seq 1 50); do [ -f /tmp/vfs.ready ] && break; sleep 0.2; done
@@ -97,16 +102,19 @@ for script in config01 config02 crash01 multiwrite01; do
     start=$(date +%s)
     status=0
     : > /tmp/s3-adapter.log
-    timeout 900 ./mptest "$db" --quiet --timeout 30000 "$script.test" > "$log" 2>&1 || status=$?
+    say "mptest $script on $m ..."
+    timeout "$MPTEST_TIMEOUT" ./mptest "$db" --quiet --timeout 30000 "$script.test" > "$log" 2>&1 || status=$?
     took=$(( $(date +%s) - start ))
     ran=$((ran + 1))
     if [ "$status" -eq 0 ]; then
       passed=$((passed + 1))
       row="$row ✅ ${took}s |"
+      say "mptest $script on $m: ok, ${took}s"
     else
       failed=1
       summary=$(grep -h 'Summary:' "$log" | tail -1)
-      [ "$status" -ne 124 ] || summary="timed out after 900s"
+      [ "$status" -ne 124 ] || summary="timed out after ${MPTEST_TIMEOUT}s"
+      say "mptest $script on $m: FAILED after ${took}s (${summary:-exit $status})"
       row="$row ❌ ${summary:-exit $status} |"
       {
         echo "<details><summary>❌ <code>$script</code> on <code>$m</code>: first and last errors</summary>"
@@ -154,6 +162,7 @@ speed() { # speed KEY LABEL DIR [no]
   [ -s "/tmp/speed/$1.total" ] || { failed=1; echo "?" > "/tmp/speed/$1.total"; tail -20 "/tmp/speed/$1.log" >&2; }
   echo "$2" > "/tmp/speed/$1.label"
   places="$places $1"
+  say "speedtest1 on $2: $(cat "/tmp/speed/$1.total")s"
 }
 speed tmp-plain "/tmp, no preload" /tmp no
 speed tmp "/tmp, preloaded" /tmp
