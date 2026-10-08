@@ -193,7 +193,7 @@ static int unxlate(char *buf, size_t bufsz) {
     static typeof(&name) real_; \
     if (!real_) real_ = (typeof(&name))dlsym(RTLD_NEXT, #name)
 
-/* REAL for a function with no public prototype (glibc's fortify entry points). */
+/* REAL for a function with no public prototype (glibc's __xstat family, gone from 2.33's headers). */
 #define REAL_T(name, type) \
     static type real_; \
     if (!real_) real_ = (type)dlsym(RTLD_NEXT, #name)

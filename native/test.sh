@@ -15,8 +15,8 @@ if [ -z "${VFS_STAGE:-}" ]; then
       *) echo "usage: $0 x64|arm64 alpine|debian" >&2; exit 2 ;;
     esac
     case "$flavour" in
-      alpine) image=node:22-alpine ;;
-      debian) image=node:22-bookworm-slim ;;
+      alpine) image=node:22-alpine@sha256:0a7108bf6c7bf5de370ffb1a3ed6be93d405b43ff159f681a8d18c0e2bc2e402 ;;
+      debian) image=node:22-bookworm-slim@sha256:c3de60bf2f9dd0ac6370e6117950ff62d6e339527e7472301c9c78a017978392 ;;
       *) echo "usage: $0 x64|arm64 alpine|debian" >&2; exit 2 ;;
     esac
     root="$(cd "$(dirname "$0")/.." && pwd)"
@@ -136,6 +136,7 @@ cat > /tmp/g.c <<'EOF'
 #include <sys/stat.h>
 #include <sys/statfs.h>
 #include <sys/statvfs.h>
+#include <sys/syscall.h>
 #include <sys/wait.h>
 #include <sys/xattr.h>
 #include <unistd.h>
@@ -225,6 +226,29 @@ int main(void) {
   if (lxstat64(ver, "/vfs/gl", &s64) || !S_ISLNK(s64.st_mode)) return 37;
   if (xstat(ver, "/vfs/h.txt", &xs) || xs.st_size != 2) return 38;
 
+  /* the remaining fortified and LFS entry points */
+  if ((fd = openat(AT_FDCWD, "/vfs/h.txt", rd)) < 0) return 40;
+  close(fd);
+  if ((fd = open64("/vfs/h.txt", rd)) < 0) return 41;
+  struct flock fl = { .l_type = F_RDLCK, .l_whence = SEEK_SET };
+  if (fcntl64(fd, F_SETLK, &fl)) return 42;
+  fl.l_type = F_UNLCK;
+  if (fcntl64(fd, F_SETLK, &fl)) return 42;
+  close(fd);
+  if (readlinkat(AT_FDCWD, "/vfs/gl", buf, sz) != 10 || strncmp(buf, "/vfs/g.txt", 10)) return 43;
+  if (scandirat64(AT_FDCWD, "/vfs", &l64, NULL, alphasort64) < 2) return 44;
+
+  /* outside every mount RENAME_EXCHANGE is the kernel's call: same result as the raw syscall */
+  int xa = open("/tmp/xa", O_CREAT | O_WRONLY | O_TRUNC, 0644), xb = open("/tmp/xb", O_CREAT | O_WRONLY | O_TRUNC, 0644);
+  if (xa < 0 || xb < 0 || write(xa, "a", 1) != 1 || write(xb, "b", 1) != 1) return 45;
+  close(xa); close(xb);
+  long raw = syscall(SYS_renameat2, AT_FDCWD, "/tmp/xa", AT_FDCWD, "/tmp/xb", RENAME_EXCHANGE);
+  int rawerr = errno;
+  if (renameat2(AT_FDCWD, "/tmp/xa", AT_FDCWD, "/tmp/xb", RENAME_EXCHANGE) != raw || (raw && errno != rawerr)) return 46;
+  char c = 0;
+  if ((xa = open("/tmp/xa", O_RDONLY)) < 0 || read(xa, &c, 1) != 1 || c != 'a') return 47;
+  close(xa); unlink("/tmp/xa"); unlink("/tmp/xb");
+
   /* a fortified caller with an undersized buffer dies the way glibc makes it die */
   pid_t pid = fork();
   if (pid == 0) { volatile size_t big = PATH_MAX; char small[8]; getcwd(small, big); _exit(0); }
@@ -236,7 +260,7 @@ int main(void) {
 EOF
 if [ "$FLAVOUR" = debian ]; then
   gcc -O2 -D_FORTIFY_SOURCE=2 /tmp/g.c -o /tmp/g
-  for sym in __open_2 __realpath_chk __getcwd_chk __readlink_chk; do
+  for sym in __open_2 __openat_2 __open64_2 __realpath_chk __getcwd_chk __readlink_chk __readlinkat_chk fcntl64 scandirat64; do
     nm -D /tmp/g | grep -q " $sym" || fail "test caller does not import $sym"
   done
 else
@@ -244,8 +268,12 @@ else
 fi
 /tmp/g || fail "glibc entry points / new hooks (rc=$?)"
 if [ "$FLAVOUR" = debian ]; then
-  # node is built against an older glibc: its stat and lock calls must bind to the shim
+  # node built against an older glibc imports these: its stat and lock calls must bind to the shim
   for sym in __xstat64 __lxstat64 fcntl64; do
+    if ! nm -D --undefined-only "$(command -v node)" | grep -qE " $sym(@|\$)"; then
+      echo "hooks: node does not import $sym, binding not checked"
+      continue
+    fi
     LD_DEBUG=bindings node -e 0 2>&1 | grep -q "binding file node .* to $SHIM .*\`$sym'" ||
       fail "node's $sym does not bind to the shim"
   done

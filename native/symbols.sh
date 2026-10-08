@@ -5,10 +5,10 @@
 #   sh native/symbols.sh x64|arm64 [path]
 #
 # Fails unless DT_NEEDED is exactly libc.so.6 and libdl.so.2, there are undefined symbols to check
-# (an empty list means the parse failed), every strong undefined symbol is exported by musl, and no
-# GLIBC_ version newer than 2.17 is required: older glibc must still start a preloaded process
-# (native/legacy.sh), even below the 2.34 floor where volumes are supported. native/negative.sh
-# checks that each rule rejects a build that breaks it.
+# (an empty list means the parse failed), every strong undefined symbol is exported by musl with the
+# same ABI, and no GLIBC_ version newer than 2.17 is required: older glibc must still start a
+# preloaded process (native/legacy.sh), even below the 2.34 floor where volumes are supported.
+# native/negative.sh checks that each rule rejects a build that breaks it.
 set -eu
 
 arch="${1:-}"
@@ -36,6 +36,11 @@ docker run --rm --platform "$platform" -v "$root:/w:ro" -w /w \
   [ -s /tmp/need ] || { echo "symbols: no undefined symbols found in $so" >&2; exit 1; }
   missing=$(comm -23 /tmp/need /tmp/musl | tr "\n" " ")
   [ -z "$missing" ] || { echo "symbols: not exported by musl: $missing" >&2; exit 1; }
+
+  # GNU variants that keep the POSIX name in glibc (the POSIX ones are __xpg_*); musl exports the
+  # name with POSIX semantics, so a call would bind to a different ABI.
+  abi=$(grep -xE "strerror_r|basename" /tmp/need | tr "\n" " " || true)
+  [ -z "$abi" ] || { echo "symbols: different ABI under musl: $abi" >&2; exit 1; }
 
   newest=$(objdump -T "$so" | grep -oE "GLIBC_[0-9]+\.[0-9]+" | sort -uV | tail -1)
   [ "$(printf "%s\nGLIBC_2.17\n" "$newest" | sort -V | tail -1)" = "GLIBC_2.17" ] ||

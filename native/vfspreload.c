@@ -27,7 +27,7 @@
  * cross it, never file contents. See DISCLOSURE for the protocol. With no
  * VFS_SOCKET the shim is a plain local-directory overlay.
  *
- * musl note: within libc, one function calling another (fopen->open,
+ * Within libc (musl and glibc alike), one function calling another (fopen->open,
  * scandir->opendir, remove->unlink, fclose->close) binds internally and does
  * NOT route through a preloaded symbol. So we must interpose every PUBLIC
  * entry point the calling program uses directly, not rely on one wrapper
@@ -35,13 +35,15 @@
  *
  * Scope / ceiling (inherent to the preload model):
  *   - only processes started with this .so in LD_PRELOAD see the VFS;
- *   - only dynamically-linked musl callers that invoke these libc symbols;
+ *   - only dynamically-linked callers (musl or glibc) that invoke these libc
+ *     symbols; a static binary never loads the preload;
  *   - it is not a kernel mountpoint — unrelated processes cannot see /vfs;
- *   - no mmap of virtual files, no nftw/glob/posix_spawn translation (yet);
+ *   - nftw and glob are not translated (mmap needs none: it takes a descriptor);
  *   - only absolute VFS_PREFIX paths are reported to the supervisor; relative
  *     paths after chdir() resolve locally.
  *
- * Build:  gcc -shared -fPIC vfspreload.c -o vfspreload.so
+ * Build:  sh native/build.sh x64|arm64   (one object for musl and glibc, ADR 0003;
+ *         its flags are what native/symbols.sh requires, a plain gcc build fails it)
  * Run:    LD_PRELOAD=/usr/local/lib/rowdy/vfspreload.so \
  *         VFS_PREFIX=/vfs VFS_BACKING=/tmp/vfsstore [VFS_SOCKET=/tmp/rowdy/vfs.sock] <program>
  *   or    VFS_MOUNTS=/a=/tmp/store/a:/b=/tmp/store/b   (prefix=backing, ':'-separated)
