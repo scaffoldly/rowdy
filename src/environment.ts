@@ -60,7 +60,9 @@ type Args = yargs.ArgumentsCamelCase<
   } & {
     workdir: string | undefined;
   } & {
-    volume: string | Array<string> | undefined;
+    volumes: string | undefined;
+  } & {
+    volume: Array<string> | undefined;
   }
 >;
 
@@ -74,7 +76,9 @@ const entrypoint = <T>(
   } & {
     workdir: string | undefined;
   } & {
-    volume: string | Array<string> | undefined;
+    volumes: string | undefined;
+  } & {
+    volume: Array<string> | undefined;
   }
 > => {
   const modified = argv
@@ -96,9 +100,16 @@ const entrypoint = <T>(
       global: false,
       group: 'Entrypoint:',
     })
+    .option('volumes', {
+      type: 'string',
+      description: 'Volumes to add to the Routes manifest: a YAML list, or one per line',
+      global: false,
+      group: 'Entrypoint:',
+    })
     .option('volume', {
       alias: 'v',
       type: 'string',
+      array: true,
       description:
         'A volume, as in docker run -v: <scheme>://<locator>:<mountpoint>[:<flags>], or /host/path:<mountpoint>. Repeatable',
       global: false,
@@ -250,9 +261,15 @@ export class Environment implements ILoggable {
               description: 'Secrets: NAME=value lines and JSON objects, in any mix; NAME=value lines win',
               group: 'Runtime:',
             })
+            .option('volumes', {
+              type: 'string',
+              description: 'Volumes to add to the Routes manifest: a YAML list, or one per line',
+              group: 'Runtime:',
+            })
             .option('volume', {
               alias: 'v',
               type: 'string',
+              array: true,
               description:
                 'A volume, as in docker run -v: <scheme>://<locator>:<mountpoint>[:<flags>], or /host/path:<mountpoint>. Repeatable',
               group: 'Runtime:',
@@ -277,6 +294,7 @@ export class Environment implements ILoggable {
                       .positional('command', {
                         describe: 'Command to run in the container',
                         type: 'string',
+                        array: true,
                       }),
                   handler: (argv) => {
                     // TODO: Fix logging ability in these early handlers
@@ -365,7 +383,8 @@ export class Environment implements ILoggable {
       //                 .positional('command', {
       //                   describe: 'Command and arguments to run in the container',
       //                   type: 'string',
-      //                   //                 })
+      //                   array: true,
+      //                 })
       //                 .option('name', {
       //                   describe: 'Assign a name to the Lambda function',
       //                   type: 'string',

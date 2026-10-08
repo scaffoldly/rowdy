@@ -11,9 +11,9 @@ spec:
     - 'file:///tmp/scratch:/scratch'
 ```
 
-In the GitHub Action, `volumes` is also an input of its own, one spec per line, `#` for comments.
-Each line becomes a `-v` on `rowdy create`. Those are added to the manifest's: an identical entry
-counts once, and two volumes on one mountpoint fail the deploy.
+In the GitHub Action, `volumes` is also an input of its own, one spec per line (or `--volumes` /
+`ROWDY_VOLUMES` on `rowdy create`). Those are added to the manifest's: an identical entry counts
+once, and two volumes on one mountpoint fail the deploy.
 
 ```yaml
 - uses: scaffoldly/rowdy@github
@@ -27,11 +27,12 @@ counts once, and two volumes on one mountpoint fail the deploy.
 
 On the command line, `-v` / `--volume` takes one spec per flag, as `docker run -v` does, and a bare
 host path means `file://`. It works on `rowdy`, `rowdy serve` and `rowdy create`, so a local run
-needs no manifest. The volumes merge into any `--routes` / `ROWDY_ROUTES` the same way, and two
+needs no manifest. Every source merges into any `--routes` / `ROWDY_ROUTES` the same way, and two
 volumes on one mountpoint fail the start:
 
 ```sh
 rowdy -v s3://my-bucket:/data -v /tmp/scratch:/scratch -- node server.js
+ROWDY_VOLUMES=$'s3://my-bucket:/data\nfile:///tmp/scratch:/scratch' rowdy -- node server.js
 ```
 
 Docker's named volumes (`data:/data`) and `:ro` have no equivalent here and are rejected.

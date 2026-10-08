@@ -398,14 +398,43 @@ spec:
     expect(Routes.fromDataURL(routes.intoDataURL()).volumes).toEqual([]);
   });
 
-  it('adds to the volumes of a manifest, deduplicating and refusing a mountpoint clash', () => {
-    const routes = Routes.fromURL('default: "http://localhost:3000/"\nvolumes:\n  - "file:///tmp/a:/a"\n');
-    routes.merge(Routes.empty().withVolumes(['file:///tmp/a:/a', 's3://bucket:/b']));
-    expect(routes.volumes).toEqual(['file:///tmp/a:/a', 's3://bucket:/b']);
-    expect(routes.intoURI('/x')!.toString()).toBe('http://localhost:3000/x');
-    expect(() => routes.merge(Routes.empty().withVolumes(['file:///tmp/c:/b']))).toThrow(
-      "Volume mountpoint '/b' is used by both"
-    );
+  describe('list', () => {
+    it('takes one spec per line, skipping blank lines and comments', () => {
+      expect(
+        Volume.list(`
+          s3://nuss-io:/s3:local=*-{journal,wal,shm}
+
+          # scratch space
+          file:///tmp/scratch:/scratch
+        `)
+      ).toEqual(['s3://nuss-io:/s3:local=*-{journal,wal,shm}', 'file:///tmp/scratch:/scratch']);
+    });
+
+    it('takes a YAML list, quoted or not', () => {
+      expect(Volume.list('- "s3://nuss-io:/s3:local=*-{journal,wal,shm}"\n- file:///tmp/scratch:/scratch\n')).toEqual([
+        's3://nuss-io:/s3:local=*-{journal,wal,shm}',
+        'file:///tmp/scratch:/scratch',
+      ]);
+    });
+
+    it('takes a single spec', () => {
+      expect(Volume.list('s3://example-bucket:/data')).toEqual(['s3://example-bucket:/data']);
+    });
+
+    it('is empty for an empty value', () => {
+      expect(Volume.list('')).toEqual([]);
+      expect(Volume.list('  \n ')).toEqual([]);
+    });
+
+    it('adds to the volumes of a manifest, deduplicating and refusing a mountpoint clash', () => {
+      const routes = Routes.fromURL('default: "http://localhost:3000/"\nvolumes:\n  - "file:///tmp/a:/a"\n');
+      routes.merge(Routes.empty().withVolumes(Volume.list('file:///tmp/a:/a\ns3://bucket:/b')));
+      expect(routes.volumes).toEqual(['file:///tmp/a:/a', 's3://bucket:/b']);
+      expect(routes.intoURI('/x')!.toString()).toBe('http://localhost:3000/x');
+      expect(() => routes.merge(Routes.empty().withVolumes(Volume.list('file:///tmp/c:/b')))).toThrow(
+        "Volume mountpoint '/b' is used by both"
+      );
+    });
   });
 
   it('should merge volumes without duplicating', () => {
