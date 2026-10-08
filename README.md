@@ -143,7 +143,9 @@ unix-domain socket (one JSON object per line, paths and metadata only; the proto
   serialized with leases (`<prefix>/.rowdy/locks/<key>`, conditional creates, `leaseMs` TTL with
   renewal, `lockWaitMs` before `EAGAIN`). The shim turns advisory locks into lease traffic
   (`fcntl`/`flock`: read lock → `revalidate`, write lock → `lock`, unlock → `flush` + `unlock`), which
-  is what makes SQLite transactions serialize across machines without WAL. `lockOnOpen: true`
+  is what makes SQLite transactions serialize across machines without WAL. A read lock trusts the
+  last ETag check for `revalidateDebounceMs` (default 250 ms), so a burst of read transactions costs
+  one HEAD; the write lock always re-checks, so a write never builds on a stale copy. `lockOnOpen: true`
   additionally holds the lease across every open-for-write/close window for plain files.
 
 ```ts
