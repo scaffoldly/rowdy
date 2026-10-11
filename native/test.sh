@@ -601,8 +601,9 @@ else
 fi
 echo "locks: ok"
 
-# fault report: a fatal SIGSEGV is described on stderr (signal, address, pc and its mapping, the
-# faulting thread's last hook), then the process still dies by the signal (status 139)
+# fault report (VFS_FAULT_REPORT=1): a fatal SIGSEGV is described on stderr (signal, address, pc and
+# its mapping, the faulting thread's last hook), then the process still dies by the signal (status 139).
+# By default nothing is installed: no report, no alternate stack on a new thread.
 cat > /tmp/segv.c <<'EOF'
 #include <dirent.h>
 #include <pthread.h>
@@ -614,12 +615,14 @@ static void recover(int sig) { (void)sig; siglongjmp(jb, 1); }
 static int boom(const struct dirent *d) { (void)d; return *(volatile int *)0; }
 static int deep(int n) { volatile char pad[1024]; pad[0] = (char)n; return deep(n + 1) + pad[0]; }
 static void *overflow(void *a) { (void)a; return (void *)(long)deep(0); }
+static void *altstack(void *a) { stack_t ss; sigaltstack(NULL, &ss); *(int *)a = !(ss.ss_flags & SS_DISABLE); return 0; }
 int main(int argc, char **argv) {
   if (argc < 2) return 2;
   if (!strcmp(argv[1], "null")) return *(volatile int *)0;
   if (!strcmp(argv[1], "thread")) { pthread_t t; pthread_create(&t, 0, overflow, 0); pthread_join(t, 0); }
   if (!strcmp(argv[1], "hook")) { struct dirent **l; return scandir("/vfs/faults", &l, boom, alphasort); }
   if (!strcmp(argv[1], "recover")) { signal(SIGSEGV, recover); if (!sigsetjmp(jb, 1)) return *(volatile int *)0; }
+  if (!strcmp(argv[1], "altstack")) { int on = 0; pthread_t t; pthread_create(&t, 0, altstack, &on); pthread_join(t, 0); return on; }
   return 0;
 }
 EOF
@@ -631,6 +634,12 @@ expect_fault() {  # expect_fault <name> <expected status> <command…>: run it, 
 }
 has() { grep -qF -- "$2" /tmp/fault.err || fail "$1: no '$2' in: $(cat /tmp/fault.err)"; }
 
+expect_fault "default off" 139 env -u VFS_FAULT_REPORT /tmp/segv null
+grep -q "rowdy-vfs:" /tmp/fault.err && fail "default off: reported: $(cat /tmp/fault.err)"
+expect_fault "default off: no thread altstack" 0 env -u VFS_FAULT_REPORT /tmp/segv altstack
+expect_fault "report on: thread altstack" 1 env VFS_FAULT_REPORT=1 /tmp/segv altstack
+
+export VFS_FAULT_REPORT=1
 expect_fault "null" 139 /tmp/segv null
 has null "rowdy-vfs: fatal SIGSEGV (signal 11, code 1 SEGV_MAPERR) at 0x0"
 has null "rowdy-vfs: pc 0x"
@@ -666,6 +675,7 @@ const bytes = Uint8Array.from([0,97,115,109,1,0,0,0, 1,5,1,96,0,1,127, 3,2,1,0, 
 const { f } = new WebAssembly.Instance(new WebAssembly.Module(bytes)).exports;
 try { f(); process.exit(1); } catch (e) { if (!(e instanceof WebAssembly.RuntimeError)) throw e; }'
 grep -q "rowdy-vfs:" /tmp/fault.err && fail "node wasm trap: reported a WebAssembly trap: $(cat /tmp/fault.err)"
+unset VFS_FAULT_REPORT
 echo "fault report: ok"
 
 kill $SRVPID

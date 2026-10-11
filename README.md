@@ -52,8 +52,8 @@ the pre-2.33 `__xstat` family that binaries built against older glibc still call
 
 ## Fault report
 
-A process that dies of a SIGSEGV or SIGBUS writes what it was doing to its stderr before it dies
-(with the same status, 139 for SIGSEGV), which rowdy relays into its log:
+With `VFS_FAULT_REPORT=1`, a process that dies of a SIGSEGV or SIGBUS writes what it was doing to
+its stderr before it dies (with the same status, 139 for SIGSEGV), which rowdy relays into its log:
 
 ```
 rowdy-vfs: fatal SIGSEGV (signal 11, code 1 SEGV_MAPERR) at 0x0, tid 42
@@ -72,7 +72,9 @@ rowdy-vfs: frame 1 0x7f56…  r-xp /lib/ld-musl-x86_64.so.1+0x5c1e0
   handler other than node's (which may recover, like a JVM's null checks) are not reported.
 
 To do this the shim keeps its own SIGSEGV/SIGBUS handler first (the program's is called from it)
-and gives each thread an alternate signal stack. `VFS_FAULT_REPORT=0` turns it off.
+and gives each thread an alternate signal stack. It is off unless `VFS_FAULT_REPORT=1`, which rowdy
+sets when its log level is `debug` or `trace` (an explicit `VFS_FAULT_REPORT` wins either way). Off,
+nothing is installed: the `sigaction`, `signal` and `pthread_create` wrappers pass straight to libc.
 
 ## Limits
 

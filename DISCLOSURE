@@ -96,8 +96,12 @@ Fault report
   to give each new thread a 64 KiB alternate signal stack, so a thread that
   overflowed its stack can still be reported. A SIGSEGV sent by kill(2) is
   passed to the program unreported, as is a fault in a program whose own
-  handler (other than node's) may recover from it. VFS_FAULT_REPORT=0 turns all of this off
-  and leaves the signals and threads untouched.
+  handler (other than node's) may recover from it.
+
+  All of this is off unless VFS_FAULT_REPORT=1 (rowdy sets it when its own
+  log level is debug or trace). Off, no handler is installed, no thread gets
+  an alternate stack, and the sigaction, signal and pthread_create wrappers
+  pass every call straight to libc.
 
 Why it exists
 
