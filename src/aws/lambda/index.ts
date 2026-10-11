@@ -1085,7 +1085,7 @@ export class LambdaFunction implements Logger {
         ),
         switchMap(({ Function, MemorySize, Environment, ImageUri, EntryPoint, Command, WorkingDirectory }) => {
           const { Code = {} } = Function;
-          let { Configuration = {} } = Function;
+          const { Configuration = {} } = Function;
           const { FunctionName } = Configuration;
           let { Version } = Configuration;
 

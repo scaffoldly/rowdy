@@ -44,6 +44,7 @@ module.exports = [
       prettier,
     },
     rules: {
+      ...typescript.configs['eslint-recommended'].overrides[0].rules,
       ...typescript.configs.recommended.rules,
       ...prettierConfig.rules,
       '@typescript-eslint/no-unused-vars': ['error', { argsIgnorePattern: '^_', varsIgnorePattern: '^_' }],
@@ -96,6 +97,7 @@ module.exports = [
       prettier,
     },
     rules: {
+      ...typescript.configs['eslint-recommended'].overrides[0].rules,
       ...typescript.configs.recommended.rules,
       ...prettierConfig.rules,
       '@typescript-eslint/no-unused-vars': ['error', { argsIgnorePattern: '^_', varsIgnorePattern: '^_' }],

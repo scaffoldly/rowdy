@@ -59,7 +59,7 @@ export class LambdaImageService implements ILambdaImageService {
 
   pullImage = async (req: CRI.PullImageRequest): Promise<CRI.PullImageResponse> => {
     // TODO: Support for platform annotation
-    let opts: PullImageOptions = {};
+    const opts: PullImageOptions = {};
     if (!req.image?.image) {
       throw new ConnectError('No image specified');
     }

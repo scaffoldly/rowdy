@@ -48,7 +48,7 @@ export class LambdaPipeline extends Pipeline {
       return;
     }
 
-    let router = new GrpcRouter(this.signal, {
+    const router = new GrpcRouter(this.signal, {
       title: 'AWS Lambda CRI',
       description: `An implementation of the Kubernetes Container Runtime Interface (CRI) which leverages technology such as AWS Lambda, AWS ECR, and AWS CloudWatch to implement Container Runtime and Image management.`,
       license: {
@@ -340,6 +340,9 @@ export class LambdaHttpProxy extends HttpProxy<LambdaPipeline> {
   }
 }
 
+// How much of a failed cron response's body goes into its log line and error.
+const CRON_REASON_CHARS = 512;
+
 export class LambdaCronProxy extends LambdaHttpProxy {
   @Trace(log)
   override into(): Observable<Response<LambdaPipeline>> {
@@ -354,14 +357,25 @@ export class LambdaCronProxy extends LambdaHttpProxy {
         // Set to 0 bytes as the prelude is not counted
         response.next(new Chunk(JSON.stringify(http.prelude()), 0));
         response.next(new Chunk(Buffer.alloc(8), 0));
-        http.data.on('data', (chunk: Buffer) => response.next(new Chunk(chunk, chunk.length)));
+        // EventBridge Scheduler discards the body, so a failure's reason is kept for the log line.
+        let reason = '';
+        http.data.on('data', (chunk: Buffer) => {
+          if (http.status >= 400 && reason.length < CRON_REASON_CHARS) {
+            reason = (reason + chunk.toString()).slice(0, CRON_REASON_CHARS);
+          }
+          response.next(new Chunk(chunk, chunk.length));
+        });
         // DEVNOTE: EventBridge Scheduler ignores the response payload, so a failed cron request is
         // only visible if the invocation itself fails. Erroring here marks it as a Lambda error.
         const settle = (): void =>
           cancelDeadline(() => {
             if (http.status >= 400) {
-              log.warn('Cron Request Failed', { status: http.status, uri: maskUrl(this.uri) });
-              response.error(new Error(`Cron request to ${this.uri.toString()} failed with status ${http.status}`));
+              log.warn('Cron Request Failed', { status: http.status, uri: maskUrl(this.uri), reason });
+              response.error(
+                new Error(
+                  `Cron request to ${this.uri.toString()} failed with status ${http.status}${reason ? `: ${reason}` : ''}`
+                )
+              );
               return;
             }
             response.complete();

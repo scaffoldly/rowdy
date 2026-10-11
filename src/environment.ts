@@ -6,7 +6,9 @@ import {
   EMPTY,
   fromEvent,
   map,
+  merge,
   mergeMap,
+  NEVER,
   Observable,
   of,
   race,
@@ -14,13 +16,14 @@ import {
   ReplaySubject,
   Subscription,
   switchMap,
+  take,
   takeUntil,
   tap,
   timer,
 } from 'rxjs';
 import { Routes } from './routes';
 import { ILoggable, isLevel, Level, log, Logger, mask, maskEnv, maskJson, Trace } from './log';
-import { ShellProxy, ShellRequest } from './proxy/shell';
+import { ShellExit, ShellProxy, ShellRequest } from './proxy/shell';
 import { ShellPipeline } from './shell/pipeline';
 import { Pipeline, Result } from './pipeline';
 import { LambdaPipeline } from './aws/lambda';
@@ -134,6 +137,9 @@ export type ProcessEnv = Record<
 >;
 
 export class Environment implements ILoggable {
+  // How long a graceful shutdown gets after the command exits before rowdy exits outright.
+  static readonly EXIT_GRACE_MS = 2000;
+
   private static _CONCURRENCY = {
     MIN: 1,
     MAX: 10,
@@ -160,6 +166,7 @@ export class Environment implements ILoggable {
   private _subscriptions: Subscription[] = [];
   private _routes: Routes;
   private _command?: string[] | undefined;
+  private _commandExit = new ReplaySubject<ShellExit>(1);
   private _envVars = new ReplaySubject<{ name: keyof ProcessEnv; value: ProcessEnv[keyof ProcessEnv] }>();
   private _rowdy: Rowdy;
   private _port?: number;
@@ -577,25 +584,65 @@ export class Environment implements ILoggable {
         new ShellProxy(shell, new ShellRequest(shell, this.command).withInput(process.stdin))
           .background()
           .invoke()
-          .subscribe((response) => {
-            this._subscriptions.push(
-              response.subscribe({
-                complete: () => {
-                  log.info('Command Completed', { bin: response.bin, response });
-                  if (this._port) {
-                    // TODO: Clean up CTRL+C
-                    return;
-                  }
-                  response.fds.end();
-                  this.abort.abort('Command complete');
-                },
-              })
-            );
+          .subscribe({
+            next: (response) => {
+              let status: ShellExit = { code: 0 };
+              this._subscriptions.push(
+                response.subscribe({
+                  next: (exit) => (status = exit),
+                  complete: () => {
+                    log.info('Command Completed', { bin: response.bin, response });
+                    response.fds.end();
+                    this.commandExited(response.bin, status);
+                  },
+                })
+              );
+            },
+            error: (error: unknown) =>
+              this.commandExited(this.command?.[0] ?? '', {
+                code: 1,
+                message: error instanceof Error ? error.message : String(error),
+              }),
           })
       );
     }
 
     return this;
+  }
+
+  /** How the command ended, once it has. */
+  get commandExit(): Observable<ShellExit> {
+    return this._commandExit.asObservable();
+  }
+
+  // DEVNOTE: Without its command rowdy has nothing to serve: poll() takes no new requests, lets the
+  // ones in flight answer, then completes, and rowdy shuts down; on Lambda the next request gets a
+  // fresh sandbox. Lambda freezes a sandbox only when the runtime asks for the next invocation,
+  // which a draining rowdy never does, so the backstop exit fires within this lifecycle and never on
+  // a later invocation. With a gRPC port rowdy keeps serving.
+  private get drain$(): Observable<ShellExit> {
+    return this._port ? NEVER : this._commandExit;
+  }
+
+  private commandExited(bin: string, exit: ShellExit): void {
+    const { code, signal, message } = exit;
+    if (code !== 0) {
+      log.error('Command Exited', { bin, code, signal: signal ?? '', message: message ?? '' });
+      if (!this._port) {
+        process.exitCode = code;
+      }
+    }
+    this._commandExit.next(exit);
+  }
+
+  private shutdown(): void {
+    this.drain$.pipe(take(1)).subscribe(({ code }) => {
+      log.info('Drained', { code });
+      this.abort.abort('Command complete');
+      if (code !== 0) {
+        setTimeout(() => process.exit(code), Environment.EXIT_GRACE_MS);
+      }
+    });
   }
 
   @Trace(log)
@@ -613,8 +660,10 @@ export class Environment implements ILoggable {
       )
     );
 
-    return pipeline.pipe(
-      takeUntil(fromEvent(this.signal, 'abort')),
+    const stop$ = merge(fromEvent(this.signal, 'abort'), this.drain$);
+
+    const results$ = pipeline.pipe(
+      takeUntil(stop$),
       tap((request) => {
         log.info('Request', request.brief());
         log.debug('Request Detail', { request, routes: this.routes });
@@ -625,8 +674,11 @@ export class Environment implements ILoggable {
       tap((response) => log.debug('Respond', { response })),
       mergeMap((response) => response.into(), Environment.CONCURRENCY),
       tap((result) => log.info('Result', result.brief())),
-      repeat({ delay: () => timer(delay) })
+      // A stopped poll fetches no next request; it completes once the requests in flight answer.
+      repeat({ delay: () => timer(delay).pipe(takeUntil(stop$)) })
     );
+
+    return results$.pipe(tap({ complete: () => this.shutdown() }));
   }
 
   repr(): string {
