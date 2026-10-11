@@ -79,24 +79,28 @@ Local supervisor socket
 
 Fault report
 
-  When the program dies of a SIGSEGV or SIGBUS raised by the kernel, the shim
-  writes a short description of the fault to the program's own stderr: the
-  signal, the faulting address, the program counter, the stack pointer and a
-  few frame-pointer return addresses, each with the /proc/self/maps line it
-  falls in, and the libc function (and path) the faulting thread was inside,
-  if any, with the 9P message it was waiting on. It reads /proc/self/maps to
-  do so and nothing else; it sends nothing anywhere. The program then dies by
-  the same signal as it would have without the shim.
+  When the program dies of a SIGSEGV, SIGBUS, SIGILL or SIGFPE raised by the
+  kernel, the shim writes a description of the fault to the program's own
+  stderr: the signal, the faulting address, the shim's own commit, the
+  program counter, the stack pointer, every general register, the code bytes
+  around the program counter, return addresses found by frame pointer and by
+  scanning the 16 KiB above the stack pointer for code addresses (each with
+  the /proc/self/maps line it falls in), and the libc function (and path)
+  the faulting thread and every other thread was inside, if any, with the 9P
+  message each was waiting on. It reads /proc/self/maps and the program's
+  own readable memory to do so, nothing else; it sends nothing anywhere. The
+  program then dies by the same signal as it would have without the shim.
 
-  For this the shim keeps its own handler for those two signals: it
-  interposes sigaction(2) and signal(3) for SIGSEGV and SIGBUS only, records
+  For this the shim keeps its own handler for those four signals: it
+  interposes sigaction(2) and signal(3) for them only, records
   the program's handler instead of installing it, and calls that handler from
   its own (node's, which handles WebAssembly memory traps, is called first
   through v8::TryHandleWebAssemblyTrapPosix). It interposes pthread_create(3)
   to give each new thread a 64 KiB alternate signal stack, so a thread that
-  overflowed its stack can still be reported. A SIGSEGV sent by kill(2) is
-  passed to the program unreported, as is a fault in a program whose own
-  handler (other than node's) may recover from it.
+  overflowed its stack can still be reported, and keeps a list of live
+  threads so the report can say what each was doing. A signal sent by
+  kill(2) is passed to the program unreported, as is a fault in a program
+  whose own handler (other than node's SIGSEGV handler) may recover from it.
 
   All of this is off unless VFS_FAULT_REPORT=1 (rowdy sets it when its own
   log level is debug or trace). Off, no handler is installed, no thread gets

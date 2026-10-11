@@ -18,6 +18,8 @@ esac
 root="$(cd "$(dirname "$0")/.." && pwd)"
 out="lib/linux-$arch"
 mkdir -p "$root/$out"
+# The commit the fault report names, so its offsets match an exact binary.
+rev="$(cd "$root" && git rev-parse --short=7 HEAD 2>/dev/null || echo unknown)"
 
 # DEVNOTE: initial-exec TLS keeps ld-linux out of DT_NEEDED (no __tls_get_addr); no stack protector
 # or fortify keeps glibc-only __*_chk calls out of the object. Both would stop musl from loading it.
@@ -30,13 +32,14 @@ docker run --rm --platform "$platform" -v "$root:/w" -w /w \
   sh /w/native/apt-snapshot.sh
   apt-get -qq update >/dev/null
   apt-get -qq install -y --no-install-recommends gcc libc6-dev >/dev/null
-  case \$(uname -m) in x86_64) dlver=GLIBC_2.2.5 ;; *) dlver=GLIBC_2.17 ;; esac
+  # arm64 atomics inline: GCC's outlined ones probe the CPU through glibc's __getauxval, which musl lacks.
+  case \$(uname -m) in x86_64) dlver=GLIBC_2.2.5 atomics= ;; *) dlver=GLIBC_2.17 atomics=-mno-outline-atomics ;; esac
   mkdir -p /tmp/stub
   echo 'void *dlsym(void *h, const char *s) { (void)h; (void)s; return 0; }' > /tmp/stub/dl.c
   echo \"\$dlver { global: dlsym; local: *; };\" > /tmp/stub/dl.map
   gcc -shared -fPIC -Wl,-soname,libdl.so.2 -Wl,--version-script=/tmp/stub/dl.map /tmp/stub/dl.c -o /tmp/stub/libdl.so.2
   gcc -O2 -s -shared -fPIC -Wall -Wextra -Werror -ftls-model=initial-exec -fno-stack-protector -U_FORTIFY_SOURCE \
-    native/vfspreload.c -L/tmp/stub -Wl,--no-as-needed -l:libdl.so.2 -o $out/vfspreload.so
+    \$atomics -DVFS_BUILD='\"$rev\"' native/vfspreload.c -L/tmp/stub -Wl,--no-as-needed -l:libdl.so.2 -o $out/vfspreload.so
 "
 echo "built $out/vfspreload.so"
 sh "$root/native/symbols.sh" "$arch"

@@ -38,12 +38,31 @@ fault() { run --separate-stderr "$@"; output=$stderr; }
   [[ "$output" != *"rowdy-vfs:"* ]]
 }
 
-@test "a NULL dereference: signal, address and the pc's object" {
+@test "a NULL dereference: signal, address, shim build, pc's object, registers, code, stack" {
   fault env VFS_FAULT_REPORT=1 "$segv" null
   [ "$status" -eq 139 ]
-  [[ "$output" == *"rowdy-vfs: fatal SIGSEGV (signal 11, code 1 SEGV_MAPERR) at 0x0"* ]]
+  [[ "$output" == *"rowdy-vfs: fatal SIGSEGV (signal 11, code 1 SEGV_MAPERR) at 0x0, tid "*", shim "* ]]
   [[ "$output" == *"rowdy-vfs: pc 0x"* ]]
   [[ "$output" == *" $segv+0x"* ]]
+  [[ "$output" == *"rowdy-vfs: regs "* ]]
+  [[ "$output" =~ rowdy-vfs:\ code\ 0x[0-9a-f]+:.*\[[0-9a-f]{2}\] ]]
+  [[ "$output" == *"rowdy-vfs: stack sp+0x"* ]]   # main's return address into libc, at least
+  [[ "$output" == *"rowdy-vfs: threads 1 registered, 0 others inside a hook or waiting on 9P"* ]]
+}
+
+@test "other threads inside a hook are listed with their path" {
+  fault env VFS_FAULT_REPORT=1 "$segv" busy
+  [ "$status" -eq 139 ]
+  [[ "$output" == *"not in a hook"* ]]
+  [[ "$output" =~ rowdy-vfs:\ thread\ [0-9]+:\ inside\ scandir\(\"/vfs/faults\"\) ]]
+  [[ "$output" == *"rowdy-vfs: threads 2 registered, 1 others inside a hook or waiting on 9P"* ]]
+}
+
+@test "an illegal instruction is reported as SIGILL" {
+  fault env VFS_FAULT_REPORT=1 "$segv" ill
+  [ "$status" -eq 132 ]
+  [[ "$output" == *"rowdy-vfs: fatal SIGILL (signal 4, code "* ]]
+  [[ "$output" == *"rowdy-vfs: code 0x"* ]]
 }
 
 @test "a thread that overflowed its stack is reported from its alternate stack" {
@@ -70,6 +89,12 @@ fault() { run --separate-stderr "$@"; output=$stderr; }
   [ "$status" -eq 139 ]
   [[ "$output" == *"rowdy-vfs: fatal SIGSEGV (signal 11, code 1 SEGV_MAPERR) at 0x0"* ]]
   [[ "$output" == *"/boom.so+0x"* ]]
+}
+
+@test "node starts without a report: OpenSSL's SIGILL probe of CPU features is its own to recover" {
+  fault env VFS_FAULT_REPORT=1 node -e 0
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"rowdy-vfs:"* ]]
 }
 
 @test "node: a sent SIGSEGV is left to node, unreported" {
