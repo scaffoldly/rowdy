@@ -100,6 +100,7 @@ Every push to `vfs` also uploads the packed build as an asset of the rolling `vf
 registry's review of the shim. The npm release stays the reviewed, attested one for everyone else.
 
 ```sh
+yarn test:unit      # unit tests for the shim's headers (cmocka, ASan + UBSan) on Debian 12
 yarn test:native    # drives the host-arch shim through busybox, node and a C caller, on alpine and debian
 yarn build          # bundles src/ with lib/linux-*/vfspreload.so inlined
 yarn test

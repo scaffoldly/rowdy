@@ -36,6 +36,7 @@
     "build:index": "tsup",
     "test": "yarn jest -- --verbose --testTimeout=30000",
     "test:native": "for flavour in alpine debian; do sh native/test.sh $(node -p process.arch) $flavour || exit 1; done",
+    "test:unit": "sh native/unit.sh $(node -p process.arch)",
     "jest": "jest",
     "lint": "eslint .",
     "lint:fix": "eslint . --fix"

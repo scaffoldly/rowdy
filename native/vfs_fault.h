@@ -73,7 +73,8 @@ static inline void crumb_leave(int *unused) {
 }
 static inline void crumb_path(const char *path) {
     if (!g_fault_on || !path) return;
-    size_t n = strnlen(path, CRUMB_PATH - 1);
+    size_t n = 0;
+    while (n < CRUMB_PATH - 1 && path[n]) n++;
     memcpy(g_crumb.path, path, n);
     g_crumb.path[n] = '\0';
     g_crumb.pathseq = g_crumb.seq;
@@ -163,7 +164,7 @@ static void match_line(const char *line, struct mapping *m, int n) {
     uintptr_t end = parse_hex(&p);
     if (*p++ != ' ') return;
     const char *perms = p;
-    p += 4;
+    for (int i = 0; i < 4; i++) if (!*p++) return;
     if (*p++ != ' ') return;
     uintptr_t offset = parse_hex(&p);
     for (int field = 0; field < 2 && *p; field++) {   /* dev, inode */
