@@ -12,6 +12,7 @@
  *   vfspreload.c     interposition: the libc symbols and their arguments
  *   vfs_core.h       core: mount table, path translation, open-file table
  *   vfs_transport.h  transport: the client for the supervisor protocol
+ *   vfs_fault.h      below them all: per-thread breadcrumbs and the fatal-fault report
  *
  * It is a genuine filesystem surface: create, read, write, stat, list, mkdir,
  * rename, chmod, delete all work, because each path-based call is translated and
@@ -74,6 +75,7 @@
 #include <sys/xattr.h>
 
 
+#include "vfs_fault.h"
 #include "vfs_transport.h"
 #include "vfs_core.h"
 
@@ -1052,4 +1054,45 @@ int posix_spawn_file_actions_addchdir_np(posix_spawn_file_actions_t *fa, const c
     if (!real_) return ENOSYS;
     XL(path);
     return real_(fa, rp_);
+}
+
+/* ---- fault report (vfs_fault.h) --------------------------------------------------
+ * The program's SIGSEGV/SIGBUS action is recorded, not installed: ours stays first and calls it.
+ * bsd_signal, sysv_signal and sigset are not interposed. */
+
+int sigaction(int sig, const struct sigaction *act, struct sigaction *old) {
+    if (fault_owns(sig)) { fault_record(sig, act, old); return 0; }
+    REAL(sigaction);
+    return real_(sig, act, old);
+}
+
+sighandler_t signal(int sig, sighandler_t handler) {
+    if (!fault_owns(sig)) { REAL(signal); return real_(sig, handler); }
+    struct sigaction act, old;
+    memset(&act, 0, sizeof act);
+    act.sa_handler = handler;
+    act.sa_flags = SA_RESTART;
+    fault_record(sig, &act, &old);
+    return (old.sa_flags & SA_SIGINFO) ? (sighandler_t)(void *)old.sa_sigaction : old.sa_handler;
+}
+
+/* Every thread gets an alternate stack for the handler, set up before its start routine runs. */
+struct thread_start { void *(*start)(void *); void *arg; };
+
+static void *thread_trampoline(void *p) {
+    struct thread_start ts = *(struct thread_start *)p;
+    free(p);
+    altstack_thread();
+    return ts.start(ts.arg);
+}
+
+int pthread_create(pthread_t *thread, const pthread_attr_t *attr, void *(*start)(void *), void *arg) {
+    REAL(pthread_create);
+    struct thread_start *ts = g_fault_on ? malloc(sizeof *ts) : NULL;
+    if (!ts) return real_(thread, attr, start, arg);
+    ts->start = start;
+    ts->arg = arg;
+    int r = real_(thread, attr, thread_trampoline, ts);
+    if (r) free(ts);
+    return r;
 }

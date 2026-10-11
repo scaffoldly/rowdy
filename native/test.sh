@@ -601,6 +601,73 @@ else
 fi
 echo "locks: ok"
 
+# fault report: a fatal SIGSEGV is described on stderr (signal, address, pc and its mapping, the
+# faulting thread's last hook), then the process still dies by the signal (status 139)
+cat > /tmp/segv.c <<'EOF'
+#include <dirent.h>
+#include <pthread.h>
+#include <setjmp.h>
+#include <signal.h>
+#include <string.h>
+static sigjmp_buf jb;
+static void recover(int sig) { (void)sig; siglongjmp(jb, 1); }
+static int boom(const struct dirent *d) { (void)d; return *(volatile int *)0; }
+static int deep(int n) { volatile char pad[1024]; pad[0] = (char)n; return deep(n + 1) + pad[0]; }
+static void *overflow(void *a) { (void)a; return (void *)(long)deep(0); }
+int main(int argc, char **argv) {
+  if (argc < 2) return 2;
+  if (!strcmp(argv[1], "null")) return *(volatile int *)0;
+  if (!strcmp(argv[1], "thread")) { pthread_t t; pthread_create(&t, 0, overflow, 0); pthread_join(t, 0); }
+  if (!strcmp(argv[1], "hook")) { struct dirent **l; return scandir("/vfs/faults", &l, boom, alphasort); }
+  if (!strcmp(argv[1], "recover")) { signal(SIGSEGV, recover); if (!sigsetjmp(jb, 1)) return *(volatile int *)0; }
+  return 0;
+}
+EOF
+gcc -O0 /tmp/segv.c -o /tmp/segv -lpthread
+expect_fault() {  # expect_fault <name> <expected status> <command…>: run it, keep stderr in /tmp/fault.err
+  name="$1"; want="$2"; shift 2
+  set +e; "$@" 2>/tmp/fault.err; rc=$?; set -e
+  [ "$rc" = "$want" ] || fail "$name: status $rc, want $want: $(cat /tmp/fault.err)"
+}
+has() { grep -qF -- "$2" /tmp/fault.err || fail "$1: no '$2' in: $(cat /tmp/fault.err)"; }
+
+expect_fault "null" 139 /tmp/segv null
+has null "rowdy-vfs: fatal SIGSEGV (signal 11, code 1 SEGV_MAPERR) at 0x0"
+has null "rowdy-vfs: pc 0x"
+has null " /tmp/segv+0x"
+
+expect_fault "thread overflow" 139 /tmp/segv thread
+has "thread overflow" "rowdy-vfs: fatal SIGSEGV"
+has "thread overflow" "in a guard page: stack overflow"
+
+mkdir -p /vfs/faults && echo x > /vfs/faults/one
+expect_fault "fault in a hook" 139 /tmp/segv hook
+has "fault in a hook" 'inside scandir("/vfs/faults")'
+
+expect_fault "recovered" 0 /tmp/segv recover
+grep -q "rowdy-vfs:" /tmp/fault.err && fail "recovered: reported a fault the program's handler recovered from: $(cat /tmp/fault.err)"
+
+expect_fault "report off" 139 env VFS_FAULT_REPORT=0 /tmp/segv null
+grep -q "rowdy-vfs:" /tmp/fault.err && fail "report off: still reported: $(cat /tmp/fault.err)"
+
+# node: a fault inside the process is reported, then node's own handler (WebAssembly traps) runs and
+# it still dies by the signal; a SIGSEGV sent to it is left to node, unreported
+echo '__attribute__((constructor)) static void boom(void) { *(volatile int *)0 = 1; }' > /tmp/boom.c
+gcc -shared -fPIC /tmp/boom.c -o /tmp/boom.so
+expect_fault "node fault" 139 node -e 'process.dlopen({ exports: {} }, "/tmp/boom.so")'
+has "node fault" "rowdy-vfs: fatal SIGSEGV (signal 11, code 1 SEGV_MAPERR) at 0x0"
+has "node fault" " /tmp/boom.so+0x"
+plain=$(set +e; env -u LD_PRELOAD node -e 'process.kill(process.pid, "SIGSEGV")' 2>/dev/null; echo $?)
+expect_fault "node sent SIGSEGV" "$plain" node -e 'process.kill(process.pid, "SIGSEGV")'
+grep -q "rowdy-vfs:" /tmp/fault.err && fail "node sent SIGSEGV: reported a sent signal: $(cat /tmp/fault.err)"
+expect_fault "node wasm trap" 0 node -e '
+const bytes = Uint8Array.from([0,97,115,109,1,0,0,0, 1,5,1,96,0,1,127, 3,2,1,0, 5,3,1,0,1,
+  7,5,1,1,102,0,0, 10,11,1,9,0,65,240,162,4,40,2,0,11]);
+const { f } = new WebAssembly.Instance(new WebAssembly.Module(bytes)).exports;
+try { f(); process.exit(1); } catch (e) { if (!(e instanceof WebAssembly.RuntimeError)) throw e; }'
+grep -q "rowdy-vfs:" /tmp/fault.err && fail "node wasm trap: reported a WebAssembly trap: $(cat /tmp/fault.err)"
+echo "fault report: ok"
+
 kill $SRVPID
 wait $SRVPID 2>/dev/null || true
 

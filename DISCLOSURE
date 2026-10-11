@@ -7,8 +7,8 @@ What this package contains
   and glibc). The same two files are also inlined into dist/index.js as
   base64 so a bundled consumer can write them to disk at runtime
   (materialize()). They are built in GitHub Actions from
-  native/vfspreload.c (which includes native/vfs_core.h and
-  native/vfs_transport.h) on the `vfs` branch of https://github.com/scaffoldly/rowdy
+  native/vfspreload.c (which includes native/vfs_core.h,
+  native/vfs_transport.h and native/vfs_fault.h) on the `vfs` branch of https://github.com/scaffoldly/rowdy
   and the published tarball carries sigstore provenance for that build.
 
 What the shared object does
@@ -76,6 +76,28 @@ Local supervisor socket
   decides what backs them (a local directory, or an object store such as S3
   using the supervisor's own credentials). The shim holds no credentials of
   any kind.
+
+Fault report
+
+  When the program dies of a SIGSEGV or SIGBUS raised by the kernel, the shim
+  writes a short description of the fault to the program's own stderr: the
+  signal, the faulting address, the program counter, the stack pointer and a
+  few frame-pointer return addresses, each with the /proc/self/maps line it
+  falls in, and the libc function (and path) the faulting thread was inside,
+  if any, with the 9P message it was waiting on. It reads /proc/self/maps to
+  do so and nothing else; it sends nothing anywhere. The program then dies by
+  the same signal as it would have without the shim.
+
+  For this the shim keeps its own handler for those two signals: it
+  interposes sigaction(2) and signal(3) for SIGSEGV and SIGBUS only, records
+  the program's handler instead of installing it, and calls that handler from
+  its own (node's, which handles WebAssembly memory traps, is called first
+  through v8::TryHandleWebAssemblyTrapPosix). It interposes pthread_create(3)
+  to give each new thread a 64 KiB alternate signal stack, so a thread that
+  overflowed its stack can still be reported. A SIGSEGV sent by kill(2) is
+  passed to the program unreported, as is a fault in a program whose own
+  handler (other than node's) may recover from it. VFS_FAULT_REPORT=0 turns all of this off
+  and leaves the signals and threads untouched.
 
 Why it exists
 

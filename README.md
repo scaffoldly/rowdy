@@ -50,6 +50,30 @@ also reach some calls under other names: the 64-bit names (`stat64`, `fopen64`, 
 the `_FORTIFY_SOURCE` entry points (`__open_2`, `__realpath_chk`, …), `renameat2`, `fcntl64`, and
 the pre-2.33 `__xstat` family that binaries built against older glibc still call.
 
+## Fault report
+
+A process that dies of a SIGSEGV or SIGBUS writes what it was doing to its stderr before it dies
+(with the same status, 139 for SIGSEGV), which rowdy relays into its log:
+
+```
+rowdy-vfs: fatal SIGSEGV (signal 11, code 1 SEGV_MAPERR) at 0x0, tid 42
+rowdy-vfs: pc 0x7f12…  r-xp /usr/local/bin/node+0x1a2b3c
+rowdy-vfs: sp 0x7f34…  rw-p [anonymous] 0x7f30…-0x7f38…
+rowdy-vfs: inside openat("/oauth/codes/abc") (depth 1), waiting on 9P Twalk
+rowdy-vfs: frame 1 0x7f56…  r-xp /lib/ld-musl-x86_64.so.1+0x5c1e0
+```
+
+- `pc` names the object the fault happened in: the shim (`vfspreload.so`), libc, the program, or
+  `[anonymous]` (JIT code). A stack pointer in a guard page is reported as a stack overflow.
+- `inside …` is the hooked libc call the faulting thread was in, with its path and the 9P request it
+  was waiting on; `not in a hook` means the fault happened outside the shim's code.
+- Frames are walked by frame pointer and stop where one is missing, which is often.
+- WebAssembly memory traps (node), a SIGSEGV sent with `kill`, and faults in a program with its own
+  handler other than node's (which may recover, like a JVM's null checks) are not reported.
+
+To do this the shim keeps its own SIGSEGV/SIGBUS handler first (the program's is called from it)
+and gives each thread an alternate signal stack. `VFS_FAULT_REPORT=0` turns it off.
+
 ## Limits
 
 - Dynamically linked programs that go through libc see the VFS: musl (alpine) and glibc 2.34 or

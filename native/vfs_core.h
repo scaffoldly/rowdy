@@ -83,6 +83,7 @@ static void vfs_init(void) {
 
     transport_init();
     g_on_connect = attach_all_locked;
+    fault_init();
 
     /* VFS_MOUNTS: "prefix=backing" entries separated by ':'. The split is at the
      * last '=' of an entry, so a prefix may contain one. */
@@ -228,6 +229,7 @@ static int virtual_of_relative(int dirfd, const char *path, char *out, size_t ou
  * absolute or relative to dfd (XLAT) or to the cwd (XL). A relative path is passed on unchanged. */
 #define XLAT(dfd, p) \
     const char *rp_; char xb_[PATH_MAX], xv_[PATH_MAX]; \
+    crumb_path(p); \
     rp_ = xlate((p), xb_, sizeof xb_); \
     const char *vp_ = (p); \
     int vf_ = (rp_ != (p)); \
@@ -237,6 +239,7 @@ static int virtual_of_relative(int dirfd, const char *path, char *out, size_t ou
 
 #define XL2AT(fa, a, fb, b) \
     char ab_[PATH_MAX], bb_[PATH_MAX], av_[PATH_MAX], bv_[PATH_MAX]; \
+    crumb_path(a); \
     const char *ra_ = xlate((a), ab_, sizeof ab_); \
     const char *rb_ = xlate((b), bb_, sizeof bb_); \
     const char *vpa_ = (a), *vpb_ = (b); \
@@ -247,11 +250,13 @@ static int virtual_of_relative(int dirfd, const char *path, char *out, size_t ou
 #define XL2(a, b) XL2AT(AT_FDCWD, a, AT_FDCWD, b)
 
 #define REAL(name) \
+    CRUMB(#name); \
     static typeof(&name) real_; \
     if (!real_) real_ = (typeof(&name))dlsym(RTLD_NEXT, #name)
 
 /* REAL for a function with no public prototype (glibc's __xstat family, gone from 2.33's headers). */
 #define REAL_T(name, type) \
+    CRUMB(#name); \
     static type real_; \
     if (!real_) real_ = (type)dlsym(RTLD_NEXT, #name)
 
