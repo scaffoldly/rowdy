@@ -1,7 +1,20 @@
 import { Environment, Logger } from '@scaffoldly/rowdy';
 import { ShellExit, ShellProxy, ShellRequest, ShellResponse } from '../src/proxy/shell';
 import { ShellPipeline } from '../src/shell/pipeline';
-import { config, firstValueFrom, lastValueFrom, of, timeout } from 'rxjs';
+import {
+  config,
+  EMPTY,
+  firstValueFrom,
+  lastValueFrom,
+  Observable,
+  of,
+  Subject,
+  Subscription,
+  take,
+  timeout,
+} from 'rxjs';
+import { Pipeline, Proxy, Request } from '../src/pipeline';
+import type { CRI } from '@scaffoldly/rowdy-grpc';
 import { createServer, Server, AddressInfo } from 'net';
 import { Routes } from '@scaffoldly/rowdy';
 import { LambdaPipeline, LambdaRequest } from '../src/aws/lambda';
@@ -153,71 +166,135 @@ describe('shell', () => {
 });
 
 describe('command exit', () => {
-  // What rowdy did after the command exited: whether it shut down, the exit code it set, and the
-  // codes it called process.exit with once the grace period passed.
-  type Shutdown = {
-    aborted: boolean;
-    exitCode: typeof process.exitCode;
-    exit: Array<Parameters<typeof process.exit>[0]>;
+  // A request the test finishes by completing it.
+  class TestRequest extends Request<Pipeline> {
+    readonly done = new Subject<Proxy<Pipeline, unknown>>();
+
+    override into(): Observable<Proxy<Pipeline, unknown>> {
+      return this.done;
+    }
+
+    override repr(): string {
+      return 'TestRequest()';
+    }
+  }
+
+  // A pipeline that waits for the next request until the test hands one out.
+  class TestPipeline extends Pipeline {
+    private readonly next = new Subject<Request<Pipeline>>();
+    fetches = 0;
+
+    override get name(): string {
+      return 'TestPipeline';
+    }
+
+    override into(): Observable<Request<Pipeline>> {
+      this.fetches++;
+      return this.next.pipe(take(1));
+    }
+
+    override version(): Observable<CRI.VersionResponse> {
+      return EMPTY;
+    }
+
+    override repr(): string {
+      return 'TestPipeline()';
+    }
+
+    receive(): TestRequest {
+      const request = new TestRequest(this);
+      this.next.next(request);
+      return request;
+    }
+  }
+
+  // process.exit never returns, so its stand-in throws; the timer that calls it surfaces the throw.
+  class ProcessExit extends Error {
+    constructor(readonly code: Parameters<typeof process.exit>[0]) {
+      super(`process.exit(${code})`);
+    }
+  }
+
+  type Harness = {
+    environment: Environment;
+    pipeline: TestPipeline;
+    exit: jest.SpiedFunction<typeof process.exit>;
   };
 
-  const exited = (status: ShellExit, port?: number): Shutdown => {
+  let rowdy: Harness;
+
+  beforeEach(() => {
+    jest.useFakeTimers();
     const environment = new Environment(new Logger());
     environment.abort = new AbortController();
-    environment['_port'] = port;
-    const exit = jest.spyOn(process, 'exit').mockImplementation((() => undefined) as never);
-    jest.useFakeTimers();
-    try {
-      environment['commandExited']('node', status);
-      const aborted = environment.abort.signal.aborted;
-      const exitCode = process.exitCode;
-      jest.advanceTimersByTime(Environment.EXIT_GRACE_MS);
-      return { aborted, exitCode, exit: exit.mock.calls.map(([code]) => code) };
-    } finally {
-      jest.useRealTimers();
-      exit.mockRestore();
-      process.exitCode = undefined;
-    }
+    const pipeline = new TestPipeline(environment);
+    environment['_pipelines'] = [pipeline];
+    const exit = jest.spyOn(process, 'exit').mockImplementation((code): never => {
+      throw new ProcessExit(code);
+    });
+    rowdy = { environment, pipeline, exit };
+  });
+
+  afterEach(() => {
+    rowdy.exit.mockRestore();
+    jest.useRealTimers();
+    process.exitCode = undefined;
+  });
+
+  const start = (port?: number): Subscription => {
+    rowdy.environment['_port'] = port;
+    return rowdy.environment.poll().subscribe();
   };
 
-  it('shuts rowdy down with the code when the command crashes, before the next request', () => {
-    expect(exited({ code: 139, signal: 'SIGSEGV' })).toEqual({ aborted: true, exitCode: 139, exit: [139] });
+  it('shuts down with the code when the command crashes while rowdy waits for a request', () => {
+    start();
+    rowdy.environment['commandExited']('node', { code: 139, signal: 'SIGSEGV' });
+    expect(rowdy.environment.abort.signal.aborted).toBe(true);
+    expect(process.exitCode).toBe(139);
+    expect(() => jest.advanceTimersByTime(Environment.EXIT_GRACE_MS)).toThrow(new ProcessExit(139));
   });
 
-  it('shuts rowdy down with the code when the command exits non-zero', () => {
-    expect(exited({ code: 3 })).toEqual({ aborted: true, exitCode: 3, exit: [3] });
+  it('lets the request in flight answer, fetches no next one, then shuts down', () => {
+    start();
+    const request = rowdy.pipeline.receive();
+    expect(rowdy.pipeline.fetches).toBe(1);
+
+    rowdy.environment['commandExited']('node', { code: 3 });
+    jest.advanceTimersByTime(Environment.EXIT_GRACE_MS);
+    expect(rowdy.environment.abort.signal.aborted).toBe(false);
+    expect(rowdy.exit).not.toHaveBeenCalled();
+
+    request.done.complete();
+    jest.advanceTimersByTime(0);
+    expect(rowdy.pipeline.fetches).toBe(1);
+    expect(rowdy.environment.abort.signal.aborted).toBe(true);
+    expect(() => jest.advanceTimersByTime(Environment.EXIT_GRACE_MS)).toThrow(new ProcessExit(3));
   });
 
-  it('shuts rowdy down cleanly when the command exits zero', () => {
-    expect(exited({ code: 0 })).toEqual({ aborted: true, exitCode: undefined, exit: [] });
+  it('keeps fetching requests while the command runs', () => {
+    start();
+    rowdy.pipeline.receive().done.complete();
+    jest.advanceTimersByTime(0);
+    expect(rowdy.pipeline.fetches).toBe(2);
+    expect(rowdy.environment.abort.signal.aborted).toBe(false);
+  });
+
+  it('shuts down cleanly when the command exits zero', () => {
+    start();
+    rowdy.environment['commandExited']('node', { code: 0 });
+    expect(rowdy.environment.abort.signal.aborted).toBe(true);
+    expect(process.exitCode).toBeUndefined();
+    jest.advanceTimersByTime(Environment.EXIT_GRACE_MS);
+    expect(rowdy.exit).not.toHaveBeenCalled();
   });
 
   it('keeps serving with a gRPC port', () => {
-    expect(exited({ code: 139, signal: 'SIGSEGV' }, 50051)).toEqual({ aborted: false, exitCode: undefined, exit: [] });
-  });
-
-  it('lets the requests in flight answer before shutting down', () => {
-    const environment = new Environment(new Logger());
-    environment.abort = new AbortController();
-    environment['_inflight'] = 1;
-    const exit = jest.spyOn(process, 'exit').mockImplementation((() => undefined) as never);
-    jest.useFakeTimers();
-    try {
-      environment['commandExited']('node', { code: 139, signal: 'SIGSEGV' });
-      jest.advanceTimersByTime(Environment.EXIT_GRACE_MS);
-      expect(environment.abort.signal.aborted).toBe(false);
-      expect(exit).not.toHaveBeenCalled();
-
-      environment['_inflight'] = 0;
-      environment['drained']();
-      expect(environment.abort.signal.aborted).toBe(true);
-      jest.advanceTimersByTime(Environment.EXIT_GRACE_MS);
-      expect(exit.mock.calls).toEqual([[139]]);
-    } finally {
-      jest.useRealTimers();
-      exit.mockRestore();
-      process.exitCode = undefined;
-    }
+    start(50051);
+    rowdy.environment['commandExited']('node', { code: 139, signal: 'SIGSEGV' });
+    jest.advanceTimersByTime(Environment.EXIT_GRACE_MS);
+    expect(rowdy.environment.abort.signal.aborted).toBe(false);
+    expect(process.exitCode).toBeUndefined();
+    expect(rowdy.exit).not.toHaveBeenCalled();
   });
 });
 

@@ -138,12 +138,20 @@ const isSignal = (name: string): name is NodeJS.Signals => name in constants.sig
 const exitOf = (error: ExecaError): ShellExit => {
   const message = error.shortMessage;
   if (error.signal && isSignal(error.signal)) {
-    return { code: 128 + constants.signals[error.signal], signal: error.signal, message };
+    const code = 128 + constants.signals[error.signal];
+    log.debug('Exit From Signal', { signal: error.signal, code });
+    return { code, signal: error.signal, message };
   }
   if (Number.isInteger(error.exitCode)) {
+    log.debug('Exit From Exit Code', { code: error.exitCode });
     return { code: error.exitCode, message };
   }
-  return { code: error.originalMessage === undefined ? 1 : 127, message };
+  const started = error.originalMessage === undefined;
+  log.debug(started ? 'Exit Without Code' : 'Exit Before Start', {
+    signal: error.signal ?? '',
+    originalMessage: error.originalMessage ?? '',
+  });
+  return { code: started ? 1 : 127, message };
 };
 
 export class ShellResponse extends Subject<ShellExit> implements ILoggable {

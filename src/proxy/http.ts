@@ -1,4 +1,18 @@
-import { catchError, firstValueFrom, from, map, NEVER, Observable, of, race, switchMap, timeout } from 'rxjs';
+import {
+  catchError,
+  filter,
+  from,
+  map,
+  NEVER,
+  Observable,
+  of,
+  race,
+  switchMap,
+  take,
+  tap,
+  throwError,
+  timeout,
+} from 'rxjs';
 import { Pipeline, Proxy, Request } from '../pipeline';
 import { Readable } from 'stream';
 import { ILoggable, log as root, Logger, maskHeaders, maskQuery, maskUrl, Trace } from '../log';
@@ -25,19 +39,6 @@ const COMMAND_EXIT_WAIT_MS = 1000;
 
 // The errors a command dying under a request shows up as.
 const DROPPED_CONNECTION: ReadonlyArray<string> = ['ECONNRESET', 'ECONNREFUSED', 'EPIPE'];
-
-// The command dying mid-request reaches the proxy as a dropped connection, usually just before
-// execa reports the exit. Wait briefly for it, so the response can say how the command ended.
-const commandExit = <P extends Pipeline>(proxy: HttpProxy<P>, error: unknown): Promise<ShellExit | undefined> => {
-  const code = isAxiosError(error) ? error.code : undefined;
-  if (!code || !DROPPED_CONNECTION.includes(code)) {
-    return Promise.resolve(undefined);
-  }
-  return firstValueFrom(proxy.environment.commandExit.pipe(timeout({ first: COMMAND_EXIT_WAIT_MS }))).then(
-    (exit: ShellExit): ShellExit | undefined => (exit.code !== 0 ? exit : undefined),
-    () => undefined
-  );
-};
 
 export type Prelude = { statusCode: number; headers: Headers; cookies: string[] };
 
@@ -543,50 +544,21 @@ class LocalHttpResponse extends HttpResponse {
         });
 
         return from(
-          axios
-            .request<Readable>({
-              responseType: 'stream',
-              method: proxy.method,
-              url: uri.toString(),
-              headers,
-              data: proxy.body,
-              httpAgent,
-              httpsAgent: proxy.httpsAgent,
-              timeout: 0,
-              maxRedirects: 0,
-              validateStatus: () => true,
-              transformRequest: (req) => req,
-              transformResponse: (res) => res,
-              signal: proxy.signal,
-            })
-            .catch(async (error) => {
-              // An HTTP status never lands here (validateStatus accepts all): this is the upstream
-              // not answering. A cancelled request is how shutdown and deadlines look.
-              const cancelled = isAxiosError(error) && error.code === 'ERR_CANCELED';
-              const exited = await commandExit(proxy, error);
-              log[cancelled ? 'debug' : 'warn']('Upstream Unreachable', {
-                error,
-                code: isAxiosError(error) ? (error.code ?? '') : '',
-              });
-              if (!isAxiosError<Readable>(error)) {
-                throw new Error(`Non-HTTP error occurred: ${error instanceof Error ? error.message : String(error)}`);
-              }
-              if (!error.response) {
-                error.response = {
-                  data: Readable.from(exited?.message ?? (error instanceof Error ? error.message : String(error))),
-                  status: 500,
-                  statusText: 'Internal Server Error',
-                  headers: new AxiosHeaders({
-                    'Content-Type': 'text/plain; charset=utf-8', // TODO: check accept header
-                    'Access-Control-Allow-Origin': '*',
-                    'Access-Control-Allow-Methods': '*',
-                    'Access-Control-Allow-Headers': '*',
-                  }),
-                  config: { headers: new AxiosHeaders() }, // TODO: construct an Axios object?
-                };
-              }
-              return error.response;
-            })
+          axios.request<Readable>({
+            responseType: 'stream',
+            method: proxy.method,
+            url: uri.toString(),
+            headers,
+            data: proxy.body,
+            httpAgent,
+            httpsAgent: proxy.httpsAgent,
+            timeout: 0,
+            maxRedirects: 0,
+            validateStatus: () => true,
+            transformRequest: (req) => req,
+            transformResponse: (res) => res,
+            signal: proxy.signal,
+          })
         ).pipe(
           map((response) => {
             log.debug(`HttpProxy.invoke() response`, {
@@ -603,9 +575,49 @@ class LocalHttpResponse extends HttpResponse {
                   : []
               )
               .withData(response.data);
-          })
+          }),
+          catchError((error: unknown) => this.unreachable(proxy, error))
         );
       })
+    );
+  }
+
+  // An HTTP status never lands here (validateStatus accepts all): this is the upstream not answering.
+  // A cancelled request is how shutdown and deadlines look. The command dying under the request
+  // reaches here as a dropped connection, usually just before its exit is reported, so a dropped
+  // connection waits briefly for the exit and answers with how the command ended.
+  private unreachable<P extends Pipeline>(proxy: HttpProxy<P>, error: unknown): Observable<HttpResponse> {
+    if (!isAxiosError(error)) {
+      return throwError(
+        () => new Error(`Non-HTTP error occurred: ${error instanceof Error ? error.message : String(error)}`)
+      );
+    }
+    const code = error.code ?? '';
+    log[code === 'ERR_CANCELED' ? 'debug' : 'warn']('Upstream Unreachable', { error, code });
+
+    const reason$: Observable<string> = DROPPED_CONNECTION.includes(code)
+      ? proxy.environment.commandExit.pipe(
+          filter((exit: ShellExit) => exit.code !== 0),
+          map((exit: ShellExit) => exit.message ?? error.message),
+          timeout({ first: COMMAND_EXIT_WAIT_MS, with: () => of(error.message) })
+        )
+      : of(error.message);
+
+    return reason$.pipe(
+      take(1),
+      tap((reason) => log.debug('Upstream Unreachable Reason', { reason })),
+      map((reason) =>
+        this.withStatus(500)
+          .withHeaders(
+            HttpHeaders.from({
+              'content-type': 'text/plain; charset=utf-8', // TODO: check accept header
+              'access-control-allow-origin': '*',
+              'access-control-allow-methods': '*',
+              'access-control-allow-headers': '*',
+            })
+          )
+          .withData(Readable.from(reason))
+      )
     );
   }
 

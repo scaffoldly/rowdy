@@ -4,10 +4,11 @@ import {
   catchError,
   defer,
   EMPTY,
-  finalize,
   fromEvent,
   map,
+  merge,
   mergeMap,
+  NEVER,
   Observable,
   of,
   race,
@@ -15,6 +16,7 @@ import {
   ReplaySubject,
   Subscription,
   switchMap,
+  take,
   takeUntil,
   tap,
   timer,
@@ -165,8 +167,6 @@ export class Environment implements ILoggable {
   private _routes: Routes;
   private _command?: string[] | undefined;
   private _commandExit = new ReplaySubject<ShellExit>(1);
-  private _exited?: ShellExit;
-  private _inflight = 0;
   private _envVars = new ReplaySubject<{ name: keyof ProcessEnv; value: ProcessEnv[keyof ProcessEnv] }>();
   private _rowdy: Rowdy;
   private _port?: number;
@@ -615,36 +615,34 @@ export class Environment implements ILoggable {
     return this._commandExit.asObservable();
   }
 
-  // DEVNOTE: Without its command rowdy has nothing to serve. It takes no new requests, lets the
-  // ones in flight answer, then shuts down; on Lambda the next request gets a fresh sandbox. Lambda
-  // freezes a sandbox only when the runtime asks for the next invocation, which a draining rowdy
-  // never does, so the backstop exit fires within this lifecycle and never on a later invocation.
+  // DEVNOTE: Without its command rowdy has nothing to serve: poll() takes no new requests, lets the
+  // ones in flight answer, then completes, and rowdy shuts down; on Lambda the next request gets a
+  // fresh sandbox. Lambda freezes a sandbox only when the runtime asks for the next invocation,
+  // which a draining rowdy never does, so the backstop exit fires within this lifecycle and never on
+  // a later invocation. With a gRPC port rowdy keeps serving.
+  private get drain$(): Observable<ShellExit> {
+    return this._port ? NEVER : this._commandExit;
+  }
+
   private commandExited(bin: string, exit: ShellExit): void {
     const { code, signal, message } = exit;
     if (code !== 0) {
       log.error('Command Exited', { bin, code, signal: signal ?? '', message: message ?? '' });
+      if (!this._port) {
+        process.exitCode = code;
+      }
     }
     this._commandExit.next(exit);
-    if (this._port) {
-      // TODO: Clean up CTRL+C
-      return;
-    }
-    if (code !== 0) {
-      process.exitCode = code;
-    }
-    this._exited = exit;
-    this.drained();
   }
 
-  private drained(): void {
-    if (!this._exited || this._inflight > 0 || this.abort.signal.aborted) {
-      return;
-    }
-    const { code } = this._exited;
-    this.abort.abort('Command complete');
-    if (code !== 0) {
-      setTimeout(() => process.exit(code), Environment.EXIT_GRACE_MS);
-    }
+  private shutdown(): void {
+    this.drain$.pipe(take(1)).subscribe(({ code }) => {
+      log.info('Drained', { code });
+      this.abort.abort('Command complete');
+      if (code !== 0) {
+        setTimeout(() => process.exit(code), Environment.EXIT_GRACE_MS);
+      }
+    });
   }
 
   @Trace(log)
@@ -662,30 +660,25 @@ export class Environment implements ILoggable {
       )
     );
 
-    return pipeline.pipe(
-      takeUntil(fromEvent(this.signal, 'abort')),
+    const stop$ = merge(fromEvent(this.signal, 'abort'), this.drain$);
+
+    const results$ = pipeline.pipe(
+      takeUntil(stop$),
       tap((request) => {
         log.info('Request', request.brief());
         log.debug('Request Detail', { request, routes: this.routes });
       }),
-      mergeMap((request) => {
-        this._inflight++;
-        return request.into().pipe(
-          tap(() => this._envVars.complete()),
-          tap((proxy) => log.debug('Proxy', { proxy })),
-          mergeMap((proxy) => proxy.into()),
-          tap((response) => log.debug('Respond', { response })),
-          mergeMap((response) => response.into()),
-          tap((result) => log.info('Result', result.brief())),
-          finalize(() => {
-            this._inflight--;
-            this.drained();
-          })
-        );
-      }, Environment.CONCURRENCY),
-      // Once the command has exited, no next request is fetched.
-      repeat({ delay: () => (this._exited ? EMPTY : timer(delay)) })
+      mergeMap((request) => request.into().pipe(tap(() => this._envVars.complete())), Environment.CONCURRENCY),
+      tap((proxy) => log.debug('Proxy', { proxy })),
+      mergeMap((proxy) => proxy.into(), Environment.CONCURRENCY),
+      tap((response) => log.debug('Respond', { response })),
+      mergeMap((response) => response.into(), Environment.CONCURRENCY),
+      tap((result) => log.info('Result', result.brief())),
+      // A stopped poll fetches no next request; it completes once the requests in flight answer.
+      repeat({ delay: () => timer(delay).pipe(takeUntil(stop$)) })
     );
+
+    return results$.pipe(tap({ complete: () => this.shutdown() }));
   }
 
   repr(): string {
