@@ -1,6 +1,6 @@
 import { Environment, Logger, Rowdy } from '@scaffoldly/rowdy';
 import { LambdaPipeline, LambdaRequest } from '../../src/aws/lambda';
-import { Result } from '../../src/pipeline';
+import { FileDescriptors, Result } from '../../src/pipeline';
 import { ShellResponse } from '../../src/proxy/shell';
 import { HttpProxy } from '../../src/proxy/http';
 import { APIGatewayProxyEventV2 } from 'aws-lambda';
@@ -118,7 +118,7 @@ describe('aws lambda runtime', () => {
         .spyOn(console, 'info')
         .mockImplementation((...args: unknown[]) => void lines.push(args.join(' ')));
       try {
-        const onData = ShellResponse.onData({ _bytes: 0 } as unknown as ShellResponse, 'stdout');
+        const onData = ShellResponse.onData(new ShellResponse('node', new FileDescriptors()), 'stdout');
         onData(Buffer.from('first line\nsecond '));
         onData(Buffer.from('line\r\n\nthird, unterminated'));
         expect(lines).toEqual(['INFO Stdout first line', 'INFO Stdout second line']);

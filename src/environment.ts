@@ -1,6 +1,7 @@
 import yargs from 'yargs';
 import { hideBin } from 'yargs/helpers';
 import {
+  BehaviorSubject,
   catchError,
   defer,
   EMPTY,
@@ -23,7 +24,7 @@ import {
 } from 'rxjs';
 import { Routes } from './routes';
 import { ILoggable, isLevel, Level, log, Logger, mask, maskEnv, maskJson, Trace } from './log';
-import { ShellExit, ShellProxy, ShellRequest } from './proxy/shell';
+import { ExitContext, ShellExit, ShellProxy, ShellRequest } from './proxy/shell';
 import { ShellPipeline } from './shell/pipeline';
 import { Pipeline, Result } from './pipeline';
 import { LambdaPipeline } from './aws/lambda';
@@ -167,6 +168,8 @@ export class Environment implements ILoggable {
   private _routes: Routes;
   private _command?: string[] | undefined;
   private _commandExit = new ReplaySubject<ShellExit>(1);
+  // The last request rowdy took, as its log line shows it: on Lambda, the invocation in flight.
+  private _lastRequest = new BehaviorSubject<string>('');
   private _envVars = new ReplaySubject<{ name: keyof ProcessEnv; value: ProcessEnv[keyof ProcessEnv] }>();
   private _rowdy: Rowdy;
   private _port?: number;
@@ -593,7 +596,7 @@ export class Environment implements ILoggable {
                   complete: () => {
                     log.info('Command Completed', { bin: response.bin, response });
                     response.fds.end();
-                    this.commandExited(response.bin, status);
+                    this.commandExited(response.bin, status, response.context());
                   },
                 })
               );
@@ -624,10 +627,23 @@ export class Environment implements ILoggable {
     return this._port ? NEVER : this._commandExit;
   }
 
-  private commandExited(bin: string, exit: ShellExit): void {
+  private commandExited(bin: string, exit: ShellExit, context?: ExitContext): void {
     const { code, signal, message } = exit;
     if (code !== 0) {
-      log.error('Command Exited', { bin, code, signal: signal ?? '', message: message ?? '' });
+      const { uptimeMs, sample, recent = [] } = context ?? {};
+      log.error('Command Exited', {
+        bin,
+        code,
+        signal: signal ?? '',
+        message: message ?? '',
+        uptime: uptimeMs === undefined ? '' : `${(uptimeMs / 1000).toFixed(1)} s`,
+        rss: sample ? `${Math.round(sample.rssKb / 1024)} MB` : '',
+        threads: sample?.threads ?? '',
+        sampled: sample ? `${((performance.now() - sample.at) / 1000).toFixed(1)} s ago` : '',
+        lastRequest: this._lastRequest.getValue(),
+      });
+      // Repeated here because the relayed lines can be far above, interleaved with other requests.
+      recent.forEach((line, i) => log.error('Command Output', { n: i + 1 - recent.length, line }));
       if (!this._port) {
         process.exitCode = code;
       }
@@ -666,6 +682,11 @@ export class Environment implements ILoggable {
       takeUntil(stop$),
       tap((request) => {
         log.info('Request', request.brief());
+        this._lastRequest.next(
+          Object.entries(request.brief())
+            .map(([key, value]) => `${key}=${value}`)
+            .join(' ')
+        );
         log.debug('Request Detail', { request, routes: this.routes });
       }),
       mergeMap((request) => request.into().pipe(tap(() => this._envVars.complete())), Environment.CONCURRENCY),

@@ -1,10 +1,25 @@
-import { EMPTY, from, map, Observable, of, Subject, switchMap, take } from 'rxjs';
+import {
+  catchError,
+  EMPTY,
+  filter,
+  from,
+  interval,
+  map,
+  Observable,
+  of,
+  startWith,
+  Subject,
+  switchMap,
+  take,
+  takeUntil,
+} from 'rxjs';
 import { FileDescriptors, Pipeline, Proxy, Request, Response } from '../pipeline';
 import { PassThrough } from 'stream';
 import { ILoggable, log as root, Logger, Trace } from '../log';
 import { execa } from 'execa';
 import type { ExecaError, Options } from 'execa';
 import { constants } from 'os';
+import { readFile } from 'fs/promises';
 
 const log = root.child('shell');
 
@@ -92,6 +107,9 @@ export class ShellProxy<P extends Pipeline> extends Proxy<P, ShellResponse> {
                 }
               );
               proc.unref();
+              if (proc.pid) {
+                response.watch(proc.pid);
+              }
               return of(response);
             }
 
@@ -154,6 +172,26 @@ const exitOf = (error: ExecaError): ShellExit => {
   return { code: started ? 1 : 127, message };
 };
 
+/** The command's memory and thread count, as last read from /proc/<pid>/status. */
+export type ProcessSample = { rssKb: number; threads: number; at: number };
+
+/** What rowdy knew about the command when it exited. */
+export type ExitContext = { uptimeMs: number; sample?: ProcessSample; recent: ReadonlyArray<string> };
+
+/** VmRSS (kB) and Threads from the text of /proc/<pid>/status; undefined when either is missing. */
+export const parseStatus = (status: string, at: number): ProcessSample | undefined => {
+  const rss = /^VmRSS:\s+(\d+)\s+kB$/m.exec(status);
+  const threads = /^Threads:\s+(\d+)$/m.exec(status);
+  if (!rss?.[1] || !threads?.[1]) {
+    return undefined;
+  }
+  return { rssKb: Number(rss[1]), threads: Number(threads[1]), at };
+};
+
+// How often a running command's /proc status is read, and how many of its output lines are kept.
+const SAMPLE_MS = 2000;
+const RECENT_LINES = 20;
+
 export class ShellResponse extends Subject<ShellExit> implements ILoggable {
   // The command's output, a line at a time, in the same shape as rowdy's own lines. Which stream
   // a line came from is the component; severity is not inferred from it.
@@ -172,13 +210,17 @@ export class ShellResponse extends Subject<ShellExit> implements ILoggable {
       partial = lines.pop() ?? '';
       for (const line of lines) {
         out.relay(sink, line);
+        response.keep(stream, line);
       }
     };
   };
 
   public readonly output = new PassThrough();
+  public readonly startedAt = performance.now();
   private _bytes: number = 0;
   private _code?: number;
+  private _recent: string[] = [];
+  private _sample?: ProcessSample;
 
   constructor(
     public readonly bin: string,
@@ -215,6 +257,34 @@ export class ShellResponse extends Subject<ShellExit> implements ILoggable {
         this.output.end();
       }
     });
+  }
+
+  private keep(stream: 'stdout' | 'stderr', line: string): void {
+    this._recent.push(`${stream}: ${line}`);
+    if (this._recent.length > RECENT_LINES) {
+      this._recent.shift();
+    }
+  }
+
+  /** Read the command's /proc status until it exits; the last reading survives it. */
+  watch(pid: number): void {
+    interval(SAMPLE_MS)
+      .pipe(
+        startWith(0),
+        takeUntil(this),
+        switchMap(() => from(readFile(`/proc/${pid}/status`, 'utf8')).pipe(catchError(() => EMPTY))),
+        map((status: string) => parseStatus(status, performance.now())),
+        filter((sample: ProcessSample | undefined): sample is ProcessSample => sample !== undefined)
+      )
+      .subscribe((sample: ProcessSample) => (this._sample = sample));
+  }
+
+  context(): ExitContext {
+    return {
+      uptimeMs: performance.now() - this.startedAt,
+      ...(this._sample ? { sample: this._sample } : {}),
+      recent: [...this._recent],
+    };
   }
 
   repr(): string {

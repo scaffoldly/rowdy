@@ -1,5 +1,7 @@
 import { Environment, Logger } from '@scaffoldly/rowdy';
-import { ShellExit, ShellProxy, ShellRequest, ShellResponse } from '../src/proxy/shell';
+import { ExitContext, parseStatus, ShellExit, ShellProxy, ShellRequest, ShellResponse } from '../src/proxy/shell';
+import { log } from '../src/log';
+import { existsSync } from 'fs';
 import { ShellPipeline } from '../src/shell/pipeline';
 import {
   config,
@@ -151,6 +153,26 @@ describe('shell', () => {
       expect(unhandled).not.toHaveBeenCalled();
     });
 
+    it('keeps the last 20 lines of output for the exit report', async () => {
+      const response = await background('for (let i = 0; i < 25; i++) console.log(`line ${i}`)');
+      await exit(response);
+      const { recent, uptimeMs } = response.context();
+      expect(recent).toHaveLength(20);
+      expect(recent[0]).toBe('stdout: line 5');
+      expect(recent[19]).toBe('stdout: line 24');
+      expect(uptimeMs).toBeGreaterThan(0);
+    });
+
+    (existsSync('/proc/self/status') ? it : it.skip)('samples memory and threads while the command runs', async () => {
+      const response = await background('setTimeout(() => {}, 300)');
+      await exit(response);
+      expect(response.context().sample).toEqual({
+        rssKb: expect.any(Number),
+        threads: expect.any(Number),
+        at: expect.any(Number),
+      });
+    });
+
     it('reports a command that cannot be started as 127', async () => {
       const shell = pipeline();
       const proxy = new ShellProxy(shell, new ShellRequest(shell, ['/nonexistent/rowdy-test-bin'])).background();
@@ -165,6 +187,17 @@ describe('shell', () => {
   });
 });
 
+describe('process status', () => {
+  it('reads VmRSS and Threads', () => {
+    const status = 'Name:\tnode\nVmRSS:\t  204800 kB\nThreads:\t11\n';
+    expect(parseStatus(status, 5)).toEqual({ rssKb: 204800, threads: 11, at: 5 });
+  });
+
+  it('is undefined without them', () => {
+    expect(parseStatus('Name:\tnode\n', 5)).toBeUndefined();
+  });
+});
+
 describe('command exit', () => {
   // A request the test finishes by completing it.
   class TestRequest extends Request<Pipeline> {
@@ -172,6 +205,10 @@ describe('command exit', () => {
 
     override into(): Observable<Proxy<Pipeline, unknown>> {
       return this.done;
+    }
+
+    override brief(): Record<string, string> {
+      return { method: 'DELETE', path: '/tunnel' };
     }
 
     override repr(): string {
@@ -269,6 +306,32 @@ describe('command exit', () => {
     expect(rowdy.pipeline.fetches).toBe(1);
     expect(rowdy.environment.abort.signal.aborted).toBe(true);
     expect(() => jest.advanceTimersByTime(Environment.EXIT_GRACE_MS)).toThrow(new ProcessExit(3));
+  });
+
+  it('logs what rowdy knew when the command crashed: uptime, memory, threads, last request, last output', () => {
+    const error = jest.spyOn(log, 'error');
+    start();
+    rowdy.pipeline.receive();
+    const context: ExitContext = {
+      uptimeMs: 12345,
+      sample: { rssKb: 204800, threads: 11, at: performance.now() },
+      recent: ['stdout: ready', 'stderr: fetch failed'],
+    };
+    rowdy.environment['commandExited']('node', { code: 139, signal: 'SIGSEGV', message: 'killed' }, context);
+    expect(error).toHaveBeenCalledWith(
+      'Command Exited',
+      expect.objectContaining({
+        code: 139,
+        signal: 'SIGSEGV',
+        uptime: '12.3 s',
+        rss: '200 MB',
+        threads: 11,
+        lastRequest: 'method=DELETE path=/tunnel',
+      })
+    );
+    expect(error).toHaveBeenCalledWith('Command Output', { n: -1, line: 'stdout: ready' });
+    expect(error).toHaveBeenCalledWith('Command Output', { n: 0, line: 'stderr: fetch failed' });
+    error.mockRestore();
   });
 
   it('keeps fetching requests while the command runs', () => {
