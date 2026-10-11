@@ -631,19 +631,25 @@ export class Environment implements ILoggable {
   private commandExited(bin: string, exit: ShellExit, context?: ExitContext): void {
     const { code, signal, message } = exit;
     if (code !== 0) {
-      const { uptimeMs, sample, recent = [] } = context ?? {};
+      const { uptimeMs, sample, report = [], recent = [] } = context ?? {};
+      const mb = (kb?: number): string => (kb === undefined ? '' : `${Math.round(kb / 1024)} MB`);
       log.error('Command Exited', {
         bin,
         code,
         signal: signal ?? '',
         message: message ?? '',
         uptime: uptimeMs === undefined ? '' : `${(uptimeMs / 1000).toFixed(1)} s`,
-        rss: sample ? `${Math.round(sample.rssKb / 1024)} MB` : '',
+        rss: mb(sample?.rssKb),
+        peakRss: mb(sample?.hwmKb),
+        vsz: mb(sample?.sizeKb),
         threads: sample?.threads ?? '',
+        fds: sample?.fds ?? '',
         sampled: sample ? `${((performance.now() - sample.at) / 1000).toFixed(1)} s ago` : '',
         lastRequest: this._lastRequest.getValue(),
       });
-      // Repeated here because the relayed lines can be far above, interleaved with other requests.
+      // Repeated here, the fault report whole: the relayed lines can be far above, interleaved with
+      // other requests, or filtered out by level (stdout is info).
+      report.forEach((line, i) => log.error('Command Fault Report', { n: i + 1, line }));
       recent.forEach((line, i) => log.error('Command Output', { n: i + 1 - recent.length, line }));
       if (!this._port) {
         process.exitCode = code;

@@ -153,14 +153,31 @@ describe('shell', () => {
       expect(unhandled).not.toHaveBeenCalled();
     });
 
-    it('keeps the last 20 lines of output for the exit report', async () => {
-      const response = await background('for (let i = 0; i < 25; i++) console.log(`line ${i}`)');
+    it('keeps the last 50 lines of output for the exit report', async () => {
+      const response = await background('for (let i = 0; i < 60; i++) console.log(`line ${i}`)');
       await exit(response);
       const { recent, uptimeMs } = response.context();
-      expect(recent).toHaveLength(20);
-      expect(recent[0]).toBe('stdout: line 5');
-      expect(recent[19]).toBe('stdout: line 24');
+      expect(recent).toHaveLength(50);
+      expect(recent[0]).toBe('stdout: line 10');
+      expect(recent[49]).toBe('stdout: line 59');
       expect(uptimeMs).toBeGreaterThan(0);
+    });
+
+    it("keeps the shim's fault report whole, apart from the other output", async () => {
+      const response = await background(
+        [
+          'for (let i = 0; i < 60; i++) console.error(`app ${i}`);',
+          'for (let i = 0; i < 80; i++) console.error(`rowdy-vfs: stack sp+0x${i} 0x1`);',
+          'process.stderr.write("rowdy-vfs: last, unterminated");',
+        ].join('')
+      );
+      await exit(response);
+      const { report, recent } = response.context();
+      expect(report).toHaveLength(81);
+      expect(report[0]).toBe('rowdy-vfs: stack sp+0x0 0x1');
+      expect(report[80]).toBe('rowdy-vfs: last, unterminated');
+      expect(recent).toHaveLength(50);
+      expect(recent.every((line) => !line.includes('rowdy-vfs:'))).toBe(true);
     });
 
     (existsSync('/proc/self/status') ? it : it.skip)('samples memory and threads while the command runs', async () => {
@@ -168,7 +185,10 @@ describe('shell', () => {
       await exit(response);
       expect(response.context().sample).toEqual({
         rssKb: expect.any(Number),
+        hwmKb: expect.any(Number),
+        sizeKb: expect.any(Number),
         threads: expect.any(Number),
+        fds: expect.any(Number),
         at: expect.any(Number),
       });
     });
@@ -188,9 +208,20 @@ describe('shell', () => {
 });
 
 describe('process status', () => {
-  it('reads VmRSS and Threads', () => {
-    const status = 'Name:\tnode\nVmRSS:\t  204800 kB\nThreads:\t11\n';
-    expect(parseStatus(status, 5)).toEqual({ rssKb: 204800, threads: 11, at: 5 });
+  it('reads VmRSS, VmHWM, VmSize and Threads, with the descriptor count', () => {
+    const status = 'Name:\tnode\nVmSize:\t 1048576 kB\nVmHWM:\t  307200 kB\nVmRSS:\t  204800 kB\nThreads:\t11\n';
+    expect(parseStatus(status, 5, 42)).toEqual({
+      rssKb: 204800,
+      hwmKb: 307200,
+      sizeKb: 1048576,
+      threads: 11,
+      fds: 42,
+      at: 5,
+    });
+  });
+
+  it('leaves out what it cannot read', () => {
+    expect(parseStatus('VmRSS:\t  204800 kB\nThreads:\t11\n', 5)).toEqual({ rssKb: 204800, threads: 11, at: 5 });
   });
 
   it('is undefined without them', () => {
@@ -314,7 +345,11 @@ describe('command exit', () => {
     rowdy.pipeline.receive();
     const context: ExitContext = {
       uptimeMs: 12345,
-      sample: { rssKb: 204800, threads: 11, at: performance.now() },
+      sample: { rssKb: 204800, hwmKb: 307200, sizeKb: 1048576, threads: 11, fds: 42, at: performance.now() },
+      report: [
+        'rowdy-vfs: fatal SIGSEGV (signal 11, code 1 SEGV_MAPERR) at 0x0, tid 7, shim 7c1afe9',
+        'rowdy-vfs: pc 0x1',
+      ],
       recent: ['stdout: ready', 'stderr: fetch failed'],
     };
     rowdy.environment['commandExited']('node', { code: 139, signal: 'SIGSEGV', message: 'killed' }, context);
@@ -325,10 +360,15 @@ describe('command exit', () => {
         signal: 'SIGSEGV',
         uptime: '12.3 s',
         rss: '200 MB',
+        peakRss: '300 MB',
+        vsz: '1024 MB',
         threads: 11,
+        fds: 42,
         lastRequest: 'method=DELETE path=/tunnel',
       })
     );
+    expect(error).toHaveBeenCalledWith('Command Fault Report', { n: 1, line: context.report[0] });
+    expect(error).toHaveBeenCalledWith('Command Fault Report', { n: 2, line: 'rowdy-vfs: pc 0x1' });
     expect(error).toHaveBeenCalledWith('Command Output', { n: -1, line: 'stdout: ready' });
     expect(error).toHaveBeenCalledWith('Command Output', { n: 0, line: 'stderr: fetch failed' });
     error.mockRestore();
