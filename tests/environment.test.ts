@@ -42,6 +42,7 @@ describe('environment', () => {
     delete process.env.VFS_BACKING;
     delete process.env.VFS_SOCKET;
     delete process.env.VFS_MOUNTS;
+    delete process.env.VFS_FAULT_REPORT;
   });
 
   // Each Environment may have started a VFS supervisor on the shared socket path.
@@ -170,6 +171,42 @@ describe('environment', () => {
       expect(existsSync(VFS_SOCKET)).toBe(true);
       const server = await environment['_vfs'];
       expect(server?.listening).toBe(true);
+    });
+
+    describe('fault report', () => {
+      it('is off at info', async () => {
+        const env = await finalize(
+          withVolumes([`file://${backing}:/vfs`], new Environment(new Logger().withLevel('info')))
+        );
+        expect(env.VFS_FAULT_REPORT).toBeUndefined();
+      });
+
+      it('is on at debug and trace', async () => {
+        for (const level of ['debug', 'trace'] as const) {
+          const env = await finalize(
+            withVolumes([`file://${backing}:/vfs`], new Environment(new Logger().withLevel(level)))
+          );
+          expect(env.VFS_FAULT_REPORT).toBe('1');
+        }
+      });
+
+      it("keeps the operator's own setting either way", async () => {
+        process.env.VFS_FAULT_REPORT = '0';
+        const off = await finalize(
+          withVolumes([`file://${backing}:/vfs`], new Environment(new Logger().withLevel('debug')))
+        );
+        expect(off.VFS_FAULT_REPORT).toBe('0');
+        process.env.VFS_FAULT_REPORT = '1';
+        const on = await finalize(
+          withVolumes([`file://${backing}:/vfs`], new Environment(new Logger().withLevel('info')))
+        );
+        expect(on.VFS_FAULT_REPORT).toBe('1');
+      });
+
+      it('is not set without volumes', async () => {
+        const env = await finalize(new Environment(new Logger().withLevel('debug')));
+        expect(env.VFS_FAULT_REPORT).toBeUndefined();
+      });
     });
 
     it('uses the declared mountpoint as the prefix', async () => {

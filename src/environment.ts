@@ -133,7 +133,8 @@ export type ProcessEnv = Record<
   | 'VFS_PREFIX'
   | 'VFS_BACKING'
   | 'VFS_SOCKET'
-  | 'VFS_MOUNTS',
+  | 'VFS_MOUNTS'
+  | 'VFS_FAULT_REPORT',
   string | undefined
 >;
 
@@ -832,6 +833,11 @@ export class Environment implements ILoggable {
                 backing: volume.scheme === 'file' ? volume.locator : i ? `${VFS_BACKING}.${i}` : VFS_BACKING,
               }));
               env.ROWDY_VFS = '1';
+              // The shim's fault report interposes signal handling and thread creation in the child,
+              // so it is on only while rowdy is debugging; an operator's own VFS_FAULT_REPORT wins.
+              if (env.VFS_FAULT_REPORT === undefined && this.log.isDebugging) {
+                env.VFS_FAULT_REPORT = '1';
+              }
               const { socket } = await this.vfsServer(mounts);
               const vfs = applyVfs(env, {
                 socket,
@@ -842,6 +848,7 @@ export class Environment implements ILoggable {
                 mounts: env.VFS_MOUNTS,
                 preload: vfs?.preload,
                 socket: vfs?.socket,
+                faultReport: env.VFS_FAULT_REPORT ?? '',
               });
               const program = this._command?.[0] && programOf(this._command[0], process.env.PATH);
               if (program && isStaticElf(program)) {
