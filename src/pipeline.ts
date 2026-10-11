@@ -80,14 +80,14 @@ export abstract class Request<P extends Pipeline> implements ILoggable {
 
   public onDeadline(callback?: () => void): { cancel: (callback?: () => void) => void } {
     if (!this._deadline) {
-      return { cancel: () => {} };
+      return { cancel: (cb?: () => void) => cb?.() };
     }
 
     const delay = this._deadline.getTime() - Date.now();
 
     if (delay <= 0) {
       callback?.();
-      return { cancel: () => {} };
+      return { cancel: (cb?: () => void) => cb?.() };
     }
 
     const timeoutId = setTimeout(() => {

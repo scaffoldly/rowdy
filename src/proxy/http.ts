@@ -1,4 +1,4 @@
-import { catchError, from, map, NEVER, Observable, of, race, switchMap } from 'rxjs';
+import { catchError, firstValueFrom, from, map, NEVER, Observable, of, race, switchMap, timeout } from 'rxjs';
 import { Pipeline, Proxy, Request } from '../pipeline';
 import { Readable } from 'stream';
 import { ILoggable, log as root, Logger, maskHeaders, maskQuery, maskUrl, Trace } from '../log';
@@ -6,6 +6,7 @@ import axios, { AxiosHeaders, AxiosResponseHeaders, isAxiosError } from 'axios';
 import { Agent } from 'https';
 import { Agent as HttpAgent } from 'http';
 import { URI } from '../routes';
+import type { ShellExit } from './shell';
 import { APIGatewayProxyEventV2 } from 'aws-lambda';
 import { Rowdy } from '../api';
 import packageJson from '../../package.json';
@@ -18,6 +19,25 @@ const log = root.child('http');
 // Upstreams are local; a fresh connection per request costs nothing.
 const httpAgent = new HttpAgent({ keepAlive: false });
 const httpsAgent = new Agent({ keepAlive: false });
+
+// How long an upstream that dropped the connection gets for its command's exit to be reported.
+const COMMAND_EXIT_WAIT_MS = 1000;
+
+// The errors a command dying under a request shows up as.
+const DROPPED_CONNECTION: ReadonlyArray<string> = ['ECONNRESET', 'ECONNREFUSED', 'EPIPE'];
+
+// The command dying mid-request reaches the proxy as a dropped connection, usually just before
+// execa reports the exit. Wait briefly for it, so the response can say how the command ended.
+const commandExit = <P extends Pipeline>(proxy: HttpProxy<P>, error: unknown): Promise<ShellExit | undefined> => {
+  const code = isAxiosError(error) ? error.code : undefined;
+  if (!code || !DROPPED_CONNECTION.includes(code)) {
+    return Promise.resolve(undefined);
+  }
+  return firstValueFrom(proxy.environment.commandExit.pipe(timeout({ first: COMMAND_EXIT_WAIT_MS }))).then(
+    (exit: ShellExit): ShellExit | undefined => (exit.code !== 0 ? exit : undefined),
+    () => undefined
+  );
+};
 
 export type Prelude = { statusCode: number; headers: Headers; cookies: string[] };
 
@@ -121,7 +141,7 @@ export class HttpHeaders implements ILoggable {
     }
 
     if (this.headers['connection']) {
-      for (let key of this.headers['connection']
+      for (const key of this.headers['connection']
         .toString()
         .toLowerCase()
         .split(',')
@@ -140,7 +160,7 @@ export class HttpHeaders implements ILoggable {
     delete instance.headers['upgrade'];
 
     // scrub keys that start with x-amz- or x-amzn-
-    for (let key of Object.keys(instance.headers)) {
+    for (const key of Object.keys(instance.headers)) {
       if (key.startsWith('x-amz-') || key.startsWith('x-amzn-')) {
         delete instance.headers[key];
       }
@@ -154,7 +174,7 @@ export class HttpHeaders implements ILoggable {
 
   static from(obj: Record<string, string | string[] | undefined | null>): HttpHeaders {
     const instance = new HttpHeaders();
-    for (let [key, value] of Object.entries(obj || {})) {
+    for (const [key, value] of Object.entries(obj || {})) {
       if (!value) continue;
       instance.headers[key.toLowerCase()] = value;
     }
@@ -163,7 +183,7 @@ export class HttpHeaders implements ILoggable {
 
   static fromHeaders(headers: Headers): HttpHeaders {
     const instance = new HttpHeaders();
-    for (let [key, value] of headers.entries()) {
+    for (const [key, value] of headers.entries()) {
       if (!value) continue;
       instance.headers[key.toLowerCase()] = value;
     }
@@ -172,7 +192,7 @@ export class HttpHeaders implements ILoggable {
 
   static fromAxios(axiosHeaders: Partial<AxiosHeaders | AxiosResponseHeaders>): HttpHeaders {
     const instance = new HttpHeaders();
-    for (let [key, value] of Object.entries(axiosHeaders.toJSON?.() || {})) {
+    for (const [key, value] of Object.entries(axiosHeaders.toJSON?.() || {})) {
       if (!value) continue;
       if (Array.isArray(value)) {
         instance.headers[key.toLowerCase()] = value;
@@ -184,7 +204,7 @@ export class HttpHeaders implements ILoggable {
 
   static fromLambda(headers: Partial<APIGatewayProxyEventV2['headers']>): HttpHeaders {
     const instance = new HttpHeaders();
-    for (let [key, value] of Object.entries(headers || {})) {
+    for (const [key, value] of Object.entries(headers || {})) {
       if (!value) continue;
       instance.headers[key.toLowerCase()] = String(value);
     }
@@ -193,7 +213,7 @@ export class HttpHeaders implements ILoggable {
 
   intoAxios(): AxiosHeaders {
     const axiosHeaders = new AxiosHeaders();
-    for (let [key, value] of Object.entries(this.headers)) {
+    for (const [key, value] of Object.entries(this.headers)) {
       axiosHeaders.set(key, value);
     }
     return axiosHeaders;
@@ -205,9 +225,9 @@ export class HttpHeaders implements ILoggable {
 
   intoHeaders(): Headers {
     const headers = new Headers();
-    for (let [key, value] of Object.entries(this.headers)) {
+    for (const [key, value] of Object.entries(this.headers)) {
       if (Array.isArray(value)) {
-        for (let v of value) {
+        for (const v of value) {
           headers.append(key, v);
         }
       } else {
@@ -539,10 +559,11 @@ class LocalHttpResponse extends HttpResponse {
               transformResponse: (res) => res,
               signal: proxy.signal,
             })
-            .catch((error) => {
+            .catch(async (error) => {
               // An HTTP status never lands here (validateStatus accepts all): this is the upstream
               // not answering. A cancelled request is how shutdown and deadlines look.
               const cancelled = isAxiosError(error) && error.code === 'ERR_CANCELED';
+              const exited = await commandExit(proxy, error);
               log[cancelled ? 'debug' : 'warn']('Upstream Unreachable', {
                 error,
                 code: isAxiosError(error) ? (error.code ?? '') : '',
@@ -552,7 +573,7 @@ class LocalHttpResponse extends HttpResponse {
               }
               if (!error.response) {
                 error.response = {
-                  data: Readable.from(error instanceof Error ? error.message : String(error)),
+                  data: Readable.from(exited?.message ?? (error instanceof Error ? error.message : String(error))),
                   status: 500,
                   statusText: 'Internal Server Error',
                   headers: new AxiosHeaders({
