@@ -191,8 +191,18 @@ static void ipc_vacate(int fd) {
 
 /* A request built by `fill`, answered into `reply`. Locks, (re)connects, and keeps
  * errno untouched on success. */
+static const char *p9_name(uint8_t type) {
+    switch (type) {
+    case Tlopen: return "Tlopen";       case Treaddir: return "Treaddir";   case Tfsync: return "Tfsync";
+    case Tlock: return "Tlock";         case Tmkdir: return "Tmkdir";       case Trenameat: return "Trenameat";
+    case Tunlinkat: return "Tunlinkat"; case Tversion: return "Tversion";   case Tattach: return "Tattach";
+    case Twalk: return "Twalk";         case Tclunk: return "Tclunk";       default: return "T?";
+    }
+}
+
 static int p9_call(uint8_t type, void (*fill)(struct p9buf *, void *), void *arg, unsigned char *reply, size_t cap) {
     if (!g_socket) { errno = ENOTCONN; return -1; }
+    CRUMB_P9(p9_name(type));
     unsigned char mem[2 * PATH_MAX + 256];
     int saved = errno;
     pthread_mutex_lock(&g_lock);
