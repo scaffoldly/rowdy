@@ -32,7 +32,11 @@ static long fake_syscall(long n, ...) {
         int fd = va_arg(ap, int);
         const char *buf = va_arg(ap, const char *);
         size_t len = va_arg(ap, size_t);
-        assert_int_equal(fd, 2);
+        if (fd != 2) {
+            r = syscall(SYS_write, fd, buf, len);   /* the report file */
+            va_end(ap);
+            return r;
+        }
         if (g_nwritten + len < sizeof g_written) {
             memcpy(g_written + g_nwritten, buf, len);
             g_nwritten += len;
@@ -43,7 +47,8 @@ static long fake_syscall(long n, ...) {
         int dirfd = va_arg(ap, int);
         const char *path = va_arg(ap, const char *);
         int flags = va_arg(ap, int);
-        r = syscall(SYS_openat, dirfd, path, flags);
+        mode_t mode = (flags & O_CREAT) ? (mode_t)va_arg(ap, int) : 0;
+        r = syscall(SYS_openat, dirfd, path, flags, mode);
     } else if (n == SYS_read) {
         int fd = va_arg(ap, int);
         void *buf = va_arg(ap, void *);
@@ -53,6 +58,8 @@ static long fake_syscall(long n, ...) {
         r = syscall(SYS_close, va_arg(ap, int));
     } else if (n == SYS_gettid) {
         r = syscall(SYS_gettid);
+    } else if (n == SYS_getpid) {
+        r = syscall(SYS_getpid);
     } else {
         fail_msg("unexpected syscall %ld", n);
         r = -1;
@@ -67,6 +74,8 @@ static int reset(void **state) {
     memset(g_thread_crumb, 0, sizeof g_thread_crumb);
     memset(g_thread_tid, 0, sizeof g_thread_tid);
     g_thread_slot = -1;
+    g_fault_file[0] = '\0';
+    g_fault_fd = -1;
     g_fault_on = 1;
     g_syscall = fake_syscall;
     g_nwritten = 0;
@@ -276,7 +285,7 @@ static void reports_a_fault_inside_a_hook(void **state) {
     CRUMB_P9("Twalk");
     fault_report(SIGSEGV, &si, &uc);
 
-    assert_contains(g_written, "rowdy-vfs: fatal SIGSEGV (signal 11, code 1 SEGV_MAPERR) at 0x0, tid ");
+    assert_contains(g_written, "rowdy-vfs: fatal SIGSEGV (signal 11, code 1 SEGV_MAPERR) at 0x0, pid ");
     assert_contains(g_written, "\nrowdy-vfs: pc 0x");
     assert_contains(g_written, "/test_fault+0x");
     /* The stack's mapping: "[stack]" natively, a plain anonymous mapping under emulation. */
@@ -411,6 +420,37 @@ static void bounded_text_stops_without_a_terminator(void **state) {
     assert_string_equal(o.b, "abcd");
 }
 
+static void the_report_is_appended_to_vfs_fault_file_too(void **state) {
+    (void)state;
+    char path[] = "/tmp/vfsunit-report-XXXXXX";
+    int tmp = mkstemp(path);
+    assert_true(tmp >= 0);
+    close(tmp);
+    strcpy(g_fault_file, path);
+    siginfo_t si;
+    memset(&si, 0, sizeof si);
+    si.si_signo = SIGSEGV;
+    si.si_code = SEGV_MAPERR;
+    ucontext_t uc;
+    int here;
+    set_context(&uc, (uintptr_t)&the_report_is_appended_to_vfs_fault_file_too, (uintptr_t)&here, 0);
+    fault_report(SIGSEGV, &si, &uc);
+    fault_report(SIGSEGV, &si, &uc);   /* a second crash appends */
+    assert_int_equal(g_fault_fd, -1);   /* closed after each report */
+
+    static char file[2 * sizeof g_written];
+    FILE *f = fopen(path, "r");
+    assert_non_null(f);
+    size_t n = fread(file, 1, sizeof file - 1, f);
+    fclose(f);
+    unlink(path);
+    file[n] = '\0';
+    assert_int_equal(n, g_nwritten);
+    assert_memory_equal(file, g_written, n);   /* the same bytes as stderr */
+    char *second = strstr(file + 1, "rowdy-vfs: fatal SIGSEGV");
+    assert_non_null(second);
+}
+
 /* A second thread inside a hook, waiting on 9P, while this one reports. */
 static pthread_mutex_t g_gate = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t g_cond = PTHREAD_COND_INITIALIZER;
@@ -470,7 +510,7 @@ static void reports_a_thread_outside_any_hook(void **state) {
     int here;
     set_context(&uc, (uintptr_t)&reports_a_thread_outside_any_hook, (uintptr_t)&here, 0);
     fault_report(SIGBUS, &si, &uc);
-    assert_contains(g_written, "rowdy-vfs: fatal SIGBUS (signal 7, code 2 BUS_ADRERR) at 0x10, tid ");
+    assert_contains(g_written, "rowdy-vfs: fatal SIGBUS (signal 7, code 2 BUS_ADRERR) at 0x10, pid ");
     assert_contains(g_written, "\nrowdy-vfs: not in a hook; none entered on this thread\n");
     assert_null(strstr(g_written, "frame 1"));
 }
@@ -501,6 +541,7 @@ int main(void) {
         cmocka_unit_test_setup(signal_codes_for_illegal_instructions_and_arithmetic, reset),
         cmocka_unit_test_setup(bounded_text_stops_without_a_terminator, reset),
         cmocka_unit_test_setup(other_threads_inside_hooks_are_listed, reset),
+        cmocka_unit_test_setup(the_report_is_appended_to_vfs_fault_file_too, reset),
     };
     return cmocka_run_group_tests_name("vfs_fault.h", tests, NULL, NULL);
 }

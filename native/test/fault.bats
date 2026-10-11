@@ -41,13 +41,24 @@ fault() { run --separate-stderr "$@"; output=$stderr; }
 @test "a NULL dereference: signal, address, shim build, pc's object, registers, code, stack" {
   fault env VFS_FAULT_REPORT=1 "$segv" null
   [ "$status" -eq 139 ]
-  [[ "$output" == *"rowdy-vfs: fatal SIGSEGV (signal 11, code 1 SEGV_MAPERR) at 0x0, tid "*", shim "* ]]
+  [[ "$output" == *"rowdy-vfs: fatal SIGSEGV (signal 11, code 1 SEGV_MAPERR) at 0x0, pid "*", tid "*", shim "* ]]
   [[ "$output" == *"rowdy-vfs: pc 0x"* ]]
   [[ "$output" == *" $segv+0x"* ]]
   [[ "$output" == *"rowdy-vfs: regs "* ]]
   [[ "$output" =~ rowdy-vfs:\ code\ 0x[0-9a-f]+:.*\[[0-9a-f]{2}\] ]]
   [[ "$output" == *"rowdy-vfs: stack sp+0x"* ]]   # main's return address into libc, at least
   [[ "$output" == *"rowdy-vfs: threads 1 registered, 0 others inside a hook or waiting on 9P"* ]]
+}
+
+@test "VFS_FAULT_FILE gets the same report, appended across crashes; stderr still gets it" {
+  local file="$BATS_TEST_TMPDIR/fault-report"
+  fault env VFS_FAULT_REPORT=1 VFS_FAULT_FILE="$file" "$segv" null
+  [ "$status" -eq 139 ]
+  [[ "$output" == *"rowdy-vfs: fatal SIGSEGV"* ]]
+  [ "$(cat "$file")" = "$output" ]
+  fault env VFS_FAULT_REPORT=1 VFS_FAULT_FILE="$file" "$segv" ill
+  [ "$(grep -c "rowdy-vfs: fatal" "$file")" -eq 2 ]
+  grep -q "rowdy-vfs: fatal SIGILL" "$file"
 }
 
 @test "other threads inside a hook are listed with their path" {

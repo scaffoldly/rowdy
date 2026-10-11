@@ -8,7 +8,7 @@
  * WebAssembly trap and otherwise dies by the signal) or dies by the signal itself, so
  * the exit status is unchanged:
  *
- *   rowdy-vfs: fatal SIGSEGV (signal 11, code 1 SEGV_MAPERR) at 0x0, tid 42, shim 53b947a
+ *   rowdy-vfs: fatal SIGSEGV (signal 11, code 1 SEGV_MAPERR) at 0x0, pid 7, tid 42, shim 53b947a
  *   rowdy-vfs: pc 0x7f…  r-xp /usr/local/bin/node+0x1a2b3c
  *   rowdy-vfs: sp 0x7f…  rw-p [stack]; fault address is 120 bytes below the stack pointer
  *   rowdy-vfs: regs rax=0x0 rbx=0x7f… rcx=… (every general register, then the error code)
@@ -23,6 +23,9 @@
  * `stack` lines are every word just above the stack pointer that points into executable
  * memory: the return addresses frame pointers would have given, among stale ones. The
  * other threads are every thread inside a hook or waiting on 9P at that moment.
+ *
+ * With VFS_FAULT_FILE set, the report is also appended to that file, so whoever launched the
+ * program reads it whole, from every process of the tree that crashed, without parsing stderr.
  *
  * The handler only makes raw system calls through libc's syscall(), resolved before
  * any fault: no allocation, no stdio, nothing that reaches our own hooks. It reads
@@ -46,6 +49,7 @@
 #include <dlfcn.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <limits.h>
 #include <signal.h>
 #include <stdint.h>
 #include <stdlib.h>
@@ -154,6 +158,19 @@ static int fault_slot(int sig) {
 
 struct fault_out { char b[FAULT_LINE]; size_t n; };
 
+/* VFS_FAULT_FILE: where the report also goes, appended, so the process that launched the program can
+ * read it whole after the crash rather than pick it out of stderr. Copied at init; opened per report. */
+static char g_fault_file[PATH_MAX];
+static int g_fault_fd = -1;
+
+static void fo_write(int fd, const char *b, size_t n) {
+    for (size_t off = 0; off < n;) {
+        long w = g_syscall(SYS_write, fd, b + off, n - off);
+        if (w <= 0) break;
+        off += (size_t)w;
+    }
+}
+
 static void fo_s(struct fault_out *o, const char *s) {
     while (s && *s && o->n < sizeof o->b - 1) o->b[o->n++] = *s++;
 }
@@ -179,11 +196,8 @@ static void fo_byte(struct fault_out *o, unsigned char v) {
 }
 static void fo_line(struct fault_out *o) {
     o->b[o->n++] = '\n';
-    for (size_t off = 0; off < o->n;) {
-        long w = g_syscall(SYS_write, 2, o->b + off, o->n - off);
-        if (w <= 0) break;
-        off += (size_t)w;
-    }
+    fo_write(2, o->b, o->n);
+    if (g_fault_fd >= 0) fo_write(g_fault_fd, o->b, o->n);
     o->n = 0;
     fo_s(o, "rowdy-vfs: ");
 }
@@ -518,6 +532,11 @@ static void fault_report(int sig, siginfo_t *si, ucontext_t *uc) {
         lookup_maps(hit, hits);
     }
 
+    if (g_fault_file[0]) {
+        long fd = g_syscall(SYS_openat, AT_FDCWD, g_fault_file, O_WRONLY | O_CREAT | O_APPEND | O_CLOEXEC, 0600);
+        g_fault_fd = fd >= 0 ? (int)fd : -1;
+    }
+
     struct fault_out o = { .n = 0 };
     fo_s(&o, "rowdy-vfs: fatal ");
     fo_s(&o, sig_name(sig));
@@ -530,6 +549,8 @@ static void fault_report(int sig, siginfo_t *si, ucontext_t *uc) {
     if (*name) { fo_s(&o, " "); fo_s(&o, name); }
     fo_s(&o, ")");
     if (si->si_code > 0) { fo_s(&o, " at "); fo_x(&o, addr); }
+    fo_s(&o, ", pid ");
+    fo_u(&o, (unsigned long)g_syscall(SYS_getpid));
     fo_s(&o, ", tid ");
     fo_u(&o, (unsigned long)g_syscall(SYS_gettid));
     fo_s(&o, ", shim ");
@@ -579,6 +600,11 @@ static void fault_report(int sig, siginfo_t *si, ucontext_t *uc) {
         fo_s(&o, " ");
         fo_mapping(&o, &hit[i]);
         fo_line(&o);
+    }
+
+    if (g_fault_fd >= 0) {
+        g_syscall(SYS_close, g_fault_fd);
+        g_fault_fd = -1;
     }
 }
 
@@ -667,6 +693,8 @@ static void fault_init(void) {
     g_syscall = (long (*)(long, ...))dlsym(RTLD_NEXT, "syscall");
     g_real_sigaction = (int (*)(int, const struct sigaction *, struct sigaction *))dlsym(RTLD_NEXT, "sigaction");
     if (!g_syscall || !g_real_sigaction) return;
+    const char *file = getenv("VFS_FAULT_FILE");
+    if (file && strlen(file) < sizeof g_fault_file) strcpy(g_fault_file, file);
 
     int (*key_create)(pthread_key_t *, void (*)(void *)) =
         (int (*)(pthread_key_t *, void (*)(void *)))dlsym(RTLD_DEFAULT, "pthread_key_create");

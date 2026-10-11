@@ -88,8 +88,11 @@ Fault report
   the /proc/self/maps line it falls in), and the libc function (and path)
   the faulting thread and every other thread was inside, if any, with the 9P
   message each was waiting on. It reads /proc/self/maps and the program's
-  own readable memory to do so, nothing else; it sends nothing anywhere. The
-  program then dies by the same signal as it would have without the shim.
+  own readable memory to do so, nothing else; it sends nothing anywhere.
+  When VFS_FAULT_FILE names a file (rowdy sets it to a file under
+  /tmp/rowdy), the same report is also appended to that local file, for the
+  launching process to read. The program then dies by the same signal as it
+  would have without the shim.
 
   For this the shim keeps its own handler for those four signals: it
   interposes sigaction(2) and signal(3) for them only, records

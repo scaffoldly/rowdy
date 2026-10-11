@@ -57,7 +57,7 @@ was doing to its stderr before it dies (with the same status, 139 for SIGSEGV), 
 into its log:
 
 ```
-rowdy-vfs: fatal SIGSEGV (signal 11, code 1 SEGV_MAPERR) at 0x0, tid 42, shim 53b947a
+rowdy-vfs: fatal SIGSEGV (signal 11, code 1 SEGV_MAPERR) at 0x0, pid 7, tid 42, shim 53b947a
 rowdy-vfs: pc 0x7f12…  r-xp /usr/local/bin/node+0x1a2b3c
 rowdy-vfs: sp 0x7f34…  rw-p [anonymous] 0x7f30…-0x7f38…
 rowdy-vfs: regs rax=0x0 rbx=0x7f… rcx=… rdx=… rsi=… rdi=…
@@ -70,6 +70,9 @@ rowdy-vfs: stack sp+0x28 0x7f78…  r-xp /usr/local/bin/node+0x9f00
 ```
 
 - The first line names the shim's own commit, so offsets map to an exact `vfspreload.so`.
+- With `VFS_FAULT_FILE` set, the same report is also appended to that file, from every process of
+  the tree that crashes, so the launcher reads it whole instead of picking it out of stderr. rowdy
+  sets it alongside `VFS_FAULT_REPORT=1` and logs the file when the command exits.
 - `pc` names the object the fault happened in: the shim (`vfspreload.so`), libc, the program, or
   `[anonymous]` (JIT code). A stack pointer in a guard page is reported as a stack overflow.
 - `regs` is every general register (on x86_64 also the page-fault error code and trap number), and
