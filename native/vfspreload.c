@@ -1082,7 +1082,7 @@ struct thread_start { void *(*start)(void *); void *arg; };
 static void *thread_trampoline(void *p) {
     struct thread_start ts = *(struct thread_start *)p;
     free(p);
-    altstack_thread();
+    thread_start();
     return ts.start(ts.arg);
 }
 

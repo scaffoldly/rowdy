@@ -52,26 +52,42 @@ the pre-2.33 `__xstat` family that binaries built against older glibc still call
 
 ## Fault report
 
-With `VFS_FAULT_REPORT=1`, a process that dies of a SIGSEGV or SIGBUS writes what it was doing to
-its stderr before it dies (with the same status, 139 for SIGSEGV), which rowdy relays into its log:
+With `VFS_FAULT_REPORT=1`, a process that dies of a SIGSEGV, SIGBUS, SIGILL or SIGFPE writes what it
+was doing to its stderr before it dies (with the same status, 139 for SIGSEGV), which rowdy relays
+into its log:
 
 ```
-rowdy-vfs: fatal SIGSEGV (signal 11, code 1 SEGV_MAPERR) at 0x0, tid 42
+rowdy-vfs: fatal SIGSEGV (signal 11, code 1 SEGV_MAPERR) at 0x0, pid 7, tid 42, shim 53b947a
 rowdy-vfs: pc 0x7f12…  r-xp /usr/local/bin/node+0x1a2b3c
 rowdy-vfs: sp 0x7f34…  rw-p [anonymous] 0x7f30…-0x7f38…
+rowdy-vfs: regs rax=0x0 rbx=0x7f… rcx=… rdx=… rsi=… rdi=…
+rowdy-vfs: code 0x7f12…: 48 89 e5 [8b] 07 c3 …
 rowdy-vfs: inside openat("/oauth/codes/abc") (depth 1), waiting on 9P Twalk
+rowdy-vfs: thread 57: inside stat("/oauth/codes") (depth 1), waiting on 9P Twalk
+rowdy-vfs: threads 12 registered, 1 others inside a hook or waiting on 9P
 rowdy-vfs: frame 1 0x7f56…  r-xp /lib/ld-musl-x86_64.so.1+0x5c1e0
+rowdy-vfs: stack sp+0x28 0x7f78…  r-xp /usr/local/bin/node+0x9f00
 ```
 
+- The first line names the shim's own commit, so offsets map to an exact `vfspreload.so`.
+- With `VFS_FAULT_FILE` set, the same report is also appended to that file, from every process of
+  the tree that crashes, so the launcher reads it whole instead of picking it out of stderr. rowdy
+  sets it alongside `VFS_FAULT_REPORT=1` and logs the file when the command exits.
 - `pc` names the object the fault happened in: the shim (`vfspreload.so`), libc, the program, or
   `[anonymous]` (JIT code). A stack pointer in a guard page is reported as a stack overflow.
+- `regs` is every general register (on x86_64 also the page-fault error code and trap number), and
+  `code` the bytes around `pc` with `pc`'s bracketed, for disassembly.
 - `inside …` is the hooked libc call the faulting thread was in, with its path and the 9P request it
-  was waiting on; `not in a hook` means the fault happened outside the shim's code.
-- Frames are walked by frame pointer and stop where one is missing, which is often.
-- WebAssembly memory traps (node), a SIGSEGV sent with `kill`, and faults in a program with its own
-  handler other than node's (which may recover, like a JVM's null checks) are not reported.
+  was waiting on; `not in a hook` means the fault happened outside the shim's code. `thread N:` lines
+  are every other thread that was inside a hook or waiting on 9P at that moment.
+- `frame` lines follow frame pointers, and stop where code has none (musl, much of node). `stack`
+  lines are every word in the 16 KiB above `sp` that points into executable memory: the return
+  addresses frame pointers would have given, among stale ones.
+- WebAssembly memory traps (node), a signal sent with `kill`, and faults in a program with its own
+  handler other than node's SIGSEGV one (which may recover, like a JVM's null checks or OpenSSL's
+  SIGILL probe of CPU features) are not reported.
 
-To do this the shim keeps its own SIGSEGV/SIGBUS handler first (the program's is called from it)
+To do this the shim keeps its own handler for those signals first (the program's is called from it)
 and gives each thread an alternate signal stack. It is off unless `VFS_FAULT_REPORT=1`, which rowdy
 sets when its log level is `debug` or `trace` (an explicit `VFS_FAULT_REPORT` wins either way). Off,
 nothing is installed: the `sigaction`, `signal` and `pthread_create` wrappers pass straight to libc.
