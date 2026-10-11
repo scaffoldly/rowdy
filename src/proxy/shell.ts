@@ -1,10 +1,28 @@
-import { EMPTY, from, map, Observable, of, Subject, switchMap, take } from 'rxjs';
+import {
+  catchError,
+  EMPTY,
+  filter,
+  from,
+  fromEvent,
+  interval,
+  map,
+  Observable,
+  of,
+  race,
+  startWith,
+  Subject,
+  switchMap,
+  take,
+  takeUntil,
+  timer,
+} from 'rxjs';
 import { FileDescriptors, Pipeline, Proxy, Request, Response } from '../pipeline';
 import { PassThrough } from 'stream';
 import { ILoggable, log as root, Logger, Trace } from '../log';
 import { execa } from 'execa';
 import type { ExecaError, Options } from 'execa';
 import { constants } from 'os';
+import { readdir, readFile } from 'fs/promises';
 
 const log = root.child('shell');
 
@@ -81,17 +99,18 @@ export class ShellProxy<P extends Pipeline> extends Proxy<P, ShellResponse> {
               proc.then(
                 ({ exitCode }) => {
                   log.debug(`${bin} exited`, { bin, code: exitCode });
-                  response.next({ code: exitCode });
-                  response.complete();
+                  response.settle({ code: exitCode });
                 },
                 (error: ExecaError) => {
                   const exit = exitOf(error);
                   log.debug(`${bin} exited`, { bin, code: exit.code, signal: exit.signal ?? '' });
-                  response.next(exit);
-                  response.complete();
+                  response.settle(exit);
                 }
               );
               proc.unref();
+              if (proc.pid) {
+                response.watch(proc.pid);
+              }
               return of(response);
             }
 
@@ -154,6 +173,54 @@ const exitOf = (error: ExecaError): ShellExit => {
   return { code: started ? 1 : 127, message };
 };
 
+/** The command's memory, threads and descriptors, as last read from /proc/<pid>. */
+export type ProcessSample = {
+  rssKb: number;
+  hwmKb?: number;
+  sizeKb?: number;
+  threads: number;
+  fds?: number;
+  at: number;
+};
+
+/** What rowdy knew about the command when it exited: how long it ran, its last /proc sample, its last output. */
+export type ExitContext = {
+  uptimeMs: number;
+  sample?: ProcessSample;
+  recent: ReadonlyArray<string>;
+};
+
+const kb = (status: string, field: string): number | undefined => {
+  const match = new RegExp(`^${field}:\\s+(\\d+)\\s+kB$`, 'm').exec(status);
+  return match?.[1] ? Number(match[1]) : undefined;
+};
+
+/** VmRSS, VmHWM and VmSize (kB) and Threads from the text of /proc/<pid>/status; undefined without VmRSS or Threads. */
+export const parseStatus = (status: string, at: number, fds?: number): ProcessSample | undefined => {
+  const rssKb = kb(status, 'VmRSS');
+  const threads = /^Threads:\s+(\d+)$/m.exec(status)?.[1];
+  if (rssKb === undefined || !threads) {
+    return undefined;
+  }
+  const hwmKb = kb(status, 'VmHWM');
+  const sizeKb = kb(status, 'VmSize');
+  return {
+    rssKb,
+    ...(hwmKb === undefined ? {} : { hwmKb }),
+    ...(sizeKb === undefined ? {} : { sizeKb }),
+    threads: Number(threads),
+    ...(fds === undefined ? {} : { fds }),
+    at,
+  };
+};
+
+// How often a running command's /proc is read, and how many of its last output lines are kept.
+const SAMPLE_MS = 2000;
+const RECENT_LINES = 50;
+// How long the end of a command waits for its output to be relayed, when something else (a process it
+// started) still holds its stdout or stderr open.
+const DRAIN_MS = 1000;
+
 export class ShellResponse extends Subject<ShellExit> implements ILoggable {
   // The command's output, a line at a time, in the same shape as rowdy's own lines. Which stream
   // a line came from is the component; severity is not inferred from it.
@@ -164,6 +231,9 @@ export class ShellResponse extends Subject<ShellExit> implements ILoggable {
     return (chunk?: Buffer): void => {
       if (!chunk) {
         out.relay(sink, partial); // stream ended: flush an unterminated last line
+        if (partial) {
+          response.keep(stream, partial);
+        }
         partial = '';
         return;
       }
@@ -172,13 +242,17 @@ export class ShellResponse extends Subject<ShellExit> implements ILoggable {
       partial = lines.pop() ?? '';
       for (const line of lines) {
         out.relay(sink, line);
+        response.keep(stream, line);
       }
     };
   };
 
   public readonly output = new PassThrough();
+  public readonly startedAt = performance.now();
   private _bytes: number = 0;
   private _code?: number;
+  private _recent: string[] = [];
+  private _sample?: ProcessSample;
 
   constructor(
     public readonly bin: string,
@@ -215,6 +289,57 @@ export class ShellResponse extends Subject<ShellExit> implements ILoggable {
         this.output.end();
       }
     });
+  }
+
+  private keep(stream: 'stdout' | 'stderr', line: string): void {
+    this._recent.push(`${stream}: ${line}`);
+    if (this._recent.length > RECENT_LINES) {
+      this._recent.shift();
+    }
+  }
+
+  /**
+   * Report the command's end once its output has been relayed: execa settles before the last chunks
+   * have passed through to this response, which are the lines just before the exit.
+   */
+  settle(exit: ShellExit): void {
+    race(fromEvent(this.output, 'end').pipe(take(1)), timer(DRAIN_MS))
+      .pipe(take(1))
+      .subscribe(() => {
+        this.next(exit);
+        this.complete();
+      });
+  }
+
+  /** Read the command's /proc status until it exits; the last reading survives it. */
+  watch(pid: number): void {
+    interval(SAMPLE_MS)
+      .pipe(
+        startWith(0),
+        takeUntil(this),
+        switchMap(() =>
+          from(
+            Promise.all([
+              readFile(`/proc/${pid}/status`, 'utf8'),
+              readdir(`/proc/${pid}/fd`).then(
+                (fds: string[]) => fds.length,
+                (): undefined => undefined
+              ),
+            ])
+          ).pipe(catchError(() => EMPTY))
+        ),
+        map(([status, fds]: [string, number | undefined]) => parseStatus(status, performance.now(), fds)),
+        filter((sample: ProcessSample | undefined): sample is ProcessSample => sample !== undefined)
+      )
+      .subscribe((sample: ProcessSample) => (this._sample = sample));
+  }
+
+  context(): ExitContext {
+    return {
+      uptimeMs: performance.now() - this.startedAt,
+      ...(this._sample ? { sample: this._sample } : {}),
+      recent: [...this._recent],
+    };
   }
 
   repr(): string {
