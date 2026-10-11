@@ -101,7 +101,7 @@ registry's review of the shim. The npm release stays the reviewed, attested one 
 
 ```sh
 yarn test:unit      # unit tests for the shim's headers (cmocka, ASan + UBSan) on Debian 12
-yarn test:native    # drives the host-arch shim through busybox, node and a C caller, on alpine and debian
+yarn test:native    # native/test/*.bats (bats-core): the host-arch shim under busybox, node and C callers, on alpine and debian
 yarn build          # bundles src/ with lib/linux-*/vfspreload.so inlined
 yarn test
 ```
