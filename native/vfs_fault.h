@@ -22,7 +22,11 @@
  * like any other fault. V8 claims WebAssembly bounds traps before any of this.
  * A program with a handler of its own other than node's is not reported, since
  * that handler may recover from the fault.
- * VFS_FAULT_REPORT=0 leaves the signals entirely to the program.
+ *
+ * Opt-in: only VFS_FAULT_REPORT=1 turns it on (rowdy sets it at log level debug or
+ * trace). Otherwise no handler is installed, no thread gets an alternate stack, the
+ * sigaction, signal and pthread_create wrappers pass straight to libc, and no
+ * breadcrumb is written.
  */
 #ifndef VFS_FAULT_H
 #define VFS_FAULT_H
@@ -38,6 +42,8 @@
 #include <sys/syscall.h>
 #include <pthread.h>
 #include <ucontext.h>
+
+static int g_fault_on;   /* VFS_FAULT_REPORT=1, set once by the constructor */
 
 /* ---- breadcrumb ------------------------------------------------------------ */
 
@@ -55,6 +61,7 @@ struct crumb {
 static __thread struct crumb g_crumb;
 
 static inline int crumb_enter(const char *fn) {
+    if (!g_fault_on) return 0;
     g_crumb.fn = fn;
     g_crumb.depth++;
     g_crumb.seq++;
@@ -65,8 +72,9 @@ static inline void crumb_leave(int *unused) {
     if (g_crumb.depth) g_crumb.depth--;
 }
 static inline void crumb_path(const char *path) {
-    if (!path) return;
-    size_t n = strnlen(path, CRUMB_PATH - 1);
+    if (!g_fault_on || !path) return;
+    size_t n = 0;
+    while (n < CRUMB_PATH - 1 && path[n]) n++;
     memcpy(g_crumb.path, path, n);
     g_crumb.path[n] = '\0';
     g_crumb.pathseq = g_crumb.seq;
@@ -79,13 +87,13 @@ static inline void crumb_p9_leave(const char **unused) {
 /* In scope for the rest of the hook: entering it now, leaving it when the hook returns. */
 #define CRUMB(name) int crumb_ __attribute__((cleanup(crumb_leave), unused)) = crumb_enter(name)
 /* In scope for the rest of the request: the 9P message the thread is waiting on. */
-#define CRUMB_P9(name) const char *crumb_p9_ __attribute__((cleanup(crumb_p9_leave), unused)) = (g_crumb.p9 = (name))
+#define CRUMB_P9(name) \
+    const char *crumb_p9_ __attribute__((cleanup(crumb_p9_leave), unused)) = (g_crumb.p9 = g_fault_on ? (name) : NULL)
 
 /* ---- report ------------------------------------------------------------------ */
 
 static long (*g_syscall)(long, ...);      /* libc's own, past our hook */
 static volatile sig_atomic_t g_faulting;  /* a fault is being reported: sigaction passes through */
-static int g_fault_on;
 static struct sigaction g_app[2];          /* the program's SIGSEGV and SIGBUS actions */
 static int (*g_real_sigaction)(int, const struct sigaction *, struct sigaction *);
 static _Bool (*g_wasm_trap)(int, siginfo_t *, void *);  /* v8::TryHandleWebAssemblyTrapPosix, a C++ bool */
@@ -156,7 +164,7 @@ static void match_line(const char *line, struct mapping *m, int n) {
     uintptr_t end = parse_hex(&p);
     if (*p++ != ' ') return;
     const char *perms = p;
-    p += 4;
+    for (int i = 0; i < 4; i++) if (!*p++) return;
     if (*p++ != ' ') return;
     uintptr_t offset = parse_hex(&p);
     for (int field = 0; field < 2 && *p; field++) {   /* dev, inode */
@@ -381,7 +389,7 @@ static void fault_record(int sig, const struct sigaction *act, struct sigaction 
 
 static void fault_init(void) {
     const char *on = getenv("VFS_FAULT_REPORT");
-    if (on && !strcmp(on, "0")) return;
+    if (!on || strcmp(on, "1") != 0) return;
     g_syscall = (long (*)(long, ...))dlsym(RTLD_NEXT, "syscall");
     g_real_sigaction = (int (*)(int, const struct sigaction *, struct sigaction *))dlsym(RTLD_NEXT, "sigaction");
     if (!g_syscall || !g_real_sigaction) return;
