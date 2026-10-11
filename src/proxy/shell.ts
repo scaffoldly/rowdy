@@ -183,14 +183,10 @@ export type ProcessSample = {
   at: number;
 };
 
-/**
- * What rowdy knew about the command when it exited: how long it ran, its last /proc sample, the
- * shim's fault report (every stderr line it wrote, `rowdy-vfs: …`) and the output just before.
- */
+/** What rowdy knew about the command when it exited: how long it ran, its last /proc sample, its last output. */
 export type ExitContext = {
   uptimeMs: number;
   sample?: ProcessSample;
-  report: ReadonlyArray<string>;
   recent: ReadonlyArray<string>;
 };
 
@@ -218,11 +214,8 @@ export const parseStatus = (status: string, at: number, fds?: number): ProcessSa
   };
 };
 
-// How often a running command's /proc is read, and how much of its output is kept for the exit:
-// the shim's fault report whole (it can list up to 256 threads), and the other lines just before.
+// How often a running command's /proc is read, and how many of its last output lines are kept.
 const SAMPLE_MS = 2000;
-const REPORT_PREFIX = 'rowdy-vfs: ';
-const REPORT_LINES = 512;
 const RECENT_LINES = 50;
 // How long the end of a command waits for its output to be relayed, when something else (a process it
 // started) still holds its stdout or stderr open.
@@ -258,7 +251,6 @@ export class ShellResponse extends Subject<ShellExit> implements ILoggable {
   public readonly startedAt = performance.now();
   private _bytes: number = 0;
   private _code?: number;
-  private _report: string[] = [];
   private _recent: string[] = [];
   private _sample?: ProcessSample;
 
@@ -300,12 +292,6 @@ export class ShellResponse extends Subject<ShellExit> implements ILoggable {
   }
 
   private keep(stream: 'stdout' | 'stderr', line: string): void {
-    if (stream === 'stderr' && line.startsWith(REPORT_PREFIX)) {
-      if (this._report.length < REPORT_LINES) {
-        this._report.push(line);
-      }
-      return;
-    }
     this._recent.push(`${stream}: ${line}`);
     if (this._recent.length > RECENT_LINES) {
       this._recent.shift();
@@ -314,7 +300,7 @@ export class ShellResponse extends Subject<ShellExit> implements ILoggable {
 
   /**
    * Report the command's end once its output has been relayed: execa settles before the last chunks
-   * have passed through to this response, and a crashing command writes its fault report last.
+   * have passed through to this response, which are the lines just before the exit.
    */
   settle(exit: ShellExit): void {
     race(fromEvent(this.output, 'end').pipe(take(1)), timer(DRAIN_MS))
@@ -352,7 +338,6 @@ export class ShellResponse extends Subject<ShellExit> implements ILoggable {
     return {
       uptimeMs: performance.now() - this.startedAt,
       ...(this._sample ? { sample: this._sample } : {}),
-      report: [...this._report],
       recent: [...this._recent],
     };
   }

@@ -1,7 +1,9 @@
 import { Environment, Logger } from '@scaffoldly/rowdy';
 import { ExitContext, parseStatus, ShellExit, ShellProxy, ShellRequest, ShellResponse } from '../src/proxy/shell';
 import { log } from '../src/log';
-import { existsSync } from 'fs';
+import { existsSync, mkdtempSync, writeFileSync } from 'fs';
+import { tmpdir } from 'os';
+import { join } from 'path';
 import { ShellPipeline } from '../src/shell/pipeline';
 import {
   config,
@@ -161,23 +163,6 @@ describe('shell', () => {
       expect(recent[0]).toBe('stdout: line 10');
       expect(recent[49]).toBe('stdout: line 59');
       expect(uptimeMs).toBeGreaterThan(0);
-    });
-
-    it("keeps the shim's fault report whole, apart from the other output", async () => {
-      const response = await background(
-        [
-          'for (let i = 0; i < 60; i++) console.error(`app ${i}`);',
-          'for (let i = 0; i < 80; i++) console.error(`rowdy-vfs: stack sp+0x${i} 0x1`);',
-          'process.stderr.write("rowdy-vfs: last, unterminated");',
-        ].join('')
-      );
-      await exit(response);
-      const { report, recent } = response.context();
-      expect(report).toHaveLength(81);
-      expect(report[0]).toBe('rowdy-vfs: stack sp+0x0 0x1');
-      expect(report[80]).toBe('rowdy-vfs: last, unterminated');
-      expect(recent).toHaveLength(50);
-      expect(recent.every((line) => !line.includes('rowdy-vfs:'))).toBe(true);
     });
 
     (existsSync('/proc/self/status') ? it : it.skip)('samples memory and threads while the command runs', async () => {
@@ -346,12 +331,15 @@ describe('command exit', () => {
     const context: ExitContext = {
       uptimeMs: 12345,
       sample: { rssKb: 204800, hwmKb: 307200, sizeKb: 1048576, threads: 11, fds: 42, at: performance.now() },
-      report: [
-        'rowdy-vfs: fatal SIGSEGV (signal 11, code 1 SEGV_MAPERR) at 0x0, tid 7, shim 7c1afe9',
-        'rowdy-vfs: pc 0x1',
-      ],
       recent: ['stdout: ready', 'stderr: fetch failed'],
     };
+    const report = [
+      'rowdy-vfs: fatal SIGSEGV (signal 11, code 1 SEGV_MAPERR) at 0x0, pid 7, tid 7, shim 1964f91',
+      'rowdy-vfs: pc 0x1',
+    ];
+    const faultFile = join(mkdtempSync(join(tmpdir(), 'rowdy-fault-')), 'fault-report');
+    writeFileSync(faultFile, `${report.join('\n')}\n`);
+    rowdy.environment['_faultFile'] = faultFile;
     rowdy.environment['commandExited']('node', { code: 139, signal: 'SIGSEGV', message: 'killed' }, context);
     expect(error).toHaveBeenCalledWith(
       'Command Exited',
@@ -367,8 +355,9 @@ describe('command exit', () => {
         lastRequest: 'method=DELETE path=/tunnel',
       })
     );
-    expect(error).toHaveBeenCalledWith('Command Fault Report', { n: 1, line: context.report[0] });
+    expect(error).toHaveBeenCalledWith('Command Fault Report', { n: 1, line: report[0] });
     expect(error).toHaveBeenCalledWith('Command Fault Report', { n: 2, line: 'rowdy-vfs: pc 0x1' });
+    expect(existsSync(faultFile)).toBe(false); // read once
     expect(error).toHaveBeenCalledWith('Command Output', { n: -1, line: 'stdout: ready' });
     expect(error).toHaveBeenCalledWith('Command Output', { n: 0, line: 'stderr: fetch failed' });
     error.mockRestore();

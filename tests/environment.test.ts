@@ -9,9 +9,9 @@ import {
   VFS_SOCKET,
   wire,
 } from '@scaffoldly/rowdy-vfs';
-import { chmodSync, existsSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
-import { join } from 'path';
+import { dirname, join } from 'path';
 import { lastValueFrom, ReplaySubject } from 'rxjs';
 
 describe('environment', () => {
@@ -43,6 +43,7 @@ describe('environment', () => {
     delete process.env.VFS_SOCKET;
     delete process.env.VFS_MOUNTS;
     delete process.env.VFS_FAULT_REPORT;
+    delete process.env.VFS_FAULT_FILE;
   });
 
   // Each Environment may have started a VFS supervisor on the shared socket path.
@@ -179,6 +180,26 @@ describe('environment', () => {
           withVolumes([`file://${backing}:/vfs`], new Environment(new Logger().withLevel('info')))
         );
         expect(env.VFS_FAULT_REPORT).toBeUndefined();
+        expect(env.VFS_FAULT_FILE).toBeUndefined();
+      });
+
+      it('writes to a file next to the supervisor socket, cleared of an earlier report', async () => {
+        const file = join(dirname(VFS_SOCKET), 'fault-report');
+        mkdirSync(dirname(file), { recursive: true });
+        writeFileSync(file, 'rowdy-vfs: from an earlier process\n');
+        const environment = withVolumes([`file://${backing}:/vfs`], new Environment(new Logger().withLevel('debug')));
+        const env = await finalize(environment);
+        expect(env.VFS_FAULT_FILE).toBe(file);
+        expect(existsSync(file)).toBe(false);
+        expect(environment['_faultFile']).toBe(file);
+      });
+
+      it("keeps the operator's own report file", async () => {
+        process.env.VFS_FAULT_FILE = join(backing, 'mine');
+        const env = await finalize(
+          withVolumes([`file://${backing}:/vfs`], new Environment(new Logger().withLevel('debug')))
+        );
+        expect(env.VFS_FAULT_FILE).toBe(join(backing, 'mine'));
       });
 
       it('is on at debug and trace', async () => {

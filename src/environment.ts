@@ -46,6 +46,8 @@ import {
 import { Volume } from './routes';
 import { LambdaImageService } from './aws/lambda/image';
 import { cpus } from 'os';
+import { readFileSync, rmSync } from 'fs';
+import { dirname, join } from 'path';
 import { internalIpV4Sync } from 'internal-ip';
 import { deployFailedSummary, deploySummary, writeGithubOutput, writeGithubSummary } from './util/github';
 import { isStaticElf, programOf } from './util/elf';
@@ -122,6 +124,9 @@ const entrypoint = <T>(
   return modified;
 };
 
+// More than any one report holds: a report lists at most 256 threads, and each process that crashes adds one.
+const FAULT_REPORT_LINES = 4096;
+
 export type ProcessEnv = Record<
   | 'HTTP_HOST'
   | 'HTTP_HOSTNAME'
@@ -134,7 +139,8 @@ export type ProcessEnv = Record<
   | 'VFS_BACKING'
   | 'VFS_SOCKET'
   | 'VFS_MOUNTS'
-  | 'VFS_FAULT_REPORT',
+  | 'VFS_FAULT_REPORT'
+  | 'VFS_FAULT_FILE',
   string | undefined
 >;
 
@@ -171,6 +177,8 @@ export class Environment implements ILoggable {
   private _commandExit = new ReplaySubject<ShellExit>(1);
   // The last request rowdy took, as its log line shows it: on Lambda, the invocation in flight.
   private _lastRequest = new BehaviorSubject<string>('');
+  // Where the shim appends its fault report (VFS_FAULT_FILE), when the report is on.
+  private _faultFile?: string;
   private _envVars = new ReplaySubject<{ name: keyof ProcessEnv; value: ProcessEnv[keyof ProcessEnv] }>();
   private _rowdy: Rowdy;
   private _port?: number;
@@ -628,10 +636,32 @@ export class Environment implements ILoggable {
     return this._port ? NEVER : this._commandExit;
   }
 
+  // The shim's fault reports from every process of the command that crashed, read once: the file is
+  // removed so a later exit cannot log them again.
+  private faultReport(): string[] {
+    const file = this._faultFile;
+    if (!file) {
+      return [];
+    }
+    let lines: string[];
+    try {
+      lines = readFileSync(file, 'utf8').split('\n').filter(Boolean);
+    } catch {
+      return [];
+    }
+    rmSync(file, { force: true });
+    if (lines.length > FAULT_REPORT_LINES) {
+      log.warn('Command Fault Report Truncated', { file, lines: lines.length, kept: FAULT_REPORT_LINES });
+      return lines.slice(0, FAULT_REPORT_LINES);
+    }
+    return lines;
+  }
+
   private commandExited(bin: string, exit: ShellExit, context?: ExitContext): void {
     const { code, signal, message } = exit;
     if (code !== 0) {
-      const { uptimeMs, sample, report = [], recent = [] } = context ?? {};
+      const { uptimeMs, sample, recent = [] } = context ?? {};
+      const report = this.faultReport();
       const mb = (kb?: number): string => (kb === undefined ? '' : `${Math.round(kb / 1024)} MB`);
       log.error('Command Exited', {
         bin,
@@ -647,9 +677,9 @@ export class Environment implements ILoggable {
         sampled: sample ? `${((performance.now() - sample.at) / 1000).toFixed(1)} s ago` : '',
         lastRequest: this._lastRequest.getValue(),
       });
-      // Repeated here, the fault report whole: the relayed lines can be far above, interleaved with
-      // other requests, or filtered out by level (stdout is info).
       report.forEach((line, i) => log.error('Command Fault Report', { n: i + 1, line }));
+      // Repeated here: the relayed lines can be far above, interleaved with other requests, or
+      // filtered out by level (stdout is info).
       recent.forEach((line, i) => log.error('Command Output', { n: i + 1 - recent.length, line }));
       if (!this._port) {
         process.exitCode = code;
@@ -844,6 +874,12 @@ export class Environment implements ILoggable {
               if (env.VFS_FAULT_REPORT === undefined && this.log.isDebugging) {
                 env.VFS_FAULT_REPORT = '1';
               }
+              if (env.VFS_FAULT_REPORT === '1') {
+                env.VFS_FAULT_FILE ??= join(dirname(VFS_SOCKET), 'fault-report');
+                // A report left from an earlier process in this sandbox is not this command's.
+                rmSync(env.VFS_FAULT_FILE, { force: true });
+                this._faultFile = env.VFS_FAULT_FILE;
+              }
               const { socket } = await this.vfsServer(mounts);
               const vfs = applyVfs(env, {
                 socket,
@@ -855,6 +891,7 @@ export class Environment implements ILoggable {
                 preload: vfs?.preload,
                 socket: vfs?.socket,
                 faultReport: env.VFS_FAULT_REPORT ?? '',
+                faultFile: env.VFS_FAULT_FILE ?? '',
               });
               const program = this._command?.[0] && programOf(this._command[0], process.env.PATH);
               if (program && isStaticElf(program)) {
