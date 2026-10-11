@@ -122,7 +122,7 @@ export class LambdaRuntimeService implements ILambdaRuntimeService {
   };
 
   removeContainer = async (req: CRI.RemoveContainerRequest): Promise<CRI.RemoveContainerResponse> => {
-    let lambda = await lastValueFrom(new LambdaFunction('Container', this.imageService).withArn(req.containerId));
+    const lambda = await lastValueFrom(new LambdaFunction('Container', this.imageService).withArn(req.containerId));
     await lastValueFrom(lambda.delete());
 
     return {

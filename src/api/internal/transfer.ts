@@ -180,7 +180,7 @@ export class Transfer implements ILoggable {
       slug = `${[...parts].slice(1, -1).join('/')}/${name}`;
     }
 
-    let url = `https://${registry}/v2/${slug}/manifests/${digest}`;
+    const url = `https://${registry}/v2/${slug}/manifests/${digest}`;
 
     if (!authorization) {
       if (authorization === null) {
@@ -665,7 +665,7 @@ export class TransferStatus implements ILoggable {
       throw new Error('Incomplete transfer information to construct image ref');
     }
 
-    let tag = desired.digest.startsWith('sha256:') ? `@${desired.digest}` : `:${desired.digest}`;
+    const tag = desired.digest.startsWith('sha256:') ? `@${desired.digest}` : `:${desired.digest}`;
     return `${registry}/${namespace}/${name}${tag}`;
   }
 
