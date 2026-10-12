@@ -4,7 +4,7 @@
  *
  * Depends on vfs_transport.h and on nothing above it. The interposition layer
  * uses only what is declared here: xlate/unxlate, notify, pre_open/post_open,
- * flush_fd, lock_transition and the fd table helpers.
+ * flush_fd, fd_untrack/fd_release, lock_transition and the fd table helpers.
  *
  * The supervisor is a 9P2000.L server. A path operation is a walk from the
  * mount's root fid, the operation on the fid, and a clunk; a descriptor opened
@@ -471,23 +471,39 @@ static int post_open(int fd, const char *vp, int flags) {
     return fd;
 }
 
-/* On fsync: persist through the fid. On the last close: clunk it, which persists
- * and gives back any lease. */
-static int flush_fd(int fd, int take) {
-    if (!fd_tracked(fd)) return 0;
+/* On fsync: persist through the fid. */
+static int flush_fd(int fd) {
+    if (fd < 0 || fd >= FD_MAX) return 0;
     pthread_mutex_lock(&g_lock);
+    int tracked = g_files[fd].refs != NULL;
     uint32_t fid = g_files[fd].fid;
-    int last = 0;
-    if (take) {
-        last = --(*g_files[fd].refs) == 0;
-        if (last) free(g_files[fd].refs);
+    pthread_mutex_unlock(&g_lock);
+    return tracked ? p9_fsync(fid) : 0;
+}
+
+/* Must run before the real close: once the number is released, another thread's open can be
+ * handed it and track it. Returns the fid for fd_release when this was its last descriptor,
+ * else P9_NOFID. */
+static uint32_t fd_untrack(int fd) {
+    if (fd < 0 || fd >= FD_MAX) return P9_NOFID;
+    uint32_t fid = P9_NOFID;
+    pthread_mutex_lock(&g_lock);
+    if (g_files[fd].refs) {
+        if (--(*g_files[fd].refs) == 0) {
+            free(g_files[fd].refs);
+            fid = g_files[fd].fid;
+        }
         g_files[fd].refs = NULL;
         g_files[fd].wlock = 0;
         g_files[fd].rlock = 0;
     }
     pthread_mutex_unlock(&g_lock);
-    if (!take) return p9_fsync(fid);
-    return last ? p9_clunk(fid) : 0;
+    return fid;
+}
+
+/* After the real close: clunk the fid fd_untrack returned, which persists and gives back any lease. */
+static int fd_release(uint32_t fid) {
+    return fid == P9_NOFID ? 0 : p9_clunk(fid);
 }
 
 /* Forward the program's advisory lock transitions to the supervisor:

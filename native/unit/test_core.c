@@ -181,6 +181,23 @@ static void the_descriptor_table_shares_a_fid_across_dup(void **state) {
     memset(&g_files[6], 0, sizeof g_files[6]);
 }
 
+static void untracking_hands_back_the_fid_only_with_its_last_descriptor(void **state) {
+    (void)state;
+    fd_track(5, 42);
+    fd_copy(5, 6);
+    assert_int_equal(fd_untrack(5), P9_NOFID);
+    assert_false(fd_tracked(5));
+    assert_true(fd_tracked(6));
+    assert_int_equal(fd_untrack(5), P9_NOFID);   /* a second close of the number */
+    assert_int_equal(*g_files[6].refs, 1);
+    assert_int_equal(fd_untrack(6), 42);
+    assert_false(fd_tracked(6));
+    assert_int_equal(fd_untrack(6), P9_NOFID);
+    assert_int_equal(fd_untrack(-1), P9_NOFID);
+    assert_int_equal(fd_untrack(FD_MAX), P9_NOFID);
+    assert_int_equal(fd_release(P9_NOFID), 0);
+}
+
 int main(void) {
     const struct CMUnitTest tests[] = {
         cmocka_unit_test_teardown(under_is_a_path_component_boundary, unmount_all),
@@ -193,6 +210,7 @@ int main(void) {
         cmocka_unit_test_teardown(trimmed_drops_trailing_slashes, unmount_all),
         cmocka_unit_test_teardown(relative_paths_resolve_against_a_directory_under_a_mount, unmount_all),
         cmocka_unit_test_teardown(the_descriptor_table_shares_a_fid_across_dup, unmount_all),
+        cmocka_unit_test_teardown(untracking_hands_back_the_fid_only_with_its_last_descriptor, unmount_all),
     };
     return cmocka_run_group_tests_name("vfs_core.h", tests, NULL, NULL);
 }
