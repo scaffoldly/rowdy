@@ -5,6 +5,7 @@ load helpers
 setup_file() {
   compile socket -O2
   compile relative -O2
+  compile closerace -O2 -pthread
   start_supervisor
 }
 
@@ -112,6 +113,30 @@ db.exec("CREATE TABLE t (v TEXT)");
 '
   echo "$output" | grep -qiE "locked|busy|EAGAIN"
   rm -f /vfs/busy.sqlite
+}
+
+@test "threads opening and closing virtual files at once each release only their own descriptor" {
+  mkdir -p /vfs/race
+  for i in 0 1 2 3 4; do echo "{\"record\":$i}" >/vfs/race/$i.json; done
+  run "$BATS_FILE_TMPDIR/closerace" 2000
+  echo "status $status: $output"
+  [ "$status" -eq 0 ]
+  rm -rf /vfs/race
+}
+
+@test "node reading files in parallel (fs.promises, libuv's pool) keeps running" {
+  mkdir -p /vfs/race
+  for i in 0 1 2 3 4; do echo "{\"record\":$i}" >/vfs/race/$i.json; done
+  run node -e '
+const fs = require("fs");
+const files = [0, 1, 2, 3, 4].map((i) => `/vfs/race/${i}.json`);
+(async () => {
+  for (let i = 0; i < 300; i++) await Promise.all(files.map((f) => fs.promises.readFile(f, "utf8")));
+})().catch((e) => { console.error(e); process.exit(1); });
+'
+  echo "status $status: $output"
+  [ "$status" -eq 0 ]
+  rm -rf /vfs/race
 }
 
 @test "with the supervisor gone, /vfs is unreachable" {

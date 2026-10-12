@@ -496,8 +496,9 @@ int close(int fd) {
     if (ipc_owns(fd)) return 0;
     /* Closing drops any advisory lock the program still held: end the lease too. */
     int l = fd_wlocked(fd) ? lock_transition(fd, F_UNLCK) : 0;
+    uint32_t fid = fd_untrack(fd);
     int r = real_close_(fd);
-    int f = flush_fd(fd, 1);
+    int f = fd_release(fid);
     if (f < 0 || l < 0) return -1;
     return r;
 }
@@ -505,14 +506,14 @@ int close(int fd) {
 int fsync(int fd) {
     REAL(fsync);
     int r = real_(fd);
-    if (r == 0 && flush_fd(fd, 0) < 0) return -1;
+    if (r == 0 && flush_fd(fd) < 0) return -1;
     return r;
 }
 
 int fdatasync(int fd) {
     REAL(fdatasync);
     int r = real_(fd);
-    if (r == 0 && flush_fd(fd, 0) < 0) return -1;
+    if (r == 0 && flush_fd(fd) < 0) return -1;
     return r;
 }
 
@@ -528,7 +529,7 @@ int dup(int oldfd) {
 static void fd_replaced(int oldfd, int newfd) {
     if (oldfd == newfd || !fd_tracked(newfd)) return;
     if (fd_wlocked(newfd)) lock_transition(newfd, F_UNLCK);
-    flush_fd(newfd, 1);
+    fd_release(fd_untrack(newfd));
 }
 
 int dup2(int oldfd, int newfd) {
@@ -549,9 +550,9 @@ int dup3(int oldfd, int newfd, int flags) {
 
 int fclose(FILE *f) {
     REAL(fclose);
-    int fd = f ? fileno(f) : -1;
+    uint32_t fid = fd_untrack(f ? fileno(f) : -1);
     int r = real_(f);
-    if (fd >= 0 && flush_fd(fd, 1) < 0) return EOF;
+    if (fd_release(fid) < 0) return EOF;
     return r;
 }
 
@@ -721,15 +722,16 @@ long syscall(long n, ...) {
         a[at] = (long)rp;
     }
 
-    long r = real_(n, a[0], a[1], a[2], a[3], a[4], a[5]);
-
 #ifdef SYS_close
     if (n == SYS_close) {
-        int f = flush_fd((int)a[0], 1);
-        if (f < 0) return -1;
+        uint32_t fid = fd_untrack((int)a[0]);
+        long r = real_(n, a[0], a[1], a[2], a[3], a[4], a[5]);
+        if (fd_release(fid) < 0) return -1;
         return r;
     }
 #endif
+
+    long r = real_(n, a[0], a[1], a[2], a[3], a[4], a[5]);
 
     if (vf_) {
         switch (n) {
