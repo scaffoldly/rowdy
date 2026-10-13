@@ -112,6 +112,8 @@ type Entry = {
   checksum?: Checksum;
   /** Created with O_EXCL: the first upload must find no object, or the create loses with EEXIST. */
   exclusive?: boolean;
+  /** Last opened with O_TRUNC: the upload replaces the object whatever version it is now at. */
+  truncated?: boolean;
   /** Descriptors currently open on it: a materialized copy in use is never evicted. */
   opens?: number;
   /** Last time the local copy was asked for, for eviction order. */
@@ -171,7 +173,9 @@ const digest = async (local: string, algo: Checksum['algo']): Promise<string | u
   }
 };
 
-const O_EXCL = 0o200; // open(2) flags cross the protocol with their Linux values
+// open(2) flags cross the protocol with their Linux values
+const O_EXCL = 0o200;
+const O_TRUNC = 0o1000;
 
 const snapshot = (local: string): { mtimeMs: number; size: number } | undefined => {
   try {
@@ -563,12 +567,13 @@ export class S3Adapter implements VfsAdapter {
       throw VfsError.code('ENOENT', `${path}: no such object`);
     }
     await this.serial(key, async () => {
-      const head = await this.head(key);
+      // Both at once: a miss waits for one round trip instead of two.
+      const [head, dir] = await Promise.all([this.head(key), this.isDir(rel)]);
       if (head) {
         await this.placeholder(rel, key, head.etag, head.size);
         return;
       }
-      if (await this.isDir(rel)) {
+      if (dir) {
         await fs.mkdir(this.local(rel), { recursive: true });
         return;
       }
@@ -678,9 +683,10 @@ export class S3Adapter implements VfsAdapter {
           size: head?.size,
           materialized: true,
           exclusive: !head && (flags & O_EXCL) !== 0,
+          truncated: (flags & O_TRUNC) !== 0,
         });
       } else {
-        this.entries.set(key, { ...entry, materialized: true });
+        this.entries.set(key, { ...entry, materialized: true, truncated: (flags & O_TRUNC) !== 0 });
       }
     });
   }
@@ -758,17 +764,21 @@ export class S3Adapter implements VfsAdapter {
           if (inTransit > 0 && (await this.landed(key, local, size, mtimeMs, base))) {
             return;
           }
-          if (base) {
+          // A truncating open never read the version it replaces, so like a plain create it is last
+          // writer wins; under a lease the write is read-modify-write and the conflict is real.
+          const replaces = current?.truncated === true && !this.leases.has(key);
+          if (base && !replaces) {
             throw VfsError.code('ESTALE', `${path}: object changed in S3 since it was opened (expected ETag ${base})`);
           }
           // Our create found an object: another instance created it first. The conditional PUT is
           // what makes O_EXCL atomic across instances; a plain create is last writer wins.
-          if (current?.exclusive) {
+          if (!base && current?.exclusive) {
             throw VfsError.code('EEXIST', `${path}: created elsewhere first`);
           }
           const head = await this.head(key);
-          if (head?.etag && attempt < 3) {
-            base = head.etag;
+          if (attempt < 3 && (head?.etag || replaces)) {
+            this.log(`replacing`, { key, base, current: head?.etag });
+            base = head?.etag;
             continue;
           }
           throw VfsError.code('ESTALE', `${path}: object appeared and vanished during the create`);
