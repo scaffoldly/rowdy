@@ -7,6 +7,7 @@ import {
   PutObjectCommand,
   S3Client,
 } from '@aws-sdk/client-s3';
+import type { HttpRequest, HttpResponse } from '@smithy/types';
 import {
   closeSync,
   existsSync,
@@ -189,6 +190,21 @@ describe('S3Adapter', () => {
       expect(s3.calls).not.toContain('GetObjectCommand');
     });
 
+    it('asks for the object and the directory prefix at once, so a miss waits for one round trip', async () => {
+      const send = s3.send.bind(s3);
+      let release!: () => void;
+      const held = new Promise<void>((resolve) => (release = resolve));
+      jest.spyOn(s3, 'send').mockImplementation(async (command: unknown) => {
+        if (command instanceof HeadObjectCommand) await held;
+        return send(command);
+      });
+      const stat = adapter.stat(`${mount}/missing.json`);
+      await new Promise((r) => setImmediate(r));
+      expect(s3.calls).toEqual(['ListObjectsV2Command']); // sent while the HEAD is still out
+      release();
+      await expect(stat).rejects.toMatchObject({ errno: 2 });
+    });
+
     it('creates a local directory for a key prefix', async () => {
       s3.put('photos/2026/a.jpg', 'x');
       await adapter.stat(`${mount}/photos`);
@@ -299,6 +315,51 @@ describe('S3Adapter', () => {
       await adapter.flush(`${mount}/race.txt`);
       expect(s3.objects.get('race.txt')?.body.toString()).toBe('mine');
       expect(s3.calls.filter((c) => c === 'PutObjectCommand')).toHaveLength(2); // If-None-Match: *, then If-Match
+    });
+
+    it('a truncating overwrite that loses the race to another instance replaces it: last writer wins', async () => {
+      s3.put('beat.json', 'v1');
+      await adapter.fetch(`${mount}/beat.json`);
+      await adapter.open(`${mount}/beat.json`, 0o1001); // O_WRONLY|O_TRUNC, as fs.writeFile opens
+      s3.put('beat.json', 'theirs');
+      writeFileSync(join(backing, 'beat.json'), 'mine');
+      await adapter.flush(`${mount}/beat.json`);
+      expect(s3.objects.get('beat.json')?.body.toString()).toBe('mine');
+      expect(s3.calls.filter((c) => c === 'PutObjectCommand')).toHaveLength(2); // stale If-Match, then the current one
+    });
+
+    it('a truncating overwrite of an object deleted elsewhere creates it again', async () => {
+      s3.put('beat.json', 'v1');
+      await adapter.fetch(`${mount}/beat.json`);
+      await adapter.open(`${mount}/beat.json`, 0o1001);
+      s3.objects.delete('beat.json');
+      writeFileSync(join(backing, 'beat.json'), 'mine');
+      await adapter.flush(`${mount}/beat.json`);
+      expect(s3.objects.get('beat.json')?.body.toString()).toBe('mine');
+    });
+
+    it('a truncating overwrite under a held lease is still ESTALE: the lock made it read-modify-write', async () => {
+      s3.put('locked.json', 'v1');
+      await adapter.fetch(`${mount}/locked.json`);
+      await adapter.lock(`${mount}/locked.json`);
+      await adapter.open(`${mount}/locked.json`, 0o1001);
+      s3.put('locked.json', 'theirs');
+      writeFileSync(join(backing, 'locked.json'), 'mine');
+      await expect(adapter.flush(`${mount}/locked.json`)).rejects.toMatchObject({ errno: 116 });
+      expect(s3.objects.get('locked.json')?.body.toString()).toBe('theirs');
+      await adapter.unlock(`${mount}/locked.json`).catch(() => {});
+    });
+
+    it('a write that does not truncate stays ESTALE after a truncating one was flushed', async () => {
+      s3.put('beat.json', 'v1');
+      await adapter.fetch(`${mount}/beat.json`);
+      await adapter.open(`${mount}/beat.json`, 0o1001);
+      writeFileSync(join(backing, 'beat.json'), 'v2');
+      await adapter.flush(`${mount}/beat.json`);
+      await adapter.open(`${mount}/beat.json`, 0o2001); // O_WRONLY|O_APPEND
+      s3.put('beat.json', 'theirs');
+      writeFileSync(join(backing, 'beat.json'), 'v2v3');
+      await expect(adapter.flush(`${mount}/beat.json`)).rejects.toMatchObject({ errno: 116 });
     });
 
     it('an O_EXCL create that loses the race fails with EEXIST at flush: the conditional PUT decides', async () => {
@@ -917,16 +978,20 @@ describe('S3Adapter', () => {
 
   it('traces each S3 round trip with its status, duration and response headers', async () => {
     const empty = Buffer.from('<ListBucketResult><KeyCount>0</KeyCount></ListBucketResult>');
-    const responses = [
-      { statusCode: 404, headers: { 'x-amz-request-id': 'r1', 'x-amz-id-2': 'x1' } },
-      { statusCode: 200, headers: { 'content-type': 'application/xml' }, body: empty },
-      { statusCode: 200, headers: { etag: '"abc"', 'content-length': '5', 'x-amz-request-id': 'r2' } },
-    ];
+    const respond = (request: HttpRequest): HttpResponse => {
+      if (request.query?.['list-type']) {
+        return { statusCode: 200, headers: { 'content-type': 'application/xml' }, body: empty };
+      }
+      return request.path.endsWith('/missing.txt')
+        ? { statusCode: 404, headers: { 'x-amz-request-id': 'r1', 'x-amz-id-2': 'x1' } }
+        : { statusCode: 200, headers: { etag: '"abc"', 'content-length': '5', 'x-amz-request-id': 'r2' } };
+    };
     const client = new S3Client({
       region: 'us-east-1',
       credentials: { accessKeyId: 'test', secretAccessKey: 'test' },
+      forcePathStyle: true,
       requestHandler: {
-        handle: async (): Promise<{ response: (typeof responses)[number] }> => ({ response: responses.shift()! }),
+        handle: async (request: HttpRequest): Promise<{ response: HttpResponse }> => ({ response: respond(request) }),
       },
     });
     const traced: Array<[string, Record<string, unknown> | undefined]> = [];
@@ -941,8 +1006,9 @@ describe('S3Adapter', () => {
     });
     await expect(a.stat(`${mount}/missing.txt`)).rejects.toMatchObject({ errno: 2 });
     await a.stat(`${mount}/present.txt`);
-    expect(traced.map(([op]) => op)).toEqual(['HeadObject', 'ListObjectsV2', 'HeadObject']);
-    expect(traced[0]).toEqual([
+    expect(traced.map(([op]) => op).sort()).toEqual(['HeadObject', 'HeadObject', 'ListObjectsV2', 'ListObjectsV2']);
+    const heads = traced.filter(([op]) => op === 'HeadObject');
+    expect(heads[0]).toEqual([
       'HeadObject',
       {
         key: 'missing.txt',
@@ -951,6 +1017,6 @@ describe('S3Adapter', () => {
         headers: { 'x-amz-request-id': 'r1', 'x-amz-id-2': 'x1' },
       },
     ]);
-    expect(traced[2]![1]).toMatchObject({ key: 'present.txt', status: 200, headers: { etag: '"abc"' } });
+    expect(heads[1]![1]).toMatchObject({ key: 'present.txt', status: 200, headers: { etag: '"abc"' } });
   });
 });
