@@ -112,8 +112,10 @@ type Entry = {
   checksum?: Checksum;
   /** Created with O_EXCL: the first upload must find no object, or the create loses with EEXIST. */
   exclusive?: boolean;
-  /** Last opened with O_TRUNC: the upload replaces the object whatever version it is now at. */
+  /** Last opened with O_TRUNC: the upload replaces the object whatever version it is now at, unless `read`. */
   truncated?: boolean;
+  /** Fetched for reading since this instance last uploaded it: a rewrite may be based on these bytes. */
+  read?: boolean;
   /** Descriptors currently open on it: a materialized copy in use is never evicted. */
   opens?: number;
   /** Last time the local copy was asked for, for eviction order. */
@@ -581,6 +583,13 @@ export class S3Adapter implements VfsAdapter {
     });
   }
 
+  private markRead(key: string): void {
+    const entry = this.entries.get(key);
+    if (entry) {
+      entry.read = true;
+    }
+  }
+
   async fetch(path: string): Promise<void> {
     const rel = this.rel(path);
     this.reserve(path, rel, 'ENOENT');
@@ -595,12 +604,14 @@ export class S3Adapter implements VfsAdapter {
         // Local content: written here (dirty, trusted) or fetched earlier (re-checked by ETag).
         await this.recheck(rel, key);
         if (existsSync(local)) {
+          this.markRead(key);
           return;
         }
         throw VfsError.code('ENOENT', `${path}: no such object`);
       }
       try {
         await this.download(key, local);
+        this.markRead(key);
       } catch (e) {
         if (e instanceof VfsError && e.errno === LINUX_ERRNO.ENOENT && entry?.materialized === false) {
           await fs.rm(local, { force: true }); // stale placeholder
@@ -764,9 +775,10 @@ export class S3Adapter implements VfsAdapter {
           if (inTransit > 0 && (await this.landed(key, local, size, mtimeMs, base))) {
             return;
           }
-          // A truncating open never read the version it replaces, so like a plain create it is last
-          // writer wins; under a lease the write is read-modify-write and the conflict is real.
-          const replaces = current?.truncated === true && !this.leases.has(key);
+          // A truncating rewrite of bytes this instance never read is last writer wins, like a plain
+          // create. Read since its last upload, or under a lease, it may be read-modify-write: the
+          // conflict is real.
+          const replaces = current?.truncated === true && !current.read && !this.leases.has(key);
           if (base && !replaces) {
             throw VfsError.code('ESTALE', `${path}: object changed in S3 since it was opened (expected ETag ${base})`);
           }

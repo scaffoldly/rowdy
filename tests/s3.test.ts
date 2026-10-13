@@ -317,9 +317,9 @@ describe('S3Adapter', () => {
       expect(s3.calls.filter((c) => c === 'PutObjectCommand')).toHaveLength(2); // If-None-Match: *, then If-Match
     });
 
-    it('a truncating overwrite that loses the race to another instance replaces it: last writer wins', async () => {
+    it('a truncating rewrite of bytes this instance never read is last writer wins', async () => {
       s3.put('beat.json', 'v1');
-      await adapter.fetch(`${mount}/beat.json`);
+      await adapter.stat(`${mount}/beat.json`); // the walk before open: a placeholder, nothing read
       await adapter.open(`${mount}/beat.json`, 0o1001); // O_WRONLY|O_TRUNC, as fs.writeFile opens
       s3.put('beat.json', 'theirs');
       writeFileSync(join(backing, 'beat.json'), 'mine');
@@ -328,9 +328,32 @@ describe('S3Adapter', () => {
       expect(s3.calls.filter((c) => c === 'PutObjectCommand')).toHaveLength(2); // stale If-Match, then the current one
     });
 
-    it('a truncating overwrite of an object deleted elsewhere creates it again', async () => {
+    it('a truncating rewrite of a file read since its last upload is ESTALE: it may be read-modify-write', async () => {
+      s3.put('counter.json', '{"n":1}');
+      await adapter.fetch(`${mount}/counter.json`); // readFile
+      await adapter.open(`${mount}/counter.json`, 0o1001); // writeFile of the edited copy
+      s3.put('counter.json', '{"n":2}'); // another instance's edit
+      writeFileSync(join(backing, 'counter.json'), '{"n":2}');
+      await expect(adapter.flush(`${mount}/counter.json`)).rejects.toMatchObject({ errno: 116 });
+      expect(s3.objects.get('counter.json')?.body.toString()).toBe('{"n":2}');
+    });
+
+    it('a read is forgotten once this instance uploads the file: the next rewrite is last writer wins', async () => {
       s3.put('beat.json', 'v1');
       await adapter.fetch(`${mount}/beat.json`);
+      await adapter.open(`${mount}/beat.json`, 0o1001);
+      writeFileSync(join(backing, 'beat.json'), 'v2');
+      await adapter.flush(`${mount}/beat.json`); // no conflict: lands on v1
+      await adapter.open(`${mount}/beat.json`, 0o1001);
+      s3.put('beat.json', 'theirs');
+      writeFileSync(join(backing, 'beat.json'), 'v3');
+      await adapter.flush(`${mount}/beat.json`);
+      expect(s3.objects.get('beat.json')?.body.toString()).toBe('v3');
+    });
+
+    it('a truncating rewrite of an object deleted elsewhere creates it again', async () => {
+      s3.put('beat.json', 'v1');
+      await adapter.stat(`${mount}/beat.json`);
       await adapter.open(`${mount}/beat.json`, 0o1001);
       s3.objects.delete('beat.json');
       writeFileSync(join(backing, 'beat.json'), 'mine');
@@ -338,9 +361,9 @@ describe('S3Adapter', () => {
       expect(s3.objects.get('beat.json')?.body.toString()).toBe('mine');
     });
 
-    it('a truncating overwrite under a held lease is still ESTALE: the lock made it read-modify-write', async () => {
+    it('a truncating rewrite under a held lease is ESTALE: the lock made it read-modify-write', async () => {
       s3.put('locked.json', 'v1');
-      await adapter.fetch(`${mount}/locked.json`);
+      await adapter.stat(`${mount}/locked.json`);
       await adapter.lock(`${mount}/locked.json`);
       await adapter.open(`${mount}/locked.json`, 0o1001);
       s3.put('locked.json', 'theirs');

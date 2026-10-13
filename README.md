@@ -175,9 +175,10 @@ unix-domain socket (one JSON object per line, paths and metadata only; the proto
   directory on first open (`fetch`), directory listings create correctly sized placeholders without
   downloading (`list`), and files are written back on close/fsync (`flush`) with
   `PutObject If-Match: <etag the copy was based on>` (or `If-None-Match: *` for a new object), so a
-  concurrent writer fails the close with `ESTALE` instead of being overwritten. A file opened with
-  `O_TRUNC` (`fs.writeFile`) and no lock held never read the version it replaces, so it is last
-  writer wins, like a plain create. `unlink` deletes,
+  concurrent writer fails the close with `ESTALE` instead of being overwritten. The exception is a
+  rewrite with `O_TRUNC` (`fs.writeFile`), no lock held, of a file this instance has not read since
+  it last uploaded it: nothing in it came from the version it replaces, so it is last writer wins,
+  like a plain create. A rewrite after a read (read-modify-write) keeps `ESTALE`. `unlink` deletes,
   `rename` copies server-side then deletes (a renamed directory moves every key under it). S3 has
   no directories: `mkdir` writes a `<key>/` marker object (the S3 console's convention) so an empty
   directory exists on every instance; `rmdir` removes it.
