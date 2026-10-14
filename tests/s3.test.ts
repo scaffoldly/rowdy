@@ -642,6 +642,16 @@ describe('S3Adapter', () => {
       expect(statSync(join(backing, 'nope.txt')).size).toBe('now it is'.length);
     });
 
+    it('creating a file the walk just found missing asks S3 nothing more before the upload', async () => {
+      const a = within(60_000);
+      await expect(a.stat(`${mount}/new.txt`)).rejects.toMatchObject({ errno: 2 }); // the walk before open
+      writeFileSync(join(backing, 'new.txt'), 'fresh');
+      s3.calls.length = 0;
+      await a.open(`${mount}/new.txt`, 0o101);
+      await a.flush(`${mount}/new.txt`);
+      expect(s3.calls).toEqual(['PutObjectCommand']); // If-None-Match: *, no HEAD first
+    });
+
     it('never hides what this instance made: a local file answers before the remembered miss', async () => {
       const a = within(60_000);
       await expect(a.stat(`${mount}/made.txt`)).rejects.toMatchObject({ errno: 2 });

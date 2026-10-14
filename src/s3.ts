@@ -864,8 +864,9 @@ export class S3Adapter implements VfsAdapter {
       }
       const entry = this.entries.get(key);
       if (!entry) {
-        // Brand-new local file: no synced snapshot, so revalidation leaves it alone until flushed.
-        const head = await this.head(key);
+        // Brand-new local file: no synced snapshot, so revalidation leaves it alone until flushed. The walk
+        // before the open usually just found it missing; that answer stands for revalidateMs.
+        const head = this.fresh(this.missedAt.get(key)) ? undefined : await this.head(key);
         this.entries.set(key, {
           etag: head?.etag,
           size: head?.size,
