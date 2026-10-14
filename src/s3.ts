@@ -1,13 +1,14 @@
 import {
   CopyObjectCommand,
   DeleteObjectCommand,
+  DeleteObjectsCommand,
   GetObjectCommand,
   HeadObjectCommand,
   ListObjectsV2Command,
   PutObjectCommand,
   S3Client,
 } from '@aws-sdk/client-s3';
-import { createReadStream, createWriteStream, lstatSync, mkdirSync, readlinkSync, type Stats } from 'fs';
+import { constants as fsConstants, createWriteStream, lstatSync, mkdirSync, readlinkSync, type Stats } from 'fs';
 import { promises as fs } from 'fs';
 import { dirname, isAbsolute, join, normalize } from 'path';
 import { Readable } from 'stream';
@@ -156,11 +157,29 @@ const checksumOf = (out: ChecksumFields): Checksum | undefined => {
 };
 
 /** Streams the local file through the same algorithm, base64 like S3 reports it. */
+/**
+ * A backing file, read without touching its atime: the adapter reads files the program did not ask to
+ * read (to digest, to upload), and under relatime that read would replace an atime the program just set
+ * with utimes. O_NOATIME needs the file's owner, as the server is when it runs as the program's user;
+ * otherwise the read is a plain one.
+ */
+const readStream = async (local: string): Promise<Readable> => {
+  const noatime = fsConstants.O_NOATIME;
+  if (noatime) {
+    try {
+      return (await fs.open(local, fsConstants.O_RDONLY | noatime)).createReadStream();
+    } catch (e) {
+      if (!(e instanceof Error && 'code' in e && e.code === 'EPERM')) throw e;
+    }
+  }
+  return (await fs.open(local, fsConstants.O_RDONLY)).createReadStream();
+};
+
 const digest = async (local: string, algo: Checksum['algo']): Promise<string | undefined> => {
   try {
     if (algo === 'crc32') {
       let value = 0;
-      for await (const chunk of createReadStream(local)) {
+      for await (const chunk of await readStream(local)) {
         value = crc32(chunk as Buffer, value);
       }
       const out = Buffer.alloc(4);
@@ -168,7 +187,7 @@ const digest = async (local: string, algo: Checksum['algo']): Promise<string | u
       return out.toString('base64');
     }
     const hash = createHash(algo);
-    for await (const chunk of createReadStream(local)) {
+    for await (const chunk of await readStream(local)) {
       hash.update(chunk as Buffer);
     }
     return hash.digest('base64');
@@ -248,6 +267,13 @@ export class S3Adapter implements VfsAdapter {
   private readonly client: S3Client;
   private readonly entries = new Map<string, Entry>();
   private readonly chains = new Map<string, Promise<unknown>>();
+  /**
+   * When each prefix was last listed, and when each key was last found missing (ms since epoch). Within
+   * revalidateMs neither asks S3 again, the same bound a trusted local copy has: what this instance does
+   * shows at once (it is on disk), what another does shows within revalidateMs.
+   */
+  private readonly listedAt = new Map<string, number>();
+  private readonly missedAt = new Map<string, number>();
   private readonly log: (message: string, params?: Record<string, unknown>) => void;
 
   /** Compiled localOnly globs; `pathy` ones (containing a `/`) match the whole relative path. */
@@ -274,7 +300,9 @@ export class S3Adapter implements VfsAdapter {
       (next, context) =>
         async (args): ReturnType<typeof next> => {
           const op = `${context.commandName ?? 'S3'}`.replace(/Command$/, '');
-          const key = (args.input as { Key?: string }).Key;
+          // What the request is about: an object's key, a listing's prefix, or a batch delete's first key.
+          const input = args.input as { Key?: string; Prefix?: string; Delete?: { Objects?: { Key?: string }[] } };
+          const key = input.Key ?? input.Prefix ?? input.Delete?.Objects?.[0]?.Key;
           const started = performance.now();
           const duration = (): string => `${(performance.now() - started).toFixed(2)} ms`;
           try {
@@ -289,6 +317,11 @@ export class S3Adapter implements VfsAdapter {
         },
       { step: 'deserialize', priority: 'low', name: 'rowdyVfsTrace' }
     );
+  }
+
+  /** Whether a check made `at` still stands: within revalidateMs. */
+  private fresh(at: number | undefined): boolean {
+    return at !== undefined && Date.now() - at < (this.options.revalidateMs ?? 2000);
   }
 
   /** Path relative to the mountpoint without a leading slash ('' for the root), or undefined if outside it. */
@@ -682,6 +715,10 @@ export class S3Adapter implements VfsAdapter {
       }
     } else {
       await this.serial(key, async () => {
+        // Nothing on disk, and S3 said so within revalidateMs (callers waiting on the lock find it here too).
+        if (this.fresh(this.missedAt.get(key))) {
+          throw VfsError.code('ENOENT', `${path}: no such object`);
+        }
         // Both at once: a miss waits for one round trip instead of two.
         const [head, dir] = await Promise.all([this.head(key), this.isDir(rel)]);
         if (head?.link) {
@@ -696,6 +733,7 @@ export class S3Adapter implements VfsAdapter {
           await fs.mkdir(this.local(rel), { recursive: true });
           return;
         }
+        this.missedAt.set(key, Date.now());
         throw VfsError.code('ENOENT', `${path}: no such object`);
       });
     }
@@ -760,6 +798,10 @@ export class S3Adapter implements VfsAdapter {
     const dir = this.local(rel);
     await fs.mkdir(dir, { recursive: true });
     const prefix = this.dirPrefix(rel);
+    if (this.fresh(this.listedAt.get(prefix))) {
+      return; // listed within revalidateMs; what this instance changed since is on disk
+    }
+    const started = Date.now();
     let token: string | undefined;
     do {
       let out;
@@ -777,6 +819,7 @@ export class S3Adapter implements VfsAdapter {
       }
       for (const common of out.CommonPrefixes ?? []) {
         if (common.Prefix && !common.Prefix.slice(prefix.length).startsWith('.rowdy/')) {
+          this.missedAt.delete(common.Prefix.slice(0, -1));
           await fs.mkdir(join(this.options.backing, this.unkey(common.Prefix)), { recursive: true });
         }
       }
@@ -786,11 +829,13 @@ export class S3Adapter implements VfsAdapter {
           ? [{ key: Key, etag: ETag, size: Size }]
           : []
       );
+      for (const { key } of children) this.missedAt.delete(key);
       await inBatches(children, LIST_HEADS, ({ key, etag, size }) =>
         this.serial(key, () => this.listed(this.unkey(key), key, etag, size))
       );
       token = out.IsTruncated ? out.NextContinuationToken : undefined;
     } while (token);
+    this.listedAt.set(prefix, started);
   }
 
   /**
@@ -837,8 +882,9 @@ export class S3Adapter implements VfsAdapter {
       }
       const entry = this.entries.get(key);
       if (!entry) {
-        // Brand-new local file: no synced snapshot, so revalidation leaves it alone until flushed.
-        const head = await this.head(key);
+        // Brand-new local file: no synced snapshot, so revalidation leaves it alone until flushed. The walk
+        // before the open usually just found it missing; that answer stands for revalidateMs.
+        const head = this.fresh(this.missedAt.get(key)) ? undefined : await this.head(key);
         this.entries.set(key, {
           etag: head?.etag,
           size: head?.size,
@@ -894,7 +940,13 @@ export class S3Adapter implements VfsAdapter {
     let base = current?.etag;
     let inTransit = 0; // attempts that failed on the way, which may or may not have landed
     for (let attempt = 1; ; attempt++) {
-      const body = createReadStream(local);
+      let body: Readable;
+      try {
+        body = await readStream(local);
+      } catch (e) {
+        if (e instanceof Error && 'code' in e && e.code === 'ENOENT') return; // removed before the flush reached us
+        throw e;
+      }
       body.on('error', () => {}); // the SDK consumes read errors; a destroyed stream must not throw
       try {
         const out = await this.client.send(
@@ -915,6 +967,7 @@ export class S3Adapter implements VfsAdapter {
           synced: { mtimeMs, size },
           checksum: checksumOf(out),
         });
+        this.missedAt.delete(key);
         this.log(`flushed`, { key, size, base });
         return;
       } catch (e) {
@@ -995,6 +1048,7 @@ export class S3Adapter implements VfsAdapter {
       synced: { mtimeMs: st.mtimeMs, size: st.size },
       link: true,
     });
+    this.missedAt.delete(key);
     this.log(`flushed`, { key, link: target });
   }
 
@@ -1015,6 +1069,7 @@ export class S3Adapter implements VfsAdapter {
       synced: { mtimeMs, size },
       checksum: head.checksum,
     });
+    this.missedAt.delete(key);
     this.log(`flushed`, { key, size, base, landed: 'response lost, object matches' });
     return true;
   }
@@ -1036,6 +1091,7 @@ export class S3Adapter implements VfsAdapter {
         await this.client.send(
           new PutObjectCommand({ Bucket: this.options.bucket, Key: marker, Body: '', ContentLength: 0 })
         );
+        this.missedAt.delete(this.key(rel));
         this.log(`marked`, { key: marker });
       } catch (e) {
         throw toVfsError(e);
@@ -1224,18 +1280,26 @@ export class S3Adapter implements VfsAdapter {
     }
     const key = this.key(rel);
     await this.serial(key, async () => {
-      // A file has an entry; anything else may have been a directory, whose marker goes too.
-      const keys = this.entries.has(key) ? [key] : [key, `${key}/`];
-      for (const k of keys) {
-        try {
-          await this.client.send(new DeleteObjectCommand({ Bucket: this.options.bucket, Key: k }));
-        } catch (e) {
-          if (!isNotFound(e)) {
-            throw toVfsError(e);
-          }
-        }
+      // The path is already gone locally, and an entry does not tell a file from a directory (opening
+      // one to list it makes one), so the object and the directory marker go together, in one request.
+      let out;
+      try {
+        out = await this.client.send(
+          new DeleteObjectsCommand({
+            Bucket: this.options.bucket,
+            Delete: { Objects: [{ Key: key }, { Key: `${key}/` }], Quiet: true },
+          })
+        );
+      } catch (e) {
+        throw toVfsError(e);
+      }
+      const failed = out.Errors?.[0];
+      if (failed) {
+        const code = failed.Code === 'AccessDenied' ? 'EACCES' : 'EIO';
+        throw VfsError.code(code, `${failed.Key}: ${failed.Code} ${failed.Message ?? ''}`.trim());
       }
       this.entries.delete(key);
+      this.listedAt.delete(`${key}/`); // a directory made again here is listed afresh
     });
   }
 
@@ -1307,6 +1371,7 @@ export class S3Adapter implements VfsAdapter {
           materialized: true,
           link: this.entries.get(fromKey)?.link,
         });
+        this.missedAt.delete(toKey);
       } catch (e) {
         if (!isNotFound(e)) {
           throw toVfsError(e);

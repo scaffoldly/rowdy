@@ -1,6 +1,7 @@
 import {
   CopyObjectCommand,
   DeleteObjectCommand,
+  DeleteObjectsCommand,
   GetObjectCommand,
   HeadObjectCommand,
   ListObjectsV2Command,
@@ -20,6 +21,7 @@ import {
   readlinkSync,
   readSync,
   renameSync,
+  rmdirSync,
   rmSync,
   statSync,
   symlinkSync,
@@ -113,6 +115,12 @@ class FakeS3 {
     if (command instanceof DeleteObjectCommand) {
       this.objects.delete(command.input.Key!);
       return {};
+    }
+    if (command instanceof DeleteObjectsCommand) {
+      // Like S3: a key that is not there is deleted all the same.
+      const keys = (command.input.Delete?.Objects ?? []).flatMap(({ Key }) => (Key ? [Key] : []));
+      for (const key of keys) this.objects.delete(key);
+      return { Deleted: command.input.Delete?.Quiet ? [] : keys.map((Key) => ({ Key })) };
     }
     if (command instanceof CopyObjectCommand) {
       const source = decodeURIComponent(command.input.CopySource!.split('/').slice(1).join('/'));
@@ -555,6 +563,17 @@ describe('S3Adapter', () => {
       await adapter.unlink(`${mount}/albums`);
       expect(s3.objects.size).toBe(0);
     });
+
+    it('rmdir of a directory that was listed (and so has an entry) still removes its marker', async () => {
+      mkdirSync(join(backing, 'listed'));
+      await adapter.mkdir(`${mount}/listed`);
+      await adapter.acquire(`${mount}/listed`); // opendir: the server acquires every opened path
+      await adapter.release(`${mount}/listed`);
+      rmdirSync(join(backing, 'listed')); // the shim removes the backing directory first
+      await adapter.unlink(`${mount}/listed`);
+      expect([...s3.objects.keys()]).toEqual([]);
+      expect(s3.calls.filter((c) => c === 'DeleteObjectsCommand')).toHaveLength(1); // object and marker, one request
+    });
   });
 
   describe('unlink and rename', () => {
@@ -590,6 +609,59 @@ describe('S3Adapter', () => {
 
     it('refuses a rename across the mountpoint boundary', async () => {
       await expect(adapter.rename(`${mount}/a.txt`, '/tmp/elsewhere.txt')).rejects.toMatchObject({ errno: 18 });
+    });
+  });
+
+  describe('listings and misses within revalidateMs', () => {
+    const within = (revalidateMs: number): S3Adapter =>
+      new S3Adapter({ bucket: 'b', mountpoint: mount, backing, client: s3 as unknown as S3Client, revalidateMs });
+
+    it('lists a directory once per revalidateMs; a write elsewhere shows on the listing after it', async () => {
+      const a = within(100);
+      s3.put('dir/one.txt', '1');
+      await a.list(`${mount}/dir`);
+      s3.put('dir/two.txt', '2'); // another instance
+      s3.calls.length = 0;
+      await a.list(`${mount}/dir`);
+      expect(s3.calls).toEqual([]);
+      expect(existsSync(join(backing, 'dir', 'two.txt'))).toBe(false);
+      await new Promise((r) => setTimeout(r, 120));
+      await a.list(`${mount}/dir`);
+      expect(existsSync(join(backing, 'dir', 'two.txt'))).toBe(true);
+    });
+
+    it('remembers a miss for revalidateMs: one HEAD and LIST for the same missing path, then asks again', async () => {
+      const a = within(100);
+      await expect(a.stat(`${mount}/nope.txt`)).rejects.toMatchObject({ errno: 2 });
+      await expect(a.stat(`${mount}/nope.txt`)).rejects.toMatchObject({ errno: 2 });
+      expect(s3.calls).toEqual(['HeadObjectCommand', 'ListObjectsV2Command']);
+      s3.put('nope.txt', 'now it is'); // another instance
+      await expect(a.stat(`${mount}/nope.txt`)).rejects.toMatchObject({ errno: 2 }); // within the window
+      await new Promise((r) => setTimeout(r, 120));
+      await a.stat(`${mount}/nope.txt`);
+      expect(statSync(join(backing, 'nope.txt')).size).toBe('now it is'.length);
+    });
+
+    it('creating a file the walk just found missing asks S3 nothing more before the upload', async () => {
+      const a = within(60_000);
+      await expect(a.stat(`${mount}/new.txt`)).rejects.toMatchObject({ errno: 2 }); // the walk before open
+      writeFileSync(join(backing, 'new.txt'), 'fresh');
+      s3.calls.length = 0;
+      await a.open(`${mount}/new.txt`, 0o101);
+      await a.flush(`${mount}/new.txt`);
+      expect(s3.calls).toEqual(['PutObjectCommand']); // If-None-Match: *, no HEAD first
+    });
+
+    it('never hides what this instance made: a local file answers before the remembered miss', async () => {
+      const a = within(60_000);
+      await expect(a.stat(`${mount}/made.txt`)).rejects.toMatchObject({ errno: 2 });
+      writeFileSync(join(backing, 'made.txt'), 'here');
+      await a.open(`${mount}/made.txt`, 0o101);
+      await a.flush(`${mount}/made.txt`);
+      await a.stat(`${mount}/made.txt`);
+      rmSync(join(backing, 'made.txt')); // gone locally, still in S3: the flush forgot the miss
+      await a.stat(`${mount}/made.txt`);
+      expect(statSync(join(backing, 'made.txt')).size).toBe(4);
     });
   });
 
@@ -945,15 +1017,23 @@ describe('S3Adapter', () => {
     });
 
     it('reads every listed entry with a HEAD for its type, as s3fs-fuse does, and not again at the same version', async () => {
+      // revalidateMs 0: every listing goes to S3, so what is left to skip is the HEADs.
+      const always = new S3Adapter({
+        bucket: 'b',
+        mountpoint: mount,
+        backing,
+        client: s3 as unknown as S3Client,
+        revalidateMs: 0,
+      });
       s3.put('dir/file.txt', 'abc');
       link('dir/to-file', 'file.txt');
-      await adapter.list(`${mount}/dir`);
+      await always.list(`${mount}/dir`);
       expect(lstatSync(join(backing, 'dir', 'to-file')).isSymbolicLink()).toBe(true);
       expect(readlinkSync(join(backing, 'dir', 'to-file'))).toBe('file.txt');
       expect(statSync(join(backing, 'dir', 'file.txt')).size).toBe(3);
       expect(s3.calls.filter((c) => c === 'HeadObjectCommand')).toHaveLength(2);
       s3.calls.length = 0;
-      await adapter.list(`${mount}/dir`);
+      await always.list(`${mount}/dir`);
       expect(s3.calls).toEqual(['ListObjectsV2Command']);
     });
 
@@ -1115,7 +1195,7 @@ describe('S3Adapter', () => {
       s3.calls.length = 0;
       await a.rename(`${mount}/final.txt`, `${mount}/final.txt-wal`);
       expect(s3.objects.has('final.txt')).toBe(false);
-      expect(s3.calls).toEqual(['DeleteObjectCommand']);
+      expect(s3.calls).toEqual(['DeleteObjectsCommand']); // the object and any directory marker, one request
     });
   });
 
