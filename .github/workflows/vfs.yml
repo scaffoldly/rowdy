@@ -17,7 +17,9 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  native:
+  # Built once: each architecture's shim, then the package around both. Every test and the release use
+  # these artifacts as they are; nothing downstream compiles or bundles again.
+  compile:
     strategy:
       matrix:
         include:
@@ -26,7 +28,7 @@ jobs:
           - arch: arm64
             runner: ubuntu-24.04-arm
     runs-on: ${{ matrix.runner }}
-    name: Native (${{ matrix.arch }})
+    name: Compile shim (${{ matrix.arch }})
 
     steps:
       - name: Checkout code
@@ -35,49 +37,6 @@ jobs:
       - name: Compile shim
         run: sh native/build.sh ${{ matrix.arch }}
 
-      - name: Gate rejects bad builds
-        run: sh tests/native/negative.sh ${{ matrix.arch }}
-
-      - name: Unit tests (cmocka, ASan + UBSan)
-        run: sh tests/native/unit.sh ${{ matrix.arch }}
-
-      # The test supervisor is the package's own 9P server, so the test needs dist/.
-      - name: Use Node.js 22.x
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
-        with:
-          node-version: 22.x
-          cache: 'yarn'
-
-      - name: Build package
-        run: |
-          mkdir -p lib/linux-x64 lib/linux-arm64
-          for arch in x64 arm64; do [ -f lib/linux-$arch/vfspreload.so ] || cp lib/linux-${{ matrix.arch }}/vfspreload.so lib/linux-$arch/vfspreload.so; done
-          yarn --frozen-lockfile && yarn build
-
-      - name: Test shim (musl, alpine)
-        run: sh tests/native/test.sh ${{ matrix.arch }} alpine
-
-      - name: Test shim (glibc, debian)
-        run: sh tests/native/test.sh ${{ matrix.arch }} debian
-
-      # A fork's pull request gets no OIDC token, so the bucket half runs only for this repository.
-      - name: Configure AWS Credentials
-        id: aws
-        if: ${{ vars.S3_BUCKET_CI != '' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
-        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
-        with:
-          aws-region: us-east-1
-          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
-
-      - name: Test shim (distroless node, nonroot)
-        run: sh tests/native/distroless.sh ${{ matrix.arch }}
-        env:
-          S3_BUCKET: ${{ steps.aws.outcome == 'success' && vars.S3_BUCKET_CI || '' }}
-          S3_PREFIX: ${{ github.repository }}/${{ github.run_id }}-${{ github.run_attempt }}/${{ matrix.arch }}
-
-      - name: Test shim (glibc below 2.34)
-        run: sh tests/native/legacy.sh ${{ matrix.arch }}
-
       - name: Upload shim
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
@@ -85,18 +44,10 @@ jobs:
           path: lib/linux-${{ matrix.arch }}/vfspreload.so
           if-no-files-found: error
 
-  # node's own fs/promises tests (tests/native/nodefs) in the image, as the unprivileged node user, with
-  # testcontainers, at the runner's own architecture: on a docker volume (the gate), and through the shim
-  # on an S3-backed /vfs (reported only; skipped without AWS credentials).
-  nodefs:
-    strategy:
-      fail-fast: false
-      matrix:
-        arch: [x64, arm64]
-        flavour: [alpine, debian]
-    runs-on: ${{ matrix.arch == 'arm64' && 'ubuntu-24.04-arm' || 'ubuntu-24.04' }}
-    needs: [native]
-    name: node fs (${{ matrix.flavour }}, ${{ matrix.arch }})
+  package:
+    runs-on: ubuntu-latest
+    needs: [compile]
+    name: Build package
 
     steps:
       - name: Checkout code
@@ -115,25 +66,23 @@ jobs:
           path: lib
           merge-multiple: false
 
-      # A fork's pull request gets no OIDC token, so the S3 store runs only for this repository.
-      - name: Configure AWS Credentials
-        id: aws
-        if: ${{ vars.S3_BUCKET_CI != '' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
-        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
-        with:
-          aws-region: us-east-1
-          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
-
-      - name: node fs/promises tests
+      - name: Build package
         run: |
           for arch in x64 arm64; do
             mkdir -p lib/linux-$arch
             mv lib/vfspreload-linux-$arch/vfspreload.so lib/linux-$arch/vfspreload.so
+            rmdir lib/vfspreload-linux-$arch
           done
-          yarn --frozen-lockfile && yarn build && yarn test:nodefs
-        env:
-          NODEFS_FLAVOUR: ${{ matrix.flavour }}
-          NODEFS_S3_BUCKET: ${{ steps.aws.outcome == 'success' && vars.S3_BUCKET_CI || '' }}
+          yarn --frozen-lockfile && yarn build
+
+      - name: Upload package
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: package
+          path: |
+            dist
+            lib
+          if-no-files-found: error
 
   lint:
     runs-on: ubuntu-latest
@@ -152,133 +101,130 @@ jobs:
       - name: Lint
         run: yarn && yarn lint
 
+  # Every test, one matrix so they run and show as one group, each on the package artifact (no entry
+  # compiles or bundles), and every one must pass for the release. An entry names its suite; `node` marks the ones that need node and the
+  # package's dependencies, `package` the ones that need dist/ and the shims.
+  #   unit         jest (yarn test) on each supported node
+  #   cmocka       the shim's headers under cmocka, ASan + UBSan, built from source in Debian 12
+  #   gate         the symbol gate (native/symbols.sh) rejects builds that break ADR 0003's rules
+  #   bats         the shim under busybox/coreutils, node and C callers, on alpine and debian
+  #   distroless   the shim in the distroless node image, as its nonroot user
+  #   legacy       the shim in a process on glibc below 2.34
+  #   sqlite       SQLite's own mptest and speedtest1 through the shim
+  #   nodefs       node's own fs/promises tests (tests/native/nodefs) with testcontainers, at the
+  #                runner's own architecture: on a docker volume (the gate), and through the shim on
+  #                an S3-backed /vfs (reported only; skipped without AWS credentials)
+  #   conformance  Step 4 of ADR 0002: the kernel's own 9P client mounts the server (needs the 9p modules)
   test:
-    strategy:
-      matrix:
-        node-version: [22.x, 24.x]
-    runs-on: ubuntu-latest
-    needs: [native]
-    name: Test
-
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-
-      - name: Use Node.js ${{ matrix.node-version }}
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
-        with:
-          node-version: ${{ matrix.node-version }}
-          cache: 'yarn'
-
-      - name: Download shims
-        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
-        with:
-          pattern: vfspreload-linux-*
-          path: lib
-          merge-multiple: false
-
-      - name: Test
-        run: |
-          for arch in x64 arm64; do
-            mkdir -p lib/linux-$arch
-            mv lib/vfspreload-linux-$arch/vfspreload.so lib/linux-$arch/vfspreload.so
-          done
-          yarn && yarn build && yarn test
-
-  # SQLite's own mptest and speedtest1 through the shim, each suite and architecture its own job.
-  sqlite:
     strategy:
       fail-fast: false
       matrix:
-        suite: [mptest, speedtest1]
-        arch: [x64, arm64]
         include:
-          - arch: x64
-            runner: ubuntu-24.04
-          - arch: arm64
-            runner: ubuntu-24.04-arm
+          - { suite: unit, name: 'unit (node 22.x)', node: 22.x, package: true, runner: ubuntu-latest }
+          - { suite: unit, name: 'unit (node 24.x)', node: 24.x, package: true, runner: ubuntu-latest }
+          - { suite: cmocka, name: 'cmocka (x64)', arch: x64, runner: ubuntu-24.04 }
+          - { suite: cmocka, name: 'cmocka (arm64)', arch: arm64, runner: ubuntu-24.04-arm }
+          - { suite: gate, name: 'symbol gate (x64)', arch: x64, runner: ubuntu-24.04 }
+          - { suite: gate, name: 'symbol gate (arm64)', arch: arm64, runner: ubuntu-24.04-arm }
+          - { suite: bats, name: 'bats (alpine, x64)', flavour: alpine, arch: x64, node: 22.x, package: true, runner: ubuntu-24.04 }
+          - { suite: bats, name: 'bats (alpine, arm64)', flavour: alpine, arch: arm64, node: 22.x, package: true, runner: ubuntu-24.04-arm }
+          - { suite: bats, name: 'bats (debian, x64)', flavour: debian, arch: x64, node: 22.x, package: true, runner: ubuntu-24.04 }
+          - { suite: bats, name: 'bats (debian, arm64)', flavour: debian, arch: arm64, node: 22.x, package: true, runner: ubuntu-24.04-arm }
+          - { suite: distroless, name: 'distroless (x64)', arch: x64, node: 22.x, package: true, runner: ubuntu-24.04 }
+          - { suite: distroless, name: 'distroless (arm64)', arch: arm64, node: 22.x, package: true, runner: ubuntu-24.04-arm }
+          - { suite: legacy, name: 'glibc below 2.34 (x64)', arch: x64, package: true, runner: ubuntu-24.04 }
+          - { suite: legacy, name: 'glibc below 2.34 (arm64)', arch: arm64, package: true, runner: ubuntu-24.04-arm }
+          - { suite: sqlite, name: 'SQLite mptest (x64)', sqlite: mptest, arch: x64, node: 22.x, package: true, runner: ubuntu-24.04 }
+          - { suite: sqlite, name: 'SQLite mptest (arm64)', sqlite: mptest, arch: arm64, node: 22.x, package: true, runner: ubuntu-24.04-arm }
+          - { suite: sqlite, name: 'SQLite speedtest1 (x64)', sqlite: speedtest1, arch: x64, node: 22.x, package: true, runner: ubuntu-24.04 }
+          - { suite: sqlite, name: 'SQLite speedtest1 (arm64)', sqlite: speedtest1, arch: arm64, node: 22.x, package: true, runner: ubuntu-24.04-arm }
+          - { suite: nodefs, name: 'node fs (alpine, x64)', flavour: alpine, arch: x64, node: 22.x, package: true, runner: ubuntu-24.04 }
+          - { suite: nodefs, name: 'node fs (alpine, arm64)', flavour: alpine, arch: arm64, node: 22.x, package: true, runner: ubuntu-24.04-arm }
+          - { suite: nodefs, name: 'node fs (debian, x64)', flavour: debian, arch: x64, node: 22.x, package: true, runner: ubuntu-24.04 }
+          - { suite: nodefs, name: 'node fs (debian, arm64)', flavour: debian, arch: arm64, node: 22.x, package: true, runner: ubuntu-24.04-arm }
+          - { suite: conformance, name: 'Kernel v9fs conformance', node: 22.x, package: true, runner: ubuntu-latest }
     runs-on: ${{ matrix.runner }}
-    needs: [native]
-    name: SQLite ${{ matrix.suite }} (${{ matrix.arch }})
+    needs: [package]
+    name: ${{ matrix.name }}
 
     steps:
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - name: Use Node.js 22.x
+      - name: Use Node.js ${{ matrix.node }}
+        if: ${{ matrix.node }}
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: 22.x
+          node-version: ${{ matrix.node }}
           cache: 'yarn'
 
-      - name: Download shims
+      - name: Download package
+        if: ${{ matrix.package }}
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
-          pattern: vfspreload-linux-*
-          path: lib
-          merge-multiple: false
+          name: package
 
-      - name: Build package
-        run: |
-          for arch in x64 arm64; do
-            mkdir -p lib/linux-$arch
-            mv lib/vfspreload-linux-$arch/vfspreload.so lib/linux-$arch/vfspreload.so
-          done
-          yarn --frozen-lockfile && yarn build
+      - name: Install dependencies
+        if: ${{ matrix.node }}
+        run: yarn --frozen-lockfile
 
       # A fork's pull request gets no OIDC token, so the bucket half runs only for this repository.
       - name: Configure AWS Credentials
         id: aws
-        if: ${{ vars.S3_BUCKET_CI != '' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
+        if: ${{ (matrix.suite == 'sqlite' || matrix.suite == 'nodefs' || matrix.suite == 'distroless') && vars.S3_BUCKET_CI != '' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
         uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
         with:
           aws-region: us-east-1
           role-to-assume: ${{ vars.AWS_ROLE_ARN }}
 
-      - name: SQLite ${{ matrix.suite }}
-        run: sh tests/native/sqlite.sh ${{ matrix.arch }} ${{ matrix.suite }}
+      - name: Unit tests
+        if: ${{ matrix.suite == 'unit' }}
+        run: yarn test
+
+      - name: Unit tests (cmocka, ASan + UBSan)
+        if: ${{ matrix.suite == 'cmocka' }}
+        run: sh tests/native/unit.sh ${{ matrix.arch }}
+
+      - name: Gate rejects bad builds
+        if: ${{ matrix.suite == 'gate' }}
+        run: sh tests/native/negative.sh ${{ matrix.arch }}
+
+      - name: Test shim (${{ matrix.flavour }})
+        if: ${{ matrix.suite == 'bats' }}
+        run: sh tests/native/test.sh ${{ matrix.arch }} ${{ matrix.flavour }}
+
+      - name: Test shim (distroless node, nonroot)
+        if: ${{ matrix.suite == 'distroless' }}
+        run: sh tests/native/distroless.sh ${{ matrix.arch }}
         env:
           S3_BUCKET: ${{ steps.aws.outcome == 'success' && vars.S3_BUCKET_CI || '' }}
-          S3_PREFIX: ${{ github.repository }}/${{ github.run_id }}-${{ github.run_attempt }}/${{ matrix.arch }}-${{ matrix.suite }}
+          S3_PREFIX: ${{ github.repository }}/${{ github.run_id }}-${{ github.run_attempt }}/${{ matrix.arch }}
 
-  # Step 4 of ADR 0002: the kernel's own 9P client mounts the server. It needs the 9p modules on
-  # the runner's kernel, which is not guaranteed, so a missing module is reported, not failed on.
-  conformance:
-    runs-on: ubuntu-latest
-    needs: [native]
-    name: Kernel v9fs conformance
-    continue-on-error: true
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Test shim (glibc below 2.34)
+        if: ${{ matrix.suite == 'legacy' }}
+        run: sh tests/native/legacy.sh ${{ matrix.arch }}
 
-      - name: Use Node.js 22.x
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
-        with:
-          node-version: 22.x
-          cache: 'yarn'
+      - name: SQLite ${{ matrix.sqlite }}
+        if: ${{ matrix.suite == 'sqlite' }}
+        run: sh tests/native/sqlite.sh ${{ matrix.arch }} ${{ matrix.sqlite }}
+        env:
+          S3_BUCKET: ${{ steps.aws.outcome == 'success' && vars.S3_BUCKET_CI || '' }}
+          S3_PREFIX: ${{ github.repository }}/${{ github.run_id }}-${{ github.run_attempt }}/${{ matrix.arch }}-${{ matrix.sqlite }}
 
-      - name: Download shims
-        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
-        with:
-          pattern: vfspreload-linux-*
-          path: lib
-          merge-multiple: false
-
-      - name: Build package
-        run: |
-          for arch in x64 arm64; do
-            mkdir -p lib/linux-$arch
-            mv lib/vfspreload-linux-$arch/vfspreload.so lib/linux-$arch/vfspreload.so
-          done
-          yarn --frozen-lockfile && yarn build
+      - name: node fs/promises tests
+        if: ${{ matrix.suite == 'nodefs' }}
+        run: yarn test:nodefs
+        env:
+          NODEFS_FLAVOUR: ${{ matrix.flavour }}
+          NODEFS_S3_BUCKET: ${{ steps.aws.outcome == 'success' && vars.S3_BUCKET_CI || '' }}
 
       - name: Mount with v9fs and exercise it
+        if: ${{ matrix.suite == 'conformance' }}
         run: sh tests/native/conformance.sh
 
   build-publish:
     runs-on: ubuntu-latest
-    needs: [native, lint, test]
+    needs: [lint, test]
     name: Build and Publish to NPM
     if: |
       success() &&
@@ -306,20 +252,11 @@ jobs:
           cache: 'yarn'
           registry-url: 'https://registry.npmjs.org'
 
-      - name: Download shims
+      # The package every test ran on, as it is: no rebuild between testing and release.
+      - name: Download package
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
-          pattern: vfspreload-linux-*
-          path: lib
-          merge-multiple: false
-
-      - name: Build package
-        run: |
-          for arch in x64 arm64; do
-            mkdir -p lib/linux-$arch
-            mv lib/vfspreload-linux-$arch/vfspreload.so lib/linux-$arch/vfspreload.so
-          done
-          yarn && yarn build
+          name: package
 
       - name: Generate pre-release version
         id: version
