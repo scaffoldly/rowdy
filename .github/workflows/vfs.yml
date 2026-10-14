@@ -85,6 +85,24 @@ jobs:
           path: lib/linux-${{ matrix.arch }}/vfspreload.so
           if-no-files-found: error
 
+  # node's own fs/promises tests (native/nodefs) on each store, as the unprivileged node user.
+  nodefs:
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [x64, arm64]
+        flavour: [alpine, debian]
+        store: [volume]
+    runs-on: ${{ matrix.arch == 'arm64' && 'ubuntu-24.04-arm' || 'ubuntu-24.04' }}
+    name: node fs (${{ matrix.store }}, ${{ matrix.flavour }}, ${{ matrix.arch }})
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: node fs/promises tests
+        run: sh native/nodefs.sh ${{ matrix.arch }} ${{ matrix.flavour }} ${{ matrix.store }}
+
   lint:
     runs-on: ubuntu-latest
     name: Lint
