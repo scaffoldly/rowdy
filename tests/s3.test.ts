@@ -11,14 +11,18 @@ import type { HttpRequest, HttpResponse } from '@smithy/types';
 import {
   closeSync,
   existsSync,
+  lstatSync,
   mkdirSync,
   mkdtempSync,
   openSync,
   readdirSync,
   readFileSync,
+  readlinkSync,
   readSync,
+  renameSync,
   rmSync,
   statSync,
+  symlinkSync,
   writeFileSync,
 } from 'fs';
 import { tmpdir } from 'os';
@@ -27,7 +31,7 @@ import { Readable } from 'stream';
 import { crc32 } from 'zlib';
 import { S3Adapter, VfsError } from '../src';
 
-type Stored = { body: Buffer; etag: string; crc32: string };
+type Stored = { body: Buffer; etag: string; crc32: string; metadata?: Record<string, string> };
 
 /** Base64 CRC32 as S3 reports it for a full-object checksum. */
 const crc32b64 = (body: Buffer): string => {
@@ -49,10 +53,10 @@ class FakeS3 {
   readonly failNext = new Map<string, Array<'network' | 'server' | 'lost'>>();
   private version = 0;
 
-  put(key: string, body: string): Stored {
+  put(key: string, body: string, metadata?: Record<string, string>): Stored {
     // ETags are opaque on purpose (as with SSE-KMS or multipart): the adapter must not read MD5s out of them.
     const buf = Buffer.from(body);
-    const stored = { body: buf, etag: `"v${++this.version}"`, crc32: crc32b64(buf) };
+    const stored = { body: buf, etag: `"v${++this.version}"`, crc32: crc32b64(buf), metadata };
     this.objects.set(key, stored);
     return stored;
   }
@@ -66,14 +70,20 @@ class FakeS3 {
     if (command instanceof HeadObjectCommand) {
       const o = this.objects.get(command.input.Key!);
       if (!o) throw notFound();
-      return { ETag: o.etag, ContentLength: o.body.length, ...this.checksums(o, command.input) };
+      return { ETag: o.etag, ContentLength: o.body.length, Metadata: o.metadata, ...this.checksums(o, command.input) };
     }
     if (command instanceof GetObjectCommand) {
       const o = this.objects.get(command.input.Key!);
       if (!o) throw notFound('NoSuchKey');
       const body = Readable.from([o.body]) as Readable & { transformToString(): Promise<string> };
       body.transformToString = async (): Promise<string> => o.body.toString();
-      return { ETag: o.etag, ContentLength: o.body.length, Body: body, ...this.checksums(o, command.input) };
+      return {
+        ETag: o.etag,
+        ContentLength: o.body.length,
+        Body: body,
+        Metadata: o.metadata,
+        ...this.checksums(o, command.input),
+      };
     }
     if (command instanceof PutObjectCommand) {
       const key = command.input.Key!;
@@ -84,9 +94,16 @@ class FakeS3 {
       const failure = this.failNext.get(key)?.shift();
       if (failure === 'network') throw dropped();
       if (failure === 'server') throw internal();
-      const chunks: Buffer[] = [];
-      for await (const chunk of command.input.Body as Readable) chunks.push(Buffer.from(chunk));
-      const stored = this.put(key, Buffer.concat(chunks).toString());
+      const input = command.input.Body;
+      let text: string;
+      if (typeof input === 'string') {
+        text = input;
+      } else {
+        const chunks: Buffer[] = [];
+        for await (const chunk of input as Readable) chunks.push(Buffer.from(chunk));
+        text = Buffer.concat(chunks).toString();
+      }
+      const stored = this.put(key, text, command.input.Metadata);
       if (failure === 'lost') throw dropped();
       return {
         ETag: stored.etag,
@@ -101,7 +118,7 @@ class FakeS3 {
       const source = decodeURIComponent(command.input.CopySource!.split('/').slice(1).join('/'));
       const o = this.objects.get(source);
       if (!o) throw notFound();
-      return { CopyObjectResult: { ETag: this.put(command.input.Key!, o.body.toString()).etag } };
+      return { CopyObjectResult: { ETag: this.put(command.input.Key!, o.body.toString(), o.metadata).etag } };
     }
     if (command instanceof ListObjectsV2Command) {
       const prefix = command.input.Prefix ?? '';
@@ -867,6 +884,108 @@ describe('S3Adapter', () => {
       await a.flush(`${mount}/f.txt`);
       expect(s3.objects.has('.rowdy/locks/f.txt')).toBe(false);
       expect(s3.objects.get('f.txt')?.body.toString()).toBe('from alice');
+    });
+  });
+
+  describe('symbolic links, stored as s3fs-fuse stores them', () => {
+    const LINK = { mode: String(0o120777) };
+    const link = (key: string, target: string): void => {
+      s3.put(key, target, LINK);
+    };
+
+    it('uploads a link as an object whose body is its target and whose mode is S_IFLNK, without following it', async () => {
+      mkdirSync(join(backing, 'data'));
+      writeFileSync(join(backing, 'data', 'real.txt'), 'the target bytes');
+      symlinkSync(join(backing, 'data', 'real.txt'), join(backing, 'abs'));
+      symlinkSync('data/real.txt', join(backing, 'rel'));
+      symlinkSync('does-not-exist', join(backing, 'dangling'));
+      for (const name of ['abs', 'rel', 'dangling']) {
+        await adapter.open(`${mount}/${name}`, 0o1);
+        await adapter.flush(`${mount}/${name}`);
+      }
+      // A target in the backing directory is stored virtual; others as written.
+      expect(s3.objects.get('abs')?.body.toString()).toBe(`${mount}/data/real.txt`);
+      expect(s3.objects.get('rel')?.body.toString()).toBe('data/real.txt');
+      expect(s3.objects.get('dangling')?.body.toString()).toBe('does-not-exist');
+      const meta = s3.objects.get('rel')?.metadata;
+      expect(meta).toMatchObject({
+        mode: '41471',
+        uid: expect.stringMatching(/^\d+$/),
+        gid: expect.stringMatching(/^\d+$/),
+      });
+      for (const time of ['atime', 'ctime', 'mtime']) expect(meta?.[time]).toMatch(/^\d+\.\d{9}$/);
+    });
+
+    it('answers stat for a local link itself, even a dangling one: S3 is asked only for its target', async () => {
+      symlinkSync('does-not-exist', join(backing, 'dangling'));
+      await adapter.stat(`${mount}/dangling`);
+      expect(s3.calls).toEqual(['HeadObjectCommand', 'ListObjectsV2Command']); // does-not-exist, which may be remote
+      expect(lstatSync(join(backing, 'dangling')).isSymbolicLink()).toBe(true);
+    });
+
+    it('makes a link object a local link, its in-mount target translated, and the target present to follow', async () => {
+      s3.put('docs/readme.txt', 'hello');
+      link('latest', `${mount}/docs/readme.txt`);
+      await adapter.stat(`${mount}/latest`);
+      expect(readlinkSync(join(backing, 'latest'))).toBe(join(backing, 'docs', 'readme.txt'));
+      expect(statSync(join(backing, 'latest')).size).toBe(5); // followed: the target's placeholder is there
+      await adapter.fetch(`${mount}/latest`);
+      expect(readFileSync(join(backing, 'latest'), 'utf8')).toBe('hello'); // and its bytes, once read
+    });
+
+    it('keeps a link to a missing target dangling, and a loop as it is', async () => {
+      link('nowhere', 'missing.txt');
+      link('a', 'b');
+      link('b', 'a');
+      await adapter.stat(`${mount}/nowhere`);
+      expect(readlinkSync(join(backing, 'nowhere'))).toBe('missing.txt');
+      await adapter.stat(`${mount}/a`);
+      expect(readlinkSync(join(backing, 'a'))).toBe('b');
+      expect(readlinkSync(join(backing, 'b'))).toBe('a');
+    });
+
+    it('reads every listed entry with a HEAD for its type, as s3fs-fuse does, and not again at the same version', async () => {
+      s3.put('dir/file.txt', 'abc');
+      link('dir/to-file', 'file.txt');
+      await adapter.list(`${mount}/dir`);
+      expect(lstatSync(join(backing, 'dir', 'to-file')).isSymbolicLink()).toBe(true);
+      expect(readlinkSync(join(backing, 'dir', 'to-file'))).toBe('file.txt');
+      expect(statSync(join(backing, 'dir', 'file.txt')).size).toBe(3);
+      expect(s3.calls.filter((c) => c === 'HeadObjectCommand')).toHaveLength(2);
+      s3.calls.length = 0;
+      await adapter.list(`${mount}/dir`);
+      expect(s3.calls).toEqual(['ListObjectsV2Command']);
+    });
+
+    it('follows a change of type made elsewhere: a link becomes a file, a file becomes a link', async () => {
+      const fresh = new S3Adapter({
+        bucket: 'b',
+        mountpoint: mount,
+        backing,
+        client: s3 as unknown as S3Client,
+        revalidateMs: 0,
+      });
+      link('swap', 'elsewhere');
+      await fresh.stat(`${mount}/swap`);
+      s3.put('swap', 'now a file');
+      await fresh.stat(`${mount}/swap`);
+      expect(lstatSync(join(backing, 'swap')).isFile()).toBe(true);
+      expect(statSync(join(backing, 'swap')).size).toBe('now a file'.length);
+      link('swap', 'back again');
+      await fresh.stat(`${mount}/swap`);
+      expect(readlinkSync(join(backing, 'swap'))).toBe('back again');
+    });
+
+    it('renames a link as one object, keeping it a link', async () => {
+      mkdirSync(join(backing, 'target-dir'));
+      symlinkSync('target-dir', join(backing, 'old'));
+      await adapter.open(`${mount}/old`, 0o1);
+      await adapter.flush(`${mount}/old`);
+      renameSync(join(backing, 'old'), join(backing, 'new')); // the shim renames the backing path first
+      await adapter.rename(`${mount}/old`, `${mount}/new`);
+      expect(s3.objects.has('old')).toBe(false);
+      expect(s3.objects.get('new')).toMatchObject({ metadata: { mode: '41471' } });
+      expect(s3.objects.get('new')?.body.toString()).toBe('target-dir');
     });
   });
 
