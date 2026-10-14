@@ -182,7 +182,13 @@ unix-domain socket (one JSON object per line, paths and metadata only; the proto
   like a plain create. A rewrite after a read (read-modify-write) keeps `ESTALE`. `unlink` deletes,
   `rename` copies server-side then deletes (a renamed directory moves every key under it). S3 has
   no directories: `mkdir` writes a `<key>/` marker object (the S3 console's convention) so an empty
-  directory exists on every instance; `rmdir` removes it.
+  directory exists on every instance; `rmdir` removes it. A symbolic link is stored as s3fs-fuse
+  stores one, so either can mount the other's bucket: an object at the link's key whose body is the
+  target (a target inside the mount as its `/vfs/...` path) and whose `x-amz-meta-mode` is `S_IFLNK`.
+  Another instance makes it a local link, and makes what it points to present so following it works;
+  a listing reads each entry's type with a HEAD, as s3fs does. A target outside the mount is used as
+  written, as it would be on any filesystem: what following it reaches is the process's own
+  permissions to decide. Writing the bucket is therefore reading whatever the process can read.
   Credentials come from the default provider chain of the process running the server.
   Multi-writer behaviour follows [ADR 0001](docs/adr/0001-multi-writer-leases.md): a trusted local
   copy is re-checked against the object's ETag at most every `revalidateMs` (default 2 s) and
