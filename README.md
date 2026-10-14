@@ -189,6 +189,9 @@ unix-domain socket (one JSON object per line, paths and metadata only; the proto
   a listing reads each entry's type with a HEAD, as s3fs does. A target outside the mount is used as
   written, as it would be on any filesystem: what following it reaches is the process's own
   permissions to decide. Writing the bucket is therefore reading whatever the process can read.
+  `fs.watch` (inotify) watches the local copy: it sees what this instance does under the mount, the
+  supervisor's own refetches and listings included, but not a write made on another instance or in
+  S3 until something here brings it in, as with s3fs-fuse or NFS.
   Credentials come from the default provider chain of the process running the server.
   Multi-writer behaviour follows [ADR 0001](docs/adr/0001-multi-writer-leases.md): a trusted local
   copy is re-checked against the object's ETag at most every `revalidateMs` (default 2 s) and

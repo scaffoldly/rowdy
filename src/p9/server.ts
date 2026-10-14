@@ -434,7 +434,11 @@ export class P9Server {
           try {
             await from.mount.adapter.stat(this.vpath(from, next));
             const st = await this.lstat(from, next);
-            if (qids.length < req.names.length - 1 && !st.isDirectory()) {
+            // A name the walk continues through is resolved as the kernel resolves it: through a
+            // symbolic link to a directory.
+            const through =
+              qids.length < req.names.length - 1 && st.isSymbolicLink() ? await fs.stat(this.backing(from, next)) : st;
+            if (qids.length < req.names.length - 1 && !through.isDirectory()) {
               throw VfsError.code('ENOTDIR', `${this.vpath(from, next)} is not a directory`);
             }
             qids.push(qidOf(st));
@@ -515,8 +519,16 @@ export class P9Server {
           }
           if (writes(req.flags)) {
             await this.markDirty(fid, req.flags);
-            if (req.flags & O_TRUNC) {
-              await fs.truncate(this.backing(fid), 0);
+            // Write-only, like the opener's own access: a file created with mode 0200 or 0444 is
+            // writable through the descriptor that created it, not by opening it for reading. An
+            // empty file (the shim's opener just created or truncated it) is left alone.
+            if (req.flags & O_TRUNC && (await fs.stat(this.backing(fid))).size > 0) {
+              const handle = await fs.open(this.backing(fid), fsc.O_WRONLY);
+              try {
+                await handle.truncate(0);
+              } finally {
+                await handle.close();
+              }
             }
           }
           st = await this.lstat(fid);

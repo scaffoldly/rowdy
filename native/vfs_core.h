@@ -179,10 +179,14 @@ static int unxlate(char *buf, size_t bufsz) {
 }
 
 /*
- * A relative `path` resolves against `dirfd` (the cwd for AT_FDCWD) inside the backing directory on
- * its own, but the supervisor must still hear about it: when that base is under a mount, write the
- * virtual path into `out` and return 1. The base comes back virtual from our own readlink and getcwd
- * hooks. A negative dirfd other than AT_FDCWD never resolves (a symlink target is not a path here).
+ * The virtual path a relative `path` names, against `dirfd` (the cwd for AT_FDCWD), written into `out`
+ * when it falls under a mount. The base comes back virtual from our own readlink and getcwd hooks. A
+ * negative dirfd other than AT_FDCWD never resolves (a symlink target is not a path here).
+ *
+ * 1: the base is under the mount too, so the relative path resolves inside the backing directory on
+ *    its own; only the supervisor needs to hear about it.
+ * 2: the base is outside every mount and ".." climbs into one ("../../vfs/x"): the kernel would look
+ *    for the virtual directory, so the caller must use the translated `out` instead.
  */
 static int virtual_of_relative(int dirfd, const char *path, char *out, size_t outsz) {
     if (!path || !*path || *path == '/' || (dirfd < 0 && dirfd != AT_FDCWD)) return 0;
@@ -198,7 +202,8 @@ static int virtual_of_relative(int dirfd, const char *path, char *out, size_t ou
         if (n <= 0) return 0;
         base[n] = '\0';
     }
-    if (!mount_of(base)) return 0;
+    int inside = mount_of(base) != NULL;
+    if (!inside && !strstr(path, "..")) return 0;   /* stays outside: only ".." can climb in */
     /* base + "/" + path, with "." and ".." folded lexically */
     size_t len = strlen(base);
     if (len >= outsz) return 0;
@@ -222,18 +227,24 @@ static int virtual_of_relative(int dirfd, const char *path, char *out, size_t ou
         if (!end) break;
         p = end + 1;
     }
-    return mount_of(out) != NULL;
+    if (!mount_of(out)) return 0;
+    return inside ? 1 : 2;
 }
 
 /* XL: rp_ is the real path, vp_ the virtual one to report; vf_ is non-zero when p is under a mount,
- * absolute or relative to dfd (XLAT) or to the cwd (XL). A relative path is passed on unchanged. */
+ * absolute or relative to dfd (XLAT) or to the cwd (XL). A relative path is passed on unchanged,
+ * unless it climbs into a mount from outside one: then it becomes the absolute backing path. */
 #define XLAT(dfd, p) \
     const char *rp_; char xb_[PATH_MAX], xv_[PATH_MAX]; \
     crumb_path(p); \
     rp_ = xlate((p), xb_, sizeof xb_); \
     const char *vp_ = (p); \
     int vf_ = (rp_ != (p)); \
-    if (!vf_ && virtual_of_relative((dfd), (p), xv_, sizeof xv_)) { vf_ = 1; vp_ = xv_; } \
+    if (!vf_) { \
+        int rel_ = virtual_of_relative((dfd), (p), xv_, sizeof xv_); \
+        if (rel_) { vf_ = 1; vp_ = xv_; } \
+        if (rel_ == 2) rp_ = xlate(xv_, xb_, sizeof xb_); \
+    } \
     (void)vf_; (void)vp_
 #define XL(p) XLAT(AT_FDCWD, p)
 
@@ -244,8 +255,16 @@ static int virtual_of_relative(int dirfd, const char *path, char *out, size_t ou
     const char *rb_ = xlate((b), bb_, sizeof bb_); \
     const char *vpa_ = (a), *vpb_ = (b); \
     int va_ = (ra_ != (a)), vb_ = (rb_ != (b)); \
-    if (!va_ && virtual_of_relative((fa), (a), av_, sizeof av_)) { va_ = 1; vpa_ = av_; } \
-    if (!vb_ && virtual_of_relative((fb), (b), bv_, sizeof bv_)) { vb_ = 1; vpb_ = bv_; } \
+    if (!va_) { \
+        int rel_ = virtual_of_relative((fa), (a), av_, sizeof av_); \
+        if (rel_) { va_ = 1; vpa_ = av_; } \
+        if (rel_ == 2) ra_ = xlate(av_, ab_, sizeof ab_); \
+    } \
+    if (!vb_) { \
+        int rel_ = virtual_of_relative((fb), (b), bv_, sizeof bv_); \
+        if (rel_) { vb_ = 1; vpb_ = bv_; } \
+        if (rel_ == 2) rb_ = xlate(bv_, bb_, sizeof bb_); \
+    } \
     (void)va_; (void)vb_; (void)vpa_; (void)vpb_
 #define XL2(a, b) XL2AT(AT_FDCWD, a, AT_FDCWD, b)
 

@@ -157,6 +157,19 @@ static void relative_paths_resolve_against_a_directory_under_a_mount(void **stat
     assert_int_equal(virtual_of_relative(-5, "x", out, sizeof out), 0);
     assert_int_equal(chdir(cwd), 0);
     assert_int_equal(virtual_of_relative(AT_FDCWD, "x", out, sizeof out), 0);   /* cwd not under it */
+
+    /* From outside every mount, ".." climbing into one names it: the caller must translate it. */
+    char outside[] = "/tmp/vfsunit-out-XXXXXX";
+    assert_non_null(mkdtemp(outside));
+    assert_int_equal(chdir(outside), 0);
+    char climb[PATH_MAX];
+    snprintf(climb, sizeof climb, "../%s/a/f", root + strlen("/tmp/"));
+    snprintf(want, sizeof want, "%s/a/f", root);
+    assert_int_equal(virtual_of_relative(AT_FDCWD, climb, out, sizeof out), 2);
+    assert_string_equal(out, want);
+    assert_int_equal(virtual_of_relative(AT_FDCWD, "../elsewhere", out, sizeof out), 0);
+    assert_int_equal(chdir(cwd), 0);
+    rmdir(outside);
     rmdir(sub);
     rmdir(root);
 }
