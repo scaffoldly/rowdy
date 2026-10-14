@@ -86,7 +86,8 @@ jobs:
           if-no-files-found: error
 
   # node's own fs/promises tests (tests/native/nodefs) in the image, as the unprivileged node user, with
-  # testcontainers; the image runs at the runner's own architecture.
+  # testcontainers, at the runner's own architecture: on a docker volume (the gate), and through the shim
+  # on an S3-backed /vfs (reported only; skipped without AWS credentials).
   nodefs:
     strategy:
       fail-fast: false
@@ -94,7 +95,8 @@ jobs:
         arch: [x64, arm64]
         flavour: [alpine, debian]
     runs-on: ${{ matrix.arch == 'arm64' && 'ubuntu-24.04-arm' || 'ubuntu-24.04' }}
-    name: node fs (volume, ${{ matrix.flavour }}, ${{ matrix.arch }})
+    needs: [native]
+    name: node fs (${{ matrix.flavour }}, ${{ matrix.arch }})
 
     steps:
       - name: Checkout code
@@ -106,10 +108,32 @@ jobs:
           node-version: 22.x
           cache: 'yarn'
 
+      - name: Download shims
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: vfspreload-linux-*
+          path: lib
+          merge-multiple: false
+
+      # A fork's pull request gets no OIDC token, so the S3 store runs only for this repository.
+      - name: Configure AWS Credentials
+        id: aws
+        if: ${{ vars.S3_BUCKET_CI != '' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          aws-region: us-east-1
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+
       - name: node fs/promises tests
-        run: yarn --frozen-lockfile && yarn test:nodefs
+        run: |
+          for arch in x64 arm64; do
+            mkdir -p lib/linux-$arch
+            mv lib/vfspreload-linux-$arch/vfspreload.so lib/linux-$arch/vfspreload.so
+          done
+          yarn --frozen-lockfile && yarn build && yarn test:nodefs
         env:
           NODEFS_FLAVOUR: ${{ matrix.flavour }}
+          NODEFS_S3_BUCKET: ${{ steps.aws.outcome == 'success' && vars.S3_BUCKET_CI || '' }}
 
   lint:
     runs-on: ubuntu-latest

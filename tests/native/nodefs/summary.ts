@@ -6,14 +6,26 @@ export type Outcome =
   | { status: 'skipped'; reason: string }
   | { status: 'failed'; ms: number; why: string; output: string };
 
-export type Row = { file: string; exercises: string; outcome: Outcome };
+/** One column: a store the tests ran on, or were skipped on. */
+export type Column = {
+  /** The column header. */
+  label: string;
+  /** Where the tests' tmpdir lives, for the headline. */
+  where: string;
+  /** Whether a failure here fails the run; otherwise it is only reported. */
+  gate: boolean;
+  /** Why the store did not run, when it did not. */
+  skip?: string;
+};
+
+/** One test file: its outcome in each column, by label (none for a store that did not run). */
+export type Row = { file: string; exercises: string; outcomes: Map<string, Outcome> };
 
 export type Report = {
   node: string;
   flavour: string;
   arch: string;
-  /** The column header, and where the tmpdir lived, for the headline. */
-  store: { label: string; where: string };
+  columns: Column[];
   rows: Row[];
 };
 
@@ -102,27 +114,54 @@ const cell = (outcome: Outcome): string => {
 
 const escape = (text: string): string => text.replace(/\|/g, '\\|');
 
-/** The GitHub step summary: a headline, one row per test file, and the output of each failure. */
-export const markdown = ({ node, flavour, arch, store, rows }: Report): string => {
-  const failed = rows.flatMap(({ file, outcome }) => (outcome.status === 'failed' ? [{ file, outcome }] : []));
-  const skipped = rows.filter((row) => row.outcome.status === 'skipped');
-  const passed = rows.length - failed.length;
+/** A ran column's tally: passed (node's own skips included) of all, and how many of those node skipped. */
+const tally = (column: Column, rows: Row[]): string => {
+  const outcomes = rows.flatMap((row) => row.outcomes.get(column.label) ?? []);
+  const failed = outcomes.filter((outcome) => outcome.status === 'failed').length;
+  const skipped = outcomes.filter((outcome) => outcome.status === 'skipped').length;
+  return (
+    `**${column.label}** ${rows.length - failed}/${rows.length} passed` +
+    (skipped ? ` (${skipped} skipped by node itself)` : '') +
+    ` on ${column.where}` +
+    (column.gate ? '' : ', reported only')
+  );
+};
+
+/** The GitHub step summary: a headline, one row per test file and column per store, and each failure's output. */
+export const markdown = ({ node, flavour, arch, columns, rows }: Report): string => {
+  const failures = columns.flatMap((column) =>
+    rows.flatMap(({ file, outcomes }) => {
+      const outcome = outcomes.get(column.label);
+      return outcome?.status === 'failed' ? [{ column, file, outcome }] : [];
+    })
+  );
+  const ran = columns.filter((column) => !column.skip);
   const lines = [
-    `### ${failed.length ? '❌' : '✅'} node ${node} fs/promises tests · ${flavour} · ${arch}`,
+    `### ${failures.some(({ column }) => column.gate) ? '❌' : '✅'} node ${node} fs/promises tests · ${flavour} · ${arch}`,
     '',
-    `**${passed}/${rows.length} passed**` +
-      (skipped.length ? ` (${skipped.length} skipped by node itself)` : '') +
-      ": node's own `test-fs*` files that use `fs/promises`, each in its own `node` as the unprivileged" +
-      ` \`node\` user, with its tmpdir on ${store.where}.`,
+    "node's own `test-fs*` files that use `fs/promises`, each in its own `node` as the unprivileged `node` user.",
     '',
-    `| test | what it exercises | ${store.label} |`,
-    '|---|---|---|',
-    ...rows.map((row) => `| \`${row.file}\` | ${escape(row.exercises)} | ${escape(cell(row.outcome))} |`),
+    ...ran.map((column) => `- ${tally(column, rows)}`),
+    ...columns.flatMap((column) => (column.skip ? [`- _**${column.label}** skipped: ${column.skip}._`] : [])),
+    '',
+    `| test | what it exercises | ${columns.map((column) => column.label).join(' | ')} |`,
+    `|---|---|${columns.map(() => '---|').join('')}`,
+    ...rows.map(
+      (row) =>
+        `| \`${row.file}\` | ${escape(row.exercises)} | ` +
+        columns
+          .map((column) => {
+            const outcome = row.outcomes.get(column.label);
+            return outcome ? escape(cell(outcome)) : '–';
+          })
+          .join(' | ') +
+        ' |'
+    ),
     '',
   ];
-  for (const { file, outcome } of failed) {
+  for (const { column, file, outcome } of failures) {
     lines.push(
-      `<details><summary>❌ <code>${file}</code>: ${outcome.why}</summary>`,
+      `<details><summary>❌ <b>${column.label}</b> <code>${file}</code>: ${outcome.why}</summary>`,
       '',
       '```',
       outcome.output,
