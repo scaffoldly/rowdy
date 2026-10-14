@@ -1334,10 +1334,10 @@
   dependencies:
     openapi-types "^12.1.3"
 
-"@scaffoldly/rowdy-vfs@^0.1.0-beta.20261012105531.bebbf69":
-  version "0.1.0-beta.20261012105531.bebbf69"
-  resolved "https://registry.yarnpkg.com/@scaffoldly/rowdy-vfs/-/rowdy-vfs-0.1.0-beta.20261012105531.bebbf69.tgz#87ca74ee0f0597b920f0826356b22ed2ecb09f4b"
-  integrity sha512-K708802UgRdw8+fEFJelEyMPMmWXpBpMKn2sNnUq4yRDp8dMRk+qUz06CFLeNWSmjD/LqZubkW5FimA59t6a2g==
+"@scaffoldly/rowdy-vfs@^0.1.0-beta.20261013144223.d1003d5":
+  version "0.1.0-beta.20261013144223.d1003d5"
+  resolved "https://registry.yarnpkg.com/@scaffoldly/rowdy-vfs/-/rowdy-vfs-0.1.0-beta.20261013144223.d1003d5.tgz#a984384ee69192eb635cbc62aa5e2c729f1ea0af"
+  integrity sha512-YZk8dOs9NGnnRO1JWRD15K1FMmL9mW7V2BUKz/AzA9ll7072n/tOpw3+w9HvQK/MJgKG/4mitRx187mTaCCWqA==
   dependencies:
     "@aws-sdk/client-s3" "^3.1144.0"
 
