@@ -147,3 +147,6 @@ lib/
 .negative/
 # Pinned SQLite sources and results (tests/native/sqlite.sh)
 .sqlite/
+
+# node fs suite: the S3 store supervisor logs (tests/native/nodefs)
+.nodefs-logs/

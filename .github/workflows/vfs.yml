@@ -218,6 +218,15 @@ jobs:
           NODEFS_FLAVOUR: ${{ matrix.flavour }}
           NODEFS_S3_BUCKET: ${{ steps.aws.outcome == 'success' && vars.S3_BUCKET_CI || '' }}
 
+      # The S3 store's supervisor log: every adapter event and S3 round trip, one JSON line each.
+      - name: Upload node fs S3 logs
+        if: ${{ always() && matrix.suite == 'nodefs' }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: nodefs-logs-${{ matrix.flavour }}-${{ matrix.arch }}
+          path: .nodefs-logs
+          if-no-files-found: ignore
+
       - name: Mount with v9fs and exercise it
         if: ${{ matrix.suite == 'conformance' }}
         run: sh tests/native/conformance.sh

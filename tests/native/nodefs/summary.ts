@@ -18,8 +18,30 @@ export type Column = {
   skip?: string;
 };
 
-/** One test file: its outcome in each column, by label (none for a store that did not run). */
-export type Row = { file: string; exercises: string; outcomes: Map<string, Outcome> };
+/** What a store's S3 adapter did while one test file ran: round trips by operation, and their time. */
+export type Traffic = { requests: number; ms: number; byOp: Record<string, number> };
+
+/** A slice of server.js's JSON lines, counted: `trace` lines are S3 round trips, with `duration: "12.34 ms"`. */
+export const traffic = (jsonl: string): Traffic => {
+  const counted: Traffic = { requests: 0, ms: 0, byOp: {} };
+  for (const text of jsonl.split('\n')) {
+    if (!text.startsWith('{')) continue;
+    let entry: { kind?: unknown; message?: unknown; duration?: unknown };
+    try {
+      entry = JSON.parse(text);
+    } catch {
+      continue;
+    }
+    if (entry.kind !== 'trace' || typeof entry.message !== 'string') continue;
+    counted.requests++;
+    counted.byOp[entry.message] = (counted.byOp[entry.message] ?? 0) + 1;
+    counted.ms += typeof entry.duration === 'string' ? parseFloat(entry.duration) || 0 : 0;
+  }
+  return counted;
+};
+
+/** One test file: its outcome in each column, by label (none for a store that did not run), and S3 traffic. */
+export type Row = { file: string; exercises: string; outcomes: Map<string, Outcome>; traffic: Map<string, Traffic> };
 
 export type Report = {
   node: string;
@@ -127,6 +149,36 @@ const tally = (column: Column, rows: Row[]): string => {
   );
 };
 
+const seconds = (ms: number): string => `${(ms / 1000).toFixed(1)}s`;
+
+/** Per store with traffic: each test's S3 round trips by operation and their total time, busiest first. */
+const trafficTable = (columns: Column[], rows: Row[]): string[] =>
+  columns.flatMap((column) => {
+    const counted = rows.flatMap((row) => {
+      const s3 = row.traffic.get(column.label);
+      return s3?.requests ? [{ file: row.file, s3 }] : [];
+    });
+    if (!counted.length) return [];
+    const ops = [...new Set(counted.flatMap(({ s3 }) => Object.keys(s3.byOp)))].sort();
+    const requests = counted.reduce((n, { s3 }) => n + s3.requests, 0);
+    const ms = counted.reduce((n, { s3 }) => n + s3.ms, 0);
+    return [
+      `<details><summary><b>${column.label}</b> S3 traffic: ${requests} requests, ${seconds(ms)} in S3</summary>`,
+      '',
+      `| test | requests | time in S3 | ${ops.join(' | ')} |`,
+      `|---|---:|---:|${ops.map(() => '---:|').join('')}`,
+      ...counted
+        .sort((a, b) => b.s3.ms - a.s3.ms)
+        .map(
+          ({ file, s3 }) =>
+            `| \`${file}\` | ${s3.requests} | ${seconds(s3.ms)} | ${ops.map((op) => s3.byOp[op] ?? 0).join(' | ')} |`
+        ),
+      '',
+      '</details>',
+      '',
+    ];
+  });
+
 /** The GitHub step summary: a headline, one row per test file and column per store, and each failure's output. */
 export const markdown = ({ node, flavour, arch, columns, rows }: Report): string => {
   const failures = columns.flatMap((column) =>
@@ -152,12 +204,14 @@ export const markdown = ({ node, flavour, arch, columns, rows }: Report): string
         columns
           .map((column) => {
             const outcome = row.outcomes.get(column.label);
-            return outcome ? escape(cell(outcome)) : '–';
+            const s3 = row.traffic.get(column.label);
+            return outcome ? escape(cell(outcome)) + (s3?.requests ? ` · ${s3.requests} S3` : '') : '–';
           })
           .join(' | ') +
         ' |'
     ),
     '',
+    ...trafficTable(columns, rows),
   ];
   for (const { column, file, outcome } of failures) {
     lines.push(
