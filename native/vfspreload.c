@@ -63,6 +63,7 @@
 #include <pthread.h>
 #include <utime.h>
 #include <sys/file.h>
+#include <sys/inotify.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/statfs.h>
@@ -214,6 +215,12 @@ int access(const char *path, int mode) {
     REAL(access); XL(path);
     if (vf_ && notify("stat", vp_, NULL, 0) < 0) return -1;
     return real_(rp_, mode);
+}
+/* Events name entries relative to the watched directory, so only the path needs translating. */
+int inotify_add_watch(int fd, const char *path, uint32_t mask) {
+    REAL(inotify_add_watch); XL(path);
+    if (vf_ && notify("stat", vp_, NULL, 0) < 0) return -1;
+    return real_(fd, rp_, mask);
 }
 int faccessat(int dirfd, const char *path, int mode, int flags) {
     REAL(faccessat); XLAT(dirfd, path);

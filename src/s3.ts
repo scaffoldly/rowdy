@@ -1,15 +1,16 @@
 import {
   CopyObjectCommand,
   DeleteObjectCommand,
+  DeleteObjectsCommand,
   GetObjectCommand,
   HeadObjectCommand,
   ListObjectsV2Command,
   PutObjectCommand,
   S3Client,
 } from '@aws-sdk/client-s3';
-import { createReadStream, createWriteStream, existsSync, mkdirSync, statSync } from 'fs';
+import { constants as fsConstants, createWriteStream, lstatSync, mkdirSync, readlinkSync, type Stats } from 'fs';
 import { promises as fs } from 'fs';
-import { dirname, join } from 'path';
+import { dirname, isAbsolute, join, normalize } from 'path';
 import { Readable } from 'stream';
 import { pipeline } from 'stream/promises';
 import { createHash, randomUUID } from 'crypto';
@@ -112,6 +113,8 @@ type Entry = {
   checksum?: Checksum;
   /** Created with O_EXCL: the first upload must find no object, or the create loses with EEXIST. */
   exclusive?: boolean;
+  /** A symbolic link: the local copy is the link itself, never filled, truncated or evicted. */
+  link?: boolean;
   /** Last opened with O_TRUNC: the upload replaces the object whatever version it is now at, unless `read`. */
   truncated?: boolean;
   /** Fetched for reading since this instance last uploaded it: a rewrite may be based on these bytes. */
@@ -154,11 +157,29 @@ const checksumOf = (out: ChecksumFields): Checksum | undefined => {
 };
 
 /** Streams the local file through the same algorithm, base64 like S3 reports it. */
+/**
+ * A backing file, read without touching its atime: the adapter reads files the program did not ask to
+ * read (to digest, to upload), and under relatime that read would replace an atime the program just set
+ * with utimes. O_NOATIME needs the file's owner, as the server is when it runs as the program's user;
+ * otherwise the read is a plain one.
+ */
+const readStream = async (local: string): Promise<Readable> => {
+  const noatime = fsConstants.O_NOATIME;
+  if (noatime) {
+    try {
+      return (await fs.open(local, fsConstants.O_RDONLY | noatime)).createReadStream();
+    } catch (e) {
+      if (!(e instanceof Error && 'code' in e && e.code === 'EPERM')) throw e;
+    }
+  }
+  return (await fs.open(local, fsConstants.O_RDONLY)).createReadStream();
+};
+
 const digest = async (local: string, algo: Checksum['algo']): Promise<string | undefined> => {
   try {
     if (algo === 'crc32') {
       let value = 0;
-      for await (const chunk of createReadStream(local)) {
+      for await (const chunk of await readStream(local)) {
         value = crc32(chunk as Buffer, value);
       }
       const out = Buffer.alloc(4);
@@ -166,7 +187,7 @@ const digest = async (local: string, algo: Checksum['algo']): Promise<string | u
       return out.toString('base64');
     }
     const hash = createHash(algo);
-    for await (const chunk of createReadStream(local)) {
+    for await (const chunk of await readStream(local)) {
       hash.update(chunk as Buffer);
     }
     return hash.digest('base64');
@@ -179,13 +200,51 @@ const digest = async (local: string, algo: Checksum['algo']): Promise<string | u
 const O_EXCL = 0o200;
 const O_TRUNC = 0o1000;
 
-const snapshot = (local: string): { mtimeMs: number; size: number } | undefined => {
+/*
+ * Symbolic links are stored as s3fs-fuse stores them, so either can mount the other's bucket: an object
+ * at the link's key whose body is the target, with the decimal st_mode in `x-amz-meta-mode` (S_IFLNK
+ * there marks it a link) and s3fs's times, uid and gid. A target inside the mount is stored virtual
+ * (`/vfs/...`), so it resolves on every instance whatever its backing directory.
+ */
+const S_IFMT = 0o170000;
+const S_IFLNK = 0o120000;
+const LINK_MODE = S_IFLNK | 0o777;
+const LINK_CONTENT_TYPE = 'application/octet-stream';
+/** Links followed in a row before ELOOP, as Linux's MAXSYMLINKS. */
+const MAX_LINK_DEPTH = 40;
+/** HEADs in flight at once while a listing learns each entry's type. */
+const LIST_HEADS = 16;
+
+/** `fn` over `items`, at most `limit` at a time. */
+const inBatches = async <T>(items: T[], limit: number, fn: (item: T) => Promise<void>): Promise<void> => {
+  for (let i = 0; i < items.length; i += limit) {
+    await Promise.all(items.slice(i, i + limit).map(fn));
+  }
+};
+
+/** Whether an object's metadata (the SDK's `Metadata`, `x-amz-meta-` stripped) marks a symbolic link. */
+const isLinkMode = (metadata?: Record<string, string>): boolean => {
+  const mode = Number(metadata?.mode);
+  return Number.isInteger(mode) && (mode & S_IFMT) === S_IFLNK;
+};
+
+/** s3fs-fuse's time format: seconds, then nanoseconds in nine digits. */
+const s3fsTime = (ms: number): string =>
+  `${Math.floor(ms / 1000)}.${String(Math.round((ms % 1000) * 1_000_000)).padStart(9, '0')}`;
+
+/** The path's own lstat, or undefined when there is nothing there (a dangling link is something). */
+const lstatOf = (local: string): Stats | undefined => {
   try {
-    const st = statSync(local);
-    return { mtimeMs: st.mtimeMs, size: st.size };
+    return lstatSync(local);
   } catch {
     return undefined;
   }
+};
+
+/** By lstat: a link's own times and size, not its target's. */
+const snapshot = (local: string): { mtimeMs: number; size: number } | undefined => {
+  const st = lstatOf(local);
+  return st ? { mtimeMs: st.mtimeMs, size: st.size } : undefined;
 };
 
 /** A lease we hold: the lock object's ETag (for a safe release) and its renewal timer. */
@@ -208,6 +267,13 @@ export class S3Adapter implements VfsAdapter {
   private readonly client: S3Client;
   private readonly entries = new Map<string, Entry>();
   private readonly chains = new Map<string, Promise<unknown>>();
+  /**
+   * When each prefix was last listed, and when each key was last found missing (ms since epoch). Within
+   * revalidateMs neither asks S3 again, the same bound a trusted local copy has: what this instance does
+   * shows at once (it is on disk), what another does shows within revalidateMs.
+   */
+  private readonly listedAt = new Map<string, number>();
+  private readonly missedAt = new Map<string, number>();
   private readonly log: (message: string, params?: Record<string, unknown>) => void;
 
   /** Compiled localOnly globs; `pathy` ones (containing a `/`) match the whole relative path. */
@@ -234,7 +300,9 @@ export class S3Adapter implements VfsAdapter {
       (next, context) =>
         async (args): ReturnType<typeof next> => {
           const op = `${context.commandName ?? 'S3'}`.replace(/Command$/, '');
-          const key = (args.input as { Key?: string }).Key;
+          // What the request is about: an object's key, a listing's prefix, or a batch delete's first key.
+          const input = args.input as { Key?: string; Prefix?: string; Delete?: { Objects?: { Key?: string }[] } };
+          const key = input.Key ?? input.Prefix ?? input.Delete?.Objects?.[0]?.Key;
           const started = performance.now();
           const duration = (): string => `${(performance.now() - started).toFixed(2)} ms`;
           try {
@@ -249,6 +317,11 @@ export class S3Adapter implements VfsAdapter {
         },
       { step: 'deserialize', priority: 'low', name: 'rowdyVfsTrace' }
     );
+  }
+
+  /** Whether a check made `at` still stands: within revalidateMs. */
+  private fresh(at: number | undefined): boolean {
+    return at !== undefined && Date.now() - at < (this.options.revalidateMs ?? 2000);
   }
 
   /** Path relative to the mountpoint without a leading slash ('' for the root), or undefined if outside it. */
@@ -288,6 +361,49 @@ export class S3Adapter implements VfsAdapter {
     return join(this.options.backing, rel);
   }
 
+  /** A link target as stored: one into the backing directory names the mount instead. */
+  private virtualOf(target: string): string {
+    const { backing, mountpoint } = this.options;
+    if (target === backing || target.startsWith(`${backing}/`)) return mountpoint + target.slice(backing.length);
+    return target;
+  }
+
+  /** A stored link target as this instance writes it: one into the mount names the backing directory. */
+  private backingOf(target: string): string {
+    const { backing, mountpoint } = this.options;
+    if (target === mountpoint || target.startsWith(`${mountpoint}/`)) return backing + target.slice(mountpoint.length);
+    return target;
+  }
+
+  /** The virtual path a local link at `rel` points to, when that is inside the mount. */
+  private linkTarget(rel: string): string | undefined {
+    let target: string;
+    try {
+      target = this.virtualOf(readlinkSync(this.local(rel)));
+    } catch {
+      return undefined;
+    }
+    const { mountpoint } = this.options;
+    const path = isAbsolute(target) ? normalize(target) : normalize(join(mountpoint, dirname(rel), target));
+    return path === mountpoint || path.startsWith(`${mountpoint}/`) ? path : undefined;
+  }
+
+  /**
+   * Makes what a local link at `rel` points to present, as `op` would for the target itself, so that
+   * following the link finds it. A target that is not there leaves the link dangling, which is no error,
+   * and a loop stops at Linux's limit with the link as it is: following it is the kernel's ELOOP.
+   */
+  private async follow(rel: string, op: 'stat' | 'fetch', depth: number): Promise<void> {
+    const target = this.linkTarget(rel);
+    if (target === undefined || depth >= MAX_LINK_DEPTH) return;
+    try {
+      await (op === 'stat' ? this.statAt(target, depth + 1) : this.fetchAt(target, depth + 1));
+    } catch (e) {
+      const dangling = e instanceof VfsError && (e.errno === LINUX_ERRNO.ENOENT || e.errno === LINUX_ERRNO.ENOTDIR);
+      if (!dangling) throw e;
+    }
+  }
+
   /** Runs `fn` after any in-flight operation on the same key. */
   private serial<T>(key: string, fn: () => Promise<T>): Promise<T> {
     const prev = this.chains.get(key) ?? Promise.resolve();
@@ -303,12 +419,14 @@ export class S3Adapter implements VfsAdapter {
     return next;
   }
 
-  private async head(key: string): Promise<{ etag?: string; size?: number; checksum?: Checksum } | undefined> {
+  private async head(
+    key: string
+  ): Promise<{ etag?: string; size?: number; checksum?: Checksum; link: boolean } | undefined> {
     try {
       const out = await this.client.send(
         new HeadObjectCommand({ Bucket: this.options.bucket, Key: key, ChecksumMode: 'ENABLED' })
       );
-      return { etag: out.ETag, size: out.ContentLength, checksum: checksumOf(out) };
+      return { etag: out.ETag, size: out.ContentLength, checksum: checksumOf(out), link: isLinkMode(out.Metadata) };
     } catch (e) {
       if (isNotFound(e)) {
         return undefined;
@@ -332,13 +450,13 @@ export class S3Adapter implements VfsAdapter {
   private async placeholder(rel: string, key: string, etag?: string, size?: number): Promise<void> {
     const local = this.local(rel);
     const existing = this.entries.get(key);
-    if (existsSync(local) && existing?.materialized !== false) {
+    if (lstatOf(local) && existing?.materialized !== false) {
       return; // real local content (fetched or written here) takes precedence
     }
     if (existing?.materialized && existing.etag !== etag && !(await this.modified(local, existing))) {
       existing.checkedAt = 0; // the listing says it changed: re-check on next use
     }
-    if (existsSync(local) && existing?.materialized) {
+    if (lstatOf(local) && existing?.materialized) {
       return;
     }
     await fs.mkdir(dirname(local), { recursive: true });
@@ -389,6 +507,25 @@ export class S3Adapter implements VfsAdapter {
     } catch (e) {
       throw isNotFound(e) ? VfsError.code('ENOENT', `${key}: no such object`) : toVfsError(e);
     }
+    if (isLinkMode(out.Metadata)) {
+      const target = ((await out.Body?.transformToString()) ?? '').trim();
+      await fs.mkdir(dirname(local), { recursive: true });
+      if (lstatOf(local)?.isDirectory()) {
+        throw VfsError.code('EISDIR', `${key}: a symbolic link where a directory is`);
+      }
+      await fs.rm(local, { force: true });
+      await fs.symlink(this.backingOf(target), local);
+      this.entries.set(key, {
+        etag: out.ETag,
+        size: out.ContentLength,
+        materialized: true,
+        checkedAt: Date.now(),
+        synced: snapshot(local),
+        link: true,
+      });
+      this.log(`linked`, { key, target });
+      return { etag: out.ETag, size: out.ContentLength };
+    }
     await this.makeRoom(key, out.ContentLength ?? 0);
     await fs.mkdir(dirname(local), { recursive: true });
     await pipeline(out.Body as Readable, createWriteStream(local, { flags: 'w' }));
@@ -426,7 +563,7 @@ export class S3Adapter implements VfsAdapter {
   private async makeRoom(key: string, size: number): Promise<void> {
     const budget = await this.cacheBytes();
     const materialized = (): Array<[string, Entry]> =>
-      [...this.entries].filter(([k, e]) => k !== key && e.materialized && e.size !== undefined);
+      [...this.entries].filter(([k, e]) => k !== key && e.materialized && !e.link && e.size !== undefined);
     let total = materialized().reduce((n, [, e]) => n + (e.size ?? 0), 0) + size;
     if (total <= budget) {
       return;
@@ -511,8 +648,13 @@ export class S3Adapter implements VfsAdapter {
       entry.checksum ??= head.checksum;
       return;
     }
-    if (entry.materialized) {
+    if (head.link || (entry.materialized && !entry.link)) {
       await this.download(key, local);
+    } else if (entry.link) {
+      // A link replaced by a file elsewhere: the link goes, and the file arrives as any listed one does.
+      await fs.rm(local, { force: true });
+      this.entries.delete(key);
+      await this.placeholder(rel, key, head.etag, head.size);
     } else {
       await fs.truncate(local, head.size ?? 0);
       this.entries.set(key, {
@@ -548,6 +690,11 @@ export class S3Adapter implements VfsAdapter {
   }
 
   async stat(path: string): Promise<void> {
+    await this.statAt(path, 0);
+  }
+
+  /** stat, `depth` links in. A local link answers for itself (dangling or not); what it points to is made present too. */
+  private async statAt(path: string, depth: number): Promise<void> {
     const rel = this.rel(path);
     this.reserve(path, rel, 'ENOENT');
     if (rel === undefined) {
@@ -561,26 +708,38 @@ export class S3Adapter implements VfsAdapter {
       return; // the shim's own stat of the backing file is the answer
     }
     const key = this.key(rel);
-    if (existsSync(this.local(rel))) {
+    if (lstatOf(this.local(rel))) {
       await this.serial(key, () => this.recheck(rel, key));
-      if (existsSync(this.local(rel))) {
-        return;
+      if (!lstatOf(this.local(rel))) {
+        throw VfsError.code('ENOENT', `${path}: no such object`);
       }
-      throw VfsError.code('ENOENT', `${path}: no such object`);
+    } else {
+      await this.serial(key, async () => {
+        // Nothing on disk, and S3 said so within revalidateMs (callers waiting on the lock find it here too).
+        if (this.fresh(this.missedAt.get(key))) {
+          throw VfsError.code('ENOENT', `${path}: no such object`);
+        }
+        // Both at once: a miss waits for one round trip instead of two.
+        const [head, dir] = await Promise.all([this.head(key), this.isDir(rel)]);
+        if (head?.link) {
+          await this.download(key, this.local(rel));
+          return;
+        }
+        if (head) {
+          await this.placeholder(rel, key, head.etag, head.size);
+          return;
+        }
+        if (dir) {
+          await fs.mkdir(this.local(rel), { recursive: true });
+          return;
+        }
+        this.missedAt.set(key, Date.now());
+        throw VfsError.code('ENOENT', `${path}: no such object`);
+      });
     }
-    await this.serial(key, async () => {
-      // Both at once: a miss waits for one round trip instead of two.
-      const [head, dir] = await Promise.all([this.head(key), this.isDir(rel)]);
-      if (head) {
-        await this.placeholder(rel, key, head.etag, head.size);
-        return;
-      }
-      if (dir) {
-        await fs.mkdir(this.local(rel), { recursive: true });
-        return;
-      }
-      throw VfsError.code('ENOENT', `${path}: no such object`);
-    });
+    if (lstatOf(this.local(rel))?.isSymbolicLink()) {
+      await this.follow(rel, 'stat', depth);
+    }
   }
 
   private markRead(key: string): void {
@@ -591,6 +750,11 @@ export class S3Adapter implements VfsAdapter {
   }
 
   async fetch(path: string): Promise<void> {
+    await this.fetchAt(path, 0);
+  }
+
+  /** fetch, `depth` links in. A local link stays a link; what it points to is fetched, as opening it reads that. */
+  private async fetchAt(path: string, depth: number): Promise<void> {
     const rel = this.rel(path);
     this.reserve(path, rel, 'ENOENT');
     if (rel === undefined || rel === '' || this.isLocal(rel)) {
@@ -600,10 +764,10 @@ export class S3Adapter implements VfsAdapter {
     const local = this.local(rel);
     await this.serial(key, async () => {
       const entry = this.entries.get(key);
-      if (existsSync(local) && entry?.materialized !== false) {
+      if (lstatOf(local) && entry?.materialized !== false) {
         // Local content: written here (dirty, trusted) or fetched earlier (re-checked by ETag).
         await this.recheck(rel, key);
-        if (existsSync(local)) {
+        if (lstatOf(local)) {
           this.markRead(key);
           return;
         }
@@ -620,6 +784,9 @@ export class S3Adapter implements VfsAdapter {
         throw e;
       }
     });
+    if (lstatOf(local)?.isSymbolicLink()) {
+      await this.follow(rel, 'fetch', depth);
+    }
   }
 
   async list(path: string): Promise<void> {
@@ -631,6 +798,10 @@ export class S3Adapter implements VfsAdapter {
     const dir = this.local(rel);
     await fs.mkdir(dir, { recursive: true });
     const prefix = this.dirPrefix(rel);
+    if (this.fresh(this.listedAt.get(prefix))) {
+      return; // listed within revalidateMs; what this instance changed since is on disk
+    }
+    const started = Date.now();
     let token: string | undefined;
     do {
       let out;
@@ -648,21 +819,45 @@ export class S3Adapter implements VfsAdapter {
       }
       for (const common of out.CommonPrefixes ?? []) {
         if (common.Prefix && !common.Prefix.slice(prefix.length).startsWith('.rowdy/')) {
+          this.missedAt.delete(common.Prefix.slice(0, -1));
           await fs.mkdir(join(this.options.backing, this.unkey(common.Prefix)), { recursive: true });
         }
       }
-      for (const object of out.Contents ?? []) {
-        if (!object.Key || object.Key === prefix || object.Key.endsWith('/')) {
-          continue; // directory markers
-        }
-        if (object.Key.slice(prefix.length).startsWith('.rowdy/')) {
-          continue; // the adapter's own lease objects
-        }
-        const childRel = this.unkey(object.Key);
-        await this.serial(object.Key, () => this.placeholder(childRel, object.Key!, object.ETag, object.Size));
-      }
+      const children = (out.Contents ?? []).flatMap(({ Key, ETag, Size }) =>
+        // directory markers, and the adapter's own lease objects
+        Key && Key !== prefix && !Key.endsWith('/') && !Key.slice(prefix.length).startsWith('.rowdy/')
+          ? [{ key: Key, etag: ETag, size: Size }]
+          : []
+      );
+      for (const { key } of children) this.missedAt.delete(key);
+      await inBatches(children, LIST_HEADS, ({ key, etag, size }) =>
+        this.serial(key, () => this.listed(this.unkey(key), key, etag, size))
+      );
       token = out.IsTruncated ? out.NextContinuationToken : undefined;
     } while (token);
+    this.listedAt.set(prefix, started);
+  }
+
+  /**
+   * One listed object, made present as what it is. A listing carries no metadata, so each entry's type is
+   * read from a HEAD, as s3fs-fuse reads every entry's mode, unless this version is known already.
+   */
+  private async listed(rel: string, key: string, etag?: string, size?: number): Promise<void> {
+    const local = this.local(rel);
+    const known = this.entries.get(key);
+    let link = known?.link === true;
+    if (known?.etag === undefined || known.etag !== etag) {
+      const head = await this.head(key);
+      if (!head) return; // gone since the listing
+      link = head.link;
+    }
+    if (!link) {
+      await this.placeholder(rel, key, etag, size);
+      return;
+    }
+    if (known && (await this.modified(local, known))) return; // unflushed here: ours until it is
+    if (known?.link && known.etag === etag && lstatOf(local)?.isSymbolicLink()) return;
+    await this.download(key, local);
   }
 
   /** Inverse of key(): bucket key -> path relative to the mountpoint. */
@@ -687,8 +882,9 @@ export class S3Adapter implements VfsAdapter {
       }
       const entry = this.entries.get(key);
       if (!entry) {
-        // Brand-new local file: no synced snapshot, so revalidation leaves it alone until flushed.
-        const head = await this.head(key);
+        // Brand-new local file: no synced snapshot, so revalidation leaves it alone until flushed. The walk
+        // before the open usually just found it missing; that answer stands for revalidateMs.
+        const head = this.fresh(this.missedAt.get(key)) ? undefined : await this.head(key);
         this.entries.set(key, {
           etag: head?.etag,
           size: head?.size,
@@ -722,28 +918,35 @@ export class S3Adapter implements VfsAdapter {
 
   /** Conditional PutObject of the local file. Caller holds the per-key lock. */
   private async put(key: string, local: string, path: string): Promise<void> {
-    let size: number;
-    let mtimeMs: number;
-    try {
-      const st = statSync(local);
-      if (st.isDirectory()) {
-        return;
-      }
-      size = st.size;
-      mtimeMs = st.mtimeMs;
-    } catch {
+    const st = lstatOf(local);
+    if (!st) {
       return; // removed before the flush reached us; unlink will follow
     }
+    if (st.isDirectory()) {
+      return;
+    }
+    const size = st.size;
+    const mtimeMs = st.mtimeMs;
     const current = this.entries.get(key);
     if (current && !(await this.modified(local, current))) {
       // The bytes already equal the base this copy is on (fetched and untouched, fsync then the
       // unlock-time flush, or a rollback that restored them): nothing to upload.
       return;
     }
+    if (st.isSymbolicLink()) {
+      await this.putLink(key, local, st);
+      return;
+    }
     let base = current?.etag;
     let inTransit = 0; // attempts that failed on the way, which may or may not have landed
     for (let attempt = 1; ; attempt++) {
-      const body = createReadStream(local);
+      let body: Readable;
+      try {
+        body = await readStream(local);
+      } catch (e) {
+        if (e instanceof Error && 'code' in e && e.code === 'ENOENT') return; // removed before the flush reached us
+        throw e;
+      }
       body.on('error', () => {}); // the SDK consumes read errors; a destroyed stream must not throw
       try {
         const out = await this.client.send(
@@ -764,6 +967,7 @@ export class S3Adapter implements VfsAdapter {
           synced: { mtimeMs, size },
           checksum: checksumOf(out),
         });
+        this.missedAt.delete(key);
         this.log(`flushed`, { key, size, base });
         return;
       } catch (e) {
@@ -811,6 +1015,43 @@ export class S3Adapter implements VfsAdapter {
     }
   }
 
+  /** A symbolic link, as s3fs-fuse writes one. Caller holds the per-key lock. */
+  private async putLink(key: string, local: string, st: Stats): Promise<void> {
+    const target = this.virtualOf(await fs.readlink(local));
+    let out;
+    try {
+      out = await this.client.send(
+        new PutObjectCommand({
+          Bucket: this.options.bucket,
+          Key: key,
+          Body: target,
+          ContentLength: Buffer.byteLength(target),
+          ContentType: LINK_CONTENT_TYPE,
+          Metadata: {
+            mode: String(LINK_MODE),
+            atime: s3fsTime(st.atimeMs),
+            ctime: s3fsTime(st.ctimeMs),
+            mtime: s3fsTime(st.mtimeMs),
+            uid: String(st.uid),
+            gid: String(st.gid),
+          },
+        })
+      );
+    } catch (e) {
+      throw toVfsError(e);
+    }
+    this.entries.set(key, {
+      etag: out.ETag,
+      size: st.size,
+      materialized: true,
+      checkedAt: Date.now(),
+      synced: { mtimeMs: st.mtimeMs, size: st.size },
+      link: true,
+    });
+    this.missedAt.delete(key);
+    this.log(`flushed`, { key, link: target });
+  }
+
   /** Whether the object holds exactly `local`'s bytes (size and checksum); if so, it is the new base. */
   private async landed(key: string, local: string, size: number, mtimeMs: number, base?: string): Promise<boolean> {
     const head = await this.head(key);
@@ -828,6 +1069,7 @@ export class S3Adapter implements VfsAdapter {
       synced: { mtimeMs, size },
       checksum: head.checksum,
     });
+    this.missedAt.delete(key);
     this.log(`flushed`, { key, size, base, landed: 'response lost, object matches' });
     return true;
   }
@@ -849,6 +1091,7 @@ export class S3Adapter implements VfsAdapter {
         await this.client.send(
           new PutObjectCommand({ Bucket: this.options.bucket, Key: marker, Body: '', ContentLength: 0 })
         );
+        this.missedAt.delete(this.key(rel));
         this.log(`marked`, { key: marker });
       } catch (e) {
         throw toVfsError(e);
@@ -1037,18 +1280,26 @@ export class S3Adapter implements VfsAdapter {
     }
     const key = this.key(rel);
     await this.serial(key, async () => {
-      // A file has an entry; anything else may have been a directory, whose marker goes too.
-      const keys = this.entries.has(key) ? [key] : [key, `${key}/`];
-      for (const k of keys) {
-        try {
-          await this.client.send(new DeleteObjectCommand({ Bucket: this.options.bucket, Key: k }));
-        } catch (e) {
-          if (!isNotFound(e)) {
-            throw toVfsError(e);
-          }
-        }
+      // The path is already gone locally, and an entry does not tell a file from a directory (opening
+      // one to list it makes one), so the object and the directory marker go together, in one request.
+      let out;
+      try {
+        out = await this.client.send(
+          new DeleteObjectsCommand({
+            Bucket: this.options.bucket,
+            Delete: { Objects: [{ Key: key }, { Key: `${key}/` }], Quiet: true },
+          })
+        );
+      } catch (e) {
+        throw toVfsError(e);
+      }
+      const failed = out.Errors?.[0];
+      if (failed) {
+        const code = failed.Code === 'AccessDenied' ? 'EACCES' : 'EIO';
+        throw VfsError.code(code, `${failed.Key}: ${failed.Code} ${failed.Message ?? ''}`.trim());
       }
       this.entries.delete(key);
+      this.listedAt.delete(`${key}/`); // a directory made again here is listed afresh
     });
   }
 
@@ -1077,7 +1328,8 @@ export class S3Adapter implements VfsAdapter {
       await this.unlink(from);
       return;
     }
-    if (existsSync(target) && statSync(target).isDirectory()) {
+    // By lstat: a renamed link to a directory is one object, not the tree it points to.
+    if (lstatOf(target)?.isDirectory()) {
       // The local rename already moved the tree; move every object under the old prefix.
       const oldPrefix = this.dirPrefix(relFrom);
       let token: string | undefined;
@@ -1113,7 +1365,13 @@ export class S3Adapter implements VfsAdapter {
             CopySource: `${this.options.bucket}/${encodeURIComponent(fromKey).replace(/%2F/g, '/')}`,
           })
         );
-        this.entries.set(toKey, { etag: out.CopyObjectResult?.ETag, materialized: true });
+        // CopyObject keeps the metadata, so a link is still a link.
+        this.entries.set(toKey, {
+          etag: out.CopyObjectResult?.ETag,
+          materialized: true,
+          link: this.entries.get(fromKey)?.link,
+        });
+        this.missedAt.delete(toKey);
       } catch (e) {
         if (!isNotFound(e)) {
           throw toVfsError(e);

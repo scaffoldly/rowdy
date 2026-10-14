@@ -117,9 +117,10 @@ registry's review of the shim. The npm release stays the reviewed, attested one 
 
 ```sh
 yarn test:unit      # unit tests for the shim's headers (cmocka, ASan + UBSan) on Debian 12
-yarn test:native    # native/test/*.bats (bats-core): the host-arch shim under busybox, node and C callers, on alpine and debian
+yarn test:native    # tests/native/test/*.bats (bats-core): the host-arch shim under busybox, node and C callers, on alpine and debian
 yarn build          # bundles src/ with lib/linux-*/vfspreload.so inlined
 yarn test
+yarn test:nodefs    # node's own fs/promises tests on a docker volume (jest + testcontainers, tests/native/nodefs)
 ```
 
 CI builds and tests the shim on native x64 and arm64 runners, then **stages** a `beta` pre-release
@@ -181,7 +182,16 @@ unix-domain socket (one JSON object per line, paths and metadata only; the proto
   like a plain create. A rewrite after a read (read-modify-write) keeps `ESTALE`. `unlink` deletes,
   `rename` copies server-side then deletes (a renamed directory moves every key under it). S3 has
   no directories: `mkdir` writes a `<key>/` marker object (the S3 console's convention) so an empty
-  directory exists on every instance; `rmdir` removes it.
+  directory exists on every instance; `rmdir` removes it. A symbolic link is stored as s3fs-fuse
+  stores one, so either can mount the other's bucket: an object at the link's key whose body is the
+  target (a target inside the mount as its `/vfs/...` path) and whose `x-amz-meta-mode` is `S_IFLNK`.
+  Another instance makes it a local link, and makes what it points to present so following it works;
+  a listing reads each entry's type with a HEAD, as s3fs does. A target outside the mount is used as
+  written, as it would be on any filesystem: what following it reaches is the process's own
+  permissions to decide. Writing the bucket is therefore reading whatever the process can read.
+  `fs.watch` (inotify) watches the local copy: it sees what this instance does under the mount, the
+  supervisor's own refetches and listings included, but not a write made on another instance or in
+  S3 until something here brings it in, as with s3fs-fuse or NFS.
   Credentials come from the default provider chain of the process running the server.
   Multi-writer behaviour follows [ADR 0001](docs/adr/0001-multi-writer-leases.md): a trusted local
   copy is re-checked against the object's ETag at most every `revalidateMs` (default 2 s) and

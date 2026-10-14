@@ -1,4 +1,14 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'fs';
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  symlinkSync,
+  writeFileSync,
+} from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { P9Client } from '../src/p9/client';
@@ -192,6 +202,29 @@ describe('P9Server', () => {
       errno: LINUX_ERRNO.EEXIST,
     });
     expect(s3.calls).toEqual(['fetch /s3/new.txt']); // the store was consulted before deciding
+  });
+
+  it('a truncating open of a file only its creator can write: empty is left alone, non-empty is truncated write-only', async () => {
+    writeFileSync(join(dir, 's3', 'created.txt'), '');
+    chmodSync(join(dir, 's3', 'created.txt'), 0o444); // open(path, 'w+', 0o444) just made it
+    await client.withFid(root, 'created.txt', async (fid) => {
+      await client.lopen(fid, O_RDWR | O_TRUNC);
+    });
+    writeFileSync(join(dir, 's3', 'writeonly.txt'), 'stale');
+    chmodSync(join(dir, 's3', 'writeonly.txt'), 0o200); // libstdc++ copy_file's destination mode
+    await client.withFid(root, 'writeonly.txt', async (fid) => {
+      await client.lopen(fid, O_WRONLY | O_TRUNC);
+    });
+    expect(statSync(join(dir, 's3', 'writeonly.txt')).size).toBe(0);
+  });
+
+  it('walks through a symbolic link to a directory, as the kernel resolves a path', async () => {
+    symlinkSync('db', join(dir, 's3', 'db-link'));
+    const { fid, qids } = await client.walk(root, ['db-link', 'nuss.sqlite']);
+    expect(qids).toHaveLength(2);
+    await client.clunk(fid);
+    symlinkSync('readme.txt', join(dir, 's3', 'file-link'));
+    await expect(client.walk(root, ['file-link', 'x'])).rejects.toMatchObject({ errno: LINUX_ERRNO.ENOTDIR });
   });
 
   it('forwards the lock ladder by type: revalidate, lock, flush + unlock; a contended lease is BLOCKED', async () => {
