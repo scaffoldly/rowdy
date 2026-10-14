@@ -249,6 +249,13 @@ export class S3Adapter implements VfsAdapter {
   private readonly client: S3Client;
   private readonly entries = new Map<string, Entry>();
   private readonly chains = new Map<string, Promise<unknown>>();
+  /**
+   * When each prefix was last listed, and when each key was last found missing (ms since epoch). Within
+   * revalidateMs neither asks S3 again, the same bound a trusted local copy has: what this instance does
+   * shows at once (it is on disk), what another does shows within revalidateMs.
+   */
+  private readonly listedAt = new Map<string, number>();
+  private readonly missedAt = new Map<string, number>();
   private readonly log: (message: string, params?: Record<string, unknown>) => void;
 
   /** Compiled localOnly globs; `pathy` ones (containing a `/`) match the whole relative path. */
@@ -275,7 +282,9 @@ export class S3Adapter implements VfsAdapter {
       (next, context) =>
         async (args): ReturnType<typeof next> => {
           const op = `${context.commandName ?? 'S3'}`.replace(/Command$/, '');
-          const key = (args.input as { Key?: string }).Key;
+          // What the request is about: an object's key, a listing's prefix, or a batch delete's first key.
+          const input = args.input as { Key?: string; Prefix?: string; Delete?: { Objects?: { Key?: string }[] } };
+          const key = input.Key ?? input.Prefix ?? input.Delete?.Objects?.[0]?.Key;
           const started = performance.now();
           const duration = (): string => `${(performance.now() - started).toFixed(2)} ms`;
           try {
@@ -290,6 +299,11 @@ export class S3Adapter implements VfsAdapter {
         },
       { step: 'deserialize', priority: 'low', name: 'rowdyVfsTrace' }
     );
+  }
+
+  /** Whether a check made `at` still stands: within revalidateMs. */
+  private fresh(at: number | undefined): boolean {
+    return at !== undefined && Date.now() - at < (this.options.revalidateMs ?? 2000);
   }
 
   /** Path relative to the mountpoint without a leading slash ('' for the root), or undefined if outside it. */
@@ -683,6 +697,10 @@ export class S3Adapter implements VfsAdapter {
       }
     } else {
       await this.serial(key, async () => {
+        // Nothing on disk, and S3 said so within revalidateMs (callers waiting on the lock find it here too).
+        if (this.fresh(this.missedAt.get(key))) {
+          throw VfsError.code('ENOENT', `${path}: no such object`);
+        }
         // Both at once: a miss waits for one round trip instead of two.
         const [head, dir] = await Promise.all([this.head(key), this.isDir(rel)]);
         if (head?.link) {
@@ -697,6 +715,7 @@ export class S3Adapter implements VfsAdapter {
           await fs.mkdir(this.local(rel), { recursive: true });
           return;
         }
+        this.missedAt.set(key, Date.now());
         throw VfsError.code('ENOENT', `${path}: no such object`);
       });
     }
@@ -761,6 +780,10 @@ export class S3Adapter implements VfsAdapter {
     const dir = this.local(rel);
     await fs.mkdir(dir, { recursive: true });
     const prefix = this.dirPrefix(rel);
+    if (this.fresh(this.listedAt.get(prefix))) {
+      return; // listed within revalidateMs; what this instance changed since is on disk
+    }
+    const started = Date.now();
     let token: string | undefined;
     do {
       let out;
@@ -778,6 +801,7 @@ export class S3Adapter implements VfsAdapter {
       }
       for (const common of out.CommonPrefixes ?? []) {
         if (common.Prefix && !common.Prefix.slice(prefix.length).startsWith('.rowdy/')) {
+          this.missedAt.delete(common.Prefix.slice(0, -1));
           await fs.mkdir(join(this.options.backing, this.unkey(common.Prefix)), { recursive: true });
         }
       }
@@ -787,11 +811,13 @@ export class S3Adapter implements VfsAdapter {
           ? [{ key: Key, etag: ETag, size: Size }]
           : []
       );
+      for (const { key } of children) this.missedAt.delete(key);
       await inBatches(children, LIST_HEADS, ({ key, etag, size }) =>
         this.serial(key, () => this.listed(this.unkey(key), key, etag, size))
       );
       token = out.IsTruncated ? out.NextContinuationToken : undefined;
     } while (token);
+    this.listedAt.set(prefix, started);
   }
 
   /**
@@ -916,6 +942,7 @@ export class S3Adapter implements VfsAdapter {
           synced: { mtimeMs, size },
           checksum: checksumOf(out),
         });
+        this.missedAt.delete(key);
         this.log(`flushed`, { key, size, base });
         return;
       } catch (e) {
@@ -996,6 +1023,7 @@ export class S3Adapter implements VfsAdapter {
       synced: { mtimeMs: st.mtimeMs, size: st.size },
       link: true,
     });
+    this.missedAt.delete(key);
     this.log(`flushed`, { key, link: target });
   }
 
@@ -1016,6 +1044,7 @@ export class S3Adapter implements VfsAdapter {
       synced: { mtimeMs, size },
       checksum: head.checksum,
     });
+    this.missedAt.delete(key);
     this.log(`flushed`, { key, size, base, landed: 'response lost, object matches' });
     return true;
   }
@@ -1037,6 +1066,7 @@ export class S3Adapter implements VfsAdapter {
         await this.client.send(
           new PutObjectCommand({ Bucket: this.options.bucket, Key: marker, Body: '', ContentLength: 0 })
         );
+        this.missedAt.delete(this.key(rel));
         this.log(`marked`, { key: marker });
       } catch (e) {
         throw toVfsError(e);
@@ -1244,6 +1274,7 @@ export class S3Adapter implements VfsAdapter {
         throw VfsError.code(code, `${failed.Key}: ${failed.Code} ${failed.Message ?? ''}`.trim());
       }
       this.entries.delete(key);
+      this.listedAt.delete(`${key}/`); // a directory made again here is listed afresh
     });
   }
 
@@ -1315,6 +1346,7 @@ export class S3Adapter implements VfsAdapter {
           materialized: true,
           link: this.entries.get(fromKey)?.link,
         });
+        this.missedAt.delete(toKey);
       } catch (e) {
         if (!isNotFound(e)) {
           throw toVfsError(e);

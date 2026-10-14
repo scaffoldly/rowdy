@@ -612,6 +612,49 @@ describe('S3Adapter', () => {
     });
   });
 
+  describe('listings and misses within revalidateMs', () => {
+    const within = (revalidateMs: number): S3Adapter =>
+      new S3Adapter({ bucket: 'b', mountpoint: mount, backing, client: s3 as unknown as S3Client, revalidateMs });
+
+    it('lists a directory once per revalidateMs; a write elsewhere shows on the listing after it', async () => {
+      const a = within(100);
+      s3.put('dir/one.txt', '1');
+      await a.list(`${mount}/dir`);
+      s3.put('dir/two.txt', '2'); // another instance
+      s3.calls.length = 0;
+      await a.list(`${mount}/dir`);
+      expect(s3.calls).toEqual([]);
+      expect(existsSync(join(backing, 'dir', 'two.txt'))).toBe(false);
+      await new Promise((r) => setTimeout(r, 120));
+      await a.list(`${mount}/dir`);
+      expect(existsSync(join(backing, 'dir', 'two.txt'))).toBe(true);
+    });
+
+    it('remembers a miss for revalidateMs: one HEAD and LIST for the same missing path, then asks again', async () => {
+      const a = within(100);
+      await expect(a.stat(`${mount}/nope.txt`)).rejects.toMatchObject({ errno: 2 });
+      await expect(a.stat(`${mount}/nope.txt`)).rejects.toMatchObject({ errno: 2 });
+      expect(s3.calls).toEqual(['HeadObjectCommand', 'ListObjectsV2Command']);
+      s3.put('nope.txt', 'now it is'); // another instance
+      await expect(a.stat(`${mount}/nope.txt`)).rejects.toMatchObject({ errno: 2 }); // within the window
+      await new Promise((r) => setTimeout(r, 120));
+      await a.stat(`${mount}/nope.txt`);
+      expect(statSync(join(backing, 'nope.txt')).size).toBe('now it is'.length);
+    });
+
+    it('never hides what this instance made: a local file answers before the remembered miss', async () => {
+      const a = within(60_000);
+      await expect(a.stat(`${mount}/made.txt`)).rejects.toMatchObject({ errno: 2 });
+      writeFileSync(join(backing, 'made.txt'), 'here');
+      await a.open(`${mount}/made.txt`, 0o101);
+      await a.flush(`${mount}/made.txt`);
+      await a.stat(`${mount}/made.txt`);
+      rmSync(join(backing, 'made.txt')); // gone locally, still in S3: the flush forgot the miss
+      await a.stat(`${mount}/made.txt`);
+      expect(statSync(join(backing, 'made.txt')).size).toBe(4);
+    });
+  });
+
   describe('revalidation', () => {
     // A read lock re-checks on every call here (no debounce), so a remote change is seen at once.
     const fresh = (revalidateMs: number, revalidateDebounceMs = 0): S3Adapter =>
@@ -964,15 +1007,23 @@ describe('S3Adapter', () => {
     });
 
     it('reads every listed entry with a HEAD for its type, as s3fs-fuse does, and not again at the same version', async () => {
+      // revalidateMs 0: every listing goes to S3, so what is left to skip is the HEADs.
+      const always = new S3Adapter({
+        bucket: 'b',
+        mountpoint: mount,
+        backing,
+        client: s3 as unknown as S3Client,
+        revalidateMs: 0,
+      });
       s3.put('dir/file.txt', 'abc');
       link('dir/to-file', 'file.txt');
-      await adapter.list(`${mount}/dir`);
+      await always.list(`${mount}/dir`);
       expect(lstatSync(join(backing, 'dir', 'to-file')).isSymbolicLink()).toBe(true);
       expect(readlinkSync(join(backing, 'dir', 'to-file'))).toBe('file.txt');
       expect(statSync(join(backing, 'dir', 'file.txt')).size).toBe(3);
       expect(s3.calls.filter((c) => c === 'HeadObjectCommand')).toHaveLength(2);
       s3.calls.length = 0;
-      await adapter.list(`${mount}/dir`);
+      await always.list(`${mount}/dir`);
       expect(s3.calls).toEqual(['ListObjectsV2Command']);
     });
 
