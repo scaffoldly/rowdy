@@ -186,7 +186,9 @@ unix-domain socket (one JSON object per line, paths and metadata only; the proto
   stores one, so either can mount the other's bucket: an object at the link's key whose body is the
   target (a target inside the mount as its `/vfs/...` path) and whose `x-amz-meta-mode` is `S_IFLNK`.
   Another instance makes it a local link, and makes what it points to present so following it works;
-  a listing reads each entry's type with a HEAD, as s3fs does.
+  a listing reads each entry's type with a HEAD, as s3fs does. A link from S3 whose target leaves the
+  mount (`/proc/self/environ`, `../../etc/passwd`) is refused with `EACCES` and left out of listings:
+  writing the bucket must not let anyone read the instance's own files.
   Credentials come from the default provider chain of the process running the server.
   Multi-writer behaviour follows [ADR 0001](docs/adr/0001-multi-writer-leases.md): a trusted local
   copy is re-checked against the object's ETag at most every `revalidateMs` (default 2 s) and

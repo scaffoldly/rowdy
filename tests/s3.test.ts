@@ -24,6 +24,7 @@ import {
   statSync,
   symlinkSync,
   writeFileSync,
+  type Stats,
 } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
@@ -889,6 +890,7 @@ describe('S3Adapter', () => {
 
   describe('symbolic links, stored as s3fs-fuse stores them', () => {
     const LINK = { mode: String(0o120777) };
+    const lstatOf = (path: string): Stats | undefined => lstatSync(path, { throwIfNoEntry: false });
     const link = (key: string, target: string): void => {
       s3.put(key, target, LINK);
     };
@@ -974,6 +976,35 @@ describe('S3Adapter', () => {
       link('swap', 'back again');
       await fresh.stat(`${mount}/swap`);
       expect(readlinkSync(join(backing, 'swap'))).toBe('back again');
+    });
+
+    it('refuses a link from S3 whose target leaves the mount: no local link, EACCES, and listings skip it', async () => {
+      link('secrets', '/proc/self/environ');
+      link('a/escape', '../../etc/passwd');
+      link('a/inside', '../docs/readme.txt');
+      s3.put('a/plain.txt', 'ok');
+      await expect(adapter.stat(`${mount}/secrets`)).rejects.toMatchObject({ errno: 13 });
+      expect(lstatOf(join(backing, 'secrets'))).toBeUndefined();
+      await adapter.list(`${mount}/a`);
+      expect(lstatOf(join(backing, 'a', 'escape'))).toBeUndefined();
+      expect(readlinkSync(join(backing, 'a', 'inside'))).toBe('../docs/readme.txt');
+      expect(statSync(join(backing, 'a', 'plain.txt')).size).toBe(2);
+    });
+
+    it('drops a link already here when S3 now points it out of the mount', async () => {
+      const fresh = new S3Adapter({
+        bucket: 'b',
+        mountpoint: mount,
+        backing,
+        client: s3 as unknown as S3Client,
+        revalidateMs: 0,
+      });
+      link('moved', 'inside.txt');
+      await fresh.stat(`${mount}/moved`);
+      expect(readlinkSync(join(backing, 'moved'))).toBe('inside.txt');
+      link('moved', '/var/task/index.js');
+      await expect(fresh.stat(`${mount}/moved`)).rejects.toMatchObject({ errno: 13 });
+      expect(lstatOf(join(backing, 'moved'))).toBeUndefined();
     });
 
     it('renames a link as one object, keeping it a link', async () => {
