@@ -8,7 +8,7 @@ import {
   PutObjectCommand,
   S3Client,
 } from '@aws-sdk/client-s3';
-import { createReadStream, createWriteStream, lstatSync, mkdirSync, readlinkSync, type Stats } from 'fs';
+import { constants as fsConstants, createWriteStream, lstatSync, mkdirSync, readlinkSync, type Stats } from 'fs';
 import { promises as fs } from 'fs';
 import { dirname, isAbsolute, join, normalize } from 'path';
 import { Readable } from 'stream';
@@ -157,11 +157,29 @@ const checksumOf = (out: ChecksumFields): Checksum | undefined => {
 };
 
 /** Streams the local file through the same algorithm, base64 like S3 reports it. */
+/**
+ * A backing file, read without touching its atime: the adapter reads files the program did not ask to
+ * read (to digest, to upload), and under relatime that read would replace an atime the program just set
+ * with utimes. O_NOATIME needs the file's owner, as the server is when it runs as the program's user;
+ * otherwise the read is a plain one.
+ */
+const readStream = async (local: string): Promise<Readable> => {
+  const noatime = fsConstants.O_NOATIME;
+  if (noatime) {
+    try {
+      return (await fs.open(local, fsConstants.O_RDONLY | noatime)).createReadStream();
+    } catch (e) {
+      if (!(e instanceof Error && 'code' in e && e.code === 'EPERM')) throw e;
+    }
+  }
+  return (await fs.open(local, fsConstants.O_RDONLY)).createReadStream();
+};
+
 const digest = async (local: string, algo: Checksum['algo']): Promise<string | undefined> => {
   try {
     if (algo === 'crc32') {
       let value = 0;
-      for await (const chunk of createReadStream(local)) {
+      for await (const chunk of await readStream(local)) {
         value = crc32(chunk as Buffer, value);
       }
       const out = Buffer.alloc(4);
@@ -169,7 +187,7 @@ const digest = async (local: string, algo: Checksum['algo']): Promise<string | u
       return out.toString('base64');
     }
     const hash = createHash(algo);
-    for await (const chunk of createReadStream(local)) {
+    for await (const chunk of await readStream(local)) {
       hash.update(chunk as Buffer);
     }
     return hash.digest('base64');
@@ -922,7 +940,13 @@ export class S3Adapter implements VfsAdapter {
     let base = current?.etag;
     let inTransit = 0; // attempts that failed on the way, which may or may not have landed
     for (let attempt = 1; ; attempt++) {
-      const body = createReadStream(local);
+      let body: Readable;
+      try {
+        body = await readStream(local);
+      } catch (e) {
+        if (e instanceof Error && 'code' in e && e.code === 'ENOENT') return; // removed before the flush reached us
+        throw e;
+      }
       body.on('error', () => {}); // the SDK consumes read errors; a destroyed stream must not throw
       try {
         const out = await this.client.send(
