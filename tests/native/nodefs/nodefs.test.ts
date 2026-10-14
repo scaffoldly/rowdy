@@ -1,6 +1,6 @@
 import { randomUUID } from 'crypto';
-import { readdirSync, readFileSync } from 'fs';
-import { join } from 'path';
+import { appendFileSync, readdirSync, readFileSync } from 'fs';
+import { basename, join } from 'path';
 import {
   GenericContainer,
   getContainerRuntimeClient,
@@ -9,6 +9,7 @@ import {
   type ContainerRuntimeClient,
   type StartedTestContainer,
 } from 'testcontainers';
+import { exercises, markdown, type Outcome, type Row } from './summary';
 
 /** The test images; their node is the version `node/test` was copied from (v22.23.3). */
 const IMAGES = {
@@ -49,6 +50,9 @@ const flagsOf = (rel: string): string[] =>
 
 const tail = (output: string): string => output.trimEnd().split('\n').slice(-TAIL_LINES).join('\n');
 
+/** node's `common.skip()` prints a TAP plan of zero with the reason, and exits 0. */
+const skipReason = (stdout: string): string | undefined => /^1\.\.0 # Skipped: (.*)$/m.exec(stdout)?.[1];
+
 describe(`node fs/promises tests on a docker volume (${FLAVOUR})`, () => {
   let client: ContainerRuntimeClient;
   let container: StartedTestContainer;
@@ -81,24 +85,52 @@ describe(`node fs/promises tests on a docker volume (${FLAVOUR})`, () => {
       { user: 'node', env: { NODE_TEST_DIR } }
     );
     expect(probe).toMatchObject({ exitCode: 0, stdout: `${NODE_TEST_DIR}/.tmp.0` });
+    node = (await container.exec(['node', '-v'])).stdout.trim();
   }, 300_000);
 
   afterAll(async () => {
     await container?.stop();
     await client?.container.dockerode.getVolume(volume).remove();
+    const summary = process.env.GITHUB_STEP_SUMMARY;
+    if (summary) {
+      const rows: Row[] = FILES.map((rel) => ({
+        file: basename(rel),
+        exercises: exercises(readFileSync(join(NODE, rel), 'utf8')),
+        outcome: outcomes.get(rel) ?? { status: 'failed', ms: 0, why: 'did not finish', output: '' },
+      }));
+      appendFileSync(
+        summary,
+        markdown({
+          node,
+          flavour: FLAVOUR,
+          arch: process.arch,
+          store: { label: 'volume', where: 'a docker named volume' },
+          rows,
+        })
+      );
+    }
   });
+
+  let node = '';
+  const outcomes = new Map<string, Outcome>();
 
   test.each(FILES)(
     '%s',
     async (rel) => {
+      const started = Date.now();
       const result = await container.exec(['node', ...flagsOf(rel), rel], {
         user: 'node',
         workingDir: TESTS,
         env: { NODE_TEST_DIR },
       });
+      const ms = Date.now() - started;
       if (result.exitCode !== 0) {
-        throw new Error(`${rel} exited ${result.exitCode}\n${tail(result.output)}`);
+        const why = `exit ${result.exitCode}`;
+        outcomes.set(rel, { status: 'failed', ms, why, output: tail(result.output) });
+        throw new Error(`${rel}: ${why}\n${tail(result.output)}`);
       }
+      const reason = skipReason(result.stdout);
+      outcomes.set(rel, reason === undefined ? { status: 'passed', ms } : { status: 'skipped', reason });
     },
     TEST_TIMEOUT_MS
   );
