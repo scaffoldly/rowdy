@@ -71,6 +71,17 @@ const awsEnvironment = (): Environment => {
   return env;
 };
 
+/** The tests start on an empty store: nothing a test finds was left by an earlier run. */
+const expectEmpty = async (container: StartedTestContainer, dir: string): Promise<void> => {
+  const listing = await container.exec(['ls', '-A', dir]);
+  expect(listing).toMatchObject({ exitCode: 0, stdout: '' });
+};
+
+const s3Client = (): S3Client =>
+  new S3Client(
+    process.env.NODEFS_S3_ENDPOINT ? { endpoint: process.env.NODEFS_S3_ENDPOINT, forcePathStyle: true } : {}
+  );
+
 /** A store's container, started: the tests run in `cwd` with their tmpdir under `dir`. */
 type Started = { container: StartedTestContainer; cwd: string; dir: string; stop(): Promise<void> };
 
@@ -99,6 +110,7 @@ const volume: Store = {
       .start();
     // A fresh volume is root's; the tests run as `node`, as an app does, so the permission tests run too.
     expect(await container.exec(['chown', 'node:node', '/data'])).toMatchObject({ exitCode: 0 });
+    await expectEmpty(container, '/data');
     return {
       container,
       cwd: '/nodefs',
@@ -128,7 +140,11 @@ const vfsS3: Store = {
     if (!S3_BUCKET) throw new Error('NODEFS_S3_BUCKET is required when AWS credentials are set');
     if (!existsSync(SHIM)) throw new Error(`${SHIM} missing: run native/build.sh ${process.arch} first`);
     if (!existsSync(join(ROOT, 'dist', 'index.js'))) throw new Error('dist/index.js missing: run yarn build first');
-    const prefix = `nodefs/${process.env.GITHUB_RUN_ID ?? randomUUID()}-${FLAVOUR}-${process.arch}`;
+    // Fresh on every run and every re-run of a CI job; the run id is only there to find it by.
+    const prefix = `nodefs/${process.env.GITHUB_RUN_ID ?? 'local'}/${randomUUID()}-${FLAVOUR}-${process.arch}`;
+    const s3 = s3Client();
+    const existing = await s3.send(new ListObjectsV2Command({ Bucket: S3_BUCKET, Prefix: `${prefix}/`, MaxKeys: 1 }));
+    if (existing.KeyCount) throw new Error(`s3://${S3_BUCKET}/${prefix}/ is not empty before the run`);
     const container = await new GenericContainer(IMAGES[FLAVOUR])
       .withUser('node')
       .withBindMounts([{ source: ROOT, target: '/w', mode: 'ro' }])
@@ -150,6 +166,7 @@ const vfsS3: Store = {
       .withWaitStrategy(Wait.forSuccessfulCommand('test -f /tmp/vfs.ready'))
       .withStartupTimeout(60_000)
       .start();
+    await expectEmpty(container, '/tmp/vfsstore');
     return {
       container,
       cwd: '/w/tests/native/nodefs/node',
@@ -164,7 +181,7 @@ const vfsS3: Store = {
 
 /** Every object the run left under `prefix`. */
 const removePrefix = async (prefix: string): Promise<void> => {
-  const s3 = new S3Client(S3_ENDPOINT ? { endpoint: S3_ENDPOINT, forcePathStyle: true } : {});
+  const s3 = s3Client();
   let token: string | undefined;
   do {
     const page = await s3.send(
