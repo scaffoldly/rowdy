@@ -29,7 +29,9 @@ if (!isFlavour(FLAVOUR)) {
 const ROOT = join(__dirname, '..', '..', '..');
 const NODE = join(__dirname, 'node');
 const SHIM = join(ROOT, 'lib', `linux-${process.arch}`, 'vfspreload.so');
-const TEST_TIMEOUT_MS = 120_000;
+/** A file's run is killed at this, in the container, so the outcome is recorded rather than jest timing out. */
+const FILE_TIMEOUT_S = 240;
+const TEST_TIMEOUT_MS = (FILE_TIMEOUT_S + 30) * 1000;
 const START_TIMEOUT_MS = 300_000;
 const TAIL_LINES = 60;
 
@@ -248,7 +250,7 @@ describe.each(STORES)(`node fs/promises tests on $label (${FLAVOUR})`, (store) =
         outcomes.get(rel)?.set(store.label, outcome);
       };
       const begun = Date.now();
-      const result = await started.container.exec(['node', ...flagsOf(rel), rel], {
+      const result = await started.container.exec(['timeout', String(FILE_TIMEOUT_S), 'node', ...flagsOf(rel), rel], {
         user: 'node',
         workingDir: started.cwd,
         env: { NODE_TEST_DIR: started.dir },
@@ -259,7 +261,8 @@ describe.each(STORES)(`node fs/promises tests on $label (${FLAVOUR})`, (store) =
         record(reason === undefined ? { status: 'passed', ms } : { status: 'skipped', reason });
         return;
       }
-      const why = `exit ${result.exitCode}`;
+      // GNU timeout exits 124, busybox's dies by the SIGTERM it sends; either way the clock says so.
+      const why = ms >= FILE_TIMEOUT_S * 1000 ? `timed out after ${FILE_TIMEOUT_S}s` : `exit ${result.exitCode}`;
       record({ status: 'failed', ms, why, output: tail(result.output) });
       const message = `${store.label} ${rel}: ${why}\n${tail(result.output)}`;
       if (store.gate) throw new Error(message);
