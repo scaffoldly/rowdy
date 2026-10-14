@@ -1,6 +1,7 @@
 import {
   CopyObjectCommand,
   DeleteObjectCommand,
+  DeleteObjectsCommand,
   GetObjectCommand,
   HeadObjectCommand,
   ListObjectsV2Command,
@@ -1224,16 +1225,23 @@ export class S3Adapter implements VfsAdapter {
     }
     const key = this.key(rel);
     await this.serial(key, async () => {
-      // A file has an entry; anything else may have been a directory, whose marker goes too.
-      const keys = this.entries.has(key) ? [key] : [key, `${key}/`];
-      for (const k of keys) {
-        try {
-          await this.client.send(new DeleteObjectCommand({ Bucket: this.options.bucket, Key: k }));
-        } catch (e) {
-          if (!isNotFound(e)) {
-            throw toVfsError(e);
-          }
-        }
+      // The path is already gone locally, and an entry does not tell a file from a directory (opening
+      // one to list it makes one), so the object and the directory marker go together, in one request.
+      let out;
+      try {
+        out = await this.client.send(
+          new DeleteObjectsCommand({
+            Bucket: this.options.bucket,
+            Delete: { Objects: [{ Key: key }, { Key: `${key}/` }], Quiet: true },
+          })
+        );
+      } catch (e) {
+        throw toVfsError(e);
+      }
+      const failed = out.Errors?.[0];
+      if (failed) {
+        const code = failed.Code === 'AccessDenied' ? 'EACCES' : 'EIO';
+        throw VfsError.code(code, `${failed.Key}: ${failed.Code} ${failed.Message ?? ''}`.trim());
       }
       this.entries.delete(key);
     });

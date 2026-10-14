@@ -1,6 +1,7 @@
 import {
   CopyObjectCommand,
   DeleteObjectCommand,
+  DeleteObjectsCommand,
   GetObjectCommand,
   HeadObjectCommand,
   ListObjectsV2Command,
@@ -20,6 +21,7 @@ import {
   readlinkSync,
   readSync,
   renameSync,
+  rmdirSync,
   rmSync,
   statSync,
   symlinkSync,
@@ -113,6 +115,12 @@ class FakeS3 {
     if (command instanceof DeleteObjectCommand) {
       this.objects.delete(command.input.Key!);
       return {};
+    }
+    if (command instanceof DeleteObjectsCommand) {
+      // Like S3: a key that is not there is deleted all the same.
+      const keys = (command.input.Delete?.Objects ?? []).flatMap(({ Key }) => (Key ? [Key] : []));
+      for (const key of keys) this.objects.delete(key);
+      return { Deleted: command.input.Delete?.Quiet ? [] : keys.map((Key) => ({ Key })) };
     }
     if (command instanceof CopyObjectCommand) {
       const source = decodeURIComponent(command.input.CopySource!.split('/').slice(1).join('/'));
@@ -554,6 +562,17 @@ describe('S3Adapter', () => {
       expect([...s3.objects.keys()]).toEqual(['albums/']);
       await adapter.unlink(`${mount}/albums`);
       expect(s3.objects.size).toBe(0);
+    });
+
+    it('rmdir of a directory that was listed (and so has an entry) still removes its marker', async () => {
+      mkdirSync(join(backing, 'listed'));
+      await adapter.mkdir(`${mount}/listed`);
+      await adapter.acquire(`${mount}/listed`); // opendir: the server acquires every opened path
+      await adapter.release(`${mount}/listed`);
+      rmdirSync(join(backing, 'listed')); // the shim removes the backing directory first
+      await adapter.unlink(`${mount}/listed`);
+      expect([...s3.objects.keys()]).toEqual([]);
+      expect(s3.calls.filter((c) => c === 'DeleteObjectsCommand')).toHaveLength(1); // object and marker, one request
     });
   });
 
@@ -1115,7 +1134,7 @@ describe('S3Adapter', () => {
       s3.calls.length = 0;
       await a.rename(`${mount}/final.txt`, `${mount}/final.txt-wal`);
       expect(s3.objects.has('final.txt')).toBe(false);
-      expect(s3.calls).toEqual(['DeleteObjectCommand']);
+      expect(s3.calls).toEqual(['DeleteObjectsCommand']); // the object and any directory marker, one request
     });
   });
 
