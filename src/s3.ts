@@ -350,11 +350,6 @@ export class S3Adapter implements VfsAdapter {
     } catch {
       return undefined;
     }
-    return this.inMount(rel, target);
-  }
-
-  /** The virtual path a link at `rel` with (virtual) `target` resolves to, when that is inside the mount. */
-  private inMount(rel: string, target: string): string | undefined {
     const { mountpoint } = this.options;
     const path = isAbsolute(target) ? normalize(target) : normalize(join(mountpoint, dirname(rel), target));
     return path === mountpoint || path.startsWith(`${mountpoint}/`) ? path : undefined;
@@ -481,16 +476,6 @@ export class S3Adapter implements VfsAdapter {
     }
     if (isLinkMode(out.Metadata)) {
       const target = ((await out.Body?.transformToString()) ?? '').trim();
-      // The bucket is not the instance: whoever can write it must not get a link here that reads local files
-      // (/proc/self/environ, the function's code), so a link from S3 may only point inside the mount.
-      if (this.inMount(this.unkey(key), target) === undefined) {
-        if (lstatOf(local)?.isSymbolicLink()) {
-          await fs.rm(local, { force: true }); // an earlier version of the link no longer stands
-          this.entries.delete(key);
-        }
-        this.log(`refused`, { key, target, reason: 'symbolic link out of the mount' });
-        throw VfsError.code('EACCES', `${key}: symbolic link to ${target} leaves the mount`);
-      }
       await fs.mkdir(dirname(local), { recursive: true });
       if (lstatOf(local)?.isDirectory()) {
         throw VfsError.code('EISDIR', `${key}: a symbolic link where a directory is`);
@@ -827,12 +812,7 @@ export class S3Adapter implements VfsAdapter {
     }
     if (known && (await this.modified(local, known))) return; // unflushed here: ours until it is
     if (known?.link && known.etag === etag && lstatOf(local)?.isSymbolicLink()) return;
-    try {
-      await this.download(key, local);
-    } catch (e) {
-      // A refused link (out of the mount) is left out of the listing; the rest of the directory still lists.
-      if (!(e instanceof VfsError && e.errno === LINUX_ERRNO.EACCES)) throw e;
-    }
+    await this.download(key, local);
   }
 
   /** Inverse of key(): bucket key -> path relative to the mountpoint. */
