@@ -100,6 +100,37 @@ assert.ok(!fs.existsSync("/vfsx"));
   [ "$checked" = 1 ] || skip "node imports none of them"
 }
 
+@test "a relative path that climbs into the mount from outside it reaches the mount" {
+  run --separate-stderr sh -euc '
+    cd /tmp
+    node -e "require(\"fs\").writeFileSync(\"../vfs/climbed.txt\", \"up\")"
+    ln -s climbed.txt ../vfs/climbed-link
+  '
+  echo "$output $stderr"
+  [ "$status" -eq 0 ]
+  [ "$(cat /tmp/vfsstore/climbed.txt)" = up ]
+  [ "$(readlink /tmp/vfsstore/climbed-link)" = climbed.txt ]
+  rm -f /vfs/climbed.txt /vfs/climbed-link
+}
+
+@test "node's fs.watch sees a change under the mount (inotify on the translated path)" {
+  mkdir -p /vfs/watched
+  run --separate-stderr node -e '
+const fs = require("fs");
+const watcher = fs.watch("/vfs/watched", (event, name) => {
+  console.log(event, name);
+  watcher.close();
+  process.exit(0);
+});
+setTimeout(() => fs.writeFileSync("/vfs/watched/new.txt", "x"), 100);
+setTimeout(() => { console.error("no event"); process.exit(1); }, 5000);
+'
+  echo "$output $stderr"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"new.txt"* ]]
+  rm -rf /vfs/watched
+}
+
 @test "paths outside every mount are left alone" {
   echo outside >/tmp/outside.a
   mv /tmp/outside.a /tmp/outside.b

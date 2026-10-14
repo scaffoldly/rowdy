@@ -24,6 +24,14 @@ setup() {
   [[ "$output" == *"Permission denied"* ]]
 }
 
+@test "a stat refused past the first name of the path is EACCES too, not ENOENT (a partial walk's errno)" {
+  mkdir -p /vfs/deeper
+  run cat /vfs/deeper/denied
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"Permission denied"* ]]
+  rmdir /vfs/deeper
+}
+
 @test "a refused flush is EIO" {
   run node -e "fs.writeFileSync('/vfs/flushfail', 'x')"
   [[ "$output" == *"EIO"* ]]

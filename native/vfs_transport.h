@@ -254,8 +254,27 @@ static void fill_walk(struct p9buf *b, void *v) {
     for (int i = 0; i < a->n; i++) puts9(b, a->names[i], a->lens[i]);
 }
 
+static int p9_clunk(uint32_t fid);
+
+/* A partial Rwalk carries no error, only how far it got: walk that far again, then the name it stopped
+ * at on its own, whose Rlerror says why (EACCES, ENOTDIR, ENOENT). */
+static int walk_errno(const struct walk_args *a, int reached) {
+    unsigned char reply[7 + 2 + 13 * P9_MAXWELEM];
+    struct walk_args prefix = { a->fid, newfid(), {0}, {0}, reached };
+    for (int i = 0; i < reached; i++) { prefix.names[i] = a->names[i]; prefix.lens[i] = a->lens[i]; }
+    if (p9_call(Twalk, fill_walk, &prefix, reply, sizeof reply) < 0) return errno;
+    if (get16(reply + 7) != reached) return ENOENT;
+    struct walk_args next = { prefix.newfid, newfid(), { a->names[reached] }, { a->lens[reached] }, 1 };
+    int e = ENOENT;   /* it resolves now: gone and back between the two walks */
+    if (p9_call(Twalk, fill_walk, &next, reply, sizeof reply) < 0) e = errno;
+    else p9_clunk(next.newfid);
+    p9_clunk(prefix.newfid);
+    return e;
+}
+
 /* Walk `rel` ("" or "a/b/c") from `root` into a fresh fid in `*out`. Sixteen
- * names per message, as the protocol allows; a partial walk is ENOENT. */
+ * names per message, as the protocol allows; a partial walk fails with the
+ * errno of the name it stopped at. */
 static int p9_walk(uint32_t root, const char *rel, uint32_t *out) {
     unsigned char reply[7 + 2 + 13 * P9_MAXWELEM];
     uint32_t from = root, to = newfid();
@@ -272,8 +291,13 @@ static int p9_walk(uint32_t root, const char *rel, uint32_t *out) {
             p = e ? e : p + strlen(p);
         }
         if (!first && a.n == 0) break;
-        if (p9_call(Twalk, fill_walk, &a, reply, sizeof reply) < 0) return -1;
-        if (get16(reply + 7) != a.n) { errno = ENOENT; return -1; }
+        int r = p9_call(Twalk, fill_walk, &a, reply, sizeof reply);
+        int e = r < 0 ? errno : get16(reply + 7) != a.n ? walk_errno(&a, get16(reply + 7)) : 0;
+        if (e) {
+            if (!first) p9_clunk(to);   /* bound by the previous sixteen */
+            errno = e;
+            return -1;
+        }
         from = to;   /* the next sixteen continue from the new fid */
         if (!*p) break;
     }
