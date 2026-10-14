@@ -1,6 +1,6 @@
 /*
  * Unit tests for vfs_transport.h: 9P message encoding and decoding, tags, and the message names the
- * fault report's breadcrumb shows. Run by native/unit.sh.
+ * fault report's breadcrumb shows. Run by tests/native/unit.sh.
  */
 #define _GNU_SOURCE
 #include <stdarg.h>

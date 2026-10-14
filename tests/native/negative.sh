@@ -2,7 +2,7 @@
 # Negative cases for native/symbols.sh: each object below breaks one rule of ADR 0003, and the gate
 # must reject it for that rule (exit 1, with its reason). A gate that passes any of them is broken.
 #
-#   sh native/negative.sh x64|arm64
+#   sh tests/native/negative.sh x64|arm64
 set -eu
 
 arch="${1:-}"
@@ -12,7 +12,7 @@ case "$arch" in
   *) echo "usage: $0 x64|arm64" >&2; exit 2 ;;
 esac
 
-root="$(cd "$(dirname "$0")/.." && pwd)"
+root="$(cd "$(dirname "$0")/../.." && pwd)"
 out=".negative/linux-$arch"
 rm -rf "${root:?}/$out"
 mkdir -p "$root/$out"

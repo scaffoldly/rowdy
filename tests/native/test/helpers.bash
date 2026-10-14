@@ -1,10 +1,10 @@
-# Shared by native/test/*.bats. The suite runs inside the image under the shim's LD_PRELOAD with
-# VFS_MOUNTS=/vfs=/tmp/vfsstore (native/test.sh), so bats itself and every command a test runs are
+# Shared by tests/native/test/*.bats. The suite runs inside the image under the shim's LD_PRELOAD with
+# VFS_MOUNTS=/vfs=/tmp/vfsstore (tests/native/test.sh), so bats itself and every command a test runs are
 # preloaded. A test that exercises the image's own shell runs it as `sh -c`.
 
 bats_require_minimum_version 1.5.0   # run --separate-stderr
 
-# compile <name> [gcc args...]: native/test/c/<name>.c into $BATS_FILE_TMPDIR/<name>
+# compile <name> [gcc args...]: tests/native/test/c/<name>.c into $BATS_FILE_TMPDIR/<name>
 compile() {
   local name=$1
   shift
@@ -15,7 +15,7 @@ compile() {
 # and refuses a few paths (denied, flushfail, busy) to exercise the shim's error paths.
 start_supervisor() {
   rm -f /tmp/ops.log /tmp/vfs.ready
-  node /w/native/test-server.js 3>&- &   # bats waits on fd 3: a background job must not hold it
+  node /w/tests/native/test-server.js 3>&- &   # bats waits on fd 3: a background job must not hold it
   echo $! >"$BATS_FILE_TMPDIR/supervisor.pid"
   for _ in 1 2 3 4 5 6 7 8 9 10; do
     [ -f /tmp/vfs.ready ] && break

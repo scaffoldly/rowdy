@@ -36,10 +36,10 @@ jobs:
         run: sh native/build.sh ${{ matrix.arch }}
 
       - name: Gate rejects bad builds
-        run: sh native/negative.sh ${{ matrix.arch }}
+        run: sh tests/native/negative.sh ${{ matrix.arch }}
 
       - name: Unit tests (cmocka, ASan + UBSan)
-        run: sh native/unit.sh ${{ matrix.arch }}
+        run: sh tests/native/unit.sh ${{ matrix.arch }}
 
       # The test supervisor is the package's own 9P server, so the test needs dist/.
       - name: Use Node.js 22.x
@@ -55,10 +55,10 @@ jobs:
           yarn --frozen-lockfile && yarn build
 
       - name: Test shim (musl, alpine)
-        run: sh native/test.sh ${{ matrix.arch }} alpine
+        run: sh tests/native/test.sh ${{ matrix.arch }} alpine
 
       - name: Test shim (glibc, debian)
-        run: sh native/test.sh ${{ matrix.arch }} debian
+        run: sh tests/native/test.sh ${{ matrix.arch }} debian
 
       # A fork's pull request gets no OIDC token, so the bucket half runs only for this repository.
       - name: Configure AWS Credentials
@@ -70,13 +70,13 @@ jobs:
           role-to-assume: ${{ vars.AWS_ROLE_ARN }}
 
       - name: Test shim (distroless node, nonroot)
-        run: sh native/distroless.sh ${{ matrix.arch }}
+        run: sh tests/native/distroless.sh ${{ matrix.arch }}
         env:
           S3_BUCKET: ${{ steps.aws.outcome == 'success' && vars.S3_BUCKET_CI || '' }}
           S3_PREFIX: ${{ github.repository }}/${{ github.run_id }}-${{ github.run_attempt }}/${{ matrix.arch }}
 
       - name: Test shim (glibc below 2.34)
-        run: sh native/legacy.sh ${{ matrix.arch }}
+        run: sh tests/native/legacy.sh ${{ matrix.arch }}
 
       - name: Upload shim
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -85,23 +85,31 @@ jobs:
           path: lib/linux-${{ matrix.arch }}/vfspreload.so
           if-no-files-found: error
 
-  # node's own fs/promises tests (native/nodefs) on each store, as the unprivileged node user.
+  # node's own fs/promises tests (tests/native/nodefs) in the image, as the unprivileged node user, with
+  # testcontainers; the image runs at the runner's own architecture.
   nodefs:
     strategy:
       fail-fast: false
       matrix:
         arch: [x64, arm64]
         flavour: [alpine, debian]
-        store: [volume]
     runs-on: ${{ matrix.arch == 'arm64' && 'ubuntu-24.04-arm' || 'ubuntu-24.04' }}
-    name: node fs (${{ matrix.store }}, ${{ matrix.flavour }}, ${{ matrix.arch }})
+    name: node fs (volume, ${{ matrix.flavour }}, ${{ matrix.arch }})
 
     steps:
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
+      - name: Use Node.js 22.x
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22.x
+          cache: 'yarn'
+
       - name: node fs/promises tests
-        run: sh native/nodefs.sh ${{ matrix.arch }} ${{ matrix.flavour }} ${{ matrix.store }}
+        run: yarn --frozen-lockfile && yarn test:nodefs
+        env:
+          NODEFS_FLAVOUR: ${{ matrix.flavour }}
 
   lint:
     runs-on: ubuntu-latest
@@ -204,7 +212,7 @@ jobs:
           role-to-assume: ${{ vars.AWS_ROLE_ARN }}
 
       - name: SQLite ${{ matrix.suite }}
-        run: sh native/sqlite.sh ${{ matrix.arch }} ${{ matrix.suite }}
+        run: sh tests/native/sqlite.sh ${{ matrix.arch }} ${{ matrix.suite }}
         env:
           S3_BUCKET: ${{ steps.aws.outcome == 'success' && vars.S3_BUCKET_CI || '' }}
           S3_PREFIX: ${{ github.repository }}/${{ github.run_id }}-${{ github.run_attempt }}/${{ matrix.arch }}-${{ matrix.suite }}
@@ -242,7 +250,7 @@ jobs:
           yarn --frozen-lockfile && yarn build
 
       - name: Mount with v9fs and exercise it
-        run: sh native/conformance.sh
+        run: sh tests/native/conformance.sh
 
   build-publish:
     runs-on: ubuntu-latest

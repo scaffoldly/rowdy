@@ -4,7 +4,7 @@
 # on /s3 when S3_BUCKET is set; speedtest1 must complete everywhere, its timings reported as ratios,
 # not gated. The report is printed, and appended to $GITHUB_STEP_SUMMARY when it is set.
 #
-#   sh native/sqlite.sh x64|arm64 mptest|speedtest1
+#   sh tests/native/sqlite.sh x64|arm64 mptest|speedtest1
 set -eu
 
 VERSION=3530400
@@ -24,7 +24,7 @@ if [ ! -f /.dockerenv ]; then
     mptest|speedtest1) ;;
     *) echo "usage: $0 x64|arm64 mptest|speedtest1" >&2; exit 2 ;;
   esac
-  root="$(cd "$(dirname "$0")/.." && pwd)"
+  root="$(cd "$(dirname "$0")/../.." && pwd)"
   [ -f "$root/dist/index.js" ] || { echo "dist/index.js missing: run yarn build first (the supervisor is the package's 9P server)" >&2; exit 2; }
   [ -f "$root/lib/linux-$arch/vfspreload.so" ] || { echo "lib/linux-$arch/vfspreload.so missing: run native/build.sh $arch first" >&2; exit 2; }
 
@@ -47,7 +47,7 @@ if [ ! -f /.dockerenv ]; then
     -e AWS_ACCESS_KEY_ID -e AWS_SECRET_ACCESS_KEY -e AWS_SESSION_TOKEN \
     -v "$root:/w:ro" -v "$cache/out:/out" \
     node:22-bookworm-slim@sha256:c3de60bf2f9dd0ac6370e6117950ff62d6e339527e7472301c9c78a017978392 \
-    sh /w/native/sqlite.sh || rc=$?
+    sh /w/tests/native/sqlite.sh || rc=$?
   if [ -f "$cache/out/summary.md" ]; then
     cat "$cache/out/summary.md"
     [ -z "${GITHUB_STEP_SUMMARY:-}" ] || cat "$cache/out/summary.md" >> "$GITHUB_STEP_SUMMARY"
@@ -82,7 +82,7 @@ else
 fi
 
 say "starting the supervisor (mounts: /vfs${S3_BUCKET:+ /s3})"
-node /w/native/sqlite-server.js &
+node /w/tests/native/sqlite-server.js &
 srv=$!
 for i in $(seq 1 50); do [ -f /tmp/vfs.ready ] && break; sleep 0.2; done
 [ -f /tmp/vfs.ready ] || { echo "sqlite: supervisor did not start" >&2; exit 1; }

@@ -4,13 +4,12 @@
 // With S3_BUCKET and S3_PREFIX (and AWS credentials) set, a second mount is a real bucket, checked
 // from here through the S3 API and emptied afterwards.
 //
-//   sh native/distroless.sh x64|arm64
-/* global require, __dirname, process, console, Buffer */
+//   sh tests/native/distroless.sh x64|arm64
 const assert = require('assert');
 const { execFile } = require('child_process');
 const fs = require('fs');
 const path = require('path');
-const { P9Server, LocalAdapter, S3Adapter } = require(path.join(__dirname, '..', 'dist', 'index.js'));
+const { P9Server, LocalAdapter, S3Adapter } = require(path.join(__dirname, '..', '..', 'dist', 'index.js'));
 
 const SHIM = process.env.SHIM;
 const BACKING = '/tmp/vfsstore';

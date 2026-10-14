@@ -1,10 +1,9 @@
-// The supervisor for native/sqlite.sh: the package's 9P server with /vfs on a local directory and,
+// The supervisor for tests/native/sqlite.sh: the package's 9P server with /vfs on a local directory and,
 // when S3_BUCKET and S3_PREFIX are set, /s3 on the bucket (the sidecars local, as on nuss.io). On
 // SIGTERM it closes and empties its prefix. Needs dist/ built.
-/* global require, __dirname, process */
 const fs = require('fs');
 const path = require('path');
-const { P9Server, LocalAdapter, S3Adapter } = require(path.join(__dirname, '..', 'dist', 'index.js'));
+const { P9Server, LocalAdapter, S3Adapter } = require(path.join(__dirname, '..', '..', 'dist', 'index.js'));
 
 const { S3_BUCKET, S3_PREFIX } = process.env;
 

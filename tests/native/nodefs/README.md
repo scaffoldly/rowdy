@@ -9,13 +9,13 @@ a failing test is fixed in the store, not in the test.
 - `node/test/common`: node's test harness, whole.
 - `node/test/fixtures`: only what those tests read (`x.txt`, `empty.txt`, `baz.js`, `copy/kitchen-sink`).
 
-`run.js` runs each file in its own node with the file's `// Flags:`, its tmpdir under `NODE_TEST_DIR`.
-`native/nodefs.sh` runs it in the image as the `node` user against a store:
+`nodefs.test.ts` (jest + testcontainers) starts the image at the host's architecture with a fresh docker
+named volume at `/data`, then runs each file as one jest test: its own `node` with the file's `// Flags:`,
+as the unprivileged `node` user, its tmpdir under `NODE_TEST_DIR=/data/nodefs`. The volume is removed
+afterwards.
 
 ```sh
-sh native/nodefs.sh x64|arm64 alpine|debian volume [--filter <regex>]
+yarn test:nodefs                          # alpine
+NODEFS_FLAVOUR=debian yarn test:nodefs
+yarn test:nodefs -t test-fs-rm            # one file
 ```
-
-| store    | where the tests' tmpdir lives                                 |
-| -------- | ------------------------------------------------------------- |
-| `volume` | a docker named volume at `/data`, created and removed per run |

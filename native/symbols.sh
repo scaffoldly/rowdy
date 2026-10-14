@@ -8,8 +8,8 @@
 # Fails unless DT_NEEDED is exactly libc.so.6 and libdl.so.2, there are undefined symbols to check
 # (an empty list means the parse failed), every strong undefined symbol is exported by musl with the
 # same ABI, and no GLIBC_ version newer than 2.17 is required: older glibc must still start a
-# preloaded process (native/legacy.sh), even below the 2.34 floor where volumes are supported.
-# native/negative.sh checks that each rule rejects a build that breaks it.
+# preloaded process (tests/native/legacy.sh), even below the 2.34 floor where volumes are supported.
+# tests/native/negative.sh checks that each rule rejects a build that breaks it.
 set -eu
 
 arch="${1:-}"

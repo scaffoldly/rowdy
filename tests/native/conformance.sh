@@ -3,14 +3,14 @@
 # drives it through ordinary tools: the server is a correct 9P2000.L file server, not only the shim's
 # counterpart. Linux only, needs root for mount(2) and the 9p modules. Needs dist/ built.
 set -eu
-root="$(cd "$(dirname "$0")/.." && pwd)"
+root="$(cd "$(dirname "$0")/../.." && pwd)"
 fail() { echo "FAIL: $*"; exit 1; }
 
 sudo modprobe 9pnet_fd 2>/dev/null || sudo modprobe 9pnet || true
 sudo modprobe 9p || fail "no 9p module on this kernel"
 
 rm -f /tmp/ops.log /tmp/vfs.ready
-node "$root/native/test-server.js" > /tmp/server.out 2>&1 &
+node "$root/tests/native/test-server.js" > /tmp/server.out 2>&1 &
 SRVPID=$!
 for i in $(seq 1 20); do [ -f /tmp/vfs.ready ] && break; sleep 0.25; done
 [ -f /tmp/vfs.ready ] || { cat /tmp/server.out; fail "server did not start"; }

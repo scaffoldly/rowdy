@@ -2,7 +2,7 @@
 # glibc older than the 2.34 floor (ADR 0003) must still start a preloaded process, and stat through
 # the pre-2.33 __xstat names without crashing, inside and outside a mount.
 #
-#   sh native/legacy.sh x64|arm64
+#   sh tests/native/legacy.sh x64|arm64
 set -eu
 
 arch="${1:-}"
@@ -12,7 +12,7 @@ case "$arch" in
   *) echo "usage: $0 x64|arm64" >&2; exit 2 ;;
 esac
 
-root="$(cd "$(dirname "$0")/.." && pwd)"
+root="$(cd "$(dirname "$0")/../.." && pwd)"
 so="lib/linux-$arch/vfspreload.so"
 [ -f "$root/$so" ] || { echo "$so missing: run native/build.sh $arch first" >&2; exit 2; }
 

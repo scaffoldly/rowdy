@@ -143,7 +143,7 @@ dist/
 bin/
 # Compiled shims (built by native/build.sh, shipped in the package)
 lib/
-# Objects the gate must reject (built by native/negative.sh)
+# Objects the gate must reject (built by tests/native/negative.sh)
 .negative/
-# Pinned SQLite sources and results (native/sqlite.sh)
+# Pinned SQLite sources and results (tests/native/sqlite.sh)
 .sqlite/

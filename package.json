@@ -34,12 +34,13 @@
     "build": "yarn build:index",
     "build:native": "sh native/build.sh x64 && sh native/build.sh arm64",
     "build:index": "tsup",
-    "test": "yarn jest -- --verbose --testTimeout=30000",
-    "test:native": "for flavour in alpine debian; do sh native/test.sh $(node -p process.arch) $flavour || exit 1; done",
-    "test:unit": "sh native/unit.sh $(node -p process.arch)",
+    "test": "jest --selectProjects unit --verbose --testTimeout=30000",
+    "test:native": "for flavour in alpine debian; do sh tests/native/test.sh $(node -p process.arch) $flavour || exit 1; done",
+    "test:unit": "sh tests/native/unit.sh $(node -p process.arch)",
     "jest": "jest",
     "lint": "eslint .",
-    "lint:fix": "eslint . --fix"
+    "lint:fix": "eslint . --fix",
+    "test:nodefs": "jest --selectProjects nodefs --verbose"
   },
   "prettier": {
     "semi": true,
@@ -69,6 +70,26 @@
         },
         "moduleNameMapper": {
           "^@scaffoldly/rowdy-vfs$": "<rootDir>/src/index.ts"
+        },
+        "testPathIgnorePatterns": [
+          "/node_modules/",
+          "<rootDir>/tests/native/"
+        ]
+      },
+      {
+        "displayName": "nodefs",
+        "preset": "ts-jest",
+        "testEnvironment": "node",
+        "testMatch": [
+          "<rootDir>/tests/native/**/*.test.ts"
+        ],
+        "transform": {
+          "^.+\\.ts$": [
+            "ts-jest",
+            {
+              "tsconfig": "tests/tsconfig.json"
+            }
+          ]
         }
       }
     ]
@@ -86,6 +107,7 @@
     "globals": "^16.2.0",
     "jest": "^30.1.3",
     "prettier": "^3.0.0",
+    "testcontainers": "^12.2.1",
     "ts-jest": "^29.1.0",
     "tsup": "^8.5.0",
     "typescript": "^5.0.0"

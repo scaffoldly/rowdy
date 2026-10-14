@@ -1,6 +1,6 @@
 /*
  * Unit tests for vfs_core.h: the mount table, path translation in both directions, relative paths
- * resolved against a directory under a mount, and the descriptor table. Run by native/unit.sh.
+ * resolved against a directory under a mount, and the descriptor table. Run by tests/native/unit.sh.
  */
 #define _GNU_SOURCE
 #include <stdarg.h>

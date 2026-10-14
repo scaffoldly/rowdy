@@ -1,7 +1,7 @@
 /*
  * Unit tests for vfs_fault.h: the /proc/self/maps parser, the report's formatting, the breadcrumbs
  * (and that they are off unless VFS_FAULT_REPORT=1), and a whole report for a made-up fault.
- * Run by native/unit.sh.
+ * Run by tests/native/unit.sh.
  */
 #define _GNU_SOURCE
 #include <stdarg.h>
