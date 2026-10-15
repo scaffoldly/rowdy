@@ -147,12 +147,8 @@ export class LambdaRequest extends Request<LambdaPipeline> {
         }
       }
 
-      const { reached, trust } = reachedBy(headers, this.pipeline.routes.hosts);
-      log.debug(trust.trusted ? 'Forwarded Host Trusted' : 'Forwarded Host Not Used', {
-        cdn: trust.cdn,
-        origin: trust.origin ?? '',
-        reason: trust.trusted ? 'in spec.hosts' : trust.reason,
-      });
+      const { reached, cdn } = reachedBy(headers);
+      log.debug('Reached By', { cdn, ...reached });
       const { host, hostname, port, proto } = reached;
       const userAgent = headers['User-Agent'] || headers['user-agent'] || this.pipeline.environment.userAgent;
 

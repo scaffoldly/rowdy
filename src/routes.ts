@@ -35,7 +35,6 @@ export type RoutesSpec = {
   crontab?: string[];
   volumes?: string[];
   cors?: CorsPaths;
-  hosts?: string[];
 };
 
 export type RoutesSchema = ApiSchema<RoutesSpec, undefined>;
@@ -557,8 +556,6 @@ export class Routes implements IRoutes, ILoggable {
   readonly crontab: Array<string> = [];
   readonly volumes: Array<string> = [];
   readonly cors: CorsPaths = {};
-  // Public origins, normalized (`https://app.example`), whose forwarded headers are trusted.
-  readonly hosts: Array<string> = [];
 
   private constructor() {}
 
@@ -630,14 +627,7 @@ export class Routes implements IRoutes, ILoggable {
     );
   }
 
-  private static readonly SPEC_KEYS: Array<keyof RoutesSpec> = [
-    'default',
-    'paths',
-    'crontab',
-    'volumes',
-    'cors',
-    'hosts',
-  ];
+  private static readonly SPEC_KEYS: Array<keyof RoutesSpec> = ['default', 'paths', 'crontab', 'volumes', 'cors'];
 
   // A document with no apiVersion / kind / spec, but at least one spec field, is a bare spec.
   private static isSpec(obj: object): obj is RoutesSpec {
@@ -669,8 +659,7 @@ export class Routes implements IRoutes, ILoggable {
       .withDefault(routes.spec?.default || '')
       .withCrontab(routes.spec?.crontab || [])
       .withVolumes(routes.spec?.volumes || [])
-      .withCors(routes.spec?.cors || {})
-      .withHosts(routes.spec?.hosts || []);
+      .withCors(routes.spec?.cors || {});
   }
 
   static fromPath(path: string): Routes {
@@ -771,25 +760,6 @@ export class Routes implements IRoutes, ILoggable {
     return this;
   }
 
-  // DEVNOTE: Validated on the way in, like volumes. A bare host means https on its default port.
-  withHosts(hosts: Array<string>): this {
-    if (!Array.isArray(hosts)) {
-      throw new Error(`Invalid hosts, expected a list of hosts or origins`);
-    }
-    hosts.forEach((entry) => {
-      const value = String(entry).trim();
-      const uri = URI.from(value.includes('://') ? value : `https://${value}`);
-      const bare = uri.pathname === '/' && !uri.search && !uri.hash && !uri.username && !uri.password;
-      if (uri.error || !['http:', 'https:'].includes(uri.protocol) || !uri.hostname || !bare) {
-        throw new Error(`Invalid host '${value}', expected a host or an http(s) origin such as https://app.example`);
-      }
-      if (!this.hosts.includes(uri.origin)) {
-        this.hosts.push(uri.origin);
-      }
-    });
-    return this;
-  }
-
   // DEVNOTE: Validated on the way in, like volumes. A later entry for the same pattern replaces
   // the earlier one but keeps its position.
   withCors(cors: CorsPaths): this {
@@ -851,7 +821,6 @@ export class Routes implements IRoutes, ILoggable {
         crontab: this.crontab.length ? this.crontab : undefined,
         volumes: this.volumes.length ? this.volumes : undefined,
         cors: Object.keys(this.cors).length ? this.cors : undefined,
-        hosts: this.hosts.length ? this.hosts : undefined,
       },
       status: undefined,
     };
@@ -985,7 +954,6 @@ export class Routes implements IRoutes, ILoggable {
     this.withCrontab(other.crontab);
     this.withVolumes(other.volumes);
     this.withCors(other.cors);
-    this.withHosts(other.hosts);
     other.rules.forEach((rule) => {
       rule.backendRefs?.forEach((ref) => {
         rule.matches?.forEach((match) => {
@@ -1014,6 +982,6 @@ export class Routes implements IRoutes, ILoggable {
   }
 
   repr(): string {
-    return `Routes(version=${this.version}, rules=${JSON.stringify(this.rules)}, crontab=${JSON.stringify(this.crontab)}, cors=${JSON.stringify(this.cors)}, hosts=${JSON.stringify(this.hosts)})`;
+    return `Routes(version=${this.version}, rules=${JSON.stringify(this.rules)}, crontab=${JSON.stringify(this.crontab)}, cors=${JSON.stringify(this.cors)})`;
   }
 }

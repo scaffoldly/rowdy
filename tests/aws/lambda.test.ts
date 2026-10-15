@@ -199,23 +199,12 @@ describe('aws lambda runtime', () => {
 
   describe('runtime variables', () => {
     const LAMBDA_HOST = 'abc.lambda-url.us-east-1.on.aws';
-    const withHosts = (...hosts: string[]): Environment => {
-      const environment = withCrontab(CRON_LINE);
-      environment.routes.withHosts(hosts);
-      return environment;
-    };
-    const own = {
-      HTTP_HOST: LAMBDA_HOST,
-      HTTP_HOSTNAME: LAMBDA_HOST,
-      HTTP_PORT: '443',
-      HTTP_PROTO: 'https',
-      HTTP_ORIGIN: `https://${LAMBDA_HOST}`,
-    };
+    const environment = (): Environment => withCrontab(CRON_LINE);
 
     it('default to localhost over http on port 80', async () => {
-      const environment = new Environment(new Logger());
-      environment['_envVars'].complete();
-      expect(await lastValueFrom(environment.Env)).toMatchObject({
+      const fresh = new Environment(new Logger());
+      fresh['_envVars'].complete();
+      expect(await lastValueFrom(fresh.Env)).toMatchObject({
         HTTP_HOST: 'localhost',
         HTTP_HOSTNAME: 'localhost',
         HTTP_PORT: '80',
@@ -225,34 +214,19 @@ describe('aws lambda runtime', () => {
     });
 
     it("describe a direct request by the Function URL's own host over https", async () => {
-      const env = await envAfter(withHosts('app.example'), functionUrlEvent({ host: LAMBDA_HOST }));
-      expect(env).toMatchObject(own);
+      const env = await envAfter(environment(), functionUrlEvent({ host: LAMBDA_HOST }));
+      expect(env).toMatchObject({
+        HTTP_HOST: LAMBDA_HOST,
+        HTTP_HOSTNAME: LAMBDA_HOST,
+        HTTP_PORT: '443',
+        HTTP_PROTO: 'https',
+        HTTP_ORIGIN: `https://${LAMBDA_HOST}`,
+      });
     });
 
-    it('ignore forwarded headers whose origin is not in spec.hosts', async () => {
+    it('take the host and scheme a proxy forwards', async () => {
       const env = await envAfter(
-        withHosts('app.example'),
-        functionUrlEvent({
-          host: LAMBDA_HOST,
-          'x-forwarded-host': 'evil.example',
-          'x-forwarded-proto': 'https',
-          'x-forwarded-port': '8443',
-        })
-      );
-      expect(env).toMatchObject(own);
-    });
-
-    it('ignore every forwarded host without spec.hosts', async () => {
-      const env = await envAfter(
-        withCrontab(CRON_LINE),
-        functionUrlEvent({ host: LAMBDA_HOST, 'x-forwarded-host': 'app.example' })
-      );
-      expect(env).toMatchObject(own);
-    });
-
-    it('use a forwarded host whose origin is in spec.hosts', async () => {
-      const env = await envAfter(
-        withHosts('app.example'),
+        environment(),
         functionUrlEvent({ host: LAMBDA_HOST, 'x-forwarded-host': 'app.example', 'x-forwarded-proto': 'https' })
       );
       expect(env).toMatchObject({
@@ -264,27 +238,21 @@ describe('aws lambda runtime', () => {
       });
     });
 
-    it('keep the port of a forwarded host and match it against spec.hosts', async () => {
-      const event = functionUrlEvent({ host: LAMBDA_HOST, 'x-forwarded-host': 'app.example:8443' });
-      expect(await envAfter(withHosts('https://app.example:8443'), event)).toMatchObject({
+    it('take the port from the forwarded host, never X-Forwarded-Port', async () => {
+      const env = await envAfter(
+        environment(),
+        functionUrlEvent({ host: LAMBDA_HOST, 'x-forwarded-host': 'app.example:8443', 'x-forwarded-port': '443' })
+      );
+      expect(env).toMatchObject({
         HTTP_HOSTNAME: 'app.example:8443',
         HTTP_PORT: '8443',
         HTTP_ORIGIN: 'https://app.example:8443',
       });
-      expect(await envAfter(withHosts('app.example'), event)).toMatchObject(own);
-    });
-
-    it('refuse a scheme spec.hosts does not list', async () => {
-      const env = await envAfter(
-        withHosts('app.example'),
-        functionUrlEvent({ host: LAMBDA_HOST, 'x-forwarded-host': 'app.example', 'x-forwarded-proto': 'http' })
-      );
-      expect(env).toMatchObject(own);
     });
 
     it("prefer a CDN's own scheme header to X-Forwarded-Proto", async () => {
       const cloudfront = await envAfter(
-        withHosts('http://app.example'),
+        environment(),
         functionUrlEvent({
           host: LAMBDA_HOST,
           'x-forwarded-host': 'app.example',
@@ -295,7 +263,7 @@ describe('aws lambda runtime', () => {
       expect(cloudfront).toMatchObject({ HTTP_PROTO: 'http', HTTP_PORT: '80', HTTP_ORIGIN: 'http://app.example' });
 
       const cloudflare = await envAfter(
-        withHosts('http://app.example'),
+        environment(),
         functionUrlEvent({
           host: LAMBDA_HOST,
           'x-forwarded-host': 'app.example',
@@ -308,7 +276,7 @@ describe('aws lambda runtime', () => {
 
     it('read RFC 7239 Forwarded', async () => {
       const env = await envAfter(
-        withHosts('app.example'),
+        environment(),
         functionUrlEvent({
           host: LAMBDA_HOST,
           forwarded: 'for=192.0.2.60;proto=https;host="app.example", for=198.51.100.17',
