@@ -52,6 +52,8 @@ class FakeS3 {
    * gets a 500, and `lost` is stored but its response never arrives.
    */
   readonly failNext = new Map<string, Array<'network' | 'server' | 'lost'>>();
+  /** How each PutObject carried its checksum: a header ahead of the whole body, a stream's trailer, or none. */
+  readonly putShapes: Array<'whole' | 'stream' | 'plain'> = [];
   /** Objects per ListObjectsV2 page; all of them when unset. */
   pageSize?: number;
   /** When set, a ListObjectsV2 answers what was there when it arrived, but only once this settles. */
@@ -105,16 +107,21 @@ class FakeS3 {
       let text: string;
       if (typeof input === 'string') {
         text = input;
+      } else if (Buffer.isBuffer(input)) {
+        text = input.toString();
       } else {
         const chunks: Buffer[] = [];
         for await (const chunk of input as Readable) chunks.push(Buffer.from(chunk));
         text = Buffer.concat(chunks).toString();
       }
+      const sent = command.input.ChecksumCRC32;
+      this.putShapes.push(sent ? 'whole' : command.input.ChecksumAlgorithm === 'CRC32' ? 'stream' : 'plain');
+      if (sent && sent !== crc32b64(Buffer.from(text))) throw badDigest();
       const stored = this.put(key, text, command.input.Metadata);
       if (failure === 'lost') throw dropped();
       return {
         ETag: stored.etag,
-        ...(command.input.ChecksumAlgorithm === 'CRC32' ? { ChecksumCRC32: stored.crc32 } : {}),
+        ...(sent || command.input.ChecksumAlgorithm === 'CRC32' ? { ChecksumCRC32: stored.crc32 } : {}),
       };
     }
     if (command instanceof DeleteObjectCommand) {
@@ -170,6 +177,11 @@ const dropped = (): Error =>
     name: 'Error',
     code: 'ECONNRESET',
     $metadata: {},
+  });
+const badDigest = (): S3Error =>
+  Object.assign(new Error('The CRC32 you specified did not match the calculated checksum.'), {
+    name: 'BadDigest',
+    $metadata: { httpStatusCode: 400 },
   });
 const internal = (): S3Error =>
   Object.assign(new Error('We encountered an internal error. Please try again.'), {
@@ -317,6 +329,22 @@ describe('S3Adapter', () => {
       writeFileSync(local, 'fresher');
       await adapter.flush(`${mount}/new.txt`);
       expect(s3.objects.get('new.txt')?.body.toString()).toBe('fresher');
+    });
+
+    it('uploads a file up to 1 MiB whole, its CRC32 as a header; a larger one streams with the checksum trailing', async () => {
+      const small = 'x'.repeat(1024 * 1024);
+      const large = 'y'.repeat(1024 * 1024 + 1);
+      writeFileSync(join(backing, 'small.txt'), small);
+      writeFileSync(join(backing, 'large.txt'), large);
+      for (const name of ['small.txt', 'large.txt']) {
+        await adapter.open(`${mount}/${name}`, 0o101);
+        await adapter.flush(`${mount}/${name}`);
+      }
+      expect(s3.putShapes).toEqual(['whole', 'stream']);
+      expect(s3.objects.get('small.txt')?.body.toString()).toBe(small);
+      expect(s3.objects.get('large.txt')?.body.toString()).toBe(large);
+      // the checksum S3 echoes is recorded either way, so an unchanged copy is recognised without a download
+      expect(s3.calls.filter((c) => c === 'GetObjectCommand')).toEqual([]);
     });
 
     it('overwrites a fetched object with If-Match on the ETag it was based on', async () => {
