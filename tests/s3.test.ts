@@ -1,7 +1,6 @@
 import {
   CopyObjectCommand,
   DeleteObjectCommand,
-  DeleteObjectsCommand,
   GetObjectCommand,
   HeadObjectCommand,
   ListObjectsV2Command,
@@ -53,6 +52,12 @@ class FakeS3 {
    * gets a 500, and `lost` is stored but its response never arrives.
    */
   readonly failNext = new Map<string, Array<'network' | 'server' | 'lost'>>();
+  /** Objects per ListObjectsV2 page; all of them when unset. */
+  pageSize?: number;
+  /** When set, a ListObjectsV2 answers what was there when it arrived, but only once this settles. */
+  listGate?: Promise<void>;
+  /** When set, a DeleteObject takes effect only once this settles. */
+  deleteGate?: Promise<void>;
   private version = 0;
 
   put(key: string, body: string, metadata?: Record<string, string>): Stored {
@@ -113,14 +118,9 @@ class FakeS3 {
       };
     }
     if (command instanceof DeleteObjectCommand) {
+      await this.deleteGate;
       this.objects.delete(command.input.Key!);
       return {};
-    }
-    if (command instanceof DeleteObjectsCommand) {
-      // Like S3: a key that is not there is deleted all the same.
-      const keys = (command.input.Delete?.Objects ?? []).flatMap(({ Key }) => (Key ? [Key] : []));
-      for (const key of keys) this.objects.delete(key);
-      return { Deleted: command.input.Delete?.Quiet ? [] : keys.map((Key) => ({ Key })) };
     }
     if (command instanceof CopyObjectCommand) {
       const source = decodeURIComponent(command.input.CopySource!.split('/').slice(1).join('/'));
@@ -143,12 +143,17 @@ class FakeS3 {
           contents.push({ Key: key, Size: o.body.length, ETag: o.etag });
         }
       }
-      const limited = command.input.MaxKeys ? contents.slice(0, command.input.MaxKeys) : contents;
+      const start = Number(command.input.ContinuationToken ?? 0);
+      const size = command.input.MaxKeys ?? this.pageSize ?? contents.length;
+      const limited = contents.slice(start, start + size);
+      const more = !command.input.MaxKeys && start + size < contents.length;
+      await this.listGate;
       return {
         Contents: limited,
-        CommonPrefixes: [...common].map((Prefix) => ({ Prefix })),
-        KeyCount: limited.length + common.size,
-        IsTruncated: false,
+        CommonPrefixes: start === 0 ? [...common].map((Prefix) => ({ Prefix })) : [],
+        KeyCount: limited.length + (start === 0 ? common.size : 0),
+        IsTruncated: more,
+        NextContinuationToken: more ? String(start + size) : undefined,
       };
     }
     throw new Error(`unexpected command ${command!.constructor.name}`);
@@ -572,7 +577,7 @@ describe('S3Adapter', () => {
       rmdirSync(join(backing, 'listed')); // the shim removes the backing directory first
       await adapter.unlink(`${mount}/listed`);
       expect([...s3.objects.keys()]).toEqual([]);
-      expect(s3.calls.filter((c) => c === 'DeleteObjectsCommand')).toHaveLength(1); // object and marker, one request
+      expect(s3.calls.filter((c) => c === 'DeleteObjectCommand')).toHaveLength(2); // object and marker, at once
     });
   });
 
@@ -650,6 +655,209 @@ describe('S3Adapter', () => {
       await a.open(`${mount}/new.txt`, 0o101);
       await a.flush(`${mount}/new.txt`);
       expect(s3.calls).toEqual(['PutObjectCommand']); // If-None-Match: *, no HEAD first
+    });
+
+    it('a listing answers for the names it did not find, until revalidateMs', async () => {
+      const a = within(100);
+      s3.put('dir/one.txt', '1');
+      await a.list(`${mount}/dir`);
+      s3.put('dir/two.txt', '2'); // another instance
+      s3.calls.length = 0;
+      await expect(a.stat(`${mount}/dir/two.txt`)).rejects.toMatchObject({ errno: 2 });
+      await expect(a.fetch(`${mount}/dir/two.txt`)).rejects.toMatchObject({ errno: 2 });
+      writeFileSync(join(backing, 'dir', 'three.txt'), '3');
+      await a.open(`${mount}/dir/three.txt`, 0o101);
+      expect(s3.calls).toEqual([]);
+      await new Promise((r) => setTimeout(r, 120));
+      await a.stat(`${mount}/dir/two.txt`);
+      expect(statSync(join(backing, 'dir', 'two.txt')).size).toBe(1);
+    });
+
+    it('a directory made where nothing was is empty: filling it asks S3 for nothing but the uploads', async () => {
+      const a = within(60_000);
+      await expect(a.stat(`${mount}/made`)).rejects.toMatchObject({ errno: 2 }); // the walk before mkdir
+      mkdirSync(join(backing, 'made'));
+      await a.mkdir(`${mount}/made`);
+      mkdirSync(join(backing, 'made', 'sub'));
+      await a.mkdir(`${mount}/made/sub`);
+      s3.calls.length = 0;
+      await expect(a.stat(`${mount}/made/sub/f.txt`)).rejects.toMatchObject({ errno: 2 });
+      writeFileSync(join(backing, 'made', 'sub', 'f.txt'), 'f');
+      await a.open(`${mount}/made/sub/f.txt`, 0o101);
+      await a.flush(`${mount}/made/sub/f.txt`);
+      await a.list(`${mount}/made/sub`);
+      expect(s3.calls).toEqual(['PutObjectCommand']);
+    });
+
+    it('a directory made without knowing what was there is listed as usual', async () => {
+      const a = within(60_000);
+      s3.put('there/old.txt', 'old'); // another instance; nothing here walked or listed it
+      mkdirSync(join(backing, 'there'));
+      await a.mkdir(`${mount}/there`);
+      await a.list(`${mount}/there`);
+      expect(existsSync(join(backing, 'there', 'old.txt'))).toBe(true);
+    });
+
+    it('what this instance removed is missing without asking S3, until revalidateMs', async () => {
+      const a = within(100);
+      s3.put('gone.txt', 'g');
+      await a.stat(`${mount}/gone.txt`);
+      rmSync(join(backing, 'gone.txt'));
+      await a.unlink(`${mount}/gone.txt`);
+      s3.put('gone.txt', 'back'); // another instance
+      s3.calls.length = 0;
+      await expect(a.stat(`${mount}/gone.txt`)).rejects.toMatchObject({ errno: 2 });
+      expect(s3.calls).toEqual([]);
+      await new Promise((r) => setTimeout(r, 120));
+      await a.stat(`${mount}/gone.txt`);
+      expect(statSync(join(backing, 'gone.txt')).size).toBe(4);
+    });
+
+    it('a listing re-checks the versions it finds unchanged: no HEAD for them within revalidateMs after it', async () => {
+      const a = within(100);
+      s3.put('dir/same.txt', 'same');
+      s3.put('dir/changed.txt', 'before');
+      await a.list(`${mount}/dir`);
+      await new Promise((r) => setTimeout(r, 120));
+      s3.put('dir/changed.txt', 'after!'); // another instance
+      await a.list(`${mount}/dir`);
+      s3.calls.length = 0;
+      await a.stat(`${mount}/dir/same.txt`);
+      expect(s3.calls).toEqual([]);
+      await a.fetch(`${mount}/dir/changed.txt`);
+      expect(readFileSync(join(backing, 'dir', 'changed.txt'), 'utf8')).toBe('after!');
+    });
+
+    it('a lookup past revalidateMs in a directory listed here lists it again: one round trip for every name', async () => {
+      const a = within(100);
+      s3.put('dir/a.txt', 'a');
+      s3.put('dir/b.txt', 'b');
+      await a.list(`${mount}/dir`);
+      await new Promise((r) => setTimeout(r, 120));
+      s3.calls.length = 0;
+      await a.stat(`${mount}/dir/a.txt`);
+      await a.stat(`${mount}/dir/b.txt`);
+      await expect(a.stat(`${mount}/dir/none.txt`)).rejects.toMatchObject({ errno: 2 });
+      writeFileSync(join(backing, 'dir', 'new.txt'), 'n');
+      await a.open(`${mount}/dir/new.txt`, 0o101);
+      expect(s3.calls).toEqual(['ListObjectsV2Command']);
+    });
+
+    it('mkdir past revalidateMs relists the parent once, and the new directory is known empty', async () => {
+      const a = within(100);
+      mkdirSync(join(backing, 'dir'));
+      await a.list(`${mount}/dir`);
+      await new Promise((r) => setTimeout(r, 120));
+      s3.calls.length = 0;
+      mkdirSync(join(backing, 'dir', 'new'));
+      await a.mkdir(`${mount}/dir/new`);
+      await expect(a.stat(`${mount}/dir/new/f.txt`)).rejects.toMatchObject({ errno: 2 });
+      mkdirSync(join(backing, 'dir', 'next'));
+      await a.mkdir(`${mount}/dir/next`);
+      expect(s3.calls).toEqual(['ListObjectsV2Command', 'PutObjectCommand', 'PutObjectCommand']);
+    });
+
+    it('a relist costs one request whatever it finds: names new here are left to their own lookup', async () => {
+      const a = within(100);
+      s3.put('shared/a.txt', 'a');
+      await a.list(`${mount}/shared`);
+      await new Promise((r) => setTimeout(r, 120));
+      for (let i = 0; i < 5; i++) s3.put(`shared/other-${i}`, 'o'); // other instances
+      s3.calls.length = 0;
+      await a.stat(`${mount}/shared/a.txt`);
+      expect(s3.calls).toEqual(['ListObjectsV2Command']);
+      expect(existsSync(join(backing, 'shared', 'other-0'))).toBe(false);
+      await a.stat(`${mount}/shared/other-0`);
+      expect(s3.calls).toEqual(['ListObjectsV2Command', 'HeadObjectCommand', 'ListObjectsV2Command']);
+      expect(statSync(join(backing, 'shared', 'other-0')).size).toBe(1);
+    });
+
+    it('a lookup in a directory never listed here, or listed in more than one page, asks for its key alone', async () => {
+      const a = within(100);
+      s3.pageSize = 1;
+      s3.put('big/a.txt', 'a');
+      s3.put('big/b.txt', 'b');
+      await a.list(`${mount}/big`);
+      expect(existsSync(join(backing, 'big', 'b.txt'))).toBe(true);
+      await new Promise((r) => setTimeout(r, 120));
+      s3.calls.length = 0;
+      await a.stat(`${mount}/big/a.txt`);
+      await expect(a.stat(`${mount}/elsewhere/none.txt`)).rejects.toMatchObject({ errno: 2 });
+      expect(s3.calls).toEqual(['HeadObjectCommand', 'HeadObjectCommand', 'ListObjectsV2Command']);
+    });
+
+    /** A listing of `dir` that has reached S3, its answer held until `release` is called. */
+    const heldListing = async (a: S3Adapter, dir: string): Promise<{ done: Promise<void>; release: () => void }> => {
+      let release = (): void => {};
+      s3.listGate = new Promise((r) => (release = r));
+      s3.calls.length = 0;
+      const done = a.list(`${mount}/${dir}`);
+      while (!s3.calls.includes('ListObjectsV2Command')) await new Promise((r) => setImmediate(r));
+      s3.listGate = undefined;
+      return { done, release };
+    };
+
+    it('a listing in flight does not bring back what this instance removes meanwhile', async () => {
+      const a = within(100);
+      s3.put('dir/a.txt', 'a');
+      s3.put('dir/b.txt', 'b');
+      await a.list(`${mount}/dir`);
+      await new Promise((r) => setTimeout(r, 120));
+      const listing = await heldListing(a, 'dir'); // answers a.txt and b.txt
+      let deleted = (): void => {};
+      s3.deleteGate = new Promise((r) => (deleted = r));
+      rmSync(join(backing, 'dir', 'a.txt')); // the shim removes the backing file first
+      const unlink = a.unlink(`${mount}/dir/a.txt`); // under way: its delete has not reached S3
+      listing.release();
+      await listing.done;
+      s3.deleteGate = undefined;
+      deleted();
+      await unlink;
+      expect(existsSync(join(backing, 'dir', 'a.txt'))).toBe(false);
+      expect(existsSync(join(backing, 'dir', 'b.txt'))).toBe(true);
+    });
+
+    it('a directory removed here while a listing of it is in flight stays removed', async () => {
+      const a = within(100);
+      s3.put('gone/a.txt', 'a');
+      s3.put('gone/sub/b.txt', 'b');
+      await a.list(`${mount}/gone`);
+      await new Promise((r) => setTimeout(r, 120));
+      const listing = await heldListing(a, 'gone');
+      rmSync(join(backing, 'gone', 'a.txt'));
+      await a.unlink(`${mount}/gone/a.txt`);
+      rmSync(join(backing, 'gone', 'sub'), { recursive: true });
+      await a.unlink(`${mount}/gone/sub/b.txt`);
+      await a.unlink(`${mount}/gone/sub`);
+      rmSync(join(backing, 'gone'), { recursive: true });
+      await a.unlink(`${mount}/gone`);
+      listing.release();
+      await listing.done;
+      expect(existsSync(join(backing, 'gone'))).toBe(false);
+    });
+
+    it('a synced copy lost from disk, with no removal under way, comes back from the listing', async () => {
+      const a = within(100);
+      s3.put('lost/a.txt', 'a');
+      s3.put('lost/link', 'a.txt', { mode: String(0o120777) });
+      await a.list(`${mount}/lost`);
+      rmSync(join(backing, 'lost', 'a.txt')); // gone from disk without an unlink
+      rmSync(join(backing, 'lost', 'link'));
+      await new Promise((r) => setTimeout(r, 120));
+      await a.list(`${mount}/lost`);
+      expect(statSync(join(backing, 'lost', 'a.txt')).size).toBe(1);
+      expect(readlinkSync(join(backing, 'lost', 'link'))).toBe('a.txt');
+    });
+
+    it('a listing does not hide an object flushed here since', async () => {
+      const a = within(60_000);
+      await a.list(mount);
+      writeFileSync(join(backing, 'late.txt'), 'late');
+      await a.open(`${mount}/late.txt`, 0o101);
+      await a.flush(`${mount}/late.txt`);
+      rmSync(join(backing, 'late.txt')); // gone locally, still in S3
+      await a.stat(`${mount}/late.txt`);
+      expect(statSync(join(backing, 'late.txt')).size).toBe(4);
     });
 
     it('never hides what this instance made: a local file answers before the remembered miss', async () => {
@@ -1195,7 +1403,7 @@ describe('S3Adapter', () => {
       s3.calls.length = 0;
       await a.rename(`${mount}/final.txt`, `${mount}/final.txt-wal`);
       expect(s3.objects.has('final.txt')).toBe(false);
-      expect(s3.calls).toEqual(['DeleteObjectsCommand']); // the object and any directory marker, one request
+      expect(s3.calls).toEqual(['DeleteObjectCommand', 'DeleteObjectCommand']); // the object and any directory marker, at once
     });
   });
 

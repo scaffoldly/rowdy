@@ -225,6 +225,7 @@ jobs:
         with:
           name: nodefs-logs-${{ matrix.flavour }}-${{ matrix.arch }}
           path: .nodefs-logs
+          include-hidden-files: true
           if-no-files-found: ignore
 
       - name: Mount with v9fs and exercise it

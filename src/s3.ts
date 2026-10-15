@@ -1,7 +1,6 @@
 import {
   CopyObjectCommand,
   DeleteObjectCommand,
-  DeleteObjectsCommand,
   GetObjectCommand,
   HeadObjectCommand,
   ListObjectsV2Command,
@@ -232,6 +231,12 @@ const isLinkMode = (metadata?: Record<string, string>): boolean => {
 const s3fsTime = (ms: number): string =>
   `${Math.floor(ms / 1000)}.${String(Math.round((ms % 1000) * 1_000_000)).padStart(9, '0')}`;
 
+/** The directory a relative path is in ('' for the mount root). */
+const parentOf = (rel: string): string => {
+  const parent = dirname(rel);
+  return parent === '.' ? '' : parent;
+};
+
 /** The path's own lstat, or undefined when there is nothing there (a dangling link is something). */
 const lstatOf = (local: string): Stats | undefined => {
   try {
@@ -274,6 +279,17 @@ export class S3Adapter implements VfsAdapter {
    */
   private readonly listedAt = new Map<string, number>();
   private readonly missedAt = new Map<string, number>();
+  /** Prefixes whose last listing took more than one page: a lookup under them asks for its key alone. */
+  private readonly paged = new Set<string>();
+  /** What a relist of each prefix found, and when: every name in it, object or directory, by key. */
+  private readonly glimpsed = new Map<string, { at: number; keys: Set<string> }>();
+  /**
+   * Keys this instance is removing, and when each removal began, kept while a listing is in flight: a listing
+   * that began before a removal must not bring back what the removal took away locally.
+   */
+  private readonly removing = new Set<string>();
+  private readonly removedAt = new Map<string, number>();
+  private listings = 0;
   private readonly log: (message: string, params?: Record<string, unknown>) => void;
 
   /** Compiled localOnly globs; `pathy` ones (containing a `/`) match the whole relative path. */
@@ -322,6 +338,94 @@ export class S3Adapter implements VfsAdapter {
   /** Whether a check made `at` still stands: within revalidateMs. */
   private fresh(at: number | undefined): boolean {
     return at !== undefined && Date.now() - at < (this.options.revalidateMs ?? 2000);
+  }
+
+  /**
+   * When S3 last showed nothing at `key`, neither object nor directory, while that still stands: a miss on the
+   * key itself, a listing of its parent, which gives everything it found an entry or a directory on disk, or a
+   * relist of its parent that did not find it. Only meaningful for a key with nothing on disk but what this
+   * instance made since.
+   */
+  private absentAt(rel: string, key: string): number | undefined {
+    const missed = this.missedAt.get(key);
+    if (this.fresh(missed)) return missed;
+    if (this.entries.has(key)) return undefined;
+    const prefix = this.dirPrefix(parentOf(rel));
+    const listed = this.listedAt.get(prefix);
+    if (this.fresh(listed)) return listed;
+    const glimpse = this.glimpsed.get(prefix);
+    return glimpse && this.fresh(glimpse.at) && !glimpse.keys.has(key) ? glimpse.at : undefined;
+  }
+
+  /** Whether this instance is removing `key`, or began to since `since`: a listing from before says nothing of it. */
+  private removedSince(key: string, since: number): boolean {
+    return this.removing.has(key) || (this.removedAt.get(key) ?? -Infinity) >= since;
+  }
+
+  /** Runs a removal of `key` that listings in flight must not undo. */
+  private async removal<T>(key: string, fn: () => Promise<T>): Promise<T> {
+    this.removing.add(key);
+    this.removedAt.set(key, Date.now());
+    try {
+      return await fn();
+    } finally {
+      this.removing.delete(key);
+      if (this.listings === 0) this.removedAt.delete(key);
+    }
+  }
+
+  /** Whether the last check of an object this instance has a synced copy of is past revalidateMs. */
+  private staleCopy(key: string): boolean {
+    const entry = this.entries.get(key);
+    return entry?.synced !== undefined && !this.fresh(entry.checkedAt);
+  }
+
+  /**
+   * One page of `rel`'s directory, for an answer about `rel` that is past revalidateMs, when that directory was
+   * listed or made here and fits one page: it answers for every name in it until revalidateMs, where asking for
+   * the key answers for one. Unlike a listing it costs that one request whatever is in it: an object at a known
+   * ETag counts as checked, a name it did not find as missing, and anything else is left to its own lookup.
+   */
+  private async relist(rel: string, key: string): Promise<void> {
+    const prefix = this.dirPrefix(parentOf(rel));
+    if (this.fresh(this.listedAt.get(prefix)) || this.fresh(this.glimpsed.get(prefix)?.at)) {
+      return; // what it would say, this instance already knows
+    }
+    if (!this.listedAt.has(prefix) && !this.glimpsed.has(prefix)) {
+      this.log(`relist skipped`, { key, prefix, why: 'never listed here' });
+      return;
+    }
+    if (this.paged.has(prefix)) {
+      this.log(`relist skipped`, { key, prefix, why: 'more than one page' });
+      return;
+    }
+    const started = Date.now();
+    let out;
+    try {
+      out = await this.client.send(
+        new ListObjectsV2Command({ Bucket: this.options.bucket, Prefix: prefix, Delimiter: '/' })
+      );
+    } catch (e) {
+      throw toVfsError(e);
+    }
+    if (out.IsTruncated) {
+      this.paged.add(prefix);
+      this.glimpsed.delete(prefix);
+      return;
+    }
+    const keys = new Set<string>();
+    for (const { Prefix } of out.CommonPrefixes ?? []) {
+      if (Prefix) keys.add(Prefix.slice(0, -1));
+    }
+    for (const { Key, ETag } of out.Contents ?? []) {
+      if (!Key) continue;
+      keys.add(Key.endsWith('/') ? Key.slice(0, -1) : Key);
+      const entry = this.entries.get(Key);
+      if (entry?.etag !== undefined && entry.etag === ETag) {
+        entry.checkedAt = Math.max(entry.checkedAt ?? 0, started);
+      }
+    }
+    this.glimpsed.set(prefix, { at: started, keys });
   }
 
   /** Path relative to the mountpoint without a leading slash ('' for the root), or undefined if outside it. */
@@ -708,6 +812,9 @@ export class S3Adapter implements VfsAdapter {
       return; // the shim's own stat of the backing file is the answer
     }
     const key = this.key(rel);
+    if (lstatOf(this.local(rel)) ? this.staleCopy(key) : this.absentAt(rel, key) === undefined) {
+      await this.relist(rel, key);
+    }
     if (lstatOf(this.local(rel))) {
       await this.serial(key, () => this.recheck(rel, key));
       if (!lstatOf(this.local(rel))) {
@@ -716,7 +823,7 @@ export class S3Adapter implements VfsAdapter {
     } else {
       await this.serial(key, async () => {
         // Nothing on disk, and S3 said so within revalidateMs (callers waiting on the lock find it here too).
-        if (this.fresh(this.missedAt.get(key))) {
+        if (this.absentAt(rel, key) !== undefined) {
           throw VfsError.code('ENOENT', `${path}: no such object`);
         }
         // Both at once: a miss waits for one round trip instead of two.
@@ -764,6 +871,9 @@ export class S3Adapter implements VfsAdapter {
     const local = this.local(rel);
     await this.serial(key, async () => {
       const entry = this.entries.get(key);
+      if (!lstatOf(local) && this.absentAt(rel, key) !== undefined) {
+        throw VfsError.code('ENOENT', `${path}: no such object`);
+      }
       if (lstatOf(local) && entry?.materialized !== false) {
         // Local content: written here (dirty, trusted) or fetched earlier (re-checked by ETag).
         await this.recheck(rel, key);
@@ -802,49 +912,81 @@ export class S3Adapter implements VfsAdapter {
       return; // listed within revalidateMs; what this instance changed since is on disk
     }
     const started = Date.now();
+    const dirKey = this.key(rel);
     let token: string | undefined;
-    do {
-      let out;
-      try {
-        out = await this.client.send(
-          new ListObjectsV2Command({
-            Bucket: this.options.bucket,
-            Prefix: prefix,
-            Delimiter: '/',
-            ContinuationToken: token,
-          })
-        );
-      } catch (e) {
-        throw toVfsError(e);
-      }
-      for (const common of out.CommonPrefixes ?? []) {
-        if (common.Prefix && !common.Prefix.slice(prefix.length).startsWith('.rowdy/')) {
-          this.missedAt.delete(common.Prefix.slice(0, -1));
-          await fs.mkdir(join(this.options.backing, this.unkey(common.Prefix)), { recursive: true });
+    let pages = 0;
+    this.listings++;
+    try {
+      do {
+        let out;
+        try {
+          out = await this.client.send(
+            new ListObjectsV2Command({
+              Bucket: this.options.bucket,
+              Prefix: prefix,
+              Delimiter: '/',
+              ContinuationToken: token,
+            })
+          );
+        } catch (e) {
+          throw toVfsError(e);
         }
-      }
-      const children = (out.Contents ?? []).flatMap(({ Key, ETag, Size }) =>
-        // directory markers, and the adapter's own lease objects
-        Key && Key !== prefix && !Key.endsWith('/') && !Key.slice(prefix.length).startsWith('.rowdy/')
-          ? [{ key: Key, etag: ETag, size: Size }]
-          : []
-      );
-      for (const { key } of children) this.missedAt.delete(key);
-      await inBatches(children, LIST_HEADS, ({ key, etag, size }) =>
-        this.serial(key, () => this.listed(this.unkey(key), key, etag, size))
-      );
-      token = out.IsTruncated ? out.NextContinuationToken : undefined;
-    } while (token);
+        if (this.removedSince(dirKey, started)) {
+          this.log(`listing dropped`, { key: prefix, why: 'directory removed here since it began' });
+          return;
+        }
+        for (const { Prefix } of out.CommonPrefixes ?? []) {
+          if (!Prefix || Prefix.slice(prefix.length).startsWith('.rowdy/')) continue;
+          const sub = Prefix.slice(0, -1);
+          if (this.removedSince(sub, started)) continue;
+          this.missedAt.delete(sub);
+          await fs.mkdir(join(this.options.backing, this.unkey(Prefix)), { recursive: true });
+        }
+        const children = (out.Contents ?? []).flatMap(({ Key, ETag, Size }) =>
+          // directory markers, the adapter's own lease objects, and what this instance removed since
+          Key &&
+          Key !== prefix &&
+          !Key.endsWith('/') &&
+          !Key.slice(prefix.length).startsWith('.rowdy/') &&
+          !this.removedSince(Key, started)
+            ? [{ key: Key, etag: ETag, size: Size }]
+            : []
+        );
+        for (const { key } of children) this.missedAt.delete(key);
+        await inBatches(children, LIST_HEADS, ({ key, etag, size }) =>
+          this.serial(key, () => this.listed(this.unkey(key), key, started, etag, size))
+        );
+        token = out.IsTruncated ? out.NextContinuationToken : undefined;
+        pages++;
+      } while (token);
+    } finally {
+      if (--this.listings === 0) this.removedAt.clear();
+    }
     this.listedAt.set(prefix, started);
+    if (pages > 1) this.paged.add(prefix);
+    else this.paged.delete(prefix);
   }
 
   /**
    * One listed object, made present as what it is. A listing carries no metadata, so each entry's type is
-   * read from a HEAD, as s3fs-fuse reads every entry's mode, unless this version is known already.
+   * read from a HEAD, as s3fs-fuse reads every entry's mode, unless this version is known already. A known
+   * version, listed at `listedAt`, is as checked then as a HEAD would have made it.
    */
-  private async listed(rel: string, key: string, etag?: string, size?: number): Promise<void> {
+  private async listed(rel: string, key: string, listedAt: number, etag?: string, size?: number): Promise<void> {
+    if (this.removedSince(key, listedAt) || this.removedSince(this.key(parentOf(rel)), listedAt)) {
+      return; // removed here since the listing
+    }
     const local = this.local(rel);
-    const known = this.entries.get(key);
+    let known = this.entries.get(key);
+    if (known?.synced !== undefined && !lstatOf(local)) {
+      // A synced copy gone from disk with no removal under way: what the listing says is all there is.
+      this.log(`relisting a lost copy`, { key });
+      this.entries.delete(key);
+      known = undefined;
+    }
+    if (known?.etag !== undefined && known.etag === etag) {
+      known.checkedAt = Math.max(known.checkedAt ?? 0, listedAt);
+    }
     let link = known?.link === true;
     if (known?.etag === undefined || known.etag !== etag) {
       const head = await this.head(key);
@@ -874,6 +1016,7 @@ export class S3Adapter implements VfsAdapter {
       return;
     }
     const key = this.key(rel);
+    if (!this.entries.has(key) && this.absentAt(rel, key) === undefined) await this.relist(rel, key);
     await this.serial(key, async () => {
       // Record the version this write is based on. A placeholder or a fetched copy already
       // carries it; a brand-new local file needs a HEAD to learn whether the object exists.
@@ -883,8 +1026,8 @@ export class S3Adapter implements VfsAdapter {
       const entry = this.entries.get(key);
       if (!entry) {
         // Brand-new local file: no synced snapshot, so revalidation leaves it alone until flushed. The walk
-        // before the open usually just found it missing; that answer stands for revalidateMs.
-        const head = this.fresh(this.missedAt.get(key)) ? undefined : await this.head(key);
+        // before the open, or a listing of its directory, usually just found it missing; that stands for revalidateMs.
+        const head = this.absentAt(rel, key) !== undefined ? undefined : await this.head(key);
         this.entries.set(key, {
           etag: head?.etag,
           size: head?.size,
@@ -1086,12 +1229,16 @@ export class S3Adapter implements VfsAdapter {
       return;
     }
     const marker = `${this.key(rel)}/`;
+    if (this.absentAt(rel, this.key(rel)) === undefined) await this.relist(rel, this.key(rel));
     await this.serial(marker, async () => {
+      // Nothing was there: the new directory is empty as of then, as a listing of it would have said.
+      const absent = this.absentAt(rel, this.key(rel));
       try {
         await this.client.send(
           new PutObjectCommand({ Bucket: this.options.bucket, Key: marker, Body: '', ContentLength: 0 })
         );
         this.missedAt.delete(this.key(rel));
+        if (absent !== undefined) this.listedAt.set(marker, absent);
         this.log(`marked`, { key: marker });
       } catch (e) {
         throw toVfsError(e);
@@ -1279,28 +1426,25 @@ export class S3Adapter implements VfsAdapter {
       return;
     }
     const key = this.key(rel);
-    await this.serial(key, async () => {
-      // The path is already gone locally, and an entry does not tell a file from a directory (opening
-      // one to list it makes one), so the object and the directory marker go together, in one request.
-      let out;
-      try {
-        out = await this.client.send(
-          new DeleteObjectsCommand({
-            Bucket: this.options.bucket,
-            Delete: { Objects: [{ Key: key }, { Key: `${key}/` }], Quiet: true },
-          })
-        );
-      } catch (e) {
-        throw toVfsError(e);
-      }
-      const failed = out.Errors?.[0];
-      if (failed) {
-        const code = failed.Code === 'AccessDenied' ? 'EACCES' : 'EIO';
-        throw VfsError.code(code, `${failed.Key}: ${failed.Code} ${failed.Message ?? ''}`.trim());
-      }
-      this.entries.delete(key);
-      this.listedAt.delete(`${key}/`); // a directory made again here is listed afresh
-    });
+    await this.removal(key, () =>
+      this.serial(key, async () => {
+        // The path is already gone locally, and an entry does not tell a file from a directory (opening
+        // one to list it makes one), so the object and the directory marker go together, in one round trip.
+        try {
+          await Promise.all(
+            [key, `${key}/`].map((Key) =>
+              this.client.send(new DeleteObjectCommand({ Bucket: this.options.bucket, Key }))
+            )
+          );
+        } catch (e) {
+          throw toVfsError(e);
+        }
+        this.entries.delete(key);
+        this.listedAt.delete(`${key}/`); // a directory made again here is listed afresh
+        this.glimpsed.delete(`${key}/`);
+        this.missedAt.set(key, Date.now());
+      })
+    );
   }
 
   async rename(from: string, to: string): Promise<void> {
@@ -1328,6 +1472,12 @@ export class S3Adapter implements VfsAdapter {
       await this.unlink(from);
       return;
     }
+    await this.removal(this.key(relFrom), () => this.moveTree(relFrom, relTo));
+  }
+
+  /** The store's side of a rename the shim already made locally. */
+  private async moveTree(relFrom: string, relTo: string): Promise<void> {
+    const target = this.local(relTo);
     // By lstat: a renamed link to a directory is one object, not the tree it points to.
     if (lstatOf(target)?.isDirectory()) {
       // The local rename already moved the tree; move every object under the old prefix.
@@ -1345,7 +1495,8 @@ export class S3Adapter implements VfsAdapter {
           }
           const tail = object.Key.slice(oldPrefix.length);
           const newKey = tail ? this.key(join(relTo, tail)) : `${this.key(relTo)}/`; // the marker itself
-          await this.move(object.Key, newKey);
+          const fromKey = object.Key;
+          await this.removal(fromKey, () => this.move(fromKey, newKey));
         }
         token = out.IsTruncated ? out.NextContinuationToken : undefined;
       } while (token);

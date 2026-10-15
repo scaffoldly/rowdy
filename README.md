@@ -195,7 +195,9 @@ unix-domain socket (one JSON object per line, paths and metadata only; the proto
   Credentials come from the default provider chain of the process running the server.
   Multi-writer behaviour follows [ADR 0001](docs/adr/0001-multi-writer-leases.md): a trusted local
   copy is re-checked against the object's ETag at most every `revalidateMs` (default 2 s) and
-  refetched **in place** when it changed, so an open descriptor sees the new bytes; writers can be
+  refetched **in place** when it changed, so an open descriptor sees the new bytes. A listing counts
+  as that check for every object it finds unchanged, and answers for the names it did not find for
+  as long, as does a miss, an unlink, or a directory made where nothing was; writers can be
   serialized with leases (`<prefix>/.rowdy/locks/<key>`, conditional creates, `leaseMs` TTL with
   renewal, `lockWaitMs` before `EAGAIN`). The shim turns advisory locks into lease traffic
   (`fcntl`/`flock`: read lock → `revalidate`, write lock → `lock`, unlock → `flush` + `unlock`), which

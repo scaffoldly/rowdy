@@ -474,6 +474,8 @@ export class P9Server {
         await this.clunk(fid);
         const st = await this.lstat(fid);
         if (st.isDirectory()) {
+          // Names only the store has are on disk once listed, so the backing rmdir sees them.
+          await fid.mount.adapter.list(this.vpath(fid));
           await fs.rmdir(this.backing(fid));
         } else {
           await fs.unlink(this.backing(fid));
@@ -712,6 +714,11 @@ export class P9Server {
         const dir = this.fid(session, req.dirfid);
         const rel = this.child(dir.rel, req.name);
         const path = this.backing(dir, rel);
+        // Names only the store has are on disk once listed, so the backing rmdir sees them.
+        const st = await fs.lstat(path).catch(() => undefined);
+        if (st?.isDirectory()) {
+          await dir.mount.adapter.list(this.vpath(dir, rel));
+        }
         // The shim does not say whether it removed a file or a directory; either is gone by now.
         await applied(async () => {
           try {
