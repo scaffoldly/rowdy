@@ -5,6 +5,7 @@ import {
   HeadObjectCommand,
   ListObjectsV2Command,
   PutObjectCommand,
+  type PutObjectCommandInput,
   S3Client,
 } from '@aws-sdk/client-s3';
 import { constants as fsConstants, createWriteStream, lstatSync, mkdirSync, readlinkSync, type Stats } from 'fs';
@@ -172,6 +173,28 @@ const readStream = async (local: string): Promise<Readable> => {
     }
   }
   return (await fs.open(local, fsConstants.O_RDONLY)).createReadStream();
+};
+
+/**
+ * Files up to this size go up whole with their CRC32 as a header. A stream goes up aws-chunked with the
+ * checksum as a trailer, which S3 answers more slowly.
+ */
+const WHOLE_PUT_MAX = 1024 * 1024;
+
+/** One upload attempt's body: the bytes and how their checksum travels. */
+type PutBody = Pick<PutObjectCommandInput, 'Body' | 'ContentLength' | 'ChecksumAlgorithm' | 'ChecksumCRC32'>;
+
+const putBody = async (local: string, size: number): Promise<PutBody> => {
+  const stream = await readStream(local);
+  if (size > WHOLE_PUT_MAX) {
+    return { Body: stream, ContentLength: size, ChecksumAlgorithm: 'CRC32' };
+  }
+  const chunks: Buffer[] = [];
+  for await (const chunk of stream) chunks.push(chunk as Buffer);
+  const bytes = Buffer.concat(chunks);
+  const crc = Buffer.alloc(4);
+  crc.writeUInt32BE(crc32(bytes));
+  return { Body: bytes, ContentLength: bytes.length, ChecksumCRC32: crc.toString('base64') };
 };
 
 const digest = async (local: string, algo: Checksum['algo']): Promise<string | undefined> => {
@@ -1090,22 +1113,21 @@ export class S3Adapter implements VfsAdapter {
     let base = current?.etag;
     let inTransit = 0; // attempts that failed on the way, which may or may not have landed
     for (let attempt = 1; ; attempt++) {
-      let body: Readable;
+      let body: PutBody;
       try {
-        body = await readStream(local);
+        body = await putBody(local, size);
       } catch (e) {
         if (e instanceof Error && 'code' in e && e.code === 'ENOENT') return; // removed before the flush reached us
         throw e;
       }
-      body.on('error', () => {}); // the SDK consumes read errors; a destroyed stream must not throw
+      const stream = body.Body instanceof Readable ? body.Body : undefined;
+      stream?.on('error', () => {}); // the SDK consumes read errors; a destroyed stream must not throw
       try {
         const out = await this.client.send(
           new PutObjectCommand({
             Bucket: this.options.bucket,
             Key: key,
-            Body: body,
-            ContentLength: size,
-            ChecksumAlgorithm: 'CRC32',
+            ...body,
             ...(base ? { IfMatch: base } : { IfNoneMatch: '*' }),
           })
         );
@@ -1121,7 +1143,7 @@ export class S3Adapter implements VfsAdapter {
         this.log(`flushed`, { key, size, base });
         return;
       } catch (e) {
-        body.destroy();
+        stream?.destroy();
         if (isPreconditionFailed(e)) {
           // An attempt that failed in transit may have landed with only its response lost, and the
           // retry is then refused because of it. Nothing is written here: the object counts as ours
