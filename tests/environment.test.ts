@@ -245,6 +245,23 @@ describe('environment', () => {
       expect(server?.mounts[0]?.adapter).toBeInstanceOf(S3Adapter);
     });
 
+    it('mounts an s3:/// volume on the bucket ROWDY_BUCKET names', async () => {
+      process.env.ROWDY_BUCKET = 'rowdy-aroaexample';
+      try {
+        const environment = withVolumes(['s3:///headscale:/var/lib/headscale']);
+        await finalize(environment);
+        const adapter = (await environment['_vfs'])?.mounts[0]?.adapter as S3Adapter;
+        expect(adapter['options']).toMatchObject({ bucket: 'rowdy-aroaexample', prefix: 'headscale' });
+      } finally {
+        delete process.env.ROWDY_BUCKET;
+      }
+    });
+
+    it('refuses an s3:/// volume without ROWDY_BUCKET', async () => {
+      const environment = withVolumes(['s3:///headscale:/var/lib/headscale']);
+      await expect(finalize(environment)).rejects.toThrow('ROWDY_BUCKET is not set');
+    });
+
     it('passes the lock and local flags through to the adapter', async () => {
       const environment = withVolumes(['s3://example-bucket:/data:lock,local=*-{journal,wal,shm}']);
       await finalize(environment);
