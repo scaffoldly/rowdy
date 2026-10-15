@@ -150,6 +150,8 @@ backs it with a bucket, fetching objects on first open and uploading them on clo
 instances can share an `s3://` volume: uploads are conditional (`ESTALE` on a lost race), and
 programs that take advisory locks (SQLite) get a lease in the bucket so their transactions serialize
 across instances. The deploy grants the execution role access to the bucket and prefix.
+`s3:///<prefix>` (no bucket) uses a bucket rowdy creates for the deployment, `rowdy-<role id>`, and
+never deletes.
 
 Nothing is mounted in the kernel sense: rowdy preloads the
 [`@scaffoldly/rowdy-vfs`](https://github.com/scaffoldly/rowdy/tree/vfs) shim into the app, which

@@ -45,12 +45,12 @@ Every entry is mounted. Nothing is mounted in the kernel sense, see [How it work
 <scheme>://<locator>:<mountpoint>[:<flags>]
 ```
 
-| Part         | Meaning                                                                                     |
-| ------------ | ------------------------------------------------------------------------------------------- |
-| `scheme`     | `file` or `s3`.                                                                             |
-| `locator`    | `file://<dir>`: an absolute directory on the function's `/tmp`. `s3://<bucket>[/<prefix>]`. |
-| `mountpoint` | Absolute path the app sees. Must be unique across the volumes.                              |
-| `flags`      | Optional, comma-separated, docker `-v` style. Listed below.                                 |
+| Part         | Meaning                                                                                                                                                             |
+| ------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `scheme`     | `file` or `s3`.                                                                                                                                                     |
+| `locator`    | `file://<dir>`: an absolute directory on the function's `/tmp`. `s3://<bucket>[/<prefix>]`, or `s3:///<prefix>` for the [managed bucket](#managed-bucket-s3prefix). |
+| `mountpoint` | Absolute path the app sees. Must be unique across the volumes.                                                                                                      |
+| `flags`      | Optional, comma-separated, docker `-v` style. Listed below.                                                                                                         |
 
 Mountpoints may nest (`/data` and `/data/cache`); the inner volume owns its subtree. A rename across
 volumes fails with `EXDEV`, as it does across filesystems, and `mv` falls back to copy and delete.
@@ -70,7 +70,36 @@ directory survives a cold start.
 
 The deploy derives the execution role's grant from the manifest: `s3:ListBucket` and
 `s3:GetBucketLocation` on the bucket, `s3:GetObject`/`PutObject`/`DeleteObject` on `<prefix>/*`. The
-bucket must already exist.
+bucket must already exist, unless it is the managed bucket.
+
+### Managed bucket: `s3:///<prefix>`
+
+With no bucket between `s3://` and the path, the volume uses a bucket rowdy manages for the
+deployment. The path is the key prefix, as in `s3://<bucket>/<prefix>`:
+
+```yaml
+volumes:
+  - 's3:///headscale:/var/lib/headscale:local=*-{journal,wal,shm}'
+  - 's3:///headplane:/var/lib/headplane'
+```
+
+- **Name:** `rowdy-<role id>`, the execution role's unique id, lower-cased (for example
+  `rowdy-aroaexample0123456789`). The role is kept across deploys of the same app, so the bucket and
+  its data are too. Role ids are unique across AWS, so the name cannot collide with another account's.
+- **On deploy:** rowdy creates the bucket in the deploy's region if it is missing, and leaves it as it
+  is if it exists. Safe to repeat. A new bucket has S3's defaults: Block Public Access on, SSE-S3
+  encryption, bucket-owner-enforced ownership, no versioning.
+- **Never deleted:** removing a volume line, or the deployment itself, leaves the bucket and its
+  objects in place.
+- **Grant:** the execution role gets the same access as for an explicit bucket, on the managed bucket
+  and each volume's prefix.
+- **At runtime:** the function's `ROWDY_BUCKET` names the bucket. A volume `s3:///…` without it fails
+  to start: `ROWDY_BUCKET is not set`. Outside a deploy, set `ROWDY_BUCKET` yourself to use one.
+- **Found later:** the deploy's run summary lists it under `Bucket`, and the Action's step sets it as
+  the `bucket` output.
+
+The deploying identity needs, on `arn:aws:s3:::rowdy-*`: `s3:ListBucket` (to check that the bucket
+exists) and `s3:CreateBucket`.
 
 ## Flags
 

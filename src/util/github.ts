@@ -38,11 +38,20 @@ export type DeploySummary = {
   alias?: string;
   memory?: number;
   volumes?: string[];
+  bucket?: string;
 };
 
 const code = (value: string): string => `\`${value}\``;
 
-export const deploySummary = ({ url, image, functionArn, alias, memory, volumes = [] }: DeploySummary): string => {
+export const deploySummary = ({
+  url,
+  image,
+  functionArn,
+  alias,
+  memory,
+  volumes = [],
+  bucket,
+}: DeploySummary): string => {
   // arn:aws:lambda:<region>:<account>:function:<name>[:<qualifier>]
   const [, , , region, , , name] = functionArn?.split(':') ?? [];
   const rows: Array<[string, string | undefined]> = [
@@ -52,6 +61,7 @@ export const deploySummary = ({ url, image, functionArn, alias, memory, volumes 
     ['Alias', alias && code(alias)],
     ['Memory', memory ? `${memory} MB` : undefined],
     ['Volumes', volumes.length ? volumes.map(code).join('<br>') : undefined],
+    ['Bucket', bucket && code(bucket)],
   ];
   return [
     name ? `### 🚀 Deployed ${code(name)}` : '### 🚀 Deployed',

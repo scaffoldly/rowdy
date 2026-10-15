@@ -378,6 +378,124 @@ describe('aws lambda volumes', () => {
       .withRoutes(Routes.empty().withVolumes(['s3://example-bucket:/data']));
     expect(statements(fn)).toHaveLength(2);
   });
+
+  describe('managed bucket', () => {
+    type Sent = { name: string; input: Record<string, unknown> };
+    type Send = (command: { constructor: { name: string }; input: Record<string, unknown> }) => Promise<unknown>;
+
+    const awsError = (name: string): Error => Object.assign(new Error(name), { name, $metadata: {} });
+
+    const mockS3 = (fn: LambdaFunction, region: string, respond: (name: string) => unknown): Sent[] => {
+      const sent: Sent[] = [];
+      const send: Send = (command) => {
+        sent.push({ name: command.constructor.name, input: command.input });
+        try {
+          return Promise.resolve(respond(command.constructor.name));
+        } catch (error) {
+          return Promise.reject(error);
+        }
+      };
+      (fn['s3'] as unknown as { send: Send }).send = send;
+      fn['s3'].config.region = async () => region;
+      return sent;
+    };
+
+    const managedFn = (): LambdaFunction =>
+      new LambdaFunction('Container', imageService)
+        .withImage('ubuntu:noble-20251001')
+        .withRoutes(
+          Routes.empty().withVolumes([
+            's3:///headscale:/var/lib/headscale:local=*-{journal,wal,shm}',
+            's3:///headplane:/var/lib/headplane',
+          ])
+        );
+
+    it('is named from the execution role', () => {
+      expect(LambdaFunction.bucketName('AROAEXAMPLE0123456789')).toBe('rowdy-aroaexample0123456789');
+    });
+
+    it('grants nothing until the bucket is named', () => {
+      const fn = managedFn();
+      expect(statements(fn)).toEqual([]);
+      expect(fn.managedVolumes.map((v) => v.prefix)).toEqual(['headscale', 'headplane']);
+    });
+
+    it('creates a missing bucket in the region, then grants each prefix and passes ROWDY_BUCKET', async () => {
+      const fn = managedFn();
+      const sent = mockS3(fn, 'us-east-2', (name) => {
+        if (name === 'HeadBucketCommand') throw awsError('NotFound');
+        return { $metadata: {} };
+      });
+      fn['RoleId'].next('AROAEXAMPLE');
+      const { updates } = fn['prepare']();
+      await lastValueFrom(updates[0]!);
+
+      expect(sent).toEqual([
+        { name: 'HeadBucketCommand', input: { Bucket: 'rowdy-aroaexample' } },
+        {
+          name: 'CreateBucketCommand',
+          input: { Bucket: 'rowdy-aroaexample', CreateBucketConfiguration: { LocationConstraint: 'us-east-2' } },
+        },
+      ]);
+      expect(fn.State.Bucket).toBe('rowdy-aroaexample');
+      expect(fn['Environment'].getValue().ROWDY_BUCKET).toBe('rowdy-aroaexample');
+      expect(statements(fn).map((s) => (s as { Resource?: string }).Resource)).toEqual([
+        'arn:aws:s3:::rowdy-aroaexample',
+        'arn:aws:s3:::rowdy-aroaexample/headscale/*',
+        'arn:aws:s3:::rowdy-aroaexample',
+        'arn:aws:s3:::rowdy-aroaexample/headplane/*',
+      ]);
+    });
+
+    it('leaves an existing bucket as it is', async () => {
+      const fn = managedFn();
+      const sent = mockS3(fn, 'us-east-2', () => ({ $metadata: {} }));
+      fn['RoleId'].next('AROAEXAMPLE');
+      await lastValueFrom(fn['prepare']().updates[0]!);
+      expect(sent.map((c) => c.name)).toEqual(['HeadBucketCommand']);
+    });
+
+    it('creates in us-east-1 without a location constraint', async () => {
+      const fn = managedFn();
+      const sent = mockS3(fn, 'us-east-1', (name) => {
+        if (name === 'HeadBucketCommand') throw awsError('NotFound');
+        return { $metadata: {} };
+      });
+      fn['RoleId'].next('AROAEXAMPLE');
+      await lastValueFrom(fn['prepare']().updates[0]!);
+      expect(sent[1]).toEqual({ name: 'CreateBucketCommand', input: { Bucket: 'rowdy-aroaexample' } });
+    });
+
+    it('accepts a bucket created between the check and the create', async () => {
+      const fn = managedFn();
+      mockS3(fn, 'us-east-2', (name) => {
+        throw awsError(name === 'HeadBucketCommand' ? 'NotFound' : 'BucketAlreadyOwnedByYou');
+      });
+      fn['RoleId'].next('AROAEXAMPLE');
+      await lastValueFrom(fn['prepare']().updates[0]!);
+      expect(fn.State.Bucket).toBe('rowdy-aroaexample');
+    });
+
+    it('fails the deploy on a bucket it cannot reach', async () => {
+      const fn = managedFn();
+      mockS3(fn, 'us-east-2', () => {
+        throw awsError('Forbidden');
+      });
+      fn['RoleId'].next('AROAEXAMPLE');
+      await expect(lastValueFrom(fn['prepare']().updates[0]!)).rejects.toThrow('Forbidden');
+      expect(fn.State.Bucket).toBeUndefined();
+    });
+
+    it('adds no bucket step without a managed volume', () => {
+      const fn = new LambdaFunction('Container', imageService)
+        .withImage('ubuntu:noble-20251001')
+        .withRoutes(Routes.empty().withVolumes(['s3://example-bucket:/data']));
+      const sent = mockS3(fn, 'us-east-2', () => ({ $metadata: {} }));
+      expect(fn.managedVolumes).toEqual([]);
+      fn['prepare']();
+      expect(sent).toEqual([]);
+    });
+  });
 });
 
 describe('aws lambda names', () => {

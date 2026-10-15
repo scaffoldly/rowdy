@@ -369,6 +369,9 @@ export class Environment implements ILoggable {
                         complete: () => {
                           this.log.info('Lambda Function Installation Complete');
                           writeGithubOutput('url', lambda.State.FunctionUrl);
+                          if (lambda.State.Bucket) {
+                            writeGithubOutput('bucket', lambda.State.Bucket);
+                          }
                           writeGithubSummary(
                             deploySummary({
                               url: lambda.State.FunctionUrl,
@@ -377,6 +380,7 @@ export class Environment implements ILoggable {
                               alias: lambda.State.Qualifier,
                               memory: lambda.Status.Configuration?.MemorySize,
                               volumes: lambda.volumes,
+                              bucket: lambda.State.Bucket,
                             })
                           );
                         },
@@ -785,10 +789,15 @@ export class Environment implements ILoggable {
   /** The store behind a volume: a local directory is the whole store; a bucket is synced into it. */
   private vfsAdapter(volume: Volume, backing: string): VfsAdapter {
     if (volume.scheme === 's3') {
-      const [bucket, ...rest] = volume.locator.split('/');
+      const bucket = volume.bucket ?? process.env.ROWDY_BUCKET;
+      if (!bucket) {
+        throw new Error(
+          `Volume '${volume.spec}' uses the managed bucket (s3:///), but ROWDY_BUCKET is not set: deploy with rowdy create, or set ROWDY_BUCKET`
+        );
+      }
       return new S3Adapter({
-        bucket: bucket!,
-        prefix: rest.join('/') || undefined,
+        bucket,
+        prefix: volume.prefix,
         mountpoint: volume.mountpoint,
         lockOnOpen: volume.options.lock,
         localOnly: volume.options.local,
