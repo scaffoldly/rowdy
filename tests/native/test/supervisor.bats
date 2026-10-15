@@ -6,6 +6,7 @@ setup_file() {
   compile socket -O2
   compile relative -O2
   compile closerace -O2 -pthread
+  compile stat -O2
   start_supervisor
 }
 
@@ -32,6 +33,26 @@ setup() {
   rmdir /vfs/deeper
 }
 
+@test "stat and lstat ask the supervisor before answering, so an object not yet fetched is seen" {
+  printf 'secret\n' > /vfs/statme
+  rm -f /tmp/ops.log
+  run "$BATS_FILE_TMPDIR/stat" /vfs/statme
+  [ "$status" -eq 0 ]
+  [ "$output" = $'stat 7\nlstat 7' ]
+  in_order "stat /vfs/statme" "stat /vfs/statme"
+  rm -f /tmp/ops.log
+  # the shell's own test builtin: dash calls stat(), busybox sh stat() or fstatat()
+  sh -c '[ -s /vfs/statme ]'
+  has_op "stat /vfs/statme"
+  rm -f /vfs/statme
+}
+
+@test "a refused stat() or lstat() is EACCES" {
+  run "$BATS_FILE_TMPDIR/stat" /vfs/denied
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"Permission denied"* ]]
+}
+
 @test "a refused flush is EIO" {
   run node -e "fs.writeFileSync('/vfs/flushfail', 'x')"
   [[ "$output" == *"EIO"* ]]
@@ -50,7 +71,7 @@ setup() {
   '
   if [ "$FLAVOUR" = alpine ]; then
     # busybox's exact call sequence
-    [[ "$(ops)" == *"stat /vfs/tracked stat /vfs/tracked fetch /vfs/tracked open /vfs/tracked flush /vfs/tracked stat /vfs list /vfs stat /vfs mkdir /vfs/d2 stat /vfs stat /vfs/d2 rename /vfs/tracked /vfs/d2/tracked2 stat /vfs stat /vfs/d2 stat /vfs/d2/tracked2 stat /vfs/d2 unlink /vfs/d2/tracked2 stat /vfs unlink /vfs/d2 "* ]] ||
+    [[ "$(ops)" == *"stat /vfs stat /vfs/tracked stat /vfs/tracked fetch /vfs/tracked open /vfs/tracked flush /vfs/tracked stat /vfs list /vfs stat /vfs/tracked stat /vfs mkdir /vfs/d2 stat /vfs stat /vfs/d2 stat /vfs/d2/tracked2 stat /vfs/d2 stat /vfs/d2/tracked2 stat /vfs/d2 rename /vfs/tracked /vfs/d2/tracked2 stat /vfs stat /vfs/d2 stat /vfs/d2/tracked2 stat /vfs/d2 stat /vfs/d2/tracked2 stat /vfs/d2 unlink /vfs/d2/tracked2 stat /vfs unlink /vfs/d2 "* ]] ||
       { echo "log did not match: $(ops)" >&2; return 1; }
   else
     # GNU coreutils makes more calls; the operations must still arrive, in order
