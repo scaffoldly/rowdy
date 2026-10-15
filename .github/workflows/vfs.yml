@@ -75,6 +75,34 @@ jobs:
           done
           yarn --frozen-lockfile && yarn build
 
+      # DEVNOTE: npm v12 runs no install scripts and resolves no git or URL dependencies unless the
+      # installer allows them, so a published package must need neither.
+      - name: Check package installs without scripts
+        run: |
+          node <<'EOF_NODE'
+          const { execSync } = require('child_process');
+          const pkg = require('./package.json');
+          const problems = [];
+          for (const script of ['preinstall', 'install', 'postinstall']) {
+            if (pkg.scripts?.[script]) problems.push(`scripts.${script}: ${pkg.scripts[script]}`);
+          }
+          const remote = /^(git[+:]|https?:|file:|link:|github:|gitlab:|bitbucket:|gist:)|^[^@\s:]+\/[^\s]+$/;
+          for (const field of ['dependencies', 'optionalDependencies', 'peerDependencies']) {
+            for (const [name, spec] of Object.entries(pkg[field] || {})) {
+              if (remote.test(spec)) problems.push(`${field}.${name}: ${spec}`);
+            }
+          }
+          const [{ files }] = JSON.parse(execSync('npm pack --dry-run --json --ignore-scripts', { encoding: 'utf8' }));
+          for (const { path } of files) {
+            if (path === 'binding.gyp' || path.endsWith('/binding.gyp')) problems.push(`${path}: an implicit node-gyp build`);
+          }
+          if (problems.length) {
+            problems.forEach((p) => console.log(`::error title=Install-time::${p}`));
+            process.exit(1);
+          }
+          console.log(`${pkg.name}: no install scripts, git or URL dependencies, or binding.gyp`);
+          EOF_NODE
+
       - name: Upload package
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
@@ -320,7 +348,7 @@ jobs:
       # binding the tarball (shims included) to this workflow run.
       - name: Stage pre-release on NPM
         run: |
-          npm install -g npm@latest
+          npm install -g npm@12.2.0
           npm stage publish --tag beta --access public --provenance
         env:
           NODE_AUTH_TOKEN: ${{ steps.identity.outputs.exchange-token }}
