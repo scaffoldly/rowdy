@@ -209,7 +209,8 @@ export class URI extends URL implements ILoggable {
       take(1),
       tap(() => log.debug(`URI is healthy`, { uri: this })),
       map(() => this),
-      shareReplay(1)
+      // Polling stops once no request waits on it; a healthy result is still replayed.
+      shareReplay({ bufferSize: 1, refCount: true })
     );
 
     URI.awaits.set(this.toString(), await$);
