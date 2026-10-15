@@ -54,6 +54,9 @@ outputs:
   image:
     description: The image reference that was deployed.
     value: ${{ steps.deploy.outputs.image }}
+  bucket:
+    description: The bucket rowdy manages for s3:///<prefix> volumes, when the deployment has one.
+    value: ${{ steps.deploy.outputs.bucket }}
 runs:
   using: "composite"
   steps:
