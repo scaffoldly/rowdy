@@ -22,7 +22,8 @@ import {
   tap,
   timer,
 } from 'rxjs';
-import { Routes, URI } from './routes';
+import { Routes } from './routes';
+import { defaultPort, originOf } from './forwarded';
 import { ILoggable, isLevel, Level, log, Logger, mask, maskEnv, maskJson, Trace } from './log';
 import { ExitContext, ShellExit, ShellProxy, ShellRequest } from './proxy/shell';
 import { ShellPipeline } from './shell/pipeline';
@@ -208,7 +209,7 @@ export class Environment implements ILoggable {
     this._routes = Routes.default();
     this.withEnv('HTTP_HOST', 'localhost')
       .withEnv('HTTP_HOSTNAME', 'localhost')
-      .withEnv('HTTP_PORT', Environment.defaultPort('http'))
+      .withEnv('HTTP_PORT', defaultPort('http'))
       .withEnv('HTTP_PROTO', 'http')
       .withEnv('HTTP_UA', `${packageJson.name}/${packageJson.version}`)
       .withEnv('NET_PRIVATE_IPV4', internalIpV4Sync());
@@ -766,24 +767,6 @@ export class Environment implements ILoggable {
     return argv.trace ? 'trace' : argv.debug ? 'debug' : 'info';
   }
 
-  /** The port a scheme implies when its URL names none: `80` for http, `443` for https. */
-  static defaultPort(proto: string): string | undefined {
-    return { http: '80', https: '443' }[proto];
-  }
-
-  /** `<proto>://<hostname>[:<port>]`, the port left out when it is the scheme's default; a port in `hostname` wins over `port`. */
-  static originOf(proto: string, hostname: string, port?: string): string {
-    const uri = URI.from(`${proto}://${hostname}`);
-    if (uri.error || uri.origin === 'null') {
-      return `${proto}://${hostname}`;
-    }
-    const ownPort = /^(?:\[[^\]]*\]|[^:]*):\d+$/.test(hostname);
-    if (!ownPort && port) {
-      uri.port = port;
-    }
-    return uri.origin;
-  }
-
   withEnv(name: keyof ProcessEnv, value: ProcessEnv[keyof ProcessEnv]): this {
     this.log.debug(`Received environment variable`, { name, value: PLAIN_ENV.has(name) ? value : mask(value) });
     this._envVars.next({ name, value });
@@ -887,11 +870,7 @@ export class Environment implements ILoggable {
         },
         error: (err) => subscriber.error(err),
         complete: async () => {
-          env.HTTP_ORIGIN = Environment.originOf(
-            env.HTTP_PROTO ?? 'http',
-            env.HTTP_HOSTNAME ?? 'localhost',
-            env.HTTP_PORT
-          );
+          env.HTTP_ORIGIN = originOf(env.HTTP_PROTO ?? 'http', env.HTTP_HOSTNAME ?? 'localhost', env.HTTP_PORT);
           // Userspace VFS, opted into by declaring `volumes:` in the Routes manifest: the shim
           // is materialized and prepended to the child's LD_PRELOAD, and the supervisor socket
           // it reports to is started here. Child env only; rowdy's own process is never

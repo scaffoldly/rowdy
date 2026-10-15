@@ -7,6 +7,7 @@ import { APIGatewayProxyEventV2 } from 'aws-lambda';
 import { HttpProxy, HttpHeaders, HttpResponse, Source } from '../proxy/http';
 import { ShellResponse } from '../proxy/shell';
 import { Crontab, CronSchema, URI } from '../routes';
+import { defaultPort, reachedBy } from '../forwarded';
 import { CRI, GrpcRouter, RuntimeService } from '@scaffoldly/rowdy-grpc';
 import { LambdaCri } from './lambda/cri';
 import { Rowdy } from '../api';
@@ -146,14 +147,12 @@ export class LambdaRequest extends Request<LambdaPipeline> {
         }
       }
 
-      const host = headers['Host'] || headers['host'] || 'localhost';
-      const hostname = headers['X-Forwarded-Host'] || headers['x-forwarded-host'] || host;
-      const proto = headers['X-Forwarded-Proto'] || headers['x-forwarded-proto'] || 'https';
-      const port =
-        headers['X-Forwarded-Port'] ||
-        headers['x-forwarded-port'] ||
-        URI.from(`${proto}://${hostname}`).port ||
-        Environment.defaultPort(proto);
+      const { reached, trust } = reachedBy(headers, this.pipeline.routes.hosts);
+      log.debug(trust.trusted ? 'Forwarded Host Trusted' : 'Forwarded Host Not Used', {
+        origin: trust.origin ?? '',
+        reason: trust.trusted ? 'in spec.hosts' : trust.reason,
+      });
+      const { host, hostname, port, proto } = reached;
       const userAgent = headers['User-Agent'] || headers['user-agent'] || this.pipeline.environment.userAgent;
 
       this.pipeline.environment
@@ -248,7 +247,7 @@ export class LambdaRequest extends Request<LambdaPipeline> {
     this.pipeline.environment
       .withEnv('HTTP_HOST', uri.host)
       .withEnv('HTTP_HOSTNAME', uri.hostname)
-      .withEnv('HTTP_PORT', uri.port || Environment.defaultPort(proto))
+      .withEnv('HTTP_PORT', uri.port || defaultPort(proto))
       .withEnv('HTTP_PROTO', proto)
       .withEnv(
         'HTTP_UA',

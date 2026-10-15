@@ -87,6 +87,10 @@ crontab:
   - '*/15 * * * * POST http://localhost:3000/tunnel/gc'
 ```
 
+`hosts:` lists the public origins (a bare host means `https`) whose forwarded headers rowdy trusts
+when it tells the app how it was reached; see
+[docs/runtime.md](docs/runtime.md#forwarded-headers-and-spechosts).
+
 A path that turns out not to exist falls back to the default routes. An inline manifest that fails
 to parse or validate throws, since it cannot be a missing file.
 
@@ -180,6 +184,7 @@ On deploy, rowdy copies the image into ECR and adds itself as a layer (`/usr/loc
 function starts rowdy, and rowdy runs the image's `ENTRYPOINT` + `CMD` as its command. rowdy gives
 the command `HTTP_ORIGIN`, `HTTP_HOST`, `HTTP_HOSTNAME`, `HTTP_PORT`, `HTTP_PROTO`, `HTTP_UA` and
 `NET_PRIVATE_IPV4`: how the sandbox's first request reached it, and the sandbox's private address.
+Forwarded headers (`X-Forwarded-Host` and the like) count only for origins listed in `spec.hosts`.
 The layer, the function's image configuration, the command's lifecycle and the variables:
 [docs/runtime.md](docs/runtime.md).
 
