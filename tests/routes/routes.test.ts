@@ -514,3 +514,33 @@ describe('volume options', () => {
     expect(Routes.fromDataURL(routes.intoDataURL()).intoVolumes()[0]!.options.lock).toBe(true);
   });
 });
+
+describe('hosts', () => {
+  it('normalizes hosts and origins and survives a data url round trip', () => {
+    const routes = Routes.fromURL(`hosts:
+  - App.Example
+  - "https://app.example"
+  - "http://app.example:8080/"
+`);
+    expect(routes.hosts).toEqual(['https://app.example', 'http://app.example:8080']);
+    expect(Routes.fromDataURL(routes.intoDataURL()).hosts).toEqual(routes.hosts);
+  });
+
+  it('omits empty hosts from the data url', () => {
+    const routes = Routes.empty().withDefault('http://localhost:3000/');
+    expect(Routes.fromDataURL(routes.intoDataURL()).hosts).toEqual([]);
+  });
+
+  it('merges hosts without duplicating', () => {
+    const a = Routes.empty().withHosts(['app.example']);
+    const b = Routes.empty().withHosts(['https://app.example', 'www.app.example']);
+    expect(a.merge(b).hosts).toEqual(['https://app.example', 'https://www.app.example']);
+  });
+
+  it.each(['https://app.example/path', 'ftp://app.example', 'https://user@app.example', 'https://app.example?x=1', ''])(
+    'rejects %p',
+    (entry) => {
+      expect(() => Routes.empty().withHosts([entry])).toThrow(/Invalid host/);
+    }
+  );
+});
