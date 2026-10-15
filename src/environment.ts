@@ -23,7 +23,7 @@ import {
   timer,
 } from 'rxjs';
 import { Routes } from './routes';
-import { defaultPort, originOf } from './forwarded';
+import { defaultPort, originOf } from './cdn';
 import { ILoggable, isLevel, Level, log, Logger, mask, maskEnv, maskJson, Trace } from './log';
 import { ExitContext, ShellExit, ShellProxy, ShellRequest } from './proxy/shell';
 import { ShellPipeline } from './shell/pipeline';

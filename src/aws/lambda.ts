@@ -7,7 +7,7 @@ import { APIGatewayProxyEventV2 } from 'aws-lambda';
 import { HttpProxy, HttpHeaders, HttpResponse, Source } from '../proxy/http';
 import { ShellResponse } from '../proxy/shell';
 import { Crontab, CronSchema, URI } from '../routes';
-import { defaultPort, reachedBy } from '../forwarded';
+import { defaultPort, reachedBy } from '../cdn';
 import { CRI, GrpcRouter, RuntimeService } from '@scaffoldly/rowdy-grpc';
 import { LambdaCri } from './lambda/cri';
 import { Rowdy } from '../api';
@@ -149,6 +149,7 @@ export class LambdaRequest extends Request<LambdaPipeline> {
 
       const { reached, trust } = reachedBy(headers, this.pipeline.routes.hosts);
       log.debug(trust.trusted ? 'Forwarded Host Trusted' : 'Forwarded Host Not Used', {
+        cdn: trust.cdn,
         origin: trust.origin ?? '',
         reason: trust.trusted ? 'in spec.hosts' : trust.reason,
       });
