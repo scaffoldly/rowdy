@@ -242,12 +242,25 @@ describe('aws lambda runtime', () => {
       expect(env).toMatchObject(own);
     });
 
-    it('ignore every forwarded host without spec.hosts', async () => {
-      const env = await envAfter(
-        withCrontab(CRON_LINE),
-        functionUrlEvent({ host: LAMBDA_HOST, 'x-forwarded-host': 'app.example' })
-      );
-      expect(env).toMatchObject(own);
+    it('use forwarded headers unchecked without spec.hosts, warning once', async () => {
+      const lines: string[] = [];
+      const spy = jest.spyOn(console, 'warn').mockImplementation((...args: unknown[]) => {
+        lines.push(args.join(' '));
+      });
+      LambdaRequest['uncheckedWarned'] = false;
+      try {
+        const event = functionUrlEvent({ host: LAMBDA_HOST, 'x-forwarded-host': 'app.example' });
+        expect(await envAfter(withCrontab(CRON_LINE), event)).toMatchObject({
+          HTTP_HOST: LAMBDA_HOST,
+          HTTP_HOSTNAME: 'app.example',
+          HTTP_PROTO: 'https',
+          HTTP_ORIGIN: 'https://app.example',
+        });
+        await envAfter(withCrontab(CRON_LINE), event);
+        expect(lines.filter((l) => l.includes('Forwarded Host Unchecked'))).toHaveLength(1);
+      } finally {
+        spy.mockRestore();
+      }
     });
 
     it('use a forwarded host whose origin is in spec.hosts', async () => {

@@ -109,6 +109,9 @@ export class LambdaPipeline extends Pipeline {
 }
 
 export class LambdaRequest extends Request<LambdaPipeline> {
+  // Once per sandbox: every request without spec.hosts would repeat it.
+  private static uncheckedWarned = false;
+
   constructor(
     pipeline: LambdaPipeline,
     public readonly data: string
@@ -148,11 +151,15 @@ export class LambdaRequest extends Request<LambdaPipeline> {
       }
 
       const { reached, trust } = reachedBy(headers, this.pipeline.routes.hosts);
-      log.debug(trust.trusted ? 'Forwarded Host Trusted' : 'Forwarded Host Not Used', {
-        cdn: trust.cdn,
-        origin: trust.origin ?? '',
-        reason: trust.trusted ? 'in spec.hosts' : trust.reason,
-      });
+      log.debug('Forwarded Host', { cdn: trust.cdn, decision: trust.decision, origin: trust.origin ?? '' });
+      if (trust.decision === 'unchecked' && !LambdaRequest.uncheckedWarned) {
+        LambdaRequest.uncheckedWarned = true;
+        log.warn('Forwarded Host Unchecked', {
+          cdn: trust.cdn,
+          origin: trust.origin ?? '',
+          reason: 'spec.hosts is empty, so any caller can set HTTP_HOSTNAME and HTTP_ORIGIN; list the public origins',
+        });
+      }
       const { host, hostname, port, proto } = reached;
       const userAgent = headers['User-Agent'] || headers['user-agent'] || this.pipeline.environment.userAgent;
 

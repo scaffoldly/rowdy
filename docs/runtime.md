@@ -98,15 +98,15 @@ rowdy sets seven variables in the command's environment. They tell the app how i
 reached: the origin, host, port and scheme a request came in on, the client's user agent, and the
 sandbox's own private address.
 
-| Variable           | Outside a request                                          | From a Function URL request                                                         | From a scheduled request                                       |
-| ------------------ | ---------------------------------------------------------- | ----------------------------------------------------------------------------------- | -------------------------------------------------------------- |
-| `HTTP_HOST`        | `localhost`                                                | the `Host` header: always the Function URL's own domain                             | the line's URI host, with any port                             |
-| `HTTP_HOSTNAME`    | `localhost`                                                | the forwarded host if [trusted](#forwarded-headers-and-spechosts), else `HTTP_HOST` | the line's URI host, without port                              |
-| `HTTP_ORIGIN`      | `http://localhost`                                         | `<HTTP_PROTO>://<HTTP_HOSTNAME>`, with any non-default port                         | built the same way                                             |
-| `HTTP_PORT`        | `80`                                                       | the port in `HTTP_HOSTNAME`, else the default for `HTTP_PROTO`                      | the line's URI port, else the default for its scheme           |
-| `HTTP_PROTO`       | `http`                                                     | the forwarded scheme if trusted, else `https`                                       | the line's URI scheme                                          |
-| `HTTP_UA`          | `<rowdy>/<version>`                                        | `<User-Agent> (<rowdy> v<version> LambdaPipeline)`                                  | `<rowdy>/<version> (cron) (<rowdy> v<version> LambdaPipeline)` |
-| `NET_PRIVATE_IPV4` | the sandbox's private IPv4 address; unset when it has none | unchanged                                                                           | unchanged                                                      |
+| Variable           | Outside a request                                          | From a Function URL request                                                      | From a scheduled request                                       |
+| ------------------ | ---------------------------------------------------------- | -------------------------------------------------------------------------------- | -------------------------------------------------------------- |
+| `HTTP_HOST`        | `localhost`                                                | the `Host` header: always the Function URL's own domain                          | the line's URI host, with any port                             |
+| `HTTP_HOSTNAME`    | `localhost`                                                | the [forwarded host](#forwarded-headers-and-spechosts) if used, else `HTTP_HOST` | the line's URI host, without port                              |
+| `HTTP_ORIGIN`      | `http://localhost`                                         | `<HTTP_PROTO>://<HTTP_HOSTNAME>`, with any non-default port                      | built the same way                                             |
+| `HTTP_PORT`        | `80`                                                       | the port in `HTTP_HOSTNAME`, else the default for `HTTP_PROTO`                   | the line's URI port, else the default for its scheme           |
+| `HTTP_PROTO`       | `http`                                                     | the forwarded scheme if used, else `https`                                       | the line's URI scheme                                          |
+| `HTTP_UA`          | `<rowdy>/<version>`                                        | `<User-Agent> (<rowdy> v<version> LambdaPipeline)`                               | `<rowdy>/<version> (cron) (<rowdy> v<version> LambdaPipeline)` |
+| `NET_PRIVATE_IPV4` | the sandbox's private IPv4 address; unset when it has none | unchanged                                                                        | unchanged                                                      |
 
 `<rowdy>` is the package name, `@scaffoldly/rowdy`. A request without a `User-Agent` header uses
 `<rowdy>/<version>` in its place. Header names are matched in any case. The default port is `443`
@@ -143,7 +143,7 @@ A CDN or proxy in front of the Function URL connects to it with the Function URL
 refuses any other. The host and scheme the visitor used reach rowdy only in forwarded headers, and
 anyone can send those, straight to the Function URL. The values are fixed from the sandbox's first
 invocation, so a forged header on that one request would set the app's public origin for the
-sandbox's whole life. So rowdy uses forwarded values only for origins you list:
+sandbox's whole life. List the public origins, and rowdy uses forwarded values only for them:
 
 ```yaml
 spec:
@@ -154,10 +154,17 @@ spec:
 ```
 
 An entry is a host, which means `https` on port 443, or an `http(s)://host[:port]` origin with no
-path. On each request, rowdy builds the origin the forwarded headers describe and uses them only if
-that exact origin is listed: host, scheme and port. A forwarded host or scheme that is not listed, or
-any forwarded header when `spec.hosts` is empty, is ignored, and the request is described by the
-Function URL itself (`https`, port 443). A forged header can then only name one of your own origins.
+path. On each request, rowdy builds the origin the forwarded headers describe:
+
+- **With `spec.hosts`:** the forwarded values are used only if that exact origin is listed: host,
+  scheme and port. Otherwise they are ignored, and the request is described by the Function URL
+  itself (`https`, port 443). A forged header can then only name one of your own origins.
+- **Without `spec.hosts`:** the forwarded values are used unchecked, and the first request that
+  uses them logs a warning, once per sandbox:
+
+  ```
+  WARN Lambda Forwarded Host Unchecked Cdn: proxy Origin: https://app.example Reason: spec.hosts is empty, so any caller can set HTTP_HOSTNAME and HTTP_ORIGIN; list the public origins
+  ```
 
 rowdy first infers the CDN from its own headers: CloudFront by `X-Amz-Cf-Id` or
 `CloudFront-Forwarded-Proto`, Cloudflare by `CF-Ray` or `CF-Visitor`; anything else is treated as a
@@ -182,8 +189,9 @@ origin request has to carry the Function URL's `Host`. Configure the CDN to add 
 Function on viewer request; on Cloudflare, with a request header Transform Rule. On CloudFront, also
 add `CloudFront-Forwarded-Proto` to the origin request policy if the site is served over `http`.
 
-At `debug`, each request logs `Forwarded Host Trusted` or `Forwarded Host Not Used`, with the CDN
-rowdy inferred, the origin the headers described and the reason.
+At `debug`, each request logs `Forwarded Host` with the CDN rowdy inferred, the origin the headers
+described, and the decision: `listed` or `unchecked` (used), `unlisted` (ignored), or `absent` (no
+forwarded host).
 
 ### When they are set
 

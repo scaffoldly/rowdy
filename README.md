@@ -185,7 +185,8 @@ function starts rowdy, and rowdy runs the image's `ENTRYPOINT` + `CMD` as its co
 the command `HTTP_ORIGIN`, `HTTP_HOST`, `HTTP_HOSTNAME`, `HTTP_PORT`, `HTTP_PROTO`, `HTTP_UA` and
 `NET_PRIVATE_IPV4`: how the sandbox's first request reached it, and the sandbox's private address.
 Forwarded headers (`X-Forwarded-Host` and the like, read per CDN: CloudFront, Cloudflare, or any
-proxy) count only for origins listed in `spec.hosts`.
+proxy) count only for origins listed in `spec.hosts`; without `spec.hosts` they are used unchecked,
+with a warning.
 The layer, the function's image configuration, the command's lifecycle and the variables:
 [docs/runtime.md](docs/runtime.md).
 
