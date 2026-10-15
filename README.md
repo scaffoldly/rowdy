@@ -196,8 +196,10 @@ unix-domain socket (one JSON object per line, paths and metadata only; the proto
   Multi-writer behaviour follows [ADR 0001](docs/adr/0001-multi-writer-leases.md): a trusted local
   copy is re-checked against the object's ETag at most every `revalidateMs` (default 2 s) and
   refetched **in place** when it changed, so an open descriptor sees the new bytes. A listing counts
-  as that check for every object it finds unchanged, and answers for the names it did not find for
-  as long, as does a miss, an unlink, or a directory made where nothing was; writers can be
+  as that check for every object it finds unchanged. A name this instance looked up and missed, or
+  removed, stays missing for as long; any other lookup asks S3, so a file another instance just
+  created is found at once. A new file skips the HEAD for its base version when a listing did not
+  have the name (the conditional upload still catches a racing creator); writers can be
   serialized with leases (`<prefix>/.rowdy/locks/<key>`, conditional creates, `leaseMs` TTL with
   renewal, `lockWaitMs` before `EAGAIN`). The shim turns advisory locks into lease traffic
   (`fcntl`/`flock`: read lock → `revalidate`, write lock → `lock`, unlock → `flush` + `unlock`), which
