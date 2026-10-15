@@ -149,7 +149,11 @@ export class LambdaRequest extends Request<LambdaPipeline> {
       const host = headers['Host'] || headers['host'] || 'localhost';
       const hostname = headers['X-Forwarded-Host'] || headers['x-forwarded-host'] || host;
       const proto = headers['X-Forwarded-Proto'] || headers['x-forwarded-proto'] || 'https';
-      const port = headers['X-Forwarded-Port'] || headers['x-forwarded-port'] || Environment.defaultPort(proto);
+      const port =
+        headers['X-Forwarded-Port'] ||
+        headers['x-forwarded-port'] ||
+        URI.from(`${proto}://${hostname}`).port ||
+        Environment.defaultPort(proto);
       const userAgent = headers['User-Agent'] || headers['user-agent'] || this.pipeline.environment.userAgent;
 
       this.pipeline.environment

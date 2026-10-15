@@ -206,6 +206,7 @@ describe('aws lambda runtime', () => {
         HTTP_HOSTNAME: 'localhost',
         HTTP_PORT: '80',
         HTTP_PROTO: 'http',
+        HTTP_ORIGIN: 'http://localhost',
       });
     });
 
@@ -219,18 +220,23 @@ describe('aws lambda runtime', () => {
           'x-forwarded-port': '8443',
         })
       );
-      expect(env).toMatchObject({ HTTP_HOSTNAME: 'app.example', HTTP_PORT: '8443', HTTP_PROTO: 'https' });
+      expect(env).toMatchObject({
+        HTTP_HOSTNAME: 'app.example',
+        HTTP_PORT: '8443',
+        HTTP_PROTO: 'https',
+        HTTP_ORIGIN: 'https://app.example:8443',
+      });
     });
 
     it("take the scheme's port without X-Forwarded-Port", async () => {
       const https = await envAfter(withCrontab(CRON_LINE), functionUrlEvent({ host: 'example.com' }));
-      expect(https).toMatchObject({ HTTP_PORT: '443', HTTP_PROTO: 'https' });
+      expect(https).toMatchObject({ HTTP_PORT: '443', HTTP_PROTO: 'https', HTTP_ORIGIN: 'https://example.com' });
 
       const http = await envAfter(
         withCrontab(CRON_LINE),
         functionUrlEvent({ host: 'example.com', 'X-Forwarded-Proto': 'http' })
       );
-      expect(http).toMatchObject({ HTTP_PORT: '80', HTTP_PROTO: 'http' });
+      expect(http).toMatchObject({ HTTP_PORT: '80', HTTP_PROTO: 'http', HTTP_ORIGIN: 'http://example.com' });
     });
 
     it("take a schedule's port from its URI, else its scheme", async () => {
@@ -240,11 +246,50 @@ describe('aws lambda runtime', () => {
         HTTP_HOSTNAME: 'localhost',
         HTTP_PORT: '3000',
         HTTP_PROTO: 'https',
+        HTTP_ORIGIN: 'https://localhost:3000',
       });
 
       const line = '0 4 * * MON http://localhost/reports/weekly';
       const implied = await envAfter(withCrontab(line), cronEvent(line));
-      expect(implied).toMatchObject({ HTTP_HOST: 'localhost', HTTP_PORT: '80', HTTP_PROTO: 'http' });
+      expect(implied).toMatchObject({
+        HTTP_HOST: 'localhost',
+        HTTP_PORT: '80',
+        HTTP_PROTO: 'http',
+        HTTP_ORIGIN: 'http://localhost',
+      });
+    });
+
+    it('take the port from X-Forwarded-Host when X-Forwarded-Port is absent', async () => {
+      const env = await envAfter(
+        withCrontab(CRON_LINE),
+        functionUrlEvent({ host: 'abc.lambda-url.us-east-1.on.aws', 'x-forwarded-host': 'app.example:8443' })
+      );
+      expect(env).toMatchObject({
+        HTTP_HOSTNAME: 'app.example:8443',
+        HTTP_PORT: '8443',
+        HTTP_ORIGIN: 'https://app.example:8443',
+      });
+    });
+
+    it("build the origin with the hostname's own port over HTTP_PORT, never twice", async () => {
+      const env = await envAfter(
+        withCrontab(CRON_LINE),
+        functionUrlEvent({
+          host: 'abc.lambda-url.us-east-1.on.aws',
+          'x-forwarded-host': 'app.example:3000',
+          'x-forwarded-port': '443',
+        })
+      );
+      expect(env).toMatchObject({ HTTP_PORT: '443', HTTP_ORIGIN: 'https://app.example:3000' });
+    });
+
+    it('build an origin from any proto, hostname and port', () => {
+      expect(Environment.originOf('https', 'app.example', '443')).toBe('https://app.example');
+      expect(Environment.originOf('http', 'app.example', '80')).toBe('http://app.example');
+      expect(Environment.originOf('https', 'app.example', '80')).toBe('https://app.example:80');
+      expect(Environment.originOf('https', 'App.Example:443', '8443')).toBe('https://app.example');
+      expect(Environment.originOf('http', '[::1]', '8080')).toBe('http://[::1]:8080');
+      expect(Environment.originOf('http', 'localhost', undefined)).toBe('http://localhost');
     });
   });
 });
