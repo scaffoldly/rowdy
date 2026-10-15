@@ -53,6 +53,8 @@ class FakeS3 {
    * gets a 500, and `lost` is stored but its response never arrives.
    */
   readonly failNext = new Map<string, Array<'network' | 'server' | 'lost'>>();
+  /** Objects per ListObjectsV2 page; all of them when unset. */
+  pageSize?: number;
   private version = 0;
 
   put(key: string, body: string, metadata?: Record<string, string>): Stored {
@@ -143,12 +145,16 @@ class FakeS3 {
           contents.push({ Key: key, Size: o.body.length, ETag: o.etag });
         }
       }
-      const limited = command.input.MaxKeys ? contents.slice(0, command.input.MaxKeys) : contents;
+      const start = Number(command.input.ContinuationToken ?? 0);
+      const size = command.input.MaxKeys ?? this.pageSize ?? contents.length;
+      const limited = contents.slice(start, start + size);
+      const more = !command.input.MaxKeys && start + size < contents.length;
       return {
         Contents: limited,
-        CommonPrefixes: [...common].map((Prefix) => ({ Prefix })),
-        KeyCount: limited.length + common.size,
-        IsTruncated: false,
+        CommonPrefixes: start === 0 ? [...common].map((Prefix) => ({ Prefix })) : [],
+        KeyCount: limited.length + (start === 0 ? common.size : 0),
+        IsTruncated: more,
+        NextContinuationToken: more ? String(start + size) : undefined,
       };
     }
     throw new Error(`unexpected command ${command!.constructor.name}`);
@@ -659,6 +665,7 @@ describe('S3Adapter', () => {
       s3.put('dir/two.txt', '2'); // another instance
       s3.calls.length = 0;
       await expect(a.stat(`${mount}/dir/two.txt`)).rejects.toMatchObject({ errno: 2 });
+      await expect(a.fetch(`${mount}/dir/two.txt`)).rejects.toMatchObject({ errno: 2 });
       writeFileSync(join(backing, 'dir', 'three.txt'), '3');
       await a.open(`${mount}/dir/three.txt`, 0o101);
       expect(s3.calls).toEqual([]);
@@ -720,6 +727,64 @@ describe('S3Adapter', () => {
       expect(s3.calls).toEqual([]);
       await a.fetch(`${mount}/dir/changed.txt`);
       expect(readFileSync(join(backing, 'dir', 'changed.txt'), 'utf8')).toBe('after!');
+    });
+
+    it('a lookup past revalidateMs in a directory listed here lists it again: one round trip for every name', async () => {
+      const a = within(100);
+      s3.put('dir/a.txt', 'a');
+      s3.put('dir/b.txt', 'b');
+      await a.list(`${mount}/dir`);
+      await new Promise((r) => setTimeout(r, 120));
+      s3.calls.length = 0;
+      await a.stat(`${mount}/dir/a.txt`);
+      await a.stat(`${mount}/dir/b.txt`);
+      await expect(a.stat(`${mount}/dir/none.txt`)).rejects.toMatchObject({ errno: 2 });
+      writeFileSync(join(backing, 'dir', 'new.txt'), 'n');
+      await a.open(`${mount}/dir/new.txt`, 0o101);
+      expect(s3.calls).toEqual(['ListObjectsV2Command']);
+    });
+
+    it('mkdir past revalidateMs relists the parent once, and the new directory is known empty', async () => {
+      const a = within(100);
+      mkdirSync(join(backing, 'dir'));
+      await a.list(`${mount}/dir`);
+      await new Promise((r) => setTimeout(r, 120));
+      s3.calls.length = 0;
+      mkdirSync(join(backing, 'dir', 'new'));
+      await a.mkdir(`${mount}/dir/new`);
+      await expect(a.stat(`${mount}/dir/new/f.txt`)).rejects.toMatchObject({ errno: 2 });
+      mkdirSync(join(backing, 'dir', 'next'));
+      await a.mkdir(`${mount}/dir/next`);
+      expect(s3.calls).toEqual(['ListObjectsV2Command', 'PutObjectCommand', 'PutObjectCommand']);
+    });
+
+    it('a relist costs one request whatever it finds: names new here are left to their own lookup', async () => {
+      const a = within(100);
+      s3.put('shared/a.txt', 'a');
+      await a.list(`${mount}/shared`);
+      await new Promise((r) => setTimeout(r, 120));
+      for (let i = 0; i < 5; i++) s3.put(`shared/other-${i}`, 'o'); // other instances
+      s3.calls.length = 0;
+      await a.stat(`${mount}/shared/a.txt`);
+      expect(s3.calls).toEqual(['ListObjectsV2Command']);
+      expect(existsSync(join(backing, 'shared', 'other-0'))).toBe(false);
+      await a.stat(`${mount}/shared/other-0`);
+      expect(s3.calls).toEqual(['ListObjectsV2Command', 'HeadObjectCommand', 'ListObjectsV2Command']);
+      expect(statSync(join(backing, 'shared', 'other-0')).size).toBe(1);
+    });
+
+    it('a lookup in a directory never listed here, or listed in more than one page, asks for its key alone', async () => {
+      const a = within(100);
+      s3.pageSize = 1;
+      s3.put('big/a.txt', 'a');
+      s3.put('big/b.txt', 'b');
+      await a.list(`${mount}/big`);
+      expect(existsSync(join(backing, 'big', 'b.txt'))).toBe(true);
+      await new Promise((r) => setTimeout(r, 120));
+      s3.calls.length = 0;
+      await a.stat(`${mount}/big/a.txt`);
+      await expect(a.stat(`${mount}/elsewhere/none.txt`)).rejects.toMatchObject({ errno: 2 });
+      expect(s3.calls).toEqual(['HeadObjectCommand', 'HeadObjectCommand', 'ListObjectsV2Command']);
     });
 
     it('a listing does not hide an object flushed here since', async () => {
