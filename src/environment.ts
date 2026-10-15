@@ -23,6 +23,7 @@ import {
   timer,
 } from 'rxjs';
 import { Routes } from './routes';
+import { defaultPort, originOf } from './cdn';
 import { ILoggable, isLevel, Level, log, Logger, mask, maskEnv, maskJson, Trace } from './log';
 import { ExitContext, ShellExit, ShellProxy, ShellRequest } from './proxy/shell';
 import { ShellPipeline } from './shell/pipeline';
@@ -130,6 +131,8 @@ const FAULT_REPORT_LINES = 4096;
 export type ProcessEnv = Record<
   | 'HTTP_HOST'
   | 'HTTP_HOSTNAME'
+  | 'HTTP_ORIGIN'
+  | 'HTTP_PORT'
   | 'HTTP_PROTO'
   | 'HTTP_UA'
   | 'NET_PRIVATE_IPV4'
@@ -143,6 +146,17 @@ export type ProcessEnv = Record<
   | 'VFS_FAULT_FILE',
   string | undefined
 >;
+
+// Logged unmasked: request and network facts, never credentials.
+const PLAIN_ENV: ReadonlySet<keyof ProcessEnv> = new Set<keyof ProcessEnv>([
+  'HTTP_HOST',
+  'HTTP_HOSTNAME',
+  'HTTP_ORIGIN',
+  'HTTP_PORT',
+  'HTTP_PROTO',
+  'HTTP_UA',
+  'NET_PRIVATE_IPV4',
+]);
 
 export class Environment implements ILoggable {
   // How long a graceful shutdown gets after the command exits before rowdy exits outright.
@@ -195,6 +209,7 @@ export class Environment implements ILoggable {
     this._routes = Routes.default();
     this.withEnv('HTTP_HOST', 'localhost')
       .withEnv('HTTP_HOSTNAME', 'localhost')
+      .withEnv('HTTP_PORT', defaultPort('http'))
       .withEnv('HTTP_PROTO', 'http')
       .withEnv('HTTP_UA', `${packageJson.name}/${packageJson.version}`)
       .withEnv('NET_PRIVATE_IPV4', internalIpV4Sync());
@@ -757,7 +772,7 @@ export class Environment implements ILoggable {
   }
 
   withEnv(name: keyof ProcessEnv, value: ProcessEnv[keyof ProcessEnv]): this {
-    this.log.debug(`Received environment variable`, { name, value: mask(value) });
+    this.log.debug(`Received environment variable`, { name, value: PLAIN_ENV.has(name) ? value : mask(value) });
     this._envVars.next({ name, value });
     return this;
   }
@@ -864,6 +879,7 @@ export class Environment implements ILoggable {
         },
         error: (err) => subscriber.error(err),
         complete: async () => {
+          env.HTTP_ORIGIN = originOf(env.HTTP_PROTO ?? 'http', env.HTTP_HOSTNAME ?? 'localhost', env.HTTP_PORT);
           // Userspace VFS, opted into by declaring `volumes:` in the Routes manifest: the shim
           // is materialized and prepended to the child's LD_PRELOAD, and the supervisor socket
           // it reports to is started here. Child env only; rowdy's own process is never
@@ -914,7 +930,7 @@ export class Environment implements ILoggable {
             subscriber.error(err);
             return;
           }
-          this.log.debug(`Environment variables finalized`, { env: maskEnv(env) });
+          this.log.debug(`Environment variables finalized`, { env: maskEnv(env, PLAIN_ENV) });
           subscriber.next({ ...env });
           subscriber.complete();
         },

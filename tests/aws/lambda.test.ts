@@ -32,6 +32,14 @@ describe('aws lambda runtime', () => {
     return (await lastValueFrom(request['intoHttp']())) as HttpProxy<LambdaPipeline>;
   };
 
+  // The command's environment as the first request leaves it.
+  const envAfter = async (environment: Environment, event: unknown): Promise<Record<string, string | undefined>> => {
+    await proxy(environment, event);
+    const env = lastValueFrom(environment.Env);
+    environment['_envVars'].complete();
+    return env;
+  };
+
   const withCrontab = (...lines: string[]): Environment => {
     const environment = new Environment(new Logger());
     environment.routes.withCrontab(lines);
@@ -186,6 +194,160 @@ describe('aws lambda runtime', () => {
       const http = await proxy(withCrontab(CRON_LINE), functionUrlEvent({ host: 'example.com', 'X-Trace': 'abc' }));
 
       expect(http.headers.get('x-trace')).toBe('abc');
+    });
+  });
+
+  describe('runtime variables', () => {
+    const LAMBDA_HOST = 'abc.lambda-url.us-east-1.on.aws';
+    const withHosts = (...hosts: string[]): Environment => {
+      const environment = withCrontab(CRON_LINE);
+      environment.routes.withHosts(hosts);
+      return environment;
+    };
+    const own = {
+      HTTP_HOST: LAMBDA_HOST,
+      HTTP_HOSTNAME: LAMBDA_HOST,
+      HTTP_PORT: '443',
+      HTTP_PROTO: 'https',
+      HTTP_ORIGIN: `https://${LAMBDA_HOST}`,
+    };
+
+    it('default to localhost over http on port 80', async () => {
+      const environment = new Environment(new Logger());
+      environment['_envVars'].complete();
+      expect(await lastValueFrom(environment.Env)).toMatchObject({
+        HTTP_HOST: 'localhost',
+        HTTP_HOSTNAME: 'localhost',
+        HTTP_PORT: '80',
+        HTTP_PROTO: 'http',
+        HTTP_ORIGIN: 'http://localhost',
+      });
+    });
+
+    it("describe a direct request by the Function URL's own host over https", async () => {
+      const env = await envAfter(withHosts('app.example'), functionUrlEvent({ host: LAMBDA_HOST }));
+      expect(env).toMatchObject(own);
+    });
+
+    it('ignore forwarded headers whose origin is not in spec.hosts', async () => {
+      const env = await envAfter(
+        withHosts('app.example'),
+        functionUrlEvent({
+          host: LAMBDA_HOST,
+          'x-forwarded-host': 'evil.example',
+          'x-forwarded-proto': 'https',
+          'x-forwarded-port': '8443',
+        })
+      );
+      expect(env).toMatchObject(own);
+    });
+
+    it('use forwarded headers unchecked without spec.hosts, warning once', async () => {
+      const lines: string[] = [];
+      const spy = jest.spyOn(console, 'warn').mockImplementation((...args: unknown[]) => {
+        lines.push(args.join(' '));
+      });
+      LambdaRequest['uncheckedWarned'] = false;
+      try {
+        const event = functionUrlEvent({ host: LAMBDA_HOST, 'x-forwarded-host': 'app.example' });
+        expect(await envAfter(withCrontab(CRON_LINE), event)).toMatchObject({
+          HTTP_HOST: LAMBDA_HOST,
+          HTTP_HOSTNAME: 'app.example',
+          HTTP_PROTO: 'https',
+          HTTP_ORIGIN: 'https://app.example',
+        });
+        await envAfter(withCrontab(CRON_LINE), event);
+        expect(lines.filter((l) => l.includes('Forwarded Host Unchecked'))).toHaveLength(1);
+      } finally {
+        spy.mockRestore();
+      }
+    });
+
+    it('use a forwarded host whose origin is in spec.hosts', async () => {
+      const env = await envAfter(
+        withHosts('app.example'),
+        functionUrlEvent({ host: LAMBDA_HOST, 'x-forwarded-host': 'app.example', 'x-forwarded-proto': 'https' })
+      );
+      expect(env).toMatchObject({
+        HTTP_HOST: LAMBDA_HOST,
+        HTTP_HOSTNAME: 'app.example',
+        HTTP_PORT: '443',
+        HTTP_PROTO: 'https',
+        HTTP_ORIGIN: 'https://app.example',
+      });
+    });
+
+    it('keep the port of a forwarded host and match it against spec.hosts', async () => {
+      const event = functionUrlEvent({ host: LAMBDA_HOST, 'x-forwarded-host': 'app.example:8443' });
+      expect(await envAfter(withHosts('https://app.example:8443'), event)).toMatchObject({
+        HTTP_HOSTNAME: 'app.example:8443',
+        HTTP_PORT: '8443',
+        HTTP_ORIGIN: 'https://app.example:8443',
+      });
+      expect(await envAfter(withHosts('app.example'), event)).toMatchObject(own);
+    });
+
+    it('refuse a scheme spec.hosts does not list', async () => {
+      const env = await envAfter(
+        withHosts('app.example'),
+        functionUrlEvent({ host: LAMBDA_HOST, 'x-forwarded-host': 'app.example', 'x-forwarded-proto': 'http' })
+      );
+      expect(env).toMatchObject(own);
+    });
+
+    it("prefer a CDN's own scheme header to X-Forwarded-Proto", async () => {
+      const cloudfront = await envAfter(
+        withHosts('http://app.example'),
+        functionUrlEvent({
+          host: LAMBDA_HOST,
+          'x-forwarded-host': 'app.example',
+          'cloudfront-forwarded-proto': 'http',
+          'x-forwarded-proto': 'https',
+        })
+      );
+      expect(cloudfront).toMatchObject({ HTTP_PROTO: 'http', HTTP_PORT: '80', HTTP_ORIGIN: 'http://app.example' });
+
+      const cloudflare = await envAfter(
+        withHosts('http://app.example'),
+        functionUrlEvent({
+          host: LAMBDA_HOST,
+          'x-forwarded-host': 'app.example',
+          'cf-visitor': '{"scheme":"http"}',
+          'x-forwarded-proto': 'https',
+        })
+      );
+      expect(cloudflare).toMatchObject({ HTTP_PROTO: 'http', HTTP_ORIGIN: 'http://app.example' });
+    });
+
+    it('read RFC 7239 Forwarded', async () => {
+      const env = await envAfter(
+        withHosts('app.example'),
+        functionUrlEvent({
+          host: LAMBDA_HOST,
+          forwarded: 'for=192.0.2.60;proto=https;host="app.example", for=198.51.100.17',
+        })
+      );
+      expect(env).toMatchObject({ HTTP_HOSTNAME: 'app.example', HTTP_ORIGIN: 'https://app.example' });
+    });
+
+    it("take a schedule's values from its URI", async () => {
+      const named = await envAfter(withCrontab(CRON_LINE), cronEvent(CRON_LINE));
+      expect(named).toMatchObject({
+        HTTP_HOST: 'localhost:3000',
+        HTTP_HOSTNAME: 'localhost',
+        HTTP_PORT: '3000',
+        HTTP_PROTO: 'https',
+        HTTP_ORIGIN: 'https://localhost:3000',
+      });
+
+      const line = '0 4 * * MON http://localhost/reports/weekly';
+      const implied = await envAfter(withCrontab(line), cronEvent(line));
+      expect(implied).toMatchObject({
+        HTTP_HOST: 'localhost',
+        HTTP_PORT: '80',
+        HTTP_PROTO: 'http',
+        HTTP_ORIGIN: 'http://localhost',
+      });
     });
   });
 });

@@ -54,7 +54,7 @@ describe('environment', () => {
     rmSync(backing, { recursive: true, force: true });
   });
 
-  it('logs the finalized environment with values masked', async () => {
+  it('logs the finalized environment with values masked, except the runtime variables', async () => {
     const lines: string[] = [];
     const spy = jest.spyOn(console, 'debug').mockImplementation((...args: unknown[]) => {
       lines.push(args.join(' '));
@@ -70,7 +70,10 @@ describe('environment', () => {
       expect(output).toContain('Environment Variables Finalized');
       expect(output).toContain('CANARY_API_TOKEN');
       expect(output).not.toContain('0123456789-do-not-log-me');
-      expect(output).not.toContain('canary-user-agent/that');
+      expect(output).toContain('HTTP_UA=canary-user-agent/that-is-long-enough');
+      expect(output).toMatch(
+        /Received Environment Variable Name: HTTP_UA Value: canary-user-agent\/that-is-long-enough/
+      );
     } finally {
       spy.mockRestore();
       delete process.env.CANARY_API_TOKEN;

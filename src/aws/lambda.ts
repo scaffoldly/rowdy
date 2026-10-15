@@ -7,6 +7,7 @@ import { APIGatewayProxyEventV2 } from 'aws-lambda';
 import { HttpProxy, HttpHeaders, HttpResponse, Source } from '../proxy/http';
 import { ShellResponse } from '../proxy/shell';
 import { Crontab, CronSchema, URI } from '../routes';
+import { defaultPort, reachedBy } from '../cdn';
 import { CRI, GrpcRouter, RuntimeService } from '@scaffoldly/rowdy-grpc';
 import { LambdaCri } from './lambda/cri';
 import { Rowdy } from '../api';
@@ -108,6 +109,9 @@ export class LambdaPipeline extends Pipeline {
 }
 
 export class LambdaRequest extends Request<LambdaPipeline> {
+  // Once per sandbox: every request without spec.hosts would repeat it.
+  private static uncheckedWarned = false;
+
   constructor(
     pipeline: LambdaPipeline,
     public readonly data: string
@@ -146,14 +150,23 @@ export class LambdaRequest extends Request<LambdaPipeline> {
         }
       }
 
-      const host = headers['Host'] || headers['host'] || 'localhost';
-      const hostname = headers['X-Forwarded-Host'] || headers['x-forwarded-host'] || host;
-      const proto = headers['X-Forwarded-Proto'] || headers['x-forwarded-proto'] || 'https';
+      const { reached, trust } = reachedBy(headers, this.pipeline.routes.hosts);
+      log.debug('Forwarded Host', { cdn: trust.cdn, decision: trust.decision, origin: trust.origin ?? '' });
+      if (trust.decision === 'unchecked' && !LambdaRequest.uncheckedWarned) {
+        LambdaRequest.uncheckedWarned = true;
+        log.warn('Forwarded Host Unchecked', {
+          cdn: trust.cdn,
+          origin: trust.origin ?? '',
+          reason: 'spec.hosts is empty, so any caller can set HTTP_HOSTNAME and HTTP_ORIGIN; list the public origins',
+        });
+      }
+      const { host, hostname, port, proto } = reached;
       const userAgent = headers['User-Agent'] || headers['user-agent'] || this.pipeline.environment.userAgent;
 
       this.pipeline.environment
         .withEnv('HTTP_HOST', host)
         .withEnv('HTTP_HOSTNAME', hostname)
+        .withEnv('HTTP_PORT', port)
         .withEnv('HTTP_PROTO', proto)
         .withEnv(
           'HTTP_UA',
@@ -236,12 +249,14 @@ export class LambdaRequest extends Request<LambdaPipeline> {
     }
 
     const uri = cron.uriRef;
+    const proto = uri.protocol.replace(':', '');
     const userAgent = `${this.pipeline.environment.userAgent} (cron)`;
 
     this.pipeline.environment
       .withEnv('HTTP_HOST', uri.host)
       .withEnv('HTTP_HOSTNAME', uri.hostname)
-      .withEnv('HTTP_PROTO', uri.protocol.replace(':', ''))
+      .withEnv('HTTP_PORT', uri.port || defaultPort(proto))
+      .withEnv('HTTP_PROTO', proto)
       .withEnv(
         'HTTP_UA',
         `${userAgent} (${this.pipeline.environment.name} v${this.pipeline.environment.version} ${this.pipeline.name})`

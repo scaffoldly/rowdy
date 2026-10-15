@@ -1322,22 +1322,22 @@
   resolved "https://registry.yarnpkg.com/@rollup/rollup-win32-x64-msvc/-/rollup-win32-x64-msvc-4.52.4.tgz#5b2dd648a960b8fa00d76f2cc4eea2f03daa80f4"
   integrity sha512-bf9PtUa0u8IXDVxzRToFQKsNCRz9qLYfR/MpECxl4mRoWYjAeFjgxj1XdZr2M/GNVpT05p+LgQOHopYDlUu6/w==
 
-"@scaffoldly/rowdy-cdk@^0.1.0-beta.20251118143037.9cb23d3":
-  version "0.1.0-beta.20251118143037.9cb23d3"
-  resolved "https://registry.yarnpkg.com/@scaffoldly/rowdy-cdk/-/rowdy-cdk-0.1.0-beta.20251118143037.9cb23d3.tgz#70e835b8f64ee8b12cbf4a8021639c72c078deed"
-  integrity sha512-vHzK+DXXidYe5i0m3DjGWx41ISa9aXE2Jbybk4ZLjv8GIVZfWOvwbH5DK4gWqH7QcYjYfuxMBl7QSDTswUNCpg==
+"@scaffoldly/rowdy-cdk@^0.1.0-beta.20261015173004.3180235":
+  version "0.1.0-beta.20261015173004.3180235"
+  resolved "https://registry.yarnpkg.com/@scaffoldly/rowdy-cdk/-/rowdy-cdk-0.1.0-beta.20261015173004.3180235.tgz#bfcdd2976faf528444f57022a959f520070cba96"
+  integrity sha512-5VUpTvlE+X5dPt0w0YQmMATAvNMez+iSD4jNXbuQuKqg/B5Zqb2ba+kXJ7oJswUjD9f+GwvJkJITrvpa6Mz5eQ==
 
-"@scaffoldly/rowdy-grpc@^0.1.0-beta.20251202230436.0a51800":
-  version "0.1.0-beta.20251202230436.0a51800"
-  resolved "https://registry.yarnpkg.com/@scaffoldly/rowdy-grpc/-/rowdy-grpc-0.1.0-beta.20251202230436.0a51800.tgz#8d234c24a60fea858348d774a1ef89ebbd659ce3"
-  integrity sha512-S/5Wk6zgJ8je/zOZjpRtpvCkVVSn9lBBBFFQ8kCQQy5ATnvqXlPhfcjt97z5h0DWOM75A0LHsWxfwZ65BbPX+A==
+"@scaffoldly/rowdy-grpc@^0.1.0-beta.20261015173030.c8f7cb7":
+  version "0.1.0-beta.20261015173030.c8f7cb7"
+  resolved "https://registry.yarnpkg.com/@scaffoldly/rowdy-grpc/-/rowdy-grpc-0.1.0-beta.20261015173030.c8f7cb7.tgz#0308f502920c2278dac70a85de22d595c272d94e"
+  integrity sha512-MfPxmBq1aYLqDkwzYbuw4C29i2hHMemzvhQldcQbVNhCAtmraRPRLsB7f73cBJi264jw2g9JbFjU1kOLZLOY2w==
   dependencies:
     openapi-types "^12.1.3"
 
-"@scaffoldly/rowdy-vfs@^0.1.0-beta.20261014144926.b08bd85":
-  version "0.1.0-beta.20261014144926.b08bd85"
-  resolved "https://registry.yarnpkg.com/@scaffoldly/rowdy-vfs/-/rowdy-vfs-0.1.0-beta.20261014144926.b08bd85.tgz#98878661880c678062a9d6e29e70729fd1b14542"
-  integrity sha512-0Sbu7NwR6V+OETdgnq+IHP7Xh59wmujvUUMmo4e3GFA+86Gs2H/zffi1O3yTXL4wULaKClwHAkEwOCf1fjxysw==
+"@scaffoldly/rowdy-vfs@^0.1.0-beta.20261015152244.54ef3e5":
+  version "0.1.0-beta.20261015152244.54ef3e5"
+  resolved "https://registry.yarnpkg.com/@scaffoldly/rowdy-vfs/-/rowdy-vfs-0.1.0-beta.20261015152244.54ef3e5.tgz#dd1071f2da7532e751f222f45a9db720ebdf98f0"
+  integrity sha512-lGit7X6oNquNMc/3cgQCHcNz6FrrPBXDPHHL8+j8b6k05f6TXIfxlGaNy+RLyya0TxCYNy8ZQ8rLIiZQ53C2uw==
   dependencies:
     "@aws-sdk/client-s3" "^3.1144.0"
 
