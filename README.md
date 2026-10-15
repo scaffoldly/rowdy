@@ -176,9 +176,12 @@ Syntax, precedence, comments and quoting, multi-line secrets and errors:
 
 ## Runtime environment
 
-rowdy gives the command `HTTP_HOST`, `HTTP_HOSTNAME`, `HTTP_PORT`, `HTTP_PROTO`, `HTTP_UA` and
+On deploy, rowdy copies the image into ECR and adds itself as a layer (`/usr/local/bin/rowdy`). The
+function starts rowdy, and rowdy runs the image's `ENTRYPOINT` + `CMD` as its command. rowdy gives
+the command `HTTP_HOST`, `HTTP_HOSTNAME`, `HTTP_PORT`, `HTTP_PROTO`, `HTTP_UA` and
 `NET_PRIVATE_IPV4`: how the sandbox's first request reached it, and the sandbox's private address.
-Sources, defaults, timing and logging: [docs/runtime.md](docs/runtime.md).
+The layer, the function's image configuration, the command's lifecycle and the variables:
+[docs/runtime.md](docs/runtime.md).
 
 ## Logging
 
