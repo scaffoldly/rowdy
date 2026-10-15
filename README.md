@@ -176,7 +176,7 @@ Syntax, precedence, comments and quoting, multi-line secrets and errors:
 
 ## Runtime environment
 
-rowdy gives the command `HTTP_HOST`, `HTTP_HOSTNAME`, `HTTP_PROTO`, `HTTP_UA` and
+rowdy gives the command `HTTP_HOST`, `HTTP_HOSTNAME`, `HTTP_PORT`, `HTTP_PROTO`, `HTTP_UA` and
 `NET_PRIVATE_IPV4`: how the sandbox's first request reached it, and the sandbox's private address.
 Sources, defaults, timing and logging: [docs/runtime.md](docs/runtime.md).
 

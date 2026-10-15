@@ -32,6 +32,14 @@ describe('aws lambda runtime', () => {
     return (await lastValueFrom(request['intoHttp']())) as HttpProxy<LambdaPipeline>;
   };
 
+  // The command's environment as the first request leaves it.
+  const envAfter = async (environment: Environment, event: unknown): Promise<Record<string, string | undefined>> => {
+    await proxy(environment, event);
+    const env = lastValueFrom(environment.Env);
+    environment['_envVars'].complete();
+    return env;
+  };
+
   const withCrontab = (...lines: string[]): Environment => {
     const environment = new Environment(new Logger());
     environment.routes.withCrontab(lines);
@@ -186,6 +194,57 @@ describe('aws lambda runtime', () => {
       const http = await proxy(withCrontab(CRON_LINE), functionUrlEvent({ host: 'example.com', 'X-Trace': 'abc' }));
 
       expect(http.headers.get('x-trace')).toBe('abc');
+    });
+  });
+
+  describe('runtime variables', () => {
+    it('default to localhost over http on port 80', async () => {
+      const environment = new Environment(new Logger());
+      environment['_envVars'].complete();
+      expect(await lastValueFrom(environment.Env)).toMatchObject({
+        HTTP_HOST: 'localhost',
+        HTTP_HOSTNAME: 'localhost',
+        HTTP_PORT: '80',
+        HTTP_PROTO: 'http',
+      });
+    });
+
+    it('take the port from X-Forwarded-Port', async () => {
+      const env = await envAfter(
+        withCrontab(CRON_LINE),
+        functionUrlEvent({
+          host: 'abc.lambda-url.us-east-1.on.aws',
+          'x-forwarded-host': 'app.example',
+          'x-forwarded-proto': 'https',
+          'x-forwarded-port': '8443',
+        })
+      );
+      expect(env).toMatchObject({ HTTP_HOSTNAME: 'app.example', HTTP_PORT: '8443', HTTP_PROTO: 'https' });
+    });
+
+    it("take the scheme's port without X-Forwarded-Port", async () => {
+      const https = await envAfter(withCrontab(CRON_LINE), functionUrlEvent({ host: 'example.com' }));
+      expect(https).toMatchObject({ HTTP_PORT: '443', HTTP_PROTO: 'https' });
+
+      const http = await envAfter(
+        withCrontab(CRON_LINE),
+        functionUrlEvent({ host: 'example.com', 'X-Forwarded-Proto': 'http' })
+      );
+      expect(http).toMatchObject({ HTTP_PORT: '80', HTTP_PROTO: 'http' });
+    });
+
+    it("take a schedule's port from its URI, else its scheme", async () => {
+      const named = await envAfter(withCrontab(CRON_LINE), cronEvent(CRON_LINE));
+      expect(named).toMatchObject({
+        HTTP_HOST: 'localhost:3000',
+        HTTP_HOSTNAME: 'localhost',
+        HTTP_PORT: '3000',
+        HTTP_PROTO: 'https',
+      });
+
+      const line = '0 4 * * MON http://localhost/reports/weekly';
+      const implied = await envAfter(withCrontab(line), cronEvent(line));
+      expect(implied).toMatchObject({ HTTP_HOST: 'localhost', HTTP_PORT: '80', HTTP_PROTO: 'http' });
     });
   });
 });

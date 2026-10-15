@@ -1,35 +1,46 @@
 # Runtime environment
 
-rowdy sets five variables in the command's environment. They tell the app how it is being
-reached: the host and scheme a request came in on, the client's user agent, and the sandbox's own
+rowdy sets six variables in the command's environment. They tell the app how it is being
+reached: the host, port and scheme a request came in on, the client's user agent, and the sandbox's own
 private address.
 
-| Variable           | Outside a request                                          | From a Function URL request                        | From a scheduled request                                       |
-| ------------------ | ---------------------------------------------------------- | -------------------------------------------------- | -------------------------------------------------------------- |
-| `HTTP_HOST`        | `localhost`                                                | the `Host` header, else `localhost`                | the line's URI host, with any port                             |
-| `HTTP_HOSTNAME`    | `localhost`                                                | `X-Forwarded-Host`, else `HTTP_HOST`               | the line's URI host, without port                              |
-| `HTTP_PROTO`       | `http`                                                     | `X-Forwarded-Proto`, else `https`                  | the line's URI scheme                                          |
-| `HTTP_UA`          | `<rowdy>/<version>`                                        | `<User-Agent> (<rowdy> v<version> LambdaPipeline)` | `<rowdy>/<version> (cron) (<rowdy> v<version> LambdaPipeline)` |
-| `NET_PRIVATE_IPV4` | the sandbox's private IPv4 address; unset when it has none | unchanged                                          | unchanged                                                      |
+| Variable           | Outside a request                                          | From a Function URL request                           | From a scheduled request                                       |
+| ------------------ | ---------------------------------------------------------- | ----------------------------------------------------- | -------------------------------------------------------------- |
+| `HTTP_HOST`        | `localhost`                                                | the `Host` header, else `localhost`                   | the line's URI host, with any port                             |
+| `HTTP_HOSTNAME`    | `localhost`                                                | `X-Forwarded-Host`, else `HTTP_HOST`                  | the line's URI host, without port                              |
+| `HTTP_PORT`        | `80`                                                       | `X-Forwarded-Port`, else the default for `HTTP_PROTO` | the line's URI port, else the default for its scheme           |
+| `HTTP_PROTO`       | `http`                                                     | `X-Forwarded-Proto`, else `https`                     | the line's URI scheme                                          |
+| `HTTP_UA`          | `<rowdy>/<version>`                                        | `<User-Agent> (<rowdy> v<version> LambdaPipeline)`    | `<rowdy>/<version> (cron) (<rowdy> v<version> LambdaPipeline)` |
+| `NET_PRIVATE_IPV4` | the sandbox's private IPv4 address; unset when it has none | unchanged                                             | unchanged                                                      |
 
 `<rowdy>` is the package name, `@scaffoldly/rowdy`. A request without a `User-Agent` header uses
 `<rowdy>/<version>` in its place. Header names are matched in either their canonical or lower-case
-spelling.
+spelling. The default port is `443` for `https` and `80` for `http`.
+
+Together, `HTTP_PROTO`, `HTTP_HOSTNAME` and `HTTP_PORT` give the app its public URL; leave the port
+out when it is the scheme's default. This assumes the proxy sends `X-Forwarded-Host` without a port;
+`HTTP_HOSTNAME` is the header exactly as sent.
+
+```sh
+URL="$HTTP_PROTO://$HTTP_HOSTNAME"
+case "$HTTP_PROTO:$HTTP_PORT" in http:80 | https:443) ;; *) URL="$URL:$HTTP_PORT" ;; esac
+```
 
 For example, a first request of `curl https://app.example/` through a proxy that sets
-`X-Forwarded-Host` and `X-Forwarded-Proto`, in front of a Function URL:
+`X-Forwarded-Host` and `X-Forwarded-Proto` but not `X-Forwarded-Port`, in front of a Function URL:
 
 ```
 HTTP_HOST=abc123.lambda-url.us-east-1.on.aws
 HTTP_HOSTNAME=app.example
+HTTP_PORT=443
 HTTP_PROTO=https
 HTTP_UA=curl/8.7.1 (@scaffoldly/rowdy v0.1.0 LambdaPipeline)
 NET_PRIVATE_IPV4=<the sandbox's private IPv4 address>
 ```
 
 A schedule line `*/15 * * * * POST http://localhost:3000/tunnel/gc` (see
-[crontab.md](crontab.md)) gives `HTTP_HOST=localhost:3000`, `HTTP_HOSTNAME=localhost` and
-`HTTP_PROTO=http`.
+[crontab.md](crontab.md)) gives `HTTP_HOST=localhost:3000`, `HTTP_HOSTNAME=localhost`,
+`HTTP_PORT=3000` and `HTTP_PROTO=http`.
 
 ## When they are set
 
@@ -61,7 +72,7 @@ DEBUG Received Environment Variable Name: HTTP_UA Value: curl/8.7.1 (@scaffoldly
 DEBUG Environment Variables Finalized Env: [PATH=/…n (21 chars), …, HTTP_HOST=abc123.lambda-url.us-east-1.on.aws, …]
 ```
 
-These five are logged in full. Every other environment value is masked to its length and a short
+These six are logged in full. Every other environment value is masked to its length and a short
 prefix and suffix, as described under Logging in the [README](../README.md#logging).
 
 `Received Environment Variable` lines appear on every invocation, but only the values from the

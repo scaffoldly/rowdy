@@ -130,6 +130,7 @@ const FAULT_REPORT_LINES = 4096;
 export type ProcessEnv = Record<
   | 'HTTP_HOST'
   | 'HTTP_HOSTNAME'
+  | 'HTTP_PORT'
   | 'HTTP_PROTO'
   | 'HTTP_UA'
   | 'NET_PRIVATE_IPV4'
@@ -148,6 +149,7 @@ export type ProcessEnv = Record<
 const PLAIN_ENV: ReadonlySet<keyof ProcessEnv> = new Set<keyof ProcessEnv>([
   'HTTP_HOST',
   'HTTP_HOSTNAME',
+  'HTTP_PORT',
   'HTTP_PROTO',
   'HTTP_UA',
   'NET_PRIVATE_IPV4',
@@ -204,6 +206,7 @@ export class Environment implements ILoggable {
     this._routes = Routes.default();
     this.withEnv('HTTP_HOST', 'localhost')
       .withEnv('HTTP_HOSTNAME', 'localhost')
+      .withEnv('HTTP_PORT', Environment.defaultPort('http'))
       .withEnv('HTTP_PROTO', 'http')
       .withEnv('HTTP_UA', `${packageJson.name}/${packageJson.version}`)
       .withEnv('NET_PRIVATE_IPV4', internalIpV4Sync());
@@ -759,6 +762,11 @@ export class Environment implements ILoggable {
       return explicit;
     }
     return argv.trace ? 'trace' : argv.debug ? 'debug' : 'info';
+  }
+
+  /** The port a scheme implies when its URL names none: `80` for http, `443` for https. */
+  static defaultPort(proto: string): string | undefined {
+    return { http: '80', https: '443' }[proto];
   }
 
   withEnv(name: keyof ProcessEnv, value: ProcessEnv[keyof ProcessEnv]): this {

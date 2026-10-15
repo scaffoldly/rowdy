@@ -149,11 +149,13 @@ export class LambdaRequest extends Request<LambdaPipeline> {
       const host = headers['Host'] || headers['host'] || 'localhost';
       const hostname = headers['X-Forwarded-Host'] || headers['x-forwarded-host'] || host;
       const proto = headers['X-Forwarded-Proto'] || headers['x-forwarded-proto'] || 'https';
+      const port = headers['X-Forwarded-Port'] || headers['x-forwarded-port'] || Environment.defaultPort(proto);
       const userAgent = headers['User-Agent'] || headers['user-agent'] || this.pipeline.environment.userAgent;
 
       this.pipeline.environment
         .withEnv('HTTP_HOST', host)
         .withEnv('HTTP_HOSTNAME', hostname)
+        .withEnv('HTTP_PORT', port)
         .withEnv('HTTP_PROTO', proto)
         .withEnv(
           'HTTP_UA',
@@ -236,12 +238,14 @@ export class LambdaRequest extends Request<LambdaPipeline> {
     }
 
     const uri = cron.uriRef;
+    const proto = uri.protocol.replace(':', '');
     const userAgent = `${this.pipeline.environment.userAgent} (cron)`;
 
     this.pipeline.environment
       .withEnv('HTTP_HOST', uri.host)
       .withEnv('HTTP_HOSTNAME', uri.hostname)
-      .withEnv('HTTP_PROTO', uri.protocol.replace(':', ''))
+      .withEnv('HTTP_PORT', uri.port || Environment.defaultPort(proto))
+      .withEnv('HTTP_PROTO', proto)
       .withEnv(
         'HTTP_UA',
         `${userAgent} (${this.pipeline.environment.name} v${this.pipeline.environment.version} ${this.pipeline.name})`
