@@ -694,6 +694,53 @@ export class LambdaFunction implements Logger {
     );
   }
 
+  // DEVNOTE: One AddPermission at a time: Lambda refuses a policy change while another is in
+  // progress (ResourceConflictException). Each is deferred so it is sent only once the one before
+  // it has finished, and so its failure fails the deploy instead of going unhandled.
+  private functionUrlPermissions(AliasArn: string): Observable<MetadataBearer> {
+    return defer(() => this.lambda.send(new GetPolicyCommand({ FunctionName: AliasArn }))).pipe(
+      catchError(() => of({ Policy: '{}' })),
+      map(({ Policy = '{}' }) => JSON.parse(Policy) as PolicyDocument),
+      switchMap((policy) => {
+        const has = (Sid: string): boolean => !!policy.Statement?.find((s) => s.Sid === Sid);
+        const operations: Observable<MetadataBearer>[] = [];
+        if (!has('FunctionURLAllowPublicAccess')) {
+          operations.push(
+            defer(() =>
+              this.lambda.send(
+                new AddPermissionCommand({
+                  FunctionName: AliasArn,
+                  Action: 'lambda:InvokeFunctionUrl',
+                  Principal: '*',
+                  StatementId: 'FunctionURLAllowPublicAccess',
+                  FunctionUrlAuthType: 'NONE',
+                })
+              )
+            )
+          );
+        }
+        if (!has('FunctionURLInvokeAllowPublicAccess')) {
+          operations.push(
+            defer(() =>
+              this.lambda.send(
+                new AddPermissionCommand({
+                  FunctionName: AliasArn,
+                  Action: 'lambda:InvokeFunction',
+                  Principal: '*',
+                  StatementId: 'FunctionURLInvokeAllowPublicAccess',
+                  InvokedViaFunctionUrl: true,
+                })
+              )
+            )
+          );
+        }
+        return operations.length
+          ? concat(...operations)
+          : defer(() => this.lambda.send(new GetPolicyCommand({ FunctionName: AliasArn })));
+      })
+    );
+  }
+
   private withRoleStatement(statement: Statement): this {
     const statements = this.RoleStatements.getValue();
     statements.push(statement);
@@ -812,8 +859,8 @@ export class LambdaFunction implements Logger {
         concat(
           ...existing
             .filter(({ Name }) => !!Name && !desired.some((d) => d.Name === Name))
-            .map(({ Name }) => from(this.scheduler.send(new DeleteScheduleCommand({ GroupName, Name })))),
-          ...desired.map(({ Name, cron }) => from(upsert(Name, cron)))
+            .map(({ Name }) => defer(() => this.scheduler.send(new DeleteScheduleCommand({ GroupName, Name })))),
+          ...desired.map(({ Name, cron }) => defer(() => upsert(Name, cron)))
         )
       )
     );
@@ -1302,52 +1349,7 @@ export class LambdaFunction implements Logger {
         )
       ),
       // Function URL Permissions
-      combineLatest([this.AliasArn.pipe(take(1))]).pipe(
-        switchMap(([AliasArn]) =>
-          from(this.lambda.send(new GetPolicyCommand({ FunctionName: AliasArn })).catch(() => ({ Policy: '{}' })))
-            .pipe(map(({ Policy = '{}' }) => JSON.parse(Policy) as PolicyDocument))
-            .pipe(
-              switchMap((policy) => {
-                const operations: Observable<MetadataBearer>[] = [];
-                if (!policy.Statement?.find((s) => s.Sid === 'FunctionURLAllowPublicAccess')) {
-                  operations.push(
-                    from(
-                      this.lambda.send(
-                        new AddPermissionCommand({
-                          FunctionName: AliasArn,
-                          Action: 'lambda:InvokeFunctionUrl',
-                          Principal: '*',
-                          StatementId: 'FunctionURLAllowPublicAccess',
-                          FunctionUrlAuthType: 'NONE',
-                        })
-                      )
-                    )
-                  );
-                }
-                if (!policy.Statement?.find((s) => s.Sid === 'FunctionURLInvokeAllowPublicAccess')) {
-                  operations.push(
-                    from(
-                      this.lambda.send(
-                        new AddPermissionCommand({
-                          FunctionName: AliasArn,
-                          Action: 'lambda:InvokeFunction',
-                          Principal: '*',
-                          StatementId: 'FunctionURLInvokeAllowPublicAccess',
-                          InvokedViaFunctionUrl: true,
-                        })
-                      )
-                    )
-                  );
-                }
-
-                if (!operations.length) {
-                  return this.lambda.send(new GetPolicyCommand({ FunctionName: AliasArn }));
-                }
-                return concat(...operations);
-              })
-            )
-        )
-      ),
+      this.AliasArn.pipe(take(1)).pipe(switchMap((AliasArn) => this.functionUrlPermissions(AliasArn!))),
       // EventBridge Schedules
       combineLatest({
         FunctionArn: this.FunctionArn.pipe(take(1)),

@@ -13,7 +13,7 @@ import {
 import { inspect } from 'util';
 import { readFileSync } from 'fs';
 import { join } from 'path';
-import { lastValueFrom, of } from 'rxjs';
+import { lastValueFrom, of, toArray } from 'rxjs';
 import { Statement } from 'aws-lambda';
 
 describe('aws lambda', () => {
@@ -495,6 +495,89 @@ describe('aws lambda volumes', () => {
       fn['prepare']();
       expect(sent).toEqual([]);
     });
+  });
+});
+
+describe('aws lambda function url permissions', () => {
+  const environment = new Environment(new Logger());
+  const imageService = new LambdaImageService(environment);
+  const ALIAS = 'arn:aws:lambda:us-east-1:123456789012:function:acme:rowdy';
+
+  type Send = (command: { constructor: { name: string }; input: Record<string, unknown> }) => Promise<unknown>;
+
+  // A Lambda that answers each call a tick later and counts how many are in flight at once.
+  const mockLambda = (fn: LambdaFunction, respond: (name: string, input: Record<string, unknown>) => unknown) => {
+    const sent: string[] = [];
+    let inFlight = 0;
+    let peak = 0;
+    const send: Send = (command) => {
+      sent.push(`${command.constructor.name}${command.input.StatementId ? `:${command.input.StatementId}` : ''}`);
+      peak = Math.max(peak, ++inFlight);
+      return new Promise((resolve, reject) =>
+        setTimeout(() => {
+          inFlight--;
+          try {
+            resolve(respond(command.constructor.name, command.input));
+          } catch (error) {
+            reject(error);
+          }
+        }, 5)
+      );
+    };
+    (fn['lambda'] as unknown as { send: Send }).send = send;
+    return { sent, peak: () => peak };
+  };
+
+  const conflict = (): Error =>
+    Object.assign(new Error('The function could not be updated due to a concurrent update operation.'), {
+      name: 'ResourceConflictException',
+      $metadata: {},
+    });
+
+  it('adds the two public permissions one at a time', async () => {
+    const fn = new LambdaFunction('Container', imageService);
+    const lambda = mockLambda(fn, (name) => {
+      if (name === 'GetPolicyCommand') throw Object.assign(new Error('none'), { name: 'ResourceNotFoundException' });
+      return { $metadata: {} };
+    });
+    await lastValueFrom(fn['functionUrlPermissions'](ALIAS).pipe(toArray()));
+    expect(lambda.sent).toEqual([
+      'GetPolicyCommand',
+      'AddPermissionCommand:FunctionURLAllowPublicAccess',
+      'AddPermissionCommand:FunctionURLInvokeAllowPublicAccess',
+    ]);
+    expect(lambda.peak()).toBe(1);
+  });
+
+  it('fails the deploy on a refused permission, without sending the next or leaving it unhandled', async () => {
+    const unhandled: unknown[] = [];
+    const onUnhandled = (reason: unknown): void => {
+      unhandled.push(reason);
+    };
+    process.on('unhandledRejection', onUnhandled);
+    try {
+      const fn = new LambdaFunction('Container', imageService);
+      const lambda = mockLambda(fn, (name) => {
+        if (name === 'GetPolicyCommand') return { Policy: '{}', $metadata: {} };
+        throw conflict();
+      });
+      await expect(lastValueFrom(fn['functionUrlPermissions'](ALIAS))).rejects.toThrow('concurrent update operation');
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(lambda.sent).toEqual(['GetPolicyCommand', 'AddPermissionCommand:FunctionURLAllowPublicAccess']);
+      expect(unhandled).toEqual([]);
+    } finally {
+      process.off('unhandledRejection', onUnhandled);
+    }
+  });
+
+  it('adds nothing when both permissions are already there', async () => {
+    const fn = new LambdaFunction('Container', imageService);
+    const Policy = JSON.stringify({
+      Statement: [{ Sid: 'FunctionURLAllowPublicAccess' }, { Sid: 'FunctionURLInvokeAllowPublicAccess' }],
+    });
+    const lambda = mockLambda(fn, () => ({ Policy, $metadata: {} }));
+    await lastValueFrom(fn['functionUrlPermissions'](ALIAS));
+    expect(lambda.sent).toEqual(['GetPolicyCommand', 'GetPolicyCommand']);
   });
 });
 
