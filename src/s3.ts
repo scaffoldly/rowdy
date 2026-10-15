@@ -324,6 +324,20 @@ export class S3Adapter implements VfsAdapter {
     return at !== undefined && Date.now() - at < (this.options.revalidateMs ?? 2000);
   }
 
+  /**
+   * When S3 last showed nothing at `key`, neither object nor directory, while that still stands: a miss on the
+   * key itself, or a listing of its parent, which gives everything it found an entry or a directory on disk.
+   * Only meaningful for a key with nothing on disk but what this instance made since.
+   */
+  private absentAt(rel: string, key: string): number | undefined {
+    const missed = this.missedAt.get(key);
+    if (this.fresh(missed)) return missed;
+    if (this.entries.has(key)) return undefined;
+    const parent = dirname(rel);
+    const listed = this.listedAt.get(this.dirPrefix(parent === '.' ? '' : parent));
+    return this.fresh(listed) ? listed : undefined;
+  }
+
   /** Path relative to the mountpoint without a leading slash ('' for the root), or undefined if outside it. */
   /**
    * The mount root's `.rowdy/` holds the leases (ADR 0001): hidden from listings, missing to a
@@ -716,7 +730,7 @@ export class S3Adapter implements VfsAdapter {
     } else {
       await this.serial(key, async () => {
         // Nothing on disk, and S3 said so within revalidateMs (callers waiting on the lock find it here too).
-        if (this.fresh(this.missedAt.get(key))) {
+        if (this.absentAt(rel, key) !== undefined) {
           throw VfsError.code('ENOENT', `${path}: no such object`);
         }
         // Both at once: a miss waits for one round trip instead of two.
@@ -831,7 +845,7 @@ export class S3Adapter implements VfsAdapter {
       );
       for (const { key } of children) this.missedAt.delete(key);
       await inBatches(children, LIST_HEADS, ({ key, etag, size }) =>
-        this.serial(key, () => this.listed(this.unkey(key), key, etag, size))
+        this.serial(key, () => this.listed(this.unkey(key), key, started, etag, size))
       );
       token = out.IsTruncated ? out.NextContinuationToken : undefined;
     } while (token);
@@ -840,11 +854,15 @@ export class S3Adapter implements VfsAdapter {
 
   /**
    * One listed object, made present as what it is. A listing carries no metadata, so each entry's type is
-   * read from a HEAD, as s3fs-fuse reads every entry's mode, unless this version is known already.
+   * read from a HEAD, as s3fs-fuse reads every entry's mode, unless this version is known already. A known
+   * version, listed at `listedAt`, is as checked then as a HEAD would have made it.
    */
-  private async listed(rel: string, key: string, etag?: string, size?: number): Promise<void> {
+  private async listed(rel: string, key: string, listedAt: number, etag?: string, size?: number): Promise<void> {
     const local = this.local(rel);
     const known = this.entries.get(key);
+    if (known?.etag !== undefined && known.etag === etag) {
+      known.checkedAt = Math.max(known.checkedAt ?? 0, listedAt);
+    }
     let link = known?.link === true;
     if (known?.etag === undefined || known.etag !== etag) {
       const head = await this.head(key);
@@ -883,8 +901,8 @@ export class S3Adapter implements VfsAdapter {
       const entry = this.entries.get(key);
       if (!entry) {
         // Brand-new local file: no synced snapshot, so revalidation leaves it alone until flushed. The walk
-        // before the open usually just found it missing; that answer stands for revalidateMs.
-        const head = this.fresh(this.missedAt.get(key)) ? undefined : await this.head(key);
+        // before the open, or a listing of its directory, usually just found it missing; that stands for revalidateMs.
+        const head = this.absentAt(rel, key) !== undefined ? undefined : await this.head(key);
         this.entries.set(key, {
           etag: head?.etag,
           size: head?.size,
@@ -1087,11 +1105,14 @@ export class S3Adapter implements VfsAdapter {
     }
     const marker = `${this.key(rel)}/`;
     await this.serial(marker, async () => {
+      // Nothing was there: the new directory is empty as of then, as a listing of it would have said.
+      const absent = this.absentAt(rel, this.key(rel));
       try {
         await this.client.send(
           new PutObjectCommand({ Bucket: this.options.bucket, Key: marker, Body: '', ContentLength: 0 })
         );
         this.missedAt.delete(this.key(rel));
+        if (absent !== undefined) this.listedAt.set(marker, absent);
         this.log(`marked`, { key: marker });
       } catch (e) {
         throw toVfsError(e);
@@ -1300,6 +1321,7 @@ export class S3Adapter implements VfsAdapter {
       }
       this.entries.delete(key);
       this.listedAt.delete(`${key}/`); // a directory made again here is listed afresh
+      this.missedAt.set(key, Date.now());
     });
   }
 

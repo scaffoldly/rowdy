@@ -652,6 +652,87 @@ describe('S3Adapter', () => {
       expect(s3.calls).toEqual(['PutObjectCommand']); // If-None-Match: *, no HEAD first
     });
 
+    it('a listing answers for the names it did not find, until revalidateMs', async () => {
+      const a = within(100);
+      s3.put('dir/one.txt', '1');
+      await a.list(`${mount}/dir`);
+      s3.put('dir/two.txt', '2'); // another instance
+      s3.calls.length = 0;
+      await expect(a.stat(`${mount}/dir/two.txt`)).rejects.toMatchObject({ errno: 2 });
+      writeFileSync(join(backing, 'dir', 'three.txt'), '3');
+      await a.open(`${mount}/dir/three.txt`, 0o101);
+      expect(s3.calls).toEqual([]);
+      await new Promise((r) => setTimeout(r, 120));
+      await a.stat(`${mount}/dir/two.txt`);
+      expect(statSync(join(backing, 'dir', 'two.txt')).size).toBe(1);
+    });
+
+    it('a directory made where nothing was is empty: filling it asks S3 for nothing but the uploads', async () => {
+      const a = within(60_000);
+      await expect(a.stat(`${mount}/made`)).rejects.toMatchObject({ errno: 2 }); // the walk before mkdir
+      mkdirSync(join(backing, 'made'));
+      await a.mkdir(`${mount}/made`);
+      mkdirSync(join(backing, 'made', 'sub'));
+      await a.mkdir(`${mount}/made/sub`);
+      s3.calls.length = 0;
+      await expect(a.stat(`${mount}/made/sub/f.txt`)).rejects.toMatchObject({ errno: 2 });
+      writeFileSync(join(backing, 'made', 'sub', 'f.txt'), 'f');
+      await a.open(`${mount}/made/sub/f.txt`, 0o101);
+      await a.flush(`${mount}/made/sub/f.txt`);
+      await a.list(`${mount}/made/sub`);
+      expect(s3.calls).toEqual(['PutObjectCommand']);
+    });
+
+    it('a directory made without knowing what was there is listed as usual', async () => {
+      const a = within(60_000);
+      s3.put('there/old.txt', 'old'); // another instance; nothing here walked or listed it
+      mkdirSync(join(backing, 'there'));
+      await a.mkdir(`${mount}/there`);
+      await a.list(`${mount}/there`);
+      expect(existsSync(join(backing, 'there', 'old.txt'))).toBe(true);
+    });
+
+    it('what this instance removed is missing without asking S3, until revalidateMs', async () => {
+      const a = within(100);
+      s3.put('gone.txt', 'g');
+      await a.stat(`${mount}/gone.txt`);
+      rmSync(join(backing, 'gone.txt'));
+      await a.unlink(`${mount}/gone.txt`);
+      s3.put('gone.txt', 'back'); // another instance
+      s3.calls.length = 0;
+      await expect(a.stat(`${mount}/gone.txt`)).rejects.toMatchObject({ errno: 2 });
+      expect(s3.calls).toEqual([]);
+      await new Promise((r) => setTimeout(r, 120));
+      await a.stat(`${mount}/gone.txt`);
+      expect(statSync(join(backing, 'gone.txt')).size).toBe(4);
+    });
+
+    it('a listing re-checks the versions it finds unchanged: no HEAD for them within revalidateMs after it', async () => {
+      const a = within(100);
+      s3.put('dir/same.txt', 'same');
+      s3.put('dir/changed.txt', 'before');
+      await a.list(`${mount}/dir`);
+      await new Promise((r) => setTimeout(r, 120));
+      s3.put('dir/changed.txt', 'after!'); // another instance
+      await a.list(`${mount}/dir`);
+      s3.calls.length = 0;
+      await a.stat(`${mount}/dir/same.txt`);
+      expect(s3.calls).toEqual([]);
+      await a.fetch(`${mount}/dir/changed.txt`);
+      expect(readFileSync(join(backing, 'dir', 'changed.txt'), 'utf8')).toBe('after!');
+    });
+
+    it('a listing does not hide an object flushed here since', async () => {
+      const a = within(60_000);
+      await a.list(mount);
+      writeFileSync(join(backing, 'late.txt'), 'late');
+      await a.open(`${mount}/late.txt`, 0o101);
+      await a.flush(`${mount}/late.txt`);
+      rmSync(join(backing, 'late.txt')); // gone locally, still in S3
+      await a.stat(`${mount}/late.txt`);
+      expect(statSync(join(backing, 'late.txt')).size).toBe(4);
+    });
+
     it('never hides what this instance made: a local file answers before the remembered miss', async () => {
       const a = within(60_000);
       await expect(a.stat(`${mount}/made.txt`)).rejects.toMatchObject({ errno: 2 });
