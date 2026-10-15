@@ -340,10 +340,17 @@ export class S3Adapter implements VfsAdapter {
     return at !== undefined && Date.now() - at < (this.options.revalidateMs ?? 2000);
   }
 
+  /** Whether this instance's own lookup of `key`, or its removal, found nothing within revalidateMs. */
+  private missed(key: string): boolean {
+    return this.fresh(this.missedAt.get(key));
+  }
+
   /**
    * When S3 last showed nothing at `key`, neither object nor directory, while that still stands: a miss on the
    * key itself, a listing of its parent, which gives everything it found an entry or a directory on disk, or a
-   * relist of its parent that did not find it. Only meaningful for a key with nothing on disk but what this
+   * relist of its parent that did not find it. Only for a create (a conditional upload still finds a name
+   * created elsewhere since); a lookup asks S3 for a name it has not missed itself, so a name another
+   * instance just created is found at once. Only meaningful for a key with nothing on disk but what this
    * instance made since.
    */
   private absentAt(rel: string, key: string): number | undefined {
@@ -812,7 +819,7 @@ export class S3Adapter implements VfsAdapter {
       return; // the shim's own stat of the backing file is the answer
     }
     const key = this.key(rel);
-    if (lstatOf(this.local(rel)) ? this.staleCopy(key) : this.absentAt(rel, key) === undefined) {
+    if (lstatOf(this.local(rel)) && this.staleCopy(key)) {
       await this.relist(rel, key);
     }
     if (lstatOf(this.local(rel))) {
@@ -823,7 +830,7 @@ export class S3Adapter implements VfsAdapter {
     } else {
       await this.serial(key, async () => {
         // Nothing on disk, and S3 said so within revalidateMs (callers waiting on the lock find it here too).
-        if (this.absentAt(rel, key) !== undefined) {
+        if (this.missed(key)) {
           throw VfsError.code('ENOENT', `${path}: no such object`);
         }
         // Both at once: a miss waits for one round trip instead of two.
@@ -871,7 +878,7 @@ export class S3Adapter implements VfsAdapter {
     const local = this.local(rel);
     await this.serial(key, async () => {
       const entry = this.entries.get(key);
-      if (!lstatOf(local) && this.absentAt(rel, key) !== undefined) {
+      if (!lstatOf(local) && this.missed(key)) {
         throw VfsError.code('ENOENT', `${path}: no such object`);
       }
       if (lstatOf(local) && entry?.materialized !== false) {

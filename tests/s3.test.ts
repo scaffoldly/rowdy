@@ -657,20 +657,19 @@ describe('S3Adapter', () => {
       expect(s3.calls).toEqual(['PutObjectCommand']); // If-None-Match: *, no HEAD first
     });
 
-    it('a listing answers for the names it did not find, until revalidateMs', async () => {
-      const a = within(100);
+    it('a name another instance created after a listing is found at once; a create here trusts the listing', async () => {
+      const a = within(60_000);
       s3.put('dir/one.txt', '1');
       await a.list(`${mount}/dir`);
-      s3.put('dir/two.txt', '2'); // another instance
+      s3.put('dir/two.txt', '2'); // another instance, right after the listing
       s3.calls.length = 0;
-      await expect(a.stat(`${mount}/dir/two.txt`)).rejects.toMatchObject({ errno: 2 });
-      await expect(a.fetch(`${mount}/dir/two.txt`)).rejects.toMatchObject({ errno: 2 });
-      writeFileSync(join(backing, 'dir', 'three.txt'), '3');
-      await a.open(`${mount}/dir/three.txt`, 0o101);
-      expect(s3.calls).toEqual([]);
-      await new Promise((r) => setTimeout(r, 120));
       await a.stat(`${mount}/dir/two.txt`);
       expect(statSync(join(backing, 'dir', 'two.txt')).size).toBe(1);
+      expect(s3.calls).toEqual(['HeadObjectCommand', 'ListObjectsV2Command']);
+      s3.calls.length = 0;
+      writeFileSync(join(backing, 'dir', 'three.txt'), '3');
+      await a.open(`${mount}/dir/three.txt`, 0o101); // no HEAD: the conditional upload finds a racing creator
+      expect(s3.calls).toEqual([]);
     });
 
     it('a directory made where nothing was is empty: filling it asks S3 for nothing but the uploads', async () => {
@@ -681,7 +680,6 @@ describe('S3Adapter', () => {
       mkdirSync(join(backing, 'made', 'sub'));
       await a.mkdir(`${mount}/made/sub`);
       s3.calls.length = 0;
-      await expect(a.stat(`${mount}/made/sub/f.txt`)).rejects.toMatchObject({ errno: 2 });
       writeFileSync(join(backing, 'made', 'sub', 'f.txt'), 'f');
       await a.open(`${mount}/made/sub/f.txt`, 0o101);
       await a.flush(`${mount}/made/sub/f.txt`);
@@ -728,7 +726,7 @@ describe('S3Adapter', () => {
       expect(readFileSync(join(backing, 'dir', 'changed.txt'), 'utf8')).toBe('after!');
     });
 
-    it('a lookup past revalidateMs in a directory listed here lists it again: one round trip for every name', async () => {
+    it('a stale copy in a directory listed here relists it: one round trip refreshes every name in it', async () => {
       const a = within(100);
       s3.put('dir/a.txt', 'a');
       s3.put('dir/b.txt', 'b');
@@ -737,10 +735,11 @@ describe('S3Adapter', () => {
       s3.calls.length = 0;
       await a.stat(`${mount}/dir/a.txt`);
       await a.stat(`${mount}/dir/b.txt`);
-      await expect(a.stat(`${mount}/dir/none.txt`)).rejects.toMatchObject({ errno: 2 });
       writeFileSync(join(backing, 'dir', 'new.txt'), 'n');
       await a.open(`${mount}/dir/new.txt`, 0o101);
       expect(s3.calls).toEqual(['ListObjectsV2Command']);
+      await expect(a.stat(`${mount}/dir/none.txt`)).rejects.toMatchObject({ errno: 2 }); // a lookup asks S3
+      expect(s3.calls).toEqual(['ListObjectsV2Command', 'HeadObjectCommand', 'ListObjectsV2Command']);
     });
 
     it('mkdir past revalidateMs relists the parent once, and the new directory is known empty', async () => {
@@ -751,7 +750,8 @@ describe('S3Adapter', () => {
       s3.calls.length = 0;
       mkdirSync(join(backing, 'dir', 'new'));
       await a.mkdir(`${mount}/dir/new`);
-      await expect(a.stat(`${mount}/dir/new/f.txt`)).rejects.toMatchObject({ errno: 2 });
+      writeFileSync(join(backing, 'dir', 'new', 'f.txt'), 'f');
+      await a.open(`${mount}/dir/new/f.txt`, 0o101);
       mkdirSync(join(backing, 'dir', 'next'));
       await a.mkdir(`${mount}/dir/next`);
       expect(s3.calls).toEqual(['ListObjectsV2Command', 'PutObjectCommand', 'PutObjectCommand']);
