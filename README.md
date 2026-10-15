@@ -174,6 +174,12 @@ secrets: |
 Syntax, precedence, comments and quoting, multi-line secrets and errors:
 [docs/secrets.md](docs/secrets.md).
 
+## Runtime environment
+
+rowdy gives the command `HTTP_HOST`, `HTTP_HOSTNAME`, `HTTP_PROTO`, `HTTP_UA` and
+`NET_PRIVATE_IPV4`: how the sandbox's first request reached it, and the sandbox's private address.
+Sources, defaults, timing and logging: [docs/runtime.md](docs/runtime.md).
+
 ## Logging
 
 Rowdy's lines follow the Lambda platform's own (`START RequestId: … Version: 47`), so they read as
@@ -223,7 +229,8 @@ request emit no `warn` or `error`.
 
 Values that look like credentials are never written in full, at any level: environment values,
 headers and query parameters with credential-like names, URL passwords and AWS SDK payloads are
-masked to their length and a short prefix and suffix (`ghp_…wxyz (40 chars)`). Request and response
+masked to their length and a short prefix and suffix (`ghp_…wxyz (40 chars)`). The
+[runtime variables](docs/runtime.md) are the exception: they are logged in full. Request and response
 bodies are not logged, only sized.
 
 ## Out of scope

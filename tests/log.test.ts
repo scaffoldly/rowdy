@@ -30,6 +30,14 @@ describe('log masking', () => {
     expect(out).not.toContain('0123456789abcdef0123456789abcdef');
   });
 
+  it('maskEnv shows the values of names in plain as they are', () => {
+    const out = maskEnv(
+      { CF_API_TOKEN: 'cf-0123456789abcdef0123456789abcdef', HTTP_HOST: 'nuss.io', UNSET: undefined },
+      new Set(['HTTP_HOST', 'UNSET'])
+    );
+    expect(out).toBe('[CF_API_TOKEN=cf-0…cdef (35 chars), HTTP_HOST=nuss.io, UNSET=]');
+  });
+
   describe('maskHeaders', () => {
     it('masks credential headers by name, case-insensitively, and keeps the rest readable', () => {
       const out = maskHeaders({

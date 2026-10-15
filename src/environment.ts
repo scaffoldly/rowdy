@@ -144,6 +144,15 @@ export type ProcessEnv = Record<
   string | undefined
 >;
 
+// Logged unmasked: request and network facts, never credentials.
+const PLAIN_ENV: ReadonlySet<keyof ProcessEnv> = new Set<keyof ProcessEnv>([
+  'HTTP_HOST',
+  'HTTP_HOSTNAME',
+  'HTTP_PROTO',
+  'HTTP_UA',
+  'NET_PRIVATE_IPV4',
+]);
+
 export class Environment implements ILoggable {
   // How long a graceful shutdown gets after the command exits before rowdy exits outright.
   static readonly EXIT_GRACE_MS = 2000;
@@ -753,7 +762,7 @@ export class Environment implements ILoggable {
   }
 
   withEnv(name: keyof ProcessEnv, value: ProcessEnv[keyof ProcessEnv]): this {
-    this.log.debug(`Received environment variable`, { name, value: mask(value) });
+    this.log.debug(`Received environment variable`, { name, value: PLAIN_ENV.has(name) ? value : mask(value) });
     this._envVars.next({ name, value });
     return this;
   }
@@ -905,7 +914,7 @@ export class Environment implements ILoggable {
             subscriber.error(err);
             return;
           }
-          this.log.debug(`Environment variables finalized`, { env: maskEnv(env) });
+          this.log.debug(`Environment variables finalized`, { env: maskEnv(env, PLAIN_ENV) });
           subscriber.next({ ...env });
           subscriber.complete();
         },

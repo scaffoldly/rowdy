@@ -46,10 +46,10 @@ export const mask = (value: unknown): string => {
   return `${s.slice(0, keep)}…${keep ? s.slice(-keep) : ''} (${s.length} chars)`;
 };
 
-/** An environment as it may be logged, `[NAME=value, …]`: every name, every value masked. */
-export const maskEnv = (env: Record<string, unknown> = {}): string =>
+/** An environment as it may be logged, `[NAME=value, …]`: every name, every value masked except those named in `plain`. */
+export const maskEnv = (env: Record<string, unknown> = {}, plain: ReadonlySet<string> = new Set()): string =>
   `[${Object.entries(env)
-    .map(([name, value]) => `${name}=${mask(value)}`)
+    .map(([name, value]) => `${name}=${plain.has(name) ? String(value ?? '') : mask(value)}`)
     .join(', ')}]`;
 
 const masked = (value: unknown, key = ''): unknown => {
