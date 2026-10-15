@@ -339,11 +339,30 @@ describe('P9Server', () => {
     expect(s3.calls.filter((c) => !c.startsWith('stat'))).toEqual([
       'mkdir /s3/photos',
       'rename /s3/readme.txt -> /s3/photos/readme.txt',
+      'list /s3/photos', // the refused rmdir
       'unlink /s3/photos/readme.txt',
+      'list /s3/photos',
       'unlink /s3/photos',
     ]);
     await client.clunk(fid);
     await client.clunk(photos.fid);
+  });
+
+  it('rmdir lists the directory first: a name only the store has keeps it from going', async () => {
+    mkdirSync(join(dir, 's3', 'prefix')); // made present by a listing of its parent, never listed itself
+    const list = s3.list.bind(s3);
+    s3.list = async (path: string): Promise<void> => {
+      await list(path);
+      if (path === '/s3/prefix') writeFileSync(join(dir, 's3', 'prefix', 'remote.txt'), 'only in the store');
+    };
+    const { fid } = await client.walk(root, []);
+    await expect(client.unlinkat(fid, 'prefix', AT_REMOVEDIR)).rejects.toMatchObject({ errno: LINUX_ERRNO.ENOTEMPTY });
+    await expect(client.unlinkat(fid, 'prefix', 0)).rejects.toMatchObject({ errno: LINUX_ERRNO.ENOTEMPTY });
+    const prefix = await client.walk(root, ['prefix']);
+    await expect(client.remove(prefix.fid)).rejects.toMatchObject({ errno: LINUX_ERRNO.ENOTEMPTY });
+    expect(existsSync(join(dir, 's3', 'prefix', 'remote.txt'))).toBe(true);
+    expect(s3.calls.filter((c) => c.startsWith('unlink'))).toEqual([]);
+    await client.clunk(fid);
   });
 
   it('refuses a rename or link across mounts with EXDEV', async () => {
