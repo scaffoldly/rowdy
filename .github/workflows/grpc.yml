@@ -82,6 +82,34 @@ jobs:
       - name: Build package
         run: yarn && yarn build
 
+      # DEVNOTE: npm v12 runs no install scripts and resolves no git or URL dependencies unless the
+      # installer allows them, so a published package must need neither.
+      - name: Check package installs without scripts
+        run: |
+          node <<'EOF_NODE'
+          const { execSync } = require('child_process');
+          const pkg = require('./package.json');
+          const problems = [];
+          for (const script of ['preinstall', 'install', 'postinstall']) {
+            if (pkg.scripts?.[script]) problems.push(`scripts.${script}: ${pkg.scripts[script]}`);
+          }
+          const remote = /^(git[+:]|https?:|file:|link:|github:|gitlab:|bitbucket:|gist:)|^[^@\s:]+\/[^\s]+$/;
+          for (const field of ['dependencies', 'optionalDependencies', 'peerDependencies']) {
+            for (const [name, spec] of Object.entries(pkg[field] || {})) {
+              if (remote.test(spec)) problems.push(`${field}.${name}: ${spec}`);
+            }
+          }
+          const [{ files }] = JSON.parse(execSync('npm pack --dry-run --json --ignore-scripts', { encoding: 'utf8' }));
+          for (const { path } of files) {
+            if (path === 'binding.gyp' || path.endsWith('/binding.gyp')) problems.push(`${path}: an implicit node-gyp build`);
+          }
+          if (problems.length) {
+            problems.forEach((p) => console.log(`::error title=Install-time::${p}`));
+            process.exit(1);
+          }
+          console.log(`${pkg.name}: no install scripts, git or URL dependencies, or binding.gyp`);
+          EOF_NODE
+
       - name: Generate pre-release version
         id: version
         run: |
