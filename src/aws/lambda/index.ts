@@ -51,6 +51,7 @@ import {
   FlexibleTimeWindowMode,
   ScheduleState,
 } from '@aws-sdk/client-scheduler';
+import { BucketLocationConstraint, CreateBucketCommand, HeadBucketCommand, S3Client } from '@aws-sdk/client-s3';
 import { PolicyDocument, Statement } from 'aws-lambda';
 import { createHash, randomUUID } from 'crypto';
 import { LambdaImageService } from './image';
@@ -71,6 +72,7 @@ import {
   merge,
   mergeMap,
   Observable,
+  of,
   OperatorFunction,
   ReplaySubject,
   retry,
@@ -84,7 +86,7 @@ import {
 import promiseRetry from 'promise-retry';
 import { inspect } from 'util';
 import { Environment, Routes } from '../..';
-import { Crontab } from '../../routes';
+import { Crontab, Volume } from '../../routes';
 import { mask, maskJson } from '../../log';
 import { TPulledImage } from '../../api/types';
 import { parseSecrets } from '../../secrets';
@@ -126,6 +128,9 @@ type AwsError = { name?: string; message?: string; $fault?: string; $retryable?:
 
 export const isNotFound = (error: unknown): boolean =>
   ['ResourceNotFoundException', 'NoSuchEntityException'].includes(`${(error as AwsError)?.name}`);
+
+const isLocationConstraint = (region: string): region is BucketLocationConstraint =>
+  Object.values<string>(BucketLocationConstraint).includes(region);
 
 export const isTransient = (error: unknown): boolean => {
   const { name, $fault, $retryable } = (error as AwsError) ?? {};
@@ -226,6 +231,11 @@ export class LambdaFunction implements Logger {
     return fit((name || roleId).replace(/[^a-zA-Z0-9_-]/g, '_'));
   }
 
+  /** The bucket `s3:///<prefix>` volumes use: one per execution role, so stable across deploys. */
+  static bucketName(roleId: string): string {
+    return `rowdy-${roleId.toLowerCase()}`;
+  }
+
   static roleName(image: Image, name?: string): string {
     return name
       ? fit(`${image.namespace}+${image.name}@${name.replace(/[^a-zA-Z0-9._-]/g, '.')}`, '.rowdy.run')
@@ -235,6 +245,7 @@ export class LambdaFunction implements Logger {
   private iam = new IAMClient({ logger: this });
   private lambda = new LambdaClient({ logger: this });
   private scheduler = new SchedulerClient({ logger: this });
+  private s3 = new S3Client({ logger: this });
 
   private type: 'Sandbox' | 'Container';
   private deleting: boolean = false;
@@ -277,6 +288,7 @@ export class LambdaFunction implements Logger {
     FunctionVersion?: string;
     AliasArn?: string;
     FunctionUrl?: string;
+    Bucket?: string;
   } = {};
 
   private _status: GetFunctionResponse = {};
@@ -584,23 +596,13 @@ export class LambdaFunction implements Logger {
     this.Routes.next(existing);
     // DEVNOTE: An s3:// volume is only usable if the execution role can reach the bucket, so
     // the grant is derived from the manifest rather than left to the operator. Scoped to the
-    // bucket and, when given, the key prefix.
+    // bucket and, when given, the key prefix. The managed bucket's grant waits for its name.
     existing
       .intoVolumes()
-      .filter((volume) => volume.scheme === 's3' && !before.has(volume.spec))
-      .forEach((volume) => {
-        const [bucket, ...prefix] = volume.locator.split('/');
-        const objects = prefix.length ? `${prefix.join('/')}/*` : '*';
-        this.withRoleStatement({
-          Effect: 'Allow',
-          Action: ['s3:ListBucket', 's3:GetBucketLocation'],
-          Resource: `arn:aws:s3:::${bucket}`,
-        }).withRoleStatement({
-          Effect: 'Allow',
-          Action: ['s3:GetObject', 's3:PutObject', 's3:DeleteObject'],
-          Resource: `arn:aws:s3:::${bucket}/${objects}`,
-        });
-      });
+      .flatMap(({ scheme, bucket, prefix, spec }) =>
+        scheme === 's3' && bucket && !before.has(spec) ? [{ bucket, prefix }] : []
+      )
+      .forEach(({ bucket, prefix }) => this.withBucketGrant(bucket, prefix));
     return this.withEnvironment('ROWDY_ROUTES', existing.intoDataURL());
   }
 
@@ -641,6 +643,55 @@ export class LambdaFunction implements Logger {
       ],
       // TODO: Restrict to resources tagged by Rowdy
     });
+  }
+
+  private withBucketGrant(bucket: string, prefix?: string): this {
+    return this.withRoleStatement({
+      Effect: 'Allow',
+      Action: ['s3:ListBucket', 's3:GetBucketLocation'],
+      Resource: `arn:aws:s3:::${bucket}`,
+    }).withRoleStatement({
+      Effect: 'Allow',
+      Action: ['s3:GetObject', 's3:PutObject', 's3:DeleteObject'],
+      Resource: `arn:aws:s3:::${bucket}/${prefix ? `${prefix}/*` : '*'}`,
+    });
+  }
+
+  /** The `s3:///<prefix>` volumes, which use the managed bucket. */
+  get managedVolumes(): Array<Volume> {
+    return this.Routes.getValue()
+      .intoVolumes()
+      .filter((volume) => volume.scheme === 's3' && !volume.bucket);
+  }
+
+  // DEVNOTE: Created when missing, never deleted or reconfigured: S3's defaults (Block Public
+  // Access, SSE-S3, bucket-owner-enforced ownership) apply.
+  private ensureBucket(Bucket: string): Observable<MetadataBearer> {
+    return defer(() => this.s3.send(new HeadBucketCommand({ Bucket }))).pipe(
+      tap(() => this.log.debug('Bucket Exists', { bucket: Bucket })),
+      catchError((error: unknown) => {
+        if ((error as AwsError)?.name !== 'NotFound') {
+          throw error;
+        }
+        return from(this.s3.config.region()).pipe(
+          switchMap((region) => {
+            this.log.info('Bucket Creating', { bucket: Bucket, region });
+            return this.s3.send(
+              new CreateBucketCommand({
+                Bucket,
+                ...(region !== 'us-east-1' && isLocationConstraint(region)
+                  ? { CreateBucketConfiguration: { LocationConstraint: region } }
+                  : {}),
+              })
+            );
+          }),
+          catchError((created: unknown) => {
+            if ((created as AwsError)?.name === 'BucketAlreadyOwnedByYou') return of({ $metadata: {} });
+            throw created;
+          })
+        );
+      })
+    );
   }
 
   private withRoleStatement(statement: Statement): this {
@@ -1026,7 +1077,25 @@ export class LambdaFunction implements Logger {
       return { creates, updates: [], tags, deletes };
     }
 
+    const managed = this.managedVolumes;
     const updates: Observable<MetadataBearer>[] = [
+      // Managed Bucket: named from the role, so it precedes the policy and configuration that use it.
+      ...(managed.length
+        ? [
+            this.RoleId.pipe(take(1)).pipe(
+              map((RoleId) => LambdaFunction.bucketName(RoleId!)),
+              switchMap((Bucket) =>
+                this.ensureBucket(Bucket).pipe(
+                  tap(() => {
+                    this.State.Bucket = Bucket;
+                    this.withEnvironment('ROWDY_BUCKET', Bucket);
+                    managed.forEach((volume) => this.withBucketGrant(Bucket, volume.prefix));
+                  })
+                )
+              )
+            ),
+          ]
+        : []),
       // Role Policy
       combineLatest({
         RoleName: this.RoleName.pipe(take(1)),

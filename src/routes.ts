@@ -428,7 +428,8 @@ export type VolumeOptions = {
  * One `volumes:` entry: `<scheme>://<locator>:<mountpoint>[:<flags>]`. The
  * mountpoint is the absolute directory the application sees; the locator
  * names what backs it (`file://<dir>` a local directory,
- * `s3://<bucket>[/<prefix>]` an object store); the flags are the volume's
+ * `s3://<bucket>[/<prefix>]` an object store, `s3:///<prefix>` the deployment's
+ * managed bucket); the flags are the volume's
  * options. Declaring a volume is what turns on the userspace VFS for the
  * container.
  */
@@ -446,6 +447,16 @@ export class Volume {
     readonly mountpoint: string,
     readonly options: VolumeOptions
   ) {}
+
+  /** An s3:// volume's bucket; undefined for `s3:///<prefix>`, which uses the deployment's managed bucket. */
+  get bucket(): string | undefined {
+    return this.scheme === 's3' ? this.locator.split('/')[0] || undefined : undefined;
+  }
+
+  /** An s3:// volume's key prefix; undefined for the whole bucket. */
+  get prefix(): string | undefined {
+    return this.scheme === 's3' ? this.locator.split('/').slice(1).join('/') || undefined : undefined;
+  }
 
   /** Split on commas that are not inside `{...}`, so brace globs survive. */
   private static splitFlags(flags: string): string[] {

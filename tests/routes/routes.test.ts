@@ -451,6 +451,21 @@ spec:
       expect(volume.spec).toBe('s3://example-bucket/some/prefix:/mnt/data');
     });
 
+    it("should name an s3 volume's bucket and prefix, and leave the bucket out for s3:///", () => {
+      expect(Volume.parse('s3://example-bucket/some/prefix:/mnt/data')).toMatchObject({
+        bucket: 'example-bucket',
+        prefix: 'some/prefix',
+      });
+      expect(Volume.parse('s3://example-bucket:/mnt/data')).toMatchObject({
+        bucket: 'example-bucket',
+        prefix: undefined,
+      });
+      const managed = Volume.parse('s3:///headscale:/var/lib/headscale:local=*-{journal,wal,shm}');
+      expect(managed).toMatchObject({ locator: '/headscale', bucket: undefined, prefix: 'headscale' });
+      expect(Volume.parse('s3:///:/mnt/data')).toMatchObject({ bucket: undefined, prefix: undefined });
+      expect(Volume.parse('file:///tmp/vfsstore:/vfs')).toMatchObject({ bucket: undefined, prefix: undefined });
+    });
+
     it('should keep a file locator absolute', () => {
       expect(Volume.parse('file:///tmp/vfsstore:/vfs').locator).toBe('/tmp/vfsstore');
       expect(() => Volume.parse('file://tmp/vfsstore:/vfs')).toThrow('must be an absolute directory');
