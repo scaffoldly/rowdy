@@ -151,12 +151,12 @@ spec:
   hosts:
     - app.example # https://app.example
     - 'http://legacy.app.example:8080'
-    - '*.preview.app.example' # https://<any one label>.preview.app.example
+    - '*.preview.app.example' # https://preview.app.example, https://<label>.preview.app.example
 ```
 
 An entry is a host, which means `https` on port 443, or an `http(s)://host[:port]` origin with no
-path. A leftmost label of `*` stands for any one label there, as in a TLS certificate:
-`*.app.example` lists `https://www.app.example`, not `https://app.example` or
+path. A leftmost label of `*` stands for the host under it and any one label there:
+`*.app.example` lists `https://app.example` and `https://www.app.example`, not
 `https://a.b.app.example`. On each request, rowdy builds the origin the forwarded headers describe:
 
 - **With `spec.hosts`:** the forwarded values are used only if that exact origin is listed: host,
@@ -181,8 +181,8 @@ host. An empty value names no target; the keys are the list above.
 ```yaml
 spec:
   hosts:
-    oidc.to: arn:aws:cloudfront::123456789012:key-value-store/706d9bf2-5c29-4b7c-8900-89eb32d9723d
-    www.oidc.to: ''
+    '*.oidc.to': arn:aws:cloudfront::123456789012:key-value-store/706d9bf2-5c29-4b7c-8900-89eb32d9723d
+    legacy.example: ''
 ```
 
 rowdy recognizes the target by its shape:

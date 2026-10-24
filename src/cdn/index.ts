@@ -38,9 +38,9 @@ export const cdnHeaders = (headers: HeaderMap): CdnHeaders =>
   CloudFrontHeaders.from(headers) ?? CloudflareHeaders.from(headers) ?? ProxyHeaders.from(headers);
 
 /**
- * Whether `origin` is one of `hosts`. A host whose leftmost label is `*` stands for any one label
- * there: `https://*.app.example` lists `https://www.app.example`, not `https://app.example` or
- * `https://a.b.app.example`.
+ * Whether `origin` is one of `hosts`. A host whose leftmost label is `*` stands for the host under
+ * it and any one label there: `https://*.app.example` lists `https://app.example` and
+ * `https://www.app.example`, not `https://a.b.app.example`.
  */
 export const isListed = (hosts: readonly string[], origin: string): boolean =>
   hosts.some((host) => {
@@ -50,6 +50,9 @@ export const isListed = (hosts: readonly string[], origin: string): boolean =>
     const [before, after, ...more] = host.split('*');
     if (before === undefined || after === undefined || more.length) {
       return false;
+    }
+    if (origin === `${before}${after.slice(1)}`) {
+      return true;
     }
     const fits = origin.length > before.length + after.length && origin.startsWith(before) && origin.endsWith(after);
     return fits && /^[a-z0-9_-]+$/.test(origin.slice(before.length, -after.length));

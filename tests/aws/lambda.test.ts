@@ -277,7 +277,10 @@ describe('aws lambda runtime', () => {
         HTTP_HOSTNAME: 'www.app.example',
         HTTP_ORIGIN: 'https://www.app.example',
       });
-      expect(await envAfter(withHosts('*.app.example'), event('app.example'))).toMatchObject(own);
+      expect(await envAfter(withHosts('*.app.example'), event('app.example'))).toMatchObject({
+        HTTP_HOSTNAME: 'app.example',
+        HTTP_ORIGIN: 'https://app.example',
+      });
       expect(await envAfter(withHosts('*.app.example'), event('a.b.app.example'))).toMatchObject(own);
     });
 
