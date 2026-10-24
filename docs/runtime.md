@@ -151,10 +151,13 @@ spec:
   hosts:
     - app.example # https://app.example
     - 'http://legacy.app.example:8080'
+    - '*.preview.app.example' # https://preview.app.example, https://<label>.preview.app.example
 ```
 
 An entry is a host, which means `https` on port 443, or an `http(s)://host[:port]` origin with no
-path. On each request, rowdy builds the origin the forwarded headers describe:
+path. A leftmost label of `*` stands for the host under it and any one label there; `**` for the
+host under it and any number of labels: `*.app.example` lists `https://app.example` and
+`https://www.app.example`, `**.app.example` also `https://a.b.app.example`. On each request, rowdy builds the origin the forwarded headers describe:
 
 - **With `spec.hosts`:** the forwarded values are used only if that exact origin is listed: host,
   scheme and port. Otherwise they are ignored, and the request is described by the Function URL
@@ -166,26 +169,99 @@ path. On each request, rowdy builds the origin the forwarded headers describe:
   WARN Lambda Forwarded Host Unchecked Cdn: proxy Origin: https://app.example Reason: spec.hosts is empty, so any caller can set HTTP_HOSTNAME and HTTP_ORIGIN; list the public origins
   ```
 
+A request straight to the Function URL carries no forwarded headers, so `spec.hosts` never turns it
+away: it is described by the Function URL itself, listed hosts or not.
+
+#### The headers the app gets
+
+rowdy replaces `Host`, `X-Forwarded-Host`, `X-Forwarded-Proto` and `X-Forwarded-Port` on every
+request with how the request reached the deployment, as decided above. A listed host reaches the app
+as itself; an unlisted or forged one, or a direct request, reaches it as the Function URL over https.
+`X-Forwarded-For` is passed on as sent.
+
+So with `spec.hosts`, an app can infer its public URL from the request without being told it: Auth.js
+with `trustHost: true` and no `AUTH_URL`, or Next.js's `request.url`, only ever see a listed origin
+or the Function URL's own. Without `spec.hosts`, the forwarded values reach the app unchecked.
+
+`Forwarded` carries the chain, client-most first: the elements the request arrived with, as sent;
+one for the CDN or proxy hop's claims (`for=` the visitor's address, `host=`, `proto=`,
+`by=_cloudfront`, `_cloudflare` or `_proxy`); and rowdy's own, last (`for=` the address that
+connected to the Function URL, `host=` and `proto=` as decided, `by=_rowdy`). Only the last element
+is rowdy's verdict, and it always matches `X-Forwarded-Host` and `-Proto`; the others are claims an
+app can inspect, and refuse a request whose claimed `host=` differs from the verdict's.
+
+```
+# Through CloudFront, with *.app.example listed
+Forwarded: for=198.51.100.7;host=www.app.example;proto=https;by=_cloudfront, for=130.176.1.2;host=www.app.example;proto=https;by=_rowdy
+
+# Straight to the Function URL with X-Forwarded-Host: evil.example
+Forwarded: host=evil.example;by=_proxy, for=203.0.113.9;host=abc.lambda-url.us-east-1.on.aws;proto=https;by=_rowdy
+```
+
+A missing claim proves nothing, and `by=_cloudfront` or `_cloudflare` is inferred from headers
+anyone can send; the verdict is what `spec.hosts` constrains.
+
+#### Several hosts on one deployment
+
+Every listed host is trusted, but `HTTP_HOSTNAME` and `HTTP_ORIGIN` still describe only the
+sandbox's first request. With `oidc.to` and `anotherbrand.com` on one deployment, a sandbox first
+reached through `oidc.to` reports `HTTP_ORIGIN=https://oidc.to` for its whole life, including to
+requests that came through `anotherbrand.com`. Anything built from them, such as redirect URLs, an
+issuer or a cookie domain, then names the wrong host.
+
+To serve each host as itself, either:
+
+- **Read the host per request.** `Host` and `X-Forwarded-*` describe each request, checked against
+  `spec.hosts` (see above), so the app can build URLs from them instead of `HTTP_ORIGIN`.
+- **Deploy once per host.** A different `name` gives each host its own function, so its sandboxes
+  only ever see that host.
+
+Hosts that name the same target share it: the store is written once per deploy, and every CDN that
+reads it gets the same environment.
+
+#### Writing the environment to the CDN
+
+`spec.hosts` can also be a map from each public host to a target: where a deploy writes the
+deployment's environment (every variable and secret the function gets) for the CDN in front of that
+host. An empty value names no target; the keys are the list above.
+
+```yaml
+spec:
+  hosts:
+    '*.oidc.to': arn:aws:cloudfront::123456789012:key-value-store/706d9bf2-5c29-4b7c-8900-89eb32d9723d
+    legacy.example: ''
+```
+
+rowdy recognizes the target by its shape:
+
+| Target                         | Written to                                                               |
+| ------------------------------ | ------------------------------------------------------------------------ |
+| a CloudFront KeyValueStore ARN | the store, one key per variable, for `cf.kvs()` in a CloudFront Function |
+
+A deploy puts only the keys whose values changed, after the function itself is deployed, and never
+deletes a key, so keys others put in the store survive. A key over 512 bytes or a value over 1 KB
+does not fit a KeyValueStore; it is skipped and named in a warning. The deploying credentials need
+`cloudfront-keyvaluestore:ListKeys`, `DescribeKeyValueStore` and `UpdateKeys` on the store. Any
+CloudFront Function associated with the store, and anyone allowed to read it, can read the secrets
+written to it.
+
 rowdy first infers the CDN from its own headers: CloudFront by `X-Amz-Cf-Id` or
 `CloudFront-Forwarded-Proto`, Cloudflare by `CF-Ray` or `CF-Visitor`; anything else is treated as a
-plain proxy. The forwarded host is read from, in order:
+plain proxy. Neither CDN ever sets `Forwarded`, so behind one it can only be what the visitor sent,
+and rowdy does not read it there.
 
-1. `Forwarded: host=…` ([RFC 7239](https://www.rfc-editor.org/rfc/rfc7239)), first element
-2. `X-Forwarded-Host`, first value
-
-The scheme is read from, in order. A CDN's own header comes first, because `X-Forwarded-Proto` can
-describe the CDN's own connection to the Function URL rather than the visitor's:
-
-1. CloudFront: `CloudFront-Forwarded-Proto`; Cloudflare: `CF-Visitor: {"scheme":"…"}`
-2. `Forwarded: proto=…`
-3. `X-Forwarded-Proto`
+| From          | Host                                                                                                                     | Scheme, in order                                                               |
+| ------------- | ------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------ |
+| CloudFront    | `X-Forwarded-Host`, first value                                                                                          | `CloudFront-Forwarded-Proto`; `X-Forwarded-Proto`                              |
+| Cloudflare    | `X-Forwarded-Host`, first value                                                                                          | `X-Forwarded-Proto`, which Cloudflare overwrites; `CF-Visitor: {"scheme":"…"}` |
+| a plain proxy | `Forwarded: host=…` ([RFC 7239](https://www.rfc-editor.org/rfc/rfc7239)), first element; `X-Forwarded-Host`, first value | `Forwarded: proto=…`; `X-Forwarded-Proto`                                      |
 
 The port is the one in the forwarded host, if any, else the scheme's default. `X-Forwarded-Port` is
 not used.
 
 None of these CDNs sends the visitor's host by default once its origin is a Function URL, because the
-origin request has to carry the Function URL's `Host`. Configure the CDN to add `X-Forwarded-Host`
-(or `Forwarded: host=`) with the visitor's host: on CloudFront, for example, with a CloudFront
+origin request has to carry the Function URL's `Host`. Configure the CDN to set `X-Forwarded-Host` to
+the visitor's host, overwriting any the visitor sent: on CloudFront, for example, with a CloudFront
 Function on viewer request; on Cloudflare, with a request header Transform Rule. On CloudFront, also
 add `CloudFront-Forwarded-Proto` to the origin request policy if the site is served over `http`.
 

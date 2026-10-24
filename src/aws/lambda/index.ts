@@ -88,6 +88,7 @@ import { inspect } from 'util';
 import { Environment, Routes } from '../..';
 import { Crontab, Volume } from '../../routes';
 import { mask, maskJson } from '../../log';
+import { CdnStore, cdnStore } from '../../cdn';
 import { TPulledImage } from '../../api/types';
 import { parseSecrets } from '../../secrets';
 
@@ -662,6 +663,35 @@ export class LambdaFunction implements Logger {
     return this.Routes.getValue()
       .intoVolumes()
       .filter((volume) => volume.scheme === 's3' && !volume.bucket);
+  }
+
+  /** The stores `spec.hosts` names, each once. */
+  get stores(): Array<CdnStore> {
+    return [...new Set(Object.values(this.Routes.getValue().targets))].map(cdnStore);
+  }
+
+  // DEVNOTE: Upserts only, so keys others put in the store survive.
+  private writeStore(store: CdnStore): Observable<MetadataBearer> {
+    return this.Environment.pipe(take(1)).pipe(
+      tap((Environment) =>
+        this.log.debug(
+          `writeStore(store=${store.name}, target=${store.target}, keys=${Object.keys(Environment).length})`
+        )
+      ),
+      switchMap((Environment) => store.write(Environment, this)),
+      tap(({ written, skipped }) => {
+        this.log.info('Store Written', { store: store.name, target: store.target, written: written.length });
+        if (skipped.length) {
+          this.log.warn('Store Keys Skipped', {
+            store: store.name,
+            target: store.target,
+            keys: skipped,
+            reason: 'too large for the store',
+          });
+        }
+      }),
+      map(() => ({ $metadata: {} }))
+    );
   }
 
   // DEVNOTE: Created when missing, never deleted or reconfigured: S3's defaults (Block Public
@@ -1350,6 +1380,8 @@ export class LambdaFunction implements Logger {
       ),
       // Function URL Permissions
       this.AliasArn.pipe(take(1)).pipe(switchMap((AliasArn) => this.functionUrlPermissions(AliasArn!))),
+      // Host Stores
+      ...this.stores.map((store) => this.writeStore(store)),
       // EventBridge Schedules
       combineLatest({
         FunctionArn: this.FunctionArn.pipe(take(1)),

@@ -27,6 +27,7 @@ import { Rowdy } from './api';
 import { ApiVersion, ApiSchema } from './api/types';
 import { join } from 'path';
 import { Cors, CorsPaths } from './cors';
+import { cdnStore } from './cdn';
 
 export type RoutePaths = { [key: string]: string | undefined };
 export type RoutesSpec = {
@@ -35,8 +36,11 @@ export type RoutesSpec = {
   crontab?: string[];
   volumes?: string[];
   cors?: CorsPaths;
-  hosts?: string[];
+  hosts?: RouteHosts;
 };
+
+/** Public hosts or origins; as a map, each names where a deploy writes the environment, or nothing. */
+export type RouteHosts = string[] | Record<string, string>;
 
 export type RoutesSchema = ApiSchema<RoutesSpec, undefined>;
 
@@ -209,7 +213,8 @@ export class URI extends URL implements ILoggable {
       take(1),
       tap(() => log.debug(`URI is healthy`, { uri: this })),
       map(() => this),
-      shareReplay(1)
+      // Polling stops once no request waits on it; a healthy result is still replayed.
+      shareReplay({ bufferSize: 1, refCount: true })
     );
 
     URI.awaits.set(this.toString(), await$);
@@ -570,6 +575,8 @@ export class Routes implements IRoutes, ILoggable {
   readonly cors: CorsPaths = {};
   // Public origins, normalized (`https://app.example`), whose forwarded headers are trusted.
   readonly hosts: Array<string> = [];
+  // By public origin: the store a deploy writes the environment to.
+  readonly targets: Record<string, string> = {};
 
   private constructor() {}
 
@@ -783,22 +790,50 @@ export class Routes implements IRoutes, ILoggable {
   }
 
   // DEVNOTE: Validated on the way in, like volumes. A bare host means https on its default port.
-  withHosts(hosts: Array<string>): this {
-    if (!Array.isArray(hosts)) {
-      throw new Error(`Invalid hosts, expected a list of hosts or origins`);
+  withHosts(hosts: RouteHosts): this {
+    if (!hosts || typeof hosts !== 'object') {
+      throw new Error(`Invalid hosts, expected a list of hosts or origins, or a map of them to targets`);
     }
-    hosts.forEach((entry) => {
+    const entries: Array<[string, unknown]> = Array.isArray(hosts)
+      ? hosts.map((host) => [host, undefined])
+      : Object.entries(hosts);
+    entries.forEach(([entry, target]) => {
       const value = String(entry).trim();
       const uri = URI.from(value.includes('://') ? value : `https://${value}`);
       const bare = uri.pathname === '/' && !uri.search && !uri.hash && !uri.username && !uri.password;
       if (uri.error || !['http:', 'https:'].includes(uri.protocol) || !uri.hostname || !bare) {
         throw new Error(`Invalid host '${value}', expected a host or an http(s) origin such as https://app.example`);
       }
+      const labels = uri.hostname.split('.');
+      const wild = (label: string, i: number) => i === 0 && ['*', '**'].includes(label) && labels.length > 1;
+      if (labels.some((label, i) => label.includes('*') && !wild(label, i))) {
+        throw new Error(
+          `Invalid host '${value}', a wildcard is a whole leftmost label such as *.app.example or **.app.example`
+        );
+      }
       if (!this.hosts.includes(uri.origin)) {
         this.hosts.push(uri.origin);
       }
+      if (target !== undefined && target !== null && target !== '') {
+        if (typeof target !== 'string') {
+          throw new Error(`Invalid target for host '${value}', expected a string`);
+        }
+        cdnStore(target.trim());
+        this.targets[uri.origin] = target.trim();
+      }
     });
     return this;
+  }
+
+  /** The hosts as the manifest writes them: a list, or a map when any has a target. */
+  intoHosts(): RouteHosts | undefined {
+    if (!this.hosts.length) {
+      return undefined;
+    }
+    if (!Object.keys(this.targets).length) {
+      return [...this.hosts];
+    }
+    return Object.fromEntries(this.hosts.map((host) => [host, this.targets[host] ?? '']));
   }
 
   // DEVNOTE: Validated on the way in, like volumes. A later entry for the same pattern replaces
@@ -862,7 +897,7 @@ export class Routes implements IRoutes, ILoggable {
         crontab: this.crontab.length ? this.crontab : undefined,
         volumes: this.volumes.length ? this.volumes : undefined,
         cors: Object.keys(this.cors).length ? this.cors : undefined,
-        hosts: this.hosts.length ? this.hosts : undefined,
+        hosts: this.intoHosts(),
       },
       status: undefined,
     };
@@ -996,7 +1031,7 @@ export class Routes implements IRoutes, ILoggable {
     this.withCrontab(other.crontab);
     this.withVolumes(other.volumes);
     this.withCors(other.cors);
-    this.withHosts(other.hosts);
+    this.withHosts(other.intoHosts() ?? []);
     other.rules.forEach((rule) => {
       rule.backendRefs?.forEach((ref) => {
         rule.matches?.forEach((match) => {
@@ -1025,6 +1060,6 @@ export class Routes implements IRoutes, ILoggable {
   }
 
   repr(): string {
-    return `Routes(version=${this.version}, rules=${JSON.stringify(this.rules)}, crontab=${JSON.stringify(this.crontab)}, cors=${JSON.stringify(this.cors)}, hosts=${JSON.stringify(this.hosts)})`;
+    return `Routes(version=${this.version}, rules=${JSON.stringify(this.rules)}, crontab=${JSON.stringify(this.crontab)}, cors=${JSON.stringify(this.cors)}, hosts=${JSON.stringify(this.intoHosts() ?? [])})`;
   }
 }

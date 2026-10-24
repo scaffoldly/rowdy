@@ -1,9 +1,23 @@
 import { CloudflareHeaders } from './cloudflare/headers';
 import { CloudFrontHeaders } from './cloudfront/headers';
-import { CdnHeaders, defaultPort, HeaderMap, originOf, portIn, ProxyHeaders } from './headers';
+import { CloudFrontStore } from './cloudfront/store';
+import { CdnHeaders, defaultPort, element, HeaderMap, originOf, portIn, ProxyHeaders, splitElements } from './headers';
+import { CdnStore, Written } from './store';
 
-export { CdnHeaders, CloudflareHeaders, CloudFrontHeaders, defaultPort, originOf, portIn, ProxyHeaders };
-export type { HeaderMap };
+export {
+  CdnHeaders,
+  CdnStore,
+  CloudflareHeaders,
+  CloudFrontHeaders,
+  CloudFrontStore,
+  defaultPort,
+  element,
+  originOf,
+  portIn,
+  ProxyHeaders,
+  splitElements,
+};
+export type { HeaderMap, Written };
 
 /** How a request reached the deployment, as the command's HTTP_* variables describe it. */
 export type Reached = {
@@ -25,6 +39,46 @@ export type Trust = { cdn: string; decision: Decision; origin?: string };
 export const cdnHeaders = (headers: HeaderMap): CdnHeaders =>
   CloudFrontHeaders.from(headers) ?? CloudflareHeaders.from(headers) ?? ProxyHeaders.from(headers);
 
+const LABEL = '[a-z0-9_-]+';
+const WILDCARDS: Record<string, RegExp> = {
+  '*': new RegExp(`^${LABEL}$`),
+  '**': new RegExp(`^${LABEL}(\\.${LABEL})*$`),
+};
+
+/**
+ * Whether `origin` is one of `hosts`. A leftmost label of `*` stands for the host under it and any
+ * one label there, `**` for the host under it and any number of labels: `https://*.app.example`
+ * lists `https://app.example` and `https://www.app.example`, `https://**.app.example` also
+ * `https://a.b.app.example`.
+ */
+export const isListed = (hosts: readonly string[], origin: string): boolean =>
+  hosts.some((host) => {
+    if (host === origin) {
+      return true;
+    }
+    const [, scheme, wildcard, under] = /^([a-z]+:\/\/)(\*\*?)\.(.+)$/.exec(host) ?? [];
+    const labels = wildcard && WILDCARDS[wildcard];
+    if (!scheme || !under || !labels) {
+      return false;
+    }
+    if (origin === `${scheme}${under}`) {
+      return true;
+    }
+    const fits = origin.startsWith(scheme) && origin.endsWith(`.${under}`);
+    return fits && labels.test(origin.slice(scheme.length, -under.length - 1));
+  });
+
+/** The store a `spec.hosts` value names; throws when no CDN recognizes it. */
+export const cdnStore = (target: string): CdnStore => {
+  const store = CloudFrontStore.from(target);
+  if (!store) {
+    throw new Error(
+      `Invalid host target '${target}', expected a CloudFront KeyValueStore ARN such as arn:aws:cloudfront::123456789012:key-value-store/<id>`
+    );
+  }
+  return store;
+};
+
 /**
  * How a Function URL request reached the deployment. Forwarded values are anyone's to send: with
  * `hosts`, they are used only when the origin they make is listed; without, they are used
@@ -42,11 +96,31 @@ export const reachedBy = (headers: HeaderMap, hosts: readonly string[]): { reach
   }
   const proto = cdn.proto() || 'https';
   const origin = originOf(proto, hostname);
-  if (hosts.length && !hosts.includes(origin)) {
+  if (hosts.length && !isListed(hosts, origin)) {
     return { reached: own, trust: { cdn: cdn.name, decision: 'unlisted', origin } };
   }
   return {
     reached: { host, hostname, port: portIn(hostname) || defaultPort(proto) || '', proto },
     trust: { cdn: cdn.name, decision: hosts.length ? 'listed' : 'unchecked', origin },
+  };
+};
+
+/**
+ * The headers the app gets. `Host` and `X-Forwarded-Host`, `-Proto` and `-Port` say how the request
+ * reached the deployment, as rowdy decided it, so an app that trusts forwarded headers (Auth.js
+ * `trustHost`) sees only an origin `hosts` lists, or the Function URL's own. `Forwarded` carries the
+ * chain: the elements the request arrived with, unverified, then rowdy's own, last.
+ */
+export const forwardedHeaders = (headers: HeaderMap, reached: Reached, source?: string): HeaderMap => {
+  const replaced = ['host', 'forwarded', 'x-forwarded-host', 'x-forwarded-proto', 'x-forwarded-port'];
+  const kept = Object.entries(headers).filter(([key]) => !replaced.includes(key.toLowerCase()));
+  const own = element({ for: source, host: reached.hostname, proto: reached.proto, by: '_rowdy' });
+  return {
+    ...Object.fromEntries(kept),
+    host: reached.hostname,
+    forwarded: [...cdnHeaders(headers).elements(), own].join(', '),
+    'x-forwarded-host': reached.hostname,
+    'x-forwarded-proto': reached.proto,
+    'x-forwarded-port': reached.port,
   };
 };

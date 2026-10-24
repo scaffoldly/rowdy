@@ -197,6 +197,103 @@ describe('aws lambda runtime', () => {
     });
   });
 
+  describe('forwarded headers the app gets', () => {
+    const LAMBDA_HOST = 'abc.lambda-url.us-east-1.on.aws';
+    const SOURCE = '130.176.1.2';
+    const listing = (...hosts: string[]): Environment => {
+      const environment = withCrontab(CRON_LINE);
+      environment.routes.withHosts(hosts);
+      return environment;
+    };
+    const seen = async (environment: Environment, headers: Record<string, string>) => {
+      const event = functionUrlEvent({ host: LAMBDA_HOST, ...headers }) as unknown as {
+        requestContext: { http: { sourceIp?: string } };
+      };
+      event.requestContext.http.sourceIp = SOURCE;
+      const http = await proxy(environment, event);
+      return {
+        host: http.headers.get('host'),
+        'x-forwarded-host': http.headers.get('x-forwarded-host'),
+        'x-forwarded-proto': http.headers.get('x-forwarded-proto'),
+        'x-forwarded-port': http.headers.get('x-forwarded-port'),
+        forwarded: http.headers.get('forwarded'),
+      };
+    };
+    const own = (forwarded: string) => ({
+      host: LAMBDA_HOST,
+      'x-forwarded-host': LAMBDA_HOST,
+      'x-forwarded-proto': 'https',
+      'x-forwarded-port': '443',
+      forwarded,
+    });
+    const ROWDY_OWN = `for=${SOURCE};host=${LAMBDA_HOST};proto=https;by=_rowdy`;
+
+    it('name a listed host, with the chain that led to it', async () => {
+      expect(
+        await seen(listing('*.app.example'), {
+          'x-amz-cf-id': 'abc',
+          'x-forwarded-for': '198.51.100.7',
+          'x-forwarded-host': 'www.app.example',
+          'cloudfront-forwarded-proto': 'https',
+        })
+      ).toEqual({
+        host: 'www.app.example',
+        'x-forwarded-host': 'www.app.example',
+        'x-forwarded-proto': 'https',
+        'x-forwarded-port': '443',
+        forwarded: `for=198.51.100.7;host=www.app.example;proto=https;by=_cloudfront, for=${SOURCE};host=www.app.example;proto=https;by=_rowdy`,
+      });
+    });
+
+    it('name the Function URL in place of a host spec.hosts does not list, keeping the claim in the chain', async () => {
+      expect(
+        await seen(listing('app.example'), {
+          'X-Forwarded-Host': 'evil.example',
+          'X-Forwarded-Proto': 'https',
+          'X-Forwarded-Port': '8443',
+          Forwarded: 'host=evil.example;proto=https',
+        })
+      ).toEqual(own(`host=evil.example;proto=https, host=evil.example;proto=https;by=_proxy, ${ROWDY_OWN}`));
+    });
+
+    it('keep a forged Forwarded behind CloudFront as a claim, deciding from X-Forwarded-Host', async () => {
+      expect(
+        await seen(listing('*.app.example'), {
+          'x-amz-cf-id': 'abc',
+          forwarded: 'host=evil.app.example',
+          'x-forwarded-for': '198.51.100.7',
+          'x-forwarded-host': 'www.app.example',
+          'cloudfront-forwarded-proto': 'https',
+        })
+      ).toMatchObject({
+        host: 'www.app.example',
+        forwarded: `host=evil.app.example, for=198.51.100.7;host=www.app.example;proto=https;by=_cloudfront, for=${SOURCE};host=www.app.example;proto=https;by=_rowdy`,
+      });
+    });
+
+    it('name the Function URL on a direct request, ending the chain with rowdy alone', async () => {
+      expect(await seen(listing('app.example'), {})).toEqual(own(ROWDY_OWN));
+      expect(await seen(listing('app.example'), { 'X-Forwarded-Proto': 'http' })).toEqual(
+        own(`proto=http;by=_proxy, ${ROWDY_OWN}`)
+      );
+    });
+
+    it('pass forwarded values unchecked without spec.hosts', async () => {
+      expect(await seen(withCrontab(CRON_LINE), { 'X-Forwarded-Host': 'app.example' })).toMatchObject({
+        host: 'app.example',
+        'x-forwarded-host': 'app.example',
+      });
+    });
+
+    it('keep X-Forwarded-For', async () => {
+      const http = await proxy(
+        listing('app.example'),
+        functionUrlEvent({ host: LAMBDA_HOST, 'X-Forwarded-For': '203.0.113.7' })
+      );
+      expect(http.headers.get('x-forwarded-for')).toBe('203.0.113.7');
+    });
+  });
+
   describe('runtime variables', () => {
     const LAMBDA_HOST = 'abc.lambda-url.us-east-1.on.aws';
     const withHosts = (...hosts: string[]): Environment => {
@@ -227,6 +324,14 @@ describe('aws lambda runtime', () => {
     it("describe a direct request by the Function URL's own host over https", async () => {
       const env = await envAfter(withHosts('app.example'), functionUrlEvent({ host: LAMBDA_HOST }));
       expect(env).toMatchObject(own);
+    });
+
+    it('describe a direct request by its own host when spec.hosts maps hosts to targets', async () => {
+      const environment = withCrontab(CRON_LINE);
+      environment.routes.withHosts({
+        'app.example': 'arn:aws:cloudfront::442239336012:key-value-store/706d9bf2-5c29-4b7c-8900-89eb32d9723d',
+      });
+      expect(await envAfter(environment, functionUrlEvent({ host: LAMBDA_HOST }))).toMatchObject(own);
     });
 
     it('ignore forwarded headers whose origin is not in spec.hosts', async () => {
@@ -261,6 +366,23 @@ describe('aws lambda runtime', () => {
       } finally {
         spy.mockRestore();
       }
+    });
+
+    it('use a forwarded host a wildcard in spec.hosts lists', async () => {
+      const event = (host: string) => functionUrlEvent({ host: LAMBDA_HOST, 'x-forwarded-host': host });
+      expect(await envAfter(withHosts('*.app.example'), event('www.app.example'))).toMatchObject({
+        HTTP_HOSTNAME: 'www.app.example',
+        HTTP_ORIGIN: 'https://www.app.example',
+      });
+      expect(await envAfter(withHosts('*.app.example'), event('app.example'))).toMatchObject({
+        HTTP_HOSTNAME: 'app.example',
+        HTTP_ORIGIN: 'https://app.example',
+      });
+      expect(await envAfter(withHosts('*.app.example'), event('a.b.app.example'))).toMatchObject(own);
+      expect(await envAfter(withHosts('**.app.example'), event('a.b.app.example'))).toMatchObject({
+        HTTP_HOSTNAME: 'a.b.app.example',
+        HTTP_ORIGIN: 'https://a.b.app.example',
+      });
     });
 
     it('use a forwarded host whose origin is in spec.hosts', async () => {
@@ -309,12 +431,7 @@ describe('aws lambda runtime', () => {
 
       const cloudflare = await envAfter(
         withHosts('http://app.example'),
-        functionUrlEvent({
-          host: LAMBDA_HOST,
-          'x-forwarded-host': 'app.example',
-          'cf-visitor': '{"scheme":"http"}',
-          'x-forwarded-proto': 'https',
-        })
+        functionUrlEvent({ host: LAMBDA_HOST, 'x-forwarded-host': 'app.example', 'cf-visitor': '{"scheme":"http"}' })
       );
       expect(cloudflare).toMatchObject({ HTTP_PROTO: 'http', HTTP_ORIGIN: 'http://app.example' });
     });

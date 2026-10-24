@@ -1,3 +1,4 @@
+import { isIPv6 } from 'net';
 import { URI } from '../routes';
 
 export type HeaderMap = Record<string, string | undefined>;
@@ -20,6 +21,25 @@ export const originOf = (proto: string, hostname: string, port?: string): string
   return uri.origin;
 };
 
+// RFC 7230 token characters; any other value is a quoted-string.
+const TOKEN = /^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/;
+
+/** An RFC 7239 element of the given parameters, those undefined left out; undefined when none is left. */
+export const element = (params: Partial<Record<'for' | 'by' | 'host' | 'proto', string>>): string | undefined => {
+  const pairs = Object.entries(params).flatMap(([key, value]) => {
+    if (!value) {
+      return [];
+    }
+    const node = (key === 'for' || key === 'by') && isIPv6(value) ? `[${value}]` : value;
+    return [`${key}=${TOKEN.test(node) ? node : `"${node.replace(/(["\\])/g, '\\$1')}"`}`];
+  });
+  return pairs.length ? pairs.join(';') : undefined;
+};
+
+/** The elements of a `Forwarded` value, split on commas outside quoted strings. */
+export const splitElements = (value: string): string[] =>
+  (value.match(/(?:[^,"]|"(?:[^"\\]|\\.)*")+/g) ?? []).map((e) => e.trim()).filter(Boolean);
+
 /**
  * What a request's headers say about how the visitor reached the proxy in front of the Function
  * URL. Anyone can send these headers; callers decide whether to believe them.
@@ -34,14 +54,37 @@ export abstract class CdnHeaders {
     return this.get('host');
   }
 
-  /** The host the visitor asked for: `Forwarded: host=`, else `X-Forwarded-Host`. */
+  /** The host the visitor asked for: `Forwarded: host=` where it counts, else `X-Forwarded-Host`. */
   host(): string | undefined {
-    return this.forwarded('host') || this.first('x-forwarded-host');
+    return (this.readsForwarded ? this.forwarded('host') : undefined) || this.first('x-forwarded-host');
   }
 
-  /** The scheme the visitor used: `Forwarded: proto=`, else `X-Forwarded-Proto`. */
+  /** The scheme the visitor used: `Forwarded: proto=` where it counts, else `X-Forwarded-Proto`. */
   proto(): string | undefined {
-    return (this.forwarded('proto') || this.first('x-forwarded-proto'))?.toLowerCase();
+    return (
+      (this.readsForwarded ? this.forwarded('proto') : undefined) || this.first('x-forwarded-proto')
+    )?.toLowerCase();
+  }
+
+  /** The visitor's address as this hop reports it: the last `X-Forwarded-For` entry. */
+  viewer(): string | undefined {
+    return this.get('x-forwarded-for')?.split(',').pop()?.trim() || undefined;
+  }
+
+  /**
+   * The RFC 7239 elements this request arrived with: those of `Forwarded`, as sent, then one for
+   * this hop's own claims, when it made any.
+   */
+  elements(): string[] {
+    const received = splitElements(this.get('forwarded') ?? '');
+    const claims = { for: this.viewer(), host: this.host(), proto: this.proto() };
+    const hop = Object.values(claims).some(Boolean) ? element({ ...claims, by: `_${this.name}` }) : undefined;
+    return hop ? [...received, hop] : received;
+  }
+
+  // Whether `Forwarded` describes the visitor. A CDN never sets it, so behind one it is the visitor's own.
+  protected get readsForwarded(): boolean {
+    return true;
   }
 
   protected has(name: string): boolean {

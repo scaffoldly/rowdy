@@ -1,6 +1,9 @@
 import { CdnHeaders, HeaderMap } from '../headers';
 
-/** Amazon CloudFront: the visitor's scheme is in `CloudFront-Forwarded-Proto`. */
+/**
+ * Amazon CloudFront: the visitor's scheme is in `CloudFront-Forwarded-Proto`. CloudFront sets no
+ * header with the visitor's host; only an edge function setting `X-Forwarded-Host` supplies it.
+ */
 export class CloudFrontHeaders extends CdnHeaders {
   /** The headers of a request that came through CloudFront; undefined for any other. */
   static from(headers: HeaderMap): CloudFrontHeaders | undefined {
@@ -12,8 +15,12 @@ export class CloudFrontHeaders extends CdnHeaders {
     return 'cloudfront';
   }
 
-  // X-Forwarded-Proto can describe CloudFront's own connection to the origin.
+  // CloudFront removes a viewer's X-Forwarded-Proto; CloudFront-Forwarded-Proto is its own, when a policy adds it.
   override proto(): string | undefined {
     return this.first('cloudfront-forwarded-proto')?.toLowerCase() || super.proto();
+  }
+
+  protected override get readsForwarded(): boolean {
+    return false;
   }
 }

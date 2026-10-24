@@ -552,6 +552,47 @@ describe('hosts', () => {
     expect(a.merge(b).hosts).toEqual(['https://app.example', 'https://www.app.example']);
   });
 
+  it('takes a map of hosts to targets and survives a data url round trip', () => {
+    const arn = 'arn:aws:cloudfront::442239336012:key-value-store/706d9bf2-5c29-4b7c-8900-89eb32d9723d';
+    const routes = Routes.fromURL(`hosts:
+  oidc.to: ${arn}
+  www.oidc.to:
+`);
+    expect(routes.hosts).toEqual(['https://oidc.to', 'https://www.oidc.to']);
+    expect(routes.targets).toEqual({ 'https://oidc.to': arn });
+    const parsed = Routes.fromDataURL(routes.intoDataURL());
+    expect(parsed.hosts).toEqual(routes.hosts);
+    expect(parsed.targets).toEqual(routes.targets);
+  });
+
+  it('merges a map of hosts into a list', () => {
+    const arn = 'arn:aws:cloudfront::442239336012:key-value-store/706d9bf2-5c29-4b7c-8900-89eb32d9723d';
+    const a = Routes.empty().withHosts(['app.example']);
+    const b = Routes.empty().withHosts({ 'https://app.example': arn, 'www.app.example': '' });
+    a.merge(b);
+    expect(a.hosts).toEqual(['https://app.example', 'https://www.app.example']);
+    expect(a.intoHosts()).toEqual({ 'https://app.example': arn, 'https://www.app.example': '' });
+  });
+
+  it('takes a wildcard as the whole leftmost label', () => {
+    expect(Routes.empty().withHosts(['*.App.Example', 'http://*.app.example:8080', '**.app.example']).hosts).toEqual([
+      'https://*.app.example',
+      'http://*.app.example:8080',
+      'https://**.app.example',
+    ]);
+  });
+
+  it.each(['*', '**', 'www.*.app.example', 'w*.app.example', '***.app.example', 'a.**.app.example', 'app.*'])(
+    'rejects the wildcard %p',
+    (entry) => {
+      expect(() => Routes.empty().withHosts([entry])).toThrow(/wildcard/);
+    }
+  );
+
+  it('rejects a target no CDN recognizes', () => {
+    expect(() => Routes.empty().withHosts({ 'app.example': 'app.workers.dev' })).toThrow(/Invalid host target/);
+  });
+
   it.each(['https://app.example/path', 'ftp://app.example', 'https://user@app.example', 'https://app.example?x=1', ''])(
     'rejects %p',
     (entry) => {

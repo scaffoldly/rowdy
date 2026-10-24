@@ -7,7 +7,7 @@ import { APIGatewayProxyEventV2 } from 'aws-lambda';
 import { HttpProxy, HttpHeaders, HttpResponse, Source } from '../proxy/http';
 import { ShellResponse } from '../proxy/shell';
 import { Crontab, CronSchema, URI } from '../routes';
-import { defaultPort, reachedBy } from '../cdn';
+import { defaultPort, forwardedHeaders, reachedBy } from '../cdn';
 import { CRI, GrpcRouter, RuntimeService } from '@scaffoldly/rowdy-grpc';
 import { LambdaCri } from './lambda/cri';
 import { Rowdy } from '../api';
@@ -196,7 +196,7 @@ export class LambdaRequest extends Request<LambdaPipeline> {
           this,
           method,
           uri,
-          HttpHeaders.fromLambda(headers),
+          HttpHeaders.fromLambda(forwardedHeaders(headers, reached, requestContext.http.sourceIp)),
           isBase64Encoded ? Buffer.from(body || '', 'base64') : Buffer.from(body || ''),
           source
         )

@@ -460,3 +460,76 @@ describe('upstream dropped by a crashed command', () => {
     expect(body).toMatch(/socket hang up|ECONNRESET/);
   });
 });
+
+describe('upstream that never listens', () => {
+  let port: number;
+
+  // A port nothing listens on: taken, then released.
+  beforeAll(async () => {
+    const probe = createServer();
+    await new Promise<void>((resolve) => probe.listen(0, '127.0.0.1', resolve));
+    port = (probe.address() as AddressInfo).port;
+    await new Promise<void>((resolve) => probe.close(() => resolve()));
+  });
+
+  const environmentFor = (exit: ShellExit, delayMs?: number): Environment => {
+    const environment = new Environment(new Logger());
+    environment['_routes'] = Routes.fromSchema({ default: `http://127.0.0.1:${port}/` });
+    if (delayMs === undefined) {
+      environment['_commandExit'].next(exit);
+    } else {
+      setTimeout(() => environment['_commandExit'].next(exit), delayMs);
+    }
+    return environment;
+  };
+
+  const respond = async (environment: Environment): Promise<{ status: number; body: string; ms: number }> => {
+    const started = Date.now();
+    const pipeline = new LambdaPipeline(environment);
+    const event = {
+      version: '2.0',
+      routeKey: '$default',
+      rawPath: '/',
+      rawQueryString: '',
+      headers: { host: 'example.com' },
+      requestContext: { http: { method: 'GET' } },
+      isBase64Encoded: false,
+    };
+    const request = new LambdaRequest(pipeline, JSON.stringify(event));
+    const proxy = (await lastValueFrom(request['intoHttp']())) as HttpProxy<LambdaPipeline>;
+    const response = await lastValueFrom(proxy.invoke());
+    let body = '';
+    for await (const chunk of response.data) body += chunk;
+    return { status: response.status, body, ms: Date.now() - started };
+  };
+
+  it('answers as soon as the command exits, instead of waiting for it to listen', async () => {
+    const { status, body, ms } = await respond(environmentFor({ code: 1 }, 300));
+    expect(status).toBe(500);
+    expect(body).toBe(`The command exited with code 1 before http://127.0.0.1:${port} answered`);
+    expect(ms).toBeLessThan(2000);
+  });
+
+  it("answers a request that arrives after the command already exited, with the command's exit message", async () => {
+    const { status, body, ms } = await respond(environmentFor({ code: 139, signal: 'SIGSEGV', message: 'killed' }));
+    expect(status).toBe(500);
+    expect(body).toBe('killed');
+    expect(ms).toBeLessThan(1000);
+  });
+
+  it('fails a cron request the same way, as an invocation error', async () => {
+    const line = `*/15 * * * * GET http://127.0.0.1:${port}/`;
+    const environment = environmentFor({ code: 1 }, 300);
+    environment.routes.withCrontab([line]);
+    const pipeline = new LambdaPipeline(environment);
+    const request = new LambdaRequest(
+      pipeline,
+      JSON.stringify({ apiVersion: 'rowdy.run/v1alpha1', kind: 'Cron', spec: { line } })
+    );
+    const proxy = (await lastValueFrom(request['intoHttp']())) as HttpProxy<LambdaPipeline>;
+    const response = await lastValueFrom(proxy.into());
+    await expect(lastValueFrom(response)).rejects.toThrow(
+      `failed with status 500: The command exited with code 1 before http://127.0.0.1:${port} answered`
+    );
+  });
+});
