@@ -216,14 +216,11 @@ To serve each host as itself, either:
 - **Deploy once per host.** A different `name` gives each host its own function, so its sandboxes
   only ever see that host.
 
-Hosts that name the same target share it: the store is written once per deploy, and every CDN that
-reads it gets the same environment.
-
-#### Writing the environment to the CDN
+#### Writing the deployment's state to the CDN
 
 `spec.hosts` can also be a map from each public host to a target: where a deploy writes the
-deployment's environment (every variable and secret the function gets) for the CDN in front of that
-host. An empty value names no target; the keys are the list above.
+deployment's state for the CDN in front of that host, so an edge function can find the Function URL
+without being told it. An empty value names no target; the keys are the list above.
 
 ```yaml
 spec:
@@ -232,18 +229,32 @@ spec:
     legacy.example: ''
 ```
 
+The state is one key per value the deploy produced: `FunctionUrl`, `FunctionArn`, `AliasArn`,
+`FunctionVersion`, `Qualifier`, `ImageUri`, `RoleArn`, `RoleId`, `RoleName` and, with a managed
+bucket, `Bucket`. No environment variable or secret is written.
+
+```js
+// A CloudFront Function on viewer request
+import cf from 'cloudfront';
+const kvs = cf.kvs();
+async function handler(event) {
+  const domainName = (await kvs.get('FunctionUrl')).split('/')[2]; // abc.lambda-url.us-east-1.on.aws
+  event.request.headers['x-forwarded-host'] = { value: event.request.headers.host.value };
+  cf.updateRequestOrigin({ domainName });
+  return event.request;
+}
+```
+
 rowdy recognizes the target by its shape:
 
-| Target                         | Written to                                                               |
-| ------------------------------ | ------------------------------------------------------------------------ |
-| a CloudFront KeyValueStore ARN | the store, one key per variable, for `cf.kvs()` in a CloudFront Function |
+| Target                         | Written to                                         |
+| ------------------------------ | -------------------------------------------------- |
+| a CloudFront KeyValueStore ARN | the store, for `cf.kvs()` in a CloudFront Function |
 
-A deploy puts only the keys whose values changed, after the function itself is deployed, and never
-deletes a key, so keys others put in the store survive. A key over 512 bytes or a value over 1 KB
-does not fit a KeyValueStore; it is skipped and named in a warning. The deploying credentials need
-`cloudfront-keyvaluestore:ListKeys`, `DescribeKeyValueStore` and `UpdateKeys` on the store. Any
-CloudFront Function associated with the store, and anyone allowed to read it, can read the secrets
-written to it.
+A deploy puts only the keys whose values changed, after the Function URL is in place, and never
+deletes a key, so keys others put in the store survive. The deploying credentials need
+`cloudfront-keyvaluestore:ListKeys`, `DescribeKeyValueStore` and `UpdateKeys` on the store. Hosts
+that name the same target share it: it is written once per deploy.
 
 rowdy first infers the CDN from its own headers: CloudFront by `X-Amz-Cf-Id` or
 `CloudFront-Forwarded-Proto`, Cloudflare by `CF-Ray` or `CF-Visitor`; anything else is treated as a

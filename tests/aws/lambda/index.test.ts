@@ -13,7 +13,8 @@ import {
 import { inspect } from 'util';
 import { readFileSync } from 'fs';
 import { join } from 'path';
-import { lastValueFrom, of, toArray } from 'rxjs';
+import { lastValueFrom, Observable, of, toArray } from 'rxjs';
+import { CdnStore, Written } from '../../../src/cdn';
 import { Statement } from 'aws-lambda';
 
 describe('aws lambda', () => {
@@ -961,5 +962,40 @@ describe('aws lambda entrypoint', () => {
 
     const fn = new LambdaFunction('Container', new LambdaImageService(new Environment(new Logger())));
     expect(fn['EntryPoint'].getValue()).toEqual([ROWDY_BIN]);
+  });
+
+  describe('host stores', () => {
+    class FakeStore extends CdnStore {
+      readonly writes: Record<string, string>[] = [];
+      constructor() {
+        super('fake');
+      }
+      get name(): string {
+        return 'fake';
+      }
+      write(values: Record<string, string>): Observable<Written> {
+        this.writes.push(values);
+        return of({ store: this.name, target: this.target, written: Object.keys(values), skipped: [] });
+      }
+    }
+
+    it("writes the deployment's state, not its environment", async () => {
+      const imageService = new LambdaImageService(new Environment(new Logger()));
+      const ALIAS_ARN = 'arn:aws:lambda:us-east-1:123456789012:function:library+ubuntu@rowdy.run:latest';
+      const ROLE_ARN = 'arn:aws:iam::123456789012:role/library+ubuntu@rowdy.run';
+      const fn = new LambdaFunction('Container', imageService)
+        .withImage('ubuntu:noble-20251001')
+        .withSecrets('API_KEY=hunter2');
+      fn['FunctionUrl'].next('https://abc.lambda-url.us-east-1.on.aws/');
+      fn['AliasArn'].next(ALIAS_ARN);
+      fn['RoleArn'].next(ROLE_ARN);
+      const store = new FakeStore();
+
+      await lastValueFrom(fn['writeStore'](store));
+
+      expect(store.writes).toEqual([
+        { FunctionUrl: 'https://abc.lambda-url.us-east-1.on.aws/', AliasArn: ALIAS_ARN, RoleArn: ROLE_ARN },
+      ]);
+    });
   });
 });
