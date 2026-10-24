@@ -2,10 +2,12 @@ import {
   CloudflareHeaders,
   CloudFrontHeaders,
   cdnHeaders,
+  element,
   isListed,
   originOf,
   portIn,
   ProxyHeaders,
+  splitElements,
 } from '../../src/cdn';
 
 describe('cdn headers', () => {
@@ -51,9 +53,18 @@ describe('cdn headers', () => {
       expect(cdnHeaders({ 'x-amz-cf-id': 'abc', 'x-forwarded-proto': 'https' }).proto()).toBe('https');
     });
 
-    it("reads Cloudflare's CF-Visitor before the standard headers, and skips one it cannot parse", () => {
-      expect(cdnHeaders({ 'cf-visitor': '{"scheme":"http"}', 'x-forwarded-proto': 'https' }).proto()).toBe('http');
-      expect(cdnHeaders({ 'cf-visitor': 'not json', 'x-forwarded-proto': 'https' }).proto()).toBe('https');
+    it("reads Cloudflare's X-Forwarded-Proto, then CF-Visitor, skipping one it cannot parse", () => {
+      expect(cdnHeaders({ 'cf-visitor': '{"scheme":"http"}', 'x-forwarded-proto': 'https' }).proto()).toBe('https');
+      expect(cdnHeaders({ 'cf-visitor': '{"scheme":"http"}' }).proto()).toBe('http');
+      expect(cdnHeaders({ 'cf-ray': 'abc', 'cf-visitor': 'not json' }).proto()).toBeUndefined();
+    });
+
+    it('ignores Forwarded behind a CDN, which never sets it', () => {
+      const forged = { forwarded: 'proto=http;host=evil.example', 'x-forwarded-host': 'app.example' };
+      const cloudfront = cdnHeaders({ ...forged, 'x-amz-cf-id': 'abc', 'cloudfront-forwarded-proto': 'https' });
+      expect([cloudfront.host(), cloudfront.proto()]).toEqual(['app.example', 'https']);
+      const cloudflare = cdnHeaders({ ...forged, 'cf-ray': 'abc', 'x-forwarded-proto': 'https' });
+      expect([cloudflare.host(), cloudflare.proto()]).toEqual(['app.example', 'https']);
     });
 
     it('reads Forwarded before X-Forwarded-Proto, from the client-most element', () => {
@@ -99,5 +110,41 @@ describe('listed hosts', () => {
     ['https://x.dev.example:8080', false],
   ])('%s is listed: %p', (origin, listed) => {
     expect(isListed(hosts, origin)).toBe(listed);
+  });
+});
+
+describe('forwarded elements', () => {
+  it('quotes what is not a token and brackets IPv6 nodes', () => {
+    expect(element({ for: '192.0.2.60', host: 'app.example', proto: 'https', by: '_rowdy' })).toBe(
+      'for=192.0.2.60;host=app.example;proto=https;by=_rowdy'
+    );
+    expect(element({ for: '2001:db8::1', host: 'app.example:8443' })).toBe(
+      'for="[2001:db8::1]";host="app.example:8443"'
+    );
+    expect(element({ host: 'a"b' })).toBe('host="a\\"b"');
+    expect(element({ for: undefined })).toBeUndefined();
+  });
+
+  it('splits on commas outside quoted strings', () => {
+    expect(splitElements('for=a, host="x,y";proto=https ,for=b')).toEqual(['for=a', 'host="x,y";proto=https', 'for=b']);
+    expect(splitElements('')).toEqual([]);
+  });
+
+  it("keeps the elements received, then adds the hop's own claims", () => {
+    const cdn = cdnHeaders({
+      'x-amz-cf-id': 'abc',
+      forwarded: 'host=evil.example',
+      'x-forwarded-for': '203.0.113.1, 198.51.100.7',
+      'x-forwarded-host': 'www.app.example',
+      'cloudfront-forwarded-proto': 'https',
+    });
+    expect(cdn.elements()).toEqual([
+      'host=evil.example',
+      'for=198.51.100.7;host=www.app.example;proto=https;by=_cloudfront',
+    ]);
+    expect(cdnHeaders({ 'cf-ray': 'abc', 'cf-connecting-ip': '198.51.100.8' }).elements()).toEqual([
+      'for=198.51.100.8;by=_cloudflare',
+    ]);
+    expect(cdnHeaders({ host: 'abc.lambda-url.us-east-1.on.aws' }).elements()).toEqual([]);
   });
 });

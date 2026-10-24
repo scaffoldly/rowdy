@@ -137,10 +137,6 @@ export class HttpHeaders implements ILoggable {
 
     delete instance.headers['set-cookie']; // cookies are handled separately
 
-    if (this.headers['x-forwarded-host']) {
-      this.headers['host'] = this.headers['x-forwarded-host'];
-    }
-
     if (this.headers['connection']) {
       for (const key of this.headers['connection']
         .toString()

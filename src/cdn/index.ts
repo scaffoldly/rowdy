@@ -1,7 +1,7 @@
 import { CloudflareHeaders } from './cloudflare/headers';
 import { CloudFrontHeaders } from './cloudfront/headers';
 import { CloudFrontStore } from './cloudfront/store';
-import { CdnHeaders, defaultPort, HeaderMap, originOf, portIn, ProxyHeaders } from './headers';
+import { CdnHeaders, defaultPort, element, HeaderMap, originOf, portIn, ProxyHeaders, splitElements } from './headers';
 import { CdnStore, Written } from './store';
 
 export {
@@ -11,9 +11,11 @@ export {
   CloudFrontHeaders,
   CloudFrontStore,
   defaultPort,
+  element,
   originOf,
   portIn,
   ProxyHeaders,
+  splitElements,
 };
 export type { HeaderMap, Written };
 
@@ -100,5 +102,25 @@ export const reachedBy = (headers: HeaderMap, hosts: readonly string[]): { reach
   return {
     reached: { host, hostname, port: portIn(hostname) || defaultPort(proto) || '', proto },
     trust: { cdn: cdn.name, decision: hosts.length ? 'listed' : 'unchecked', origin },
+  };
+};
+
+/**
+ * The headers the app gets. `Host` and `X-Forwarded-Host`, `-Proto` and `-Port` say how the request
+ * reached the deployment, as rowdy decided it, so an app that trusts forwarded headers (Auth.js
+ * `trustHost`) sees only an origin `hosts` lists, or the Function URL's own. `Forwarded` carries the
+ * chain: the elements the request arrived with, unverified, then rowdy's own, last.
+ */
+export const forwardedHeaders = (headers: HeaderMap, reached: Reached, source?: string): HeaderMap => {
+  const replaced = ['host', 'forwarded', 'x-forwarded-host', 'x-forwarded-proto', 'x-forwarded-port'];
+  const kept = Object.entries(headers).filter(([key]) => !replaced.includes(key.toLowerCase()));
+  const own = element({ for: source, host: reached.hostname, proto: reached.proto, by: '_rowdy' });
+  return {
+    ...Object.fromEntries(kept),
+    host: reached.hostname,
+    forwarded: [...cdnHeaders(headers).elements(), own].join(', '),
+    'x-forwarded-host': reached.hostname,
+    'x-forwarded-proto': reached.proto,
+    'x-forwarded-port': reached.port,
   };
 };
