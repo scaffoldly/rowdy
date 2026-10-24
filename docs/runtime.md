@@ -166,6 +166,35 @@ path. On each request, rowdy builds the origin the forwarded headers describe:
   WARN Lambda Forwarded Host Unchecked Cdn: proxy Origin: https://app.example Reason: spec.hosts is empty, so any caller can set HTTP_HOSTNAME and HTTP_ORIGIN; list the public origins
   ```
 
+A request straight to the Function URL carries no forwarded headers, so `spec.hosts` never turns it
+away: it is described by the Function URL itself, listed hosts or not.
+
+#### Writing the environment to the CDN
+
+`spec.hosts` can also be a map from each public host to a target: where a deploy writes the
+deployment's environment (every variable and secret the function gets) for the CDN in front of that
+host. An empty value names no target; the keys are the list above.
+
+```yaml
+spec:
+  hosts:
+    oidc.to: arn:aws:cloudfront::123456789012:key-value-store/706d9bf2-5c29-4b7c-8900-89eb32d9723d
+    www.oidc.to: ''
+```
+
+rowdy recognizes the target by its shape:
+
+| Target                         | Written to                                                               |
+| ------------------------------ | ------------------------------------------------------------------------ |
+| a CloudFront KeyValueStore ARN | the store, one key per variable, for `cf.kvs()` in a CloudFront Function |
+
+A deploy puts only the keys whose values changed, after the function itself is deployed, and never
+deletes a key, so keys others put in the store survive. A key over 512 bytes or a value over 1 KB
+does not fit a KeyValueStore; it is skipped and named in a warning. The deploying credentials need
+`cloudfront-keyvaluestore:ListKeys`, `DescribeKeyValueStore` and `UpdateKeys` on the store. Any
+CloudFront Function associated with the store, and anyone allowed to read it, can read the secrets
+written to it.
+
 rowdy first infers the CDN from its own headers: CloudFront by `X-Amz-Cf-Id` or
 `CloudFront-Forwarded-Proto`, Cloudflare by `CF-Ray` or `CF-Visitor`; anything else is treated as a
 plain proxy. The forwarded host is read from, in order:

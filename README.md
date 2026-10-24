@@ -88,7 +88,8 @@ crontab:
 ```
 
 `hosts:` lists the public origins (a bare host means `https`) whose forwarded headers rowdy trusts
-when it tells the app how it was reached; see
+when it tells the app how it was reached. As a map, each host can name a target, such as a
+CloudFront KeyValueStore ARN, that a deploy writes the environment to; see
 [docs/runtime.md](docs/runtime.md#forwarded-headers-and-spechosts).
 
 A path that turns out not to exist falls back to the default routes. An inline manifest that fails

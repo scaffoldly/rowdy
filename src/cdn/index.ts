@@ -1,9 +1,21 @@
 import { CloudflareHeaders } from './cloudflare/headers';
 import { CloudFrontHeaders } from './cloudfront/headers';
+import { CloudFrontStore } from './cloudfront/store';
 import { CdnHeaders, defaultPort, HeaderMap, originOf, portIn, ProxyHeaders } from './headers';
+import { CdnStore, Written } from './store';
 
-export { CdnHeaders, CloudflareHeaders, CloudFrontHeaders, defaultPort, originOf, portIn, ProxyHeaders };
-export type { HeaderMap };
+export {
+  CdnHeaders,
+  CdnStore,
+  CloudflareHeaders,
+  CloudFrontHeaders,
+  CloudFrontStore,
+  defaultPort,
+  originOf,
+  portIn,
+  ProxyHeaders,
+};
+export type { HeaderMap, Written };
 
 /** How a request reached the deployment, as the command's HTTP_* variables describe it. */
 export type Reached = {
@@ -24,6 +36,17 @@ export type Trust = { cdn: string; decision: Decision; origin?: string };
 /** The headers of the CDN a request came through, else of a plain proxy. */
 export const cdnHeaders = (headers: HeaderMap): CdnHeaders =>
   CloudFrontHeaders.from(headers) ?? CloudflareHeaders.from(headers) ?? ProxyHeaders.from(headers);
+
+/** The store a `spec.hosts` value names; throws when no CDN recognizes it. */
+export const cdnStore = (target: string): CdnStore => {
+  const store = CloudFrontStore.from(target);
+  if (!store) {
+    throw new Error(
+      `Invalid host target '${target}', expected a CloudFront KeyValueStore ARN such as arn:aws:cloudfront::123456789012:key-value-store/<id>`
+    );
+  }
+  return store;
+};
 
 /**
  * How a Function URL request reached the deployment. Forwarded values are anyone's to send: with

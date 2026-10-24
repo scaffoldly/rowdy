@@ -229,6 +229,14 @@ describe('aws lambda runtime', () => {
       expect(env).toMatchObject(own);
     });
 
+    it('describe a direct request by its own host when spec.hosts maps hosts to targets', async () => {
+      const environment = withCrontab(CRON_LINE);
+      environment.routes.withHosts({
+        'app.example': 'arn:aws:cloudfront::442239336012:key-value-store/706d9bf2-5c29-4b7c-8900-89eb32d9723d',
+      });
+      expect(await envAfter(environment, functionUrlEvent({ host: LAMBDA_HOST }))).toMatchObject(own);
+    });
+
     it('ignore forwarded headers whose origin is not in spec.hosts', async () => {
       const env = await envAfter(
         withHosts('app.example'),
