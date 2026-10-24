@@ -670,15 +670,16 @@ export class LambdaFunction implements Logger {
     return [...new Set(Object.values(this.Routes.getValue().targets))].map(cdnStore);
   }
 
-  // DEVNOTE: Upserts only, so keys others put in the store survive.
+  // DEVNOTE: Upserts only, so keys others put in the store survive. Deferred, so State holds what
+  // the steps before it set.
   private writeStore(store: CdnStore): Observable<MetadataBearer> {
-    return this.Environment.pipe(take(1)).pipe(
-      tap((Environment) =>
-        this.log.debug(
-          `writeStore(store=${store.name}, target=${store.target}, keys=${Object.keys(Environment).length})`
-        )
-      ),
-      switchMap((Environment) => store.write(Environment, this)),
+    return defer(() => {
+      const values = Object.fromEntries(
+        Object.entries(this.State).filter((entry): entry is [string, string] => !!entry[1])
+      );
+      this.log.debug(`writeStore(store=${store.name}, target=${store.target}, keys=${Object.keys(values).join(',')})`);
+      return store.write(values, this);
+    }).pipe(
       tap(({ written, skipped }) => {
         this.log.info('Store Written', { store: store.name, target: store.target, written: written.length });
         if (skipped.length) {

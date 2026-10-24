@@ -45,12 +45,12 @@ export class CloudFrontStore extends CdnStore {
     return 'cloudfront';
   }
 
-  write(environment: Record<string, string>, logger?: Logger): Observable<Written> {
+  write(values: Record<string, string>, logger?: Logger): Observable<Written> {
     const KvsARN = this.target;
     const client = new CloudFrontKeyValueStoreClient({ logger });
     const fits = ([key, value]: [string, string]): boolean =>
       Buffer.byteLength(key) <= MAX_KEY_BYTES && Buffer.byteLength(value) <= MAX_VALUE_BYTES;
-    const entries = Object.entries(environment);
+    const entries = Object.entries(values);
     const skipped = entries.filter((entry) => !fits(entry)).map(([key]) => key);
 
     return defer(() => client.send(new ListKeysCommand({ KvsARN }))).pipe(

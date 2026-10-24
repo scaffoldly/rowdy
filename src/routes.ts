@@ -39,7 +39,7 @@ export type RoutesSpec = {
   hosts?: RouteHosts;
 };
 
-/** Public hosts or origins; as a map, each names where a deploy writes the environment, or nothing. */
+/** Public hosts or origins; as a map, each names where a deploy writes the deployment's state, or nothing. */
 export type RouteHosts = string[] | Record<string, string>;
 
 export type RoutesSchema = ApiSchema<RoutesSpec, undefined>;
@@ -575,7 +575,7 @@ export class Routes implements IRoutes, ILoggable {
   readonly cors: CorsPaths = {};
   // Public origins, normalized (`https://app.example`), whose forwarded headers are trusted.
   readonly hosts: Array<string> = [];
-  // By public origin: the store a deploy writes the environment to.
+  // By public origin: the store a deploy writes the deployment's state to.
   readonly targets: Record<string, string> = {};
 
   private constructor() {}
