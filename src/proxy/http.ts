@@ -529,7 +529,20 @@ class LocalHttpResponse extends HttpResponse {
       return NEVER;
     }
 
-    return proxy.uri.await().pipe(
+    // DEVNOTE: The health check waits until the upstream listens, and only an abort stops it. A command
+    // that exits before ever listening would otherwise hold the request until the Lambda deadline, and
+    // shutdown waits for that request: the exit answers it instead.
+    const exited$ = proxy.environment.commandExit.pipe(
+      take(1),
+      map((exit: ShellExit) => {
+        const how = `code ${exit.code}${exit.signal ? ` (${exit.signal})` : ''}`;
+        const reason = exit.message ?? `The command exited with ${how} before ${proxy.uri.origin} answered`;
+        log.warn('Upstream Never Answered', { uri: proxy.uri, code: exit.code, signal: exit.signal ?? '' });
+        return this.failure(reason);
+      })
+    );
+
+    const forwarded$ = proxy.uri.await().pipe(
       switchMap((uri) => {
         const headers = proxy.headers.intoAxios();
 
@@ -576,6 +589,8 @@ class LocalHttpResponse extends HttpResponse {
         );
       })
     );
+
+    return race(forwarded$, exited$);
   }
 
   // An HTTP status never lands here (validateStatus accepts all): this is the upstream not answering.
@@ -602,19 +617,22 @@ class LocalHttpResponse extends HttpResponse {
     return reason$.pipe(
       take(1),
       tap((reason) => log.debug('Upstream Unreachable Reason', { reason })),
-      map((reason) =>
-        this.withStatus(500)
-          .withHeaders(
-            HttpHeaders.from({
-              'content-type': 'text/plain; charset=utf-8', // TODO: check accept header
-              'access-control-allow-origin': '*',
-              'access-control-allow-methods': '*',
-              'access-control-allow-headers': '*',
-            })
-          )
-          .withData(Readable.from(reason))
-      )
+      map((reason) => this.failure(reason))
     );
+  }
+
+  // The upstream could not answer: a 500 with the reason as its body.
+  private failure(reason: string): HttpResponse {
+    return this.withStatus(500)
+      .withHeaders(
+        HttpHeaders.from({
+          'content-type': 'text/plain; charset=utf-8', // TODO: check accept header
+          'access-control-allow-origin': '*',
+          'access-control-allow-methods': '*',
+          'access-control-allow-headers': '*',
+        })
+      )
+      .withData(Readable.from(reason));
   }
 
   override repr(): string {
