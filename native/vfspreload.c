@@ -201,10 +201,14 @@ FILE *freopen(const char *path, const char *mode, FILE *stream) {
 /* ---- metadata ------------------------------------------------------------ */
 
 int stat(const char *path, struct stat *st) {
-    REAL(stat);  XL(path);  return real_(rp_, st);
+    REAL(stat); XL(path);
+    if (vf_ && notify("stat", vp_, NULL, 0) < 0) return -1;
+    return real_(rp_, st);
 }
 int lstat(const char *path, struct stat *st) {
-    REAL(lstat); XL(path);  return real_(rp_, st);
+    REAL(lstat); XL(path);
+    if (vf_ && notify("stat", vp_, NULL, 0) < 0) return -1;
+    return real_(rp_, st);
 }
 int fstatat(int dirfd, const char *path, struct stat *st, int flags) {
     REAL(fstatat); XLAT(dirfd, path);
@@ -840,22 +844,30 @@ typedef int (*fxstatat_fn)(int, int, const char *, struct stat *, int);
 int __xstat(int ver, const char *path, struct stat *st) {
     REAL_T(__xstat, xstat_fn);
     if (!real_) return stat(path, st);
-    XL(path); return real_(ver, rp_, st);
+    XL(path);
+    if (vf_ && notify("stat", vp_, NULL, 0) < 0) return -1;
+    return real_(ver, rp_, st);
 }
 int __xstat64(int ver, const char *path, struct stat64 *st) {
     REAL_T(__xstat64, xstat_fn);
     if (!real_) return stat(path, (struct stat *)st);
-    XL(path); return real_(ver, rp_, (struct stat *)st);
+    XL(path);
+    if (vf_ && notify("stat", vp_, NULL, 0) < 0) return -1;
+    return real_(ver, rp_, (struct stat *)st);
 }
 int __lxstat(int ver, const char *path, struct stat *st) {
     REAL_T(__lxstat, xstat_fn);
     if (!real_) return lstat(path, st);
-    XL(path); return real_(ver, rp_, st);
+    XL(path);
+    if (vf_ && notify("stat", vp_, NULL, 0) < 0) return -1;
+    return real_(ver, rp_, st);
 }
 int __lxstat64(int ver, const char *path, struct stat64 *st) {
     REAL_T(__lxstat64, xstat_fn);
     if (!real_) return lstat(path, (struct stat *)st);
-    XL(path); return real_(ver, rp_, (struct stat *)st);
+    XL(path);
+    if (vf_ && notify("stat", vp_, NULL, 0) < 0) return -1;
+    return real_(ver, rp_, (struct stat *)st);
 }
 int __fxstatat(int ver, int dirfd, const char *path, struct stat *st, int flags) {
     REAL_T(__fxstatat, fxstatat_fn);
