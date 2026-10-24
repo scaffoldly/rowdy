@@ -155,9 +155,9 @@ spec:
 ```
 
 An entry is a host, which means `https` on port 443, or an `http(s)://host[:port]` origin with no
-path. A leftmost label of `*` stands for the host under it and any one label there:
-`*.app.example` lists `https://app.example` and `https://www.app.example`, not
-`https://a.b.app.example`. On each request, rowdy builds the origin the forwarded headers describe:
+path. A leftmost label of `*` stands for the host under it and any one label there; `**` for the
+host under it and any number of labels: `*.app.example` lists `https://app.example` and
+`https://www.app.example`, `**.app.example` also `https://a.b.app.example`. On each request, rowdy builds the origin the forwarded headers describe:
 
 - **With `spec.hosts`:** the forwarded values are used only if that exact origin is listed: host,
   scheme and port. Otherwise they are ignored, and the request is described by the Function URL

@@ -37,25 +37,33 @@ export type Trust = { cdn: string; decision: Decision; origin?: string };
 export const cdnHeaders = (headers: HeaderMap): CdnHeaders =>
   CloudFrontHeaders.from(headers) ?? CloudflareHeaders.from(headers) ?? ProxyHeaders.from(headers);
 
+const LABEL = '[a-z0-9_-]+';
+const WILDCARDS: Record<string, RegExp> = {
+  '*': new RegExp(`^${LABEL}$`),
+  '**': new RegExp(`^${LABEL}(\\.${LABEL})*$`),
+};
+
 /**
- * Whether `origin` is one of `hosts`. A host whose leftmost label is `*` stands for the host under
- * it and any one label there: `https://*.app.example` lists `https://app.example` and
- * `https://www.app.example`, not `https://a.b.app.example`.
+ * Whether `origin` is one of `hosts`. A leftmost label of `*` stands for the host under it and any
+ * one label there, `**` for the host under it and any number of labels: `https://*.app.example`
+ * lists `https://app.example` and `https://www.app.example`, `https://**.app.example` also
+ * `https://a.b.app.example`.
  */
 export const isListed = (hosts: readonly string[], origin: string): boolean =>
   hosts.some((host) => {
     if (host === origin) {
       return true;
     }
-    const [before, after, ...more] = host.split('*');
-    if (before === undefined || after === undefined || more.length) {
+    const [, scheme, wildcard, under] = /^([a-z]+:\/\/)(\*\*?)\.(.+)$/.exec(host) ?? [];
+    const labels = wildcard && WILDCARDS[wildcard];
+    if (!scheme || !under || !labels) {
       return false;
     }
-    if (origin === `${before}${after.slice(1)}`) {
+    if (origin === `${scheme}${under}`) {
       return true;
     }
-    const fits = origin.length > before.length + after.length && origin.startsWith(before) && origin.endsWith(after);
-    return fits && /^[a-z0-9_-]+$/.test(origin.slice(before.length, -after.length));
+    const fits = origin.startsWith(scheme) && origin.endsWith(`.${under}`);
+    return fits && labels.test(origin.slice(scheme.length, -under.length - 1));
   });
 
 /** The store a `spec.hosts` value names; throws when no CDN recognizes it. */

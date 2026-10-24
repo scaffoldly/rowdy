@@ -575,13 +575,14 @@ describe('hosts', () => {
   });
 
   it('takes a wildcard as the whole leftmost label', () => {
-    expect(Routes.empty().withHosts(['*.App.Example', 'http://*.app.example:8080']).hosts).toEqual([
+    expect(Routes.empty().withHosts(['*.App.Example', 'http://*.app.example:8080', '**.app.example']).hosts).toEqual([
       'https://*.app.example',
       'http://*.app.example:8080',
+      'https://**.app.example',
     ]);
   });
 
-  it.each(['*', 'www.*.app.example', 'w*.app.example', '**.app.example', 'app.*'])(
+  it.each(['*', '**', 'www.*.app.example', 'w*.app.example', '***.app.example', 'a.**.app.example', 'app.*'])(
     'rejects the wildcard %p',
     (entry) => {
       expect(() => Routes.empty().withHosts([entry])).toThrow(/wildcard/);

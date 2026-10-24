@@ -282,6 +282,10 @@ describe('aws lambda runtime', () => {
         HTTP_ORIGIN: 'https://app.example',
       });
       expect(await envAfter(withHosts('*.app.example'), event('a.b.app.example'))).toMatchObject(own);
+      expect(await envAfter(withHosts('**.app.example'), event('a.b.app.example'))).toMatchObject({
+        HTTP_HOSTNAME: 'a.b.app.example',
+        HTTP_ORIGIN: 'https://a.b.app.example',
+      });
     });
 
     it('use a forwarded host whose origin is in spec.hosts', async () => {

@@ -75,7 +75,7 @@ describe('cdn headers', () => {
 });
 
 describe('listed hosts', () => {
-  const hosts = ['https://*.app.example', 'http://*.dev.example:8080'];
+  const hosts = ['https://*.app.example', 'http://*.dev.example:8080', 'https://**.deep.example'];
 
   it.each([
     ['https://app.example', true],
@@ -90,6 +90,12 @@ describe('listed hosts', () => {
     ['http://dev.example:8080', true],
     ['http://dev.example', false],
     ['https://example', false],
+    ['https://deep.example', true],
+    ['https://a.deep.example', true],
+    ['https://a.b.c.d.e.deep.example', true],
+    ['https://a..deep.example', false],
+    ['https://notdeep.example', false],
+    ['https://a.deep.example:8443', false],
     ['https://x.dev.example:8080', false],
   ])('%s is listed: %p', (origin, listed) => {
     expect(isListed(hosts, origin)).toBe(listed);
