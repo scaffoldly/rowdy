@@ -803,6 +803,10 @@ export class Routes implements IRoutes, ILoggable {
       if (uri.error || !['http:', 'https:'].includes(uri.protocol) || !uri.hostname || !bare) {
         throw new Error(`Invalid host '${value}', expected a host or an http(s) origin such as https://app.example`);
       }
+      const labels = uri.hostname.split('.');
+      if (labels.some((label, i) => label.includes('*') && (i > 0 || label !== '*' || labels.length < 2))) {
+        throw new Error(`Invalid host '${value}', a wildcard is a whole leftmost label such as *.app.example`);
+      }
       if (!this.hosts.includes(uri.origin)) {
         this.hosts.push(uri.origin);
       }

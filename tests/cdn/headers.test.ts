@@ -1,4 +1,12 @@
-import { CloudflareHeaders, CloudFrontHeaders, cdnHeaders, originOf, portIn, ProxyHeaders } from '../../src/cdn';
+import {
+  CloudflareHeaders,
+  CloudFrontHeaders,
+  cdnHeaders,
+  isListed,
+  originOf,
+  portIn,
+  ProxyHeaders,
+} from '../../src/cdn';
 
 describe('cdn headers', () => {
   it('builds an origin from any proto, hostname and port', () => {
@@ -63,5 +71,24 @@ describe('cdn headers', () => {
         'abc.lambda-url.us-east-1.on.aws'
       );
     });
+  });
+});
+
+describe('listed hosts', () => {
+  const hosts = ['https://app.example', 'https://*.app.example', 'http://*.dev.example:8080'];
+
+  it.each([
+    ['https://app.example', true],
+    ['https://www.app.example', true],
+    ['https://api-2.app.example', true],
+    ['https://a.b.app.example', false],
+    ['https://evilapp.example', false],
+    ['https://www.app.example:8443', false],
+    ['http://www.app.example', false],
+    ['http://x.dev.example:8080', true],
+    ['http://x.dev.example', false],
+    ['https://x.dev.example:8080', false],
+  ])('%s is listed: %p', (origin, listed) => {
+    expect(isListed(hosts, origin)).toBe(listed);
   });
 });

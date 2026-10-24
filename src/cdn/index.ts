@@ -37,6 +37,24 @@ export type Trust = { cdn: string; decision: Decision; origin?: string };
 export const cdnHeaders = (headers: HeaderMap): CdnHeaders =>
   CloudFrontHeaders.from(headers) ?? CloudflareHeaders.from(headers) ?? ProxyHeaders.from(headers);
 
+/**
+ * Whether `origin` is one of `hosts`. A host whose leftmost label is `*` stands for any one label
+ * there: `https://*.app.example` lists `https://www.app.example`, not `https://app.example` or
+ * `https://a.b.app.example`.
+ */
+export const isListed = (hosts: readonly string[], origin: string): boolean =>
+  hosts.some((host) => {
+    if (host === origin) {
+      return true;
+    }
+    const [before, after, ...more] = host.split('*');
+    if (before === undefined || after === undefined || more.length) {
+      return false;
+    }
+    const fits = origin.length > before.length + after.length && origin.startsWith(before) && origin.endsWith(after);
+    return fits && /^[a-z0-9_-]+$/.test(origin.slice(before.length, -after.length));
+  });
+
 /** The store a `spec.hosts` value names; throws when no CDN recognizes it. */
 export const cdnStore = (target: string): CdnStore => {
   const store = CloudFrontStore.from(target);
@@ -65,7 +83,7 @@ export const reachedBy = (headers: HeaderMap, hosts: readonly string[]): { reach
   }
   const proto = cdn.proto() || 'https';
   const origin = originOf(proto, hostname);
-  if (hosts.length && !hosts.includes(origin)) {
+  if (hosts.length && !isListed(hosts, origin)) {
     return { reached: own, trust: { cdn: cdn.name, decision: 'unlisted', origin } };
   }
   return {

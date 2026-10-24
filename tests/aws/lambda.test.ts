@@ -271,6 +271,16 @@ describe('aws lambda runtime', () => {
       }
     });
 
+    it('use a forwarded host a wildcard in spec.hosts lists', async () => {
+      const event = (host: string) => functionUrlEvent({ host: LAMBDA_HOST, 'x-forwarded-host': host });
+      expect(await envAfter(withHosts('*.app.example'), event('www.app.example'))).toMatchObject({
+        HTTP_HOSTNAME: 'www.app.example',
+        HTTP_ORIGIN: 'https://www.app.example',
+      });
+      expect(await envAfter(withHosts('*.app.example'), event('app.example'))).toMatchObject(own);
+      expect(await envAfter(withHosts('*.app.example'), event('a.b.app.example'))).toMatchObject(own);
+    });
+
     it('use a forwarded host whose origin is in spec.hosts', async () => {
       const env = await envAfter(
         withHosts('app.example'),

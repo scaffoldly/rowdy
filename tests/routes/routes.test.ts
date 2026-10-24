@@ -574,6 +574,20 @@ describe('hosts', () => {
     expect(a.intoHosts()).toEqual({ 'https://app.example': arn, 'https://www.app.example': '' });
   });
 
+  it('takes a wildcard as the whole leftmost label', () => {
+    expect(Routes.empty().withHosts(['*.App.Example', 'http://*.app.example:8080']).hosts).toEqual([
+      'https://*.app.example',
+      'http://*.app.example:8080',
+    ]);
+  });
+
+  it.each(['*', 'www.*.app.example', 'w*.app.example', '**.app.example', 'app.*'])(
+    'rejects the wildcard %p',
+    (entry) => {
+      expect(() => Routes.empty().withHosts([entry])).toThrow(/wildcard/);
+    }
+  );
+
   it('rejects a target no CDN recognizes', () => {
     expect(() => Routes.empty().withHosts({ 'app.example': 'app.workers.dev' })).toThrow(/Invalid host target/);
   });

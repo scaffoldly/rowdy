@@ -151,10 +151,13 @@ spec:
   hosts:
     - app.example # https://app.example
     - 'http://legacy.app.example:8080'
+    - '*.preview.app.example' # https://<any one label>.preview.app.example
 ```
 
 An entry is a host, which means `https` on port 443, or an `http(s)://host[:port]` origin with no
-path. On each request, rowdy builds the origin the forwarded headers describe:
+path. A leftmost label of `*` stands for any one label there, as in a TLS certificate:
+`*.app.example` lists `https://www.app.example`, not `https://app.example` or
+`https://a.b.app.example`. On each request, rowdy builds the origin the forwarded headers describe:
 
 - **With `spec.hosts`:** the forwarded values are used only if that exact origin is listed: host,
   scheme and port. Otherwise they are ignored, and the request is described by the Function URL
