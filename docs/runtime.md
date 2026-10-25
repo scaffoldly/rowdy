@@ -22,7 +22,8 @@ the deploying account's ECR, and adds itself on the way.
   `ghcr.io/scaffoldly/rowdy:beta` publish, rowdy's layers are appended on top of the image's own.
   That is one layer holding a single file, `/usr/local/bin/rowdy`. The binary is statically linked,
   so it runs on any base: distroless, scratch, Alpine, Debian. A platform rowdy does not publish is
-  copied unchanged.
+  copied unchanged. Images given with `--layers-from` add their one layer before rowdy's; see
+  [Your own layers](#your-own-layers).
 - **What changes in the config.** Only what the new layer needs: its uncompressed digest is appended
   to `rootfs.diff_ids` and rowdy's build history to `history`. `ENTRYPOINT`, `CMD`, `ENV`,
   `WORKDIR` and `USER` stay as they were built. The config and manifests are rehashed, so the copy
@@ -33,6 +34,39 @@ the deploying account's ECR, and adds itself on the way.
 The function runs the `linux/amd64` copy, by digest: its image URI is
 `<registry>/<namespace>/<name>@sha256:…`, and its architecture is `x86_64`. An image without a
 `linux/amd64` variant fails to deploy with `Unable to find image for platform: linux/amd64`.
+
+### Your own layers
+
+`--layers-from <image>` (repeatable; `ROWDY_LAYERS_FROM`, one per line, or `layers-from:` in the
+GitHub Action) adds another image's layer the same way, so a tool is on the deployed image without
+the app's Dockerfile installing it:
+
+```sh
+rowdy create aws lambda ghcr.io/owner/app:latest --layers-from ghcr.io/tunnel-pizza/tunneld:latest-layer
+```
+
+The layers go on in the order given, then rowdy's last, so `/usr/local/bin/rowdy` is always rowdy's.
+A repeated image is added once, and naming rowdy's own image adds nothing. A source is read
+anonymously, so it must be public.
+
+A source must be built like rowdy's own final stage: `FROM scratch`, one `COPY` of a static binary,
+an `ENTRYPOINT`. On every platform it publishes, before anything is copied, rowdy checks:
+
+- one layer, and one entry in `rootfs.diff_ids`;
+- that layer is at most 64 MiB compressed;
+- a `history`, whose one non-empty entry is a `COPY` or `ADD`;
+- no other step but `ENTRYPOINT`, `CMD` or `LABEL`: no `RUN`, `ENV`, `ARG`, `USER`, `WORKDIR` and the
+  like;
+- no `Env` but buildkit's default `PATH`.
+
+A source that breaks any of them fails the deploy, naming the image, the platform and the rule:
+
+```
+layers-from ghcr.io/tunnel-pizza/tunneld:latest (linux/amd64): 2 layers; a layers-from image must be one small layer, as rowdy's is (FROM scratch, one COPY, ENTRYPOINT)
+```
+
+The layer's files themselves are not inspected. A platform a source does not publish is copied
+without it, with a `Layers Skipped` warning.
 
 ## `ENTRYPOINT` and `CMD`
 
