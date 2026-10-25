@@ -6,6 +6,7 @@ import { Logger } from '../..';
 import { LambdaFunction, tagify } from '.';
 import { catchError, from, lastValueFrom, map, mergeAll, Observable, throwError, toArray } from 'rxjs';
 import { Annotations } from './metadata';
+import { ROWDY_LAYERS } from '../../api/internal/layers';
 
 // eslint-disable-next-line @typescript-eslint/no-empty-object-type
 interface ILambdaRuntimeService extends Partial<ServiceImpl<typeof CRI.RuntimeService>> {}
@@ -32,7 +33,7 @@ export class LambdaRuntimeService implements ILambdaRuntimeService {
     let lambda = new LambdaFunction(
       'Container',
       this.imageService
-        .withLayersFrom('ghcr.io/scaffoldly/rowdy:beta')
+        .withLayersFrom([ROWDY_LAYERS])
         .withAuthorization(req.config?.image?.annotations?.[Annotations.Images.ImageAuth])
     );
     const name = req.config?.metadata?.name;

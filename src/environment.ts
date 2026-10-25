@@ -52,6 +52,7 @@ import { dirname, join } from 'path';
 import { internalIpV4Sync } from 'internal-ip';
 import { deployFailedSummary, deploySummary, writeGithubOutput, writeGithubSummary } from './util/github';
 import { isStaticElf, programOf } from './util/elf';
+import { deploySources } from './api/internal/layers';
 
 export type { Secrets } from './secrets';
 type Args = yargs.ArgumentsCamelCase<
@@ -285,6 +286,12 @@ export class Environment implements ILoggable {
               default: false,
               group: 'Runtime:',
             })
+            .option('layers-from', {
+              type: 'string',
+              description:
+                "An image whose one layer is added to the deployed image, as rowdy's is (public; FROM scratch, one COPY). Repeatable",
+              group: 'Runtime:',
+            })
             .option('routes', {
               type: 'string',
               description: 'Path to, or inline YAML/JSON of, a Routes manifest (also accepts file:// and data:)',
@@ -333,7 +340,7 @@ export class Environment implements ILoggable {
                     // TODO: Fix logging ability in these early handlers
                     let lambda = new LambdaFunction(
                       'Container',
-                      new LambdaImageService(this).withLayersFrom('ghcr.io/scaffoldly/rowdy:beta')
+                      new LambdaImageService(this).withLayersFrom(deploySources(argv['layers-from']))
                     ).withImage(argv.image);
 
                     // DEVNOTE: The function's environment is merged on update, so the legacy flags

@@ -28,6 +28,7 @@ import { ApiVersion, ApiSchema } from './api/types';
 import { join } from 'path';
 import { Cors, CorsPaths } from './cors';
 import { cdnStore } from './cdn';
+import { specList } from './util/list';
 
 export type RoutePaths = { [key: string]: string | undefined };
 export type RoutesSpec = {
@@ -522,16 +523,7 @@ export class Volume {
 
   /** The specs in a `--volumes` value: a YAML list, or one spec per line with `#` comments. */
   static list(value: string): Array<string> {
-    let parsed: unknown;
-    try {
-      parsed = YAML.parse(value);
-    } catch {
-      parsed = undefined;
-    }
-    const entries = Array.isArray(parsed)
-      ? parsed.map((entry) => String(entry))
-      : value.split(/\r?\n/).filter((line) => !line.trim().startsWith('#'));
-    return entries.map((entry) => entry.trim()).filter(Boolean);
+    return specList(value);
   }
 
   static parse(spec: string): Volume {

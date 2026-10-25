@@ -21,6 +21,7 @@ import { createHash } from 'crypto';
 import { ILoggable, Logger } from '../../log';
 import { AxiosInstance, AxiosResponse, isAxiosError } from 'axios';
 import { PullImageOptions, TRegistry } from '../types';
+import { checkSource, skippedLevel } from './layers';
 import { homedir } from 'os';
 import { Readable } from 'stream';
 import promiseRetry from 'promise-retry';
@@ -89,6 +90,13 @@ export type ImageManifest = Image & {
   images: { manifest: External['Manifest']; image: External['Image']; config?: Buffer }[];
   headers: HttpHeaders;
 };
+
+/** A layers-from image as collected and checked: its configs keyed by platform manifest digest. */
+export type Source = { from: string; manifest: ImageManifest; configs: Map<string, External['Config']> };
+
+/** What a blob is read with: a layers-from source's anonymously, never with the app image's credentials. */
+export const sourceHeaders = (app: HttpHeaders, ref: External['Ref']): HttpHeaders =>
+  ref.annotations?.['run.rowdy.index.url'] ? HttpHeaders.from({}) : app;
 
 type Response<T> = { data: T | undefined; headers: HttpHeaders; status: number; method: string; url: string };
 
@@ -210,7 +218,47 @@ export class Transfer implements ILoggable {
     return (source) => source.pipe(map((image) => this.normalizeImage(image, authorization, registry)));
   }
 
-  static collect(log: Logger, http: AxiosInstance, layersFrom?: string): OperatorFunction<Image, ImageManifest> {
+  /**
+   * A layers-from image, collected and checked: every platform but attestations, with its config. Errors for an
+   * image that is not one layer, before anything is uploaded.
+   */
+  static source(log: Logger, http: AxiosInstance, ref: string): Observable<Source> {
+    return of(ref).pipe(
+      // DEVNOTE: no auth for layersFrom, it must be a public image
+      Transfer.normalize(null),
+      Transfer.collect(log, http),
+      switchMap((manifest) =>
+        from(manifest.images.filter((img) => img.manifest.platform?.architecture !== 'unknown')).pipe(
+          mergeMap(async (img) => {
+            if (!img.image.config?.digest || !img.image.config.mediaType) {
+              throw new Error(`layers-from ${ref}: manifest ${img.manifest.digest} has no config`);
+            }
+            const url = `${manifest.url.split('/').slice(0, -2).join('/')}/blobs/${img.image.config.digest}`;
+            const { data } = await http.get<External['Config']>(url, {
+              headers: manifest.headers.with('accept', img.image.config.mediaType).intoAxios(),
+            });
+            return { img, config: data };
+          }, Environment.CONCURRENCY),
+          toArray(),
+          map((platforms) => {
+            checkSource(
+              ref,
+              platforms.map(({ img, config }) => ({
+                platform: `${img.manifest.platform?.os}/${img.manifest.platform?.architecture}`,
+                image: img.image,
+                config,
+              }))
+            );
+            log.debug('Layers From Checked', { from: ref, platforms: platforms.length });
+            const configs = new Map(platforms.map(({ img, config }) => [img.manifest.digest ?? '', config]));
+            return { from: ref, manifest, configs };
+          })
+        )
+      )
+    );
+  }
+
+  static collect(log: Logger, http: AxiosInstance, layersFrom: string[] = []): OperatorFunction<Image, ImageManifest> {
     return (source) => {
       const headers: HttpHeaders = HttpHeaders.from({
         Accept: [
@@ -222,18 +270,14 @@ export class Transfer implements ILoggable {
       });
       return source.pipe(
         tap((image) => log.info(`${image.image}: Pulling from ${image.slug}`)),
-        switchMap((image) => {
-          if (!layersFrom) {
-            return of({ image, additional: undefined });
-          }
-          return of(layersFrom).pipe(
-            // DEVNOTE: no auth for layersFrom, it must be a public image
-            Transfer.normalize(null),
-            Transfer.collect(log, http),
-            map((manifest) => ({ image, additional: manifest }))
-          );
-        }),
-        switchMap(({ image, additional }) => {
+        switchMap((image) =>
+          from(layersFrom).pipe(
+            concatMap((ref) => Transfer.source(log, http, ref)),
+            toArray(),
+            map((sources) => ({ image, sources }))
+          )
+        ),
+        switchMap(({ image, sources }) => {
           // TODO: Fetch tags from Registry and infer tags[]
           // Ref: https://distribution.github.io/distribution/spec/api/
           return from(
@@ -292,7 +336,7 @@ export class Transfer implements ILoggable {
                 throw new Error(`Unsupported mediaType on index: ${data.mediaType}`);
               }
 
-              if (additional) {
+              if (sources.length) {
                 // Drop attestation manifests, since we're fundamentally altering the image with new layers
                 index.manifests = index.manifests?.filter((m) => m.platform?.architecture !== 'unknown');
               }
@@ -300,10 +344,9 @@ export class Transfer implements ILoggable {
               return {
                 digest,
                 index,
-                additional,
               };
             }),
-            switchMap(({ digest, index, additional }) =>
+            switchMap(({ digest, index }) =>
               from(index.manifests || [])
                 .pipe(
                   tap((manifest) =>
@@ -329,62 +372,62 @@ export class Transfer implements ILoggable {
                             throw new Error(`Unsupported mediaType on manifest: ${data.mediaType}`);
                           }
 
-                          const match = additional?.index?.manifests?.find(
-                            (m) =>
-                              m.platform?.architecture === manifest.platform?.architecture &&
-                              m.platform?.os === manifest.platform?.os
-                          );
+                          const platform = `${manifest.platform?.os}/${manifest.platform?.architecture}`;
+                          const matched = sources.flatMap((source) => {
+                            const match = source.manifest.index.manifests?.find(
+                              (m) =>
+                                m.platform?.architecture === manifest.platform?.architecture &&
+                                m.platform?.os === manifest.platform?.os
+                            );
+                            const runtime = source.manifest.images.find((img) => img.manifest.digest === match?.digest);
+                            const rtCfg = source.configs.get(match?.digest ?? '');
+                            if (!match || !runtime || !rtCfg) {
+                              log[skippedLevel(platform)]('Layers Skipped', {
+                                from: source.from,
+                                platform,
+                                reason: 'not published for this platform',
+                              });
+                              return [];
+                            }
+                            return [{ source, runtime, rtCfg }];
+                          });
 
-                          if (!match) {
+                          if (!matched.length) {
                             return { manifest, image: data, config: undefined };
                           }
 
-                          const runtime = additional?.images?.find((img) => img.manifest.digest === match.digest);
-
-                          data.layers = data.layers || [];
-                          data.layers.push(
-                            ...(runtime?.image.layers || []).map((l) => ({
-                              ...l,
-                              annotations: { ...l.annotations, 'run.rowdy.index.url': additional!.url },
-                            }))
-                          );
-
                           // The injected layers must also be reflected in the image config's
                           // rootfs.diff_ids (the uncompressed layer digests, only available from the
-                          // runtime image's config) or the image is invalid: len(layers) != len(diff_ids)
+                          // source image's config) or the image is invalid: len(layers) != len(diff_ids)
                           // and the registry/runtime drops the app layer (issue #5).
                           if (!data.config?.digest || !data.config?.mediaType) {
                             throw new Error(
                               `App image manifest ${manifest.digest} has no config; cannot inject layers`
                             );
                           }
-                          if (!runtime?.image.config?.digest || !runtime.image.config.mediaType) {
-                            throw new Error(`Runtime image ${match.digest} has no config; cannot inject layers`);
-                          }
 
                           const appCfgUrl = `${image.url.split('/').slice(0, -2).join('/')}/blobs/${data.config.digest}`;
-                          const rtCfgUrl = `${additional!.url.split('/').slice(0, -2).join('/')}/blobs/${runtime.image.config.digest}`;
+                          const appCfg = await http
+                            .get<External['Config']>(appCfgUrl, {
+                              headers: headers.with('accept', data.config.mediaType).intoAxios(),
+                            })
+                            .then((r) => r.data);
 
-                          const [appCfg, rtCfg] = await Promise.all([
-                            http
-                              .get<External['Config']>(appCfgUrl, {
-                                headers: headers.with('accept', data.config.mediaType).intoAxios(),
-                              })
-                              .then((r) => r.data),
-                            http
-                              .get<External['Config']>(rtCfgUrl, {
-                                headers: additional!.headers.with('accept', runtime.image.config.mediaType).intoAxios(),
-                              })
-                              .then((r) => r.data),
-                          ]);
-
+                          data.layers = data.layers || [];
                           appCfg.rootfs = appCfg.rootfs || { type: 'layers', diff_ids: [] };
-                          appCfg.rootfs.diff_ids = [
-                            ...(appCfg.rootfs.diff_ids || []),
-                            ...(rtCfg.rootfs?.diff_ids || []),
-                          ];
-                          if (rtCfg.history?.length) {
-                            appCfg.history = [...(appCfg.history || []), ...rtCfg.history];
+                          appCfg.rootfs.diff_ids = appCfg.rootfs.diff_ids || [];
+                          for (const { source, runtime, rtCfg } of matched) {
+                            data.layers.push(
+                              ...(runtime.image.layers || []).map((l) => ({
+                                ...l,
+                                annotations: { ...l.annotations, 'run.rowdy.index.url': source.manifest.url },
+                              }))
+                            );
+                            appCfg.rootfs.diff_ids.push(...(rtCfg.rootfs?.diff_ids || []));
+                            if (rtCfg.history?.length) {
+                              appCfg.history = [...(appCfg.history || []), ...rtCfg.history];
+                            }
+                            log.info('Layers Injected', { from: source.from, platform });
                           }
 
                           const config = Buffer.from(JSON.stringify(appCfg));
@@ -840,7 +883,7 @@ export class Upload implements ILoggable {
               responseType: 'stream',
               maxBodyLength: Infinity,
               maxContentLength: Infinity,
-              headers: this.transfer.fromHeaders.with('accept', this.mediaType).intoAxios(),
+              headers: sourceHeaders(this.transfer.fromHeaders, this.ref).with('accept', this.mediaType).intoAxios(),
               onDownloadProgress: (e) => (this.bytes.received += e.bytes),
             })
           )

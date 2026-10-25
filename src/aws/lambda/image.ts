@@ -10,7 +10,7 @@ import { PullImageOptions, TPulledImage } from '../../api/types';
 interface ILambdaImageService extends Partial<ServiceImpl<typeof CRI.ImageService>> {}
 
 export class LambdaImageService implements ILambdaImageService {
-  private _layersFrom?: string;
+  private _layersFrom: string[] = [];
   private _authorization?: string;
   private _pulledImages: Map<string, TPulledImage> = new Map();
 
@@ -32,7 +32,7 @@ export class LambdaImageService implements ILambdaImageService {
     return this.environment.rowdy.images;
   }
 
-  withLayersFrom(layersFrom: string): LambdaImageService {
+  withLayersFrom(layersFrom: string[]): LambdaImageService {
     // Create a new instance to avoid mutating existing ones
     const service = new LambdaImageService(this.environment);
     service._layersFrom = layersFrom;
@@ -64,7 +64,7 @@ export class LambdaImageService implements ILambdaImageService {
       throw new ConnectError('No image specified');
     }
 
-    if (this._layersFrom) {
+    if (this._layersFrom.length) {
       opts.layersFrom = this._layersFrom;
     }
 

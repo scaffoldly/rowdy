@@ -1,0 +1,55 @@
+{
+  "manifest": {
+    "schemaVersion": 2,
+    "mediaType": "application/vnd.oci.image.manifest.v1+json",
+    "config": {
+      "mediaType": "application/vnd.oci.image.config.v1+json",
+      "digest": "sha256:fce4d1011f3ec4f156bda4c061e97d25835ac583c13b8f313203e8c9d5fab67b",
+      "size": 1141
+    },
+    "layers": [
+      {
+        "mediaType": "application/vnd.oci.image.layer.v1.tar+gzip",
+        "digest": "sha256:6d53b07c31f324fff3271c6f9e6c04686c8ce5657382b32a3b2eda7b2fcceb52",
+        "size": 37354481
+      }
+    ]
+  },
+  "config": {
+    "architecture": "amd64",
+    "config": {
+      "Env": ["PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"],
+      "Entrypoint": ["/usr/local/bin/rowdy"],
+      "WorkingDir": "/",
+      "Labels": {
+        "org.opencontainers.image.created": "2026-10-25T04:42:02.448Z",
+        "org.opencontainers.image.description": "Server-less Events Router",
+        "org.opencontainers.image.licenses": "NOASSERTION",
+        "org.opencontainers.image.revision": "18336b74cf060bbdd000190cd98932d3f14e89c1",
+        "org.opencontainers.image.source": "https://github.com/scaffoldly/rowdy",
+        "org.opencontainers.image.title": "rowdy",
+        "org.opencontainers.image.url": "https://github.com/scaffoldly/rowdy",
+        "org.opencontainers.image.version": "main"
+      }
+    },
+    "created": "2026-10-25T04:42:46.428764262Z",
+    "history": [
+      {
+        "created": "2026-10-25T04:42:46.428764262Z",
+        "created_by": "COPY /work/bin/rowdy /usr/local/bin/rowdy # buildkit",
+        "comment": "buildkit.dockerfile.v0"
+      },
+      {
+        "created": "2026-10-25T04:42:46.428764262Z",
+        "created_by": "ENTRYPOINT [\"/usr/local/bin/rowdy\"]",
+        "comment": "buildkit.dockerfile.v0",
+        "empty_layer": true
+      }
+    ],
+    "os": "linux",
+    "rootfs": {
+      "type": "layers",
+      "diff_ids": ["sha256:413162c4dae12a6baf422904d01c93c2f26d8ef69b315edbb660bc4531d3e8fc"]
+    }
+  }
+}

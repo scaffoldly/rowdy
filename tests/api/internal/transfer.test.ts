@@ -1,5 +1,7 @@
 import { lastValueFrom, of, toArray } from 'rxjs';
-import { Transfer, External, ImageManifest } from '../../../src/api/internal/transfer';
+import { Transfer, External, ImageManifest, sourceHeaders } from '../../../src/api/internal/transfer';
+import { HttpHeaders } from '../../../src/proxy/http';
+import { ROWDY_LAYERS } from '../../../src/api/internal/layers';
 import { Logger, Rowdy } from '@scaffoldly/rowdy';
 // eslint-disable-next-line @typescript-eslint/no-unused-vars
 import { readFileSync, writeFileSync } from 'fs';
@@ -274,7 +276,7 @@ describe('transfers', () => {
       const result = await lastValueFrom(
         of('mirror.gcr.io/library/busybox:latest').pipe(
           Transfer.normalize(),
-          Transfer.collect(logger, rowdy.http, 'ghcr.io/scaffoldly/rowdy:beta')
+          Transfer.collect(logger, rowdy.http, [ROWDY_LAYERS])
         )
       );
 
@@ -292,6 +294,84 @@ describe('transfers', () => {
         expect(img.image.layers!.length).toBe(config.rootfs!.diff_ids!.length);
       }
     }, 60000);
+
+    describe('layers-from', () => {
+      it("reads a layers-from blob without the app image's credentials", () => {
+        const app = HttpHeaders.from({ authorization: 'Basic c2VjcmV0', accept: 'application/json' });
+        const ref = { annotations: { 'run.rowdy.index.url': 'https://ghcr.io/v2/scaffoldly/rowdy/manifests/beta' } };
+        expect(sourceHeaders(app, ref).get('authorization')).toBeUndefined();
+        expect(sourceHeaders(app, {}).get('authorization')).toBe('Basic c2VjcmV0');
+      });
+
+      const busybox = 'mirror.gcr.io/library/busybox:latest';
+      const TUNNELD = 'ghcr.io/tunnel-pizza/tunneld:latest';
+      const platformOf = (img: ImageManifest['images'][number]): string =>
+        `${img.manifest.platform?.os}/${img.manifest.platform?.architecture}`;
+
+      it('reads a layers-from blob anonymously from its own registry', async () => {
+        const source = await lastValueFrom(Transfer.source(logger, rowdy.http, ROWDY_LAYERS));
+        const layer = source.manifest.images[0]!.image.layers![0]!;
+        const url = `${source.manifest.url.split('/').slice(0, -2).join('/')}/blobs/${layer.digest}`;
+        const ref = { ...layer, annotations: { 'run.rowdy.index.url': source.manifest.url } };
+        const app = HttpHeaders.from({ authorization: 'Bearer not-for-this-registry' });
+        const response = await rowdy.http.head(url, { headers: sourceHeaders(app, ref).intoAxios() });
+        expect(response.status).toBe(200);
+      }, 120000);
+
+      it('checks rowdy:beta as a layers-from source', async () => {
+        const source = await lastValueFrom(Transfer.source(logger, rowdy.http, ROWDY_LAYERS));
+        expect(source.from).toBe(ROWDY_LAYERS);
+        expect(source.configs.size).toBeGreaterThanOrEqual(2);
+      }, 120000);
+
+      it('accepts a third-party source built like rowdy', async () => {
+        const source = await lastValueFrom(Transfer.source(logger, rowdy.http, TUNNELD));
+        expect(source.configs.size).toBeGreaterThanOrEqual(2);
+      }, 120000);
+
+      it('refuses a source that is more than one layer', async () => {
+        await expect(
+          lastValueFrom(Transfer.source(logger, rowdy.http, 'mirror.gcr.io/library/nginx:alpine'))
+        ).rejects.toThrow(/layers-from mirror.gcr.io\/library\/nginx:alpine \(linux\/[^)]+\): \d+ layers/);
+      }, 120000);
+
+      describe('collected with two sources', () => {
+        let plain: ImageManifest;
+        let layered: ImageManifest;
+
+        beforeAll(async () => {
+          plain = await lastValueFrom(of(busybox).pipe(Transfer.normalize(), Transfer.collect(logger, rowdy.http)));
+          layered = await lastValueFrom(
+            of(busybox).pipe(Transfer.normalize(), Transfer.collect(logger, rowdy.http, [TUNNELD, ROWDY_LAYERS]))
+          );
+        }, 120000);
+
+        const appLayers = (digest?: string): number =>
+          plain.images.find((img) => img.manifest.digest === digest)?.image.layers?.length ?? -1;
+
+        it("injects every source's layer in order, rowdy last", () => {
+          const injected = layered.images.filter((img) => !!img.config);
+          expect(injected.length).toBeGreaterThanOrEqual(2);
+          for (const img of injected) {
+            const layers = img.image.layers!;
+            const config = JSON.parse(img.config!.toString('utf-8')) as External['Config'];
+            expect(layers.length).toBe(appLayers(img.manifest.digest) + 2);
+            const [tunneld, rowdyLayer] = layers.slice(-2);
+            expect(tunneld!.annotations?.['run.rowdy.index.url']).toContain('tunnel-pizza/tunneld');
+            expect(rowdyLayer!.annotations?.['run.rowdy.index.url']).toContain('scaffoldly/rowdy');
+            expect(config.rootfs!.diff_ids!.length).toBe(layers.length);
+            expect(config.history!.filter((h) => h.empty_layer !== true).length).toBe(layers.length);
+          }
+        });
+
+        it('copies a platform no source publishes unchanged', () => {
+          const i386 = layered.images.find((img) => platformOf(img) === 'linux/386');
+          expect(i386).toBeDefined();
+          expect(i386!.config).toBeUndefined();
+          expect(i386!.image.layers!.length).toBe(appLayers(i386!.manifest.digest));
+        });
+      });
+    });
 
     tests.forEach(({ normalized, collected }) => {
       it(`should collect manifests for ${normalized.image}`, async () => {
