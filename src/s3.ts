@@ -1161,6 +1161,10 @@ export class S3Adapter implements VfsAdapter {
           // Our create found an object: another instance created it first. The conditional PUT is
           // what makes O_EXCL atomic across instances; a plain create is last writer wins.
           if (!base && current?.exclusive) {
+            // The copy holds bytes that never became the object: drop it so the next lookup finds the winner's.
+            await fs.rm(local, { force: true });
+            this.entries.delete(key);
+            this.log(`lost create`, { key });
             throw VfsError.code('EEXIST', `${path}: created elsewhere first`);
           }
           const head = await this.head(key);
