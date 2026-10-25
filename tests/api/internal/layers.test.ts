@@ -5,8 +5,8 @@ import {
   deploySources,
   instructionOf,
   layerSources,
-  MAX_LAYER_BYTES,
   ROWDY_LAYERS,
+  skippedLevel,
   SourcePlatform,
 } from '../../../src/api/internal/layers';
 import { External } from '../../../src/api/internal/transfer';
@@ -23,7 +23,7 @@ const platform = (name: string, { manifest, config }: Fixture): SourcePlatform =
 });
 
 const refusal = (from: string, name: string, rule: string): string =>
-  `layers-from ${from} (${name}): ${rule}; a layers-from image must be one small layer, as rowdy's is (FROM scratch, one COPY, ENTRYPOINT)`;
+  `layers-from ${from} (${name}): ${rule}; a layers-from image must be one layer, as rowdy's is (FROM scratch, one COPY, ENTRYPOINT)`;
 
 describe('layers-from', () => {
   describe('specList', () => {
@@ -70,10 +70,11 @@ describe('layers-from', () => {
   });
 
   describe('checkSource', () => {
-    const from = 'ghcr.io/scaffoldly/rowdy:beta';
+    // Not rowdy's own image, which is exempt: the rules still have to accept its shape.
+    const from = 'ghcr.io/example/tool:latest';
     const amd64 = 'linux/amd64';
 
-    it("passes rowdy's own image", () => {
+    it("passes an image built like rowdy's own", () => {
       expect(() => checkSource(from, [platform(amd64, fixture())])).not.toThrow();
     });
 
@@ -90,13 +91,6 @@ describe('layers-from', () => {
 
     it.each<[string, (f: Fixture) => Fixture]>([
       ['2 layers', twoLayers],
-      [
-        `layer is ${MAX_LAYER_BYTES + 1} bytes, over ${MAX_LAYER_BYTES}`,
-        (f) => {
-          f.manifest.layers![0]!.size = MAX_LAYER_BYTES + 1;
-          return f;
-        },
-      ],
       [
         'RUN in history',
         (f) => {
@@ -136,10 +130,28 @@ describe('layers-from', () => {
       expect(() => checkSource(from, [platform(amd64, change(fixture()))])).toThrow(refusal(from, amd64, rule));
     });
 
+    it("does not limit the layer's size", () => {
+      const big = fixture();
+      big.manifest.layers![0]!.size = 1024 * 1024 * 1024;
+      expect(() => checkSource(from, [platform(amd64, big)])).not.toThrow();
+    });
+
+    it("exempts rowdy's own image, which this repo builds", () => {
+      expect(() => checkSource(ROWDY_LAYERS, [platform(amd64, twoLayers(fixture()))])).not.toThrow();
+    });
+
     it('checks every platform, not only the one Lambda runs', () => {
       expect(() =>
         checkSource(from, [platform(amd64, fixture()), platform('linux/arm64', twoLayers(fixture()))])
       ).toThrow(refusal(from, 'linux/arm64', '2 layers'));
+    });
+  });
+
+  describe('skippedLevel', () => {
+    it('warns only for the platform Lambda runs', () => {
+      expect(skippedLevel('linux/amd64')).toBe('warn');
+      expect(skippedLevel('linux/s390x')).toBe('debug');
+      expect(skippedLevel('linux/arm64')).toBe('debug');
     });
   });
 });

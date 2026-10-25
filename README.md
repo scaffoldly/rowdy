@@ -185,7 +185,7 @@ Syntax, precedence, comments and quoting, multi-line secrets and errors:
 
 On deploy, rowdy copies the image into ECR and adds itself as a layer (`/usr/local/bin/rowdy`).
 `--layers-from <image>` (repeatable, or `ROWDY_LAYERS_FROM`) adds the one layer of your own images
-before rowdy's, such as `ghcr.io/tunnel-pizza/tunneld:latest-layer`; each must be built like
+before rowdy's, such as `ghcr.io/tunnel-pizza/tunneld:latest`; each must be built like
 rowdy's final stage (`FROM scratch`, one `COPY`), or the deploy fails. The
 function starts rowdy, and rowdy runs the image's `ENTRYPOINT` + `CMD` as its command. rowdy gives
 the command `HTTP_ORIGIN`, `HTTP_HOST`, `HTTP_HOSTNAME`, `HTTP_PORT`, `HTTP_PROTO`, `HTTP_UA` and

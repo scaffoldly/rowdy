@@ -13,11 +13,11 @@ describe('lambda image service', () => {
     const pullImage = jest.spyOn(environment.rowdy.images, 'pullImage').mockReturnValue(of(pulled));
 
     await new LambdaImageService(environment)
-      .withLayersFrom(deploySources(['ghcr.io/tunnel-pizza/tunneld:latest-layer']))
+      .withLayersFrom(deploySources(['ghcr.io/tunnel-pizza/tunneld:latest']))
       .pullImage(create(CRI.PullImageRequestSchema, { image: { image: 'busybox' } }));
 
     expect(pullImage).toHaveBeenCalledWith('busybox', {
-      layersFrom: ['ghcr.io/tunnel-pizza/tunneld:latest-layer', 'ghcr.io/scaffoldly/rowdy:beta'],
+      layersFrom: ['ghcr.io/tunnel-pizza/tunneld:latest', 'ghcr.io/scaffoldly/rowdy:beta'],
     });
   });
 });

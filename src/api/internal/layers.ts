@@ -4,12 +4,15 @@ import type { External } from './transfer';
 /** rowdy's own image: its one layer is added to every deployed image, after any layers-from source. */
 export const ROWDY_LAYERS = 'ghcr.io/scaffoldly/rowdy:beta';
 
-/** The largest compressed layer a layers-from image may have. */
-export const MAX_LAYER_BYTES = 64 * 1024 * 1024;
-
 // The one non-empty history entry must add files; only these may sit beside it.
 const LAYER_INSTRUCTIONS: ReadonlyArray<string> = ['COPY', 'ADD'];
 const EMPTY_INSTRUCTIONS: ReadonlyArray<string> = ['ENTRYPOINT', 'CMD', 'LABEL'];
+
+// The function runs this platform's copy; a source missing from any other cannot reach it.
+const DEPLOYED_PLATFORM = 'linux/amd64';
+
+/** How loudly to log a source a platform of the app does not get: only the platform Lambda runs is worth a warning. */
+export const skippedLevel = (platform: string): 'warn' | 'debug' => (platform === DEPLOYED_PLATFORM ? 'warn' : 'debug');
 
 /** One platform of a layers-from image: `platform` is `os/architecture`. */
 export type SourcePlatform = { platform: string; image: External['Image']; config: External['Config'] };
@@ -45,10 +48,6 @@ const brokenRule = ({ image, config }: SourcePlatform): string | undefined => {
   if (diffIds.length !== 1) {
     return `${diffIds.length} diff_ids`;
   }
-  const size = layers[0]?.size ?? 0;
-  if (size > MAX_LAYER_BYTES) {
-    return `layer is ${size} bytes, over ${MAX_LAYER_BYTES}`;
-  }
   const history = config.history;
   if (!history?.length) {
     return 'no history';
@@ -74,13 +73,16 @@ const brokenRule = ({ image, config }: SourcePlatform): string | undefined => {
   return undefined;
 };
 
-/** Throws for the first platform of `from` that is not one small layer, as rowdy's own image is. */
+/** Throws for the first platform of `from` that is not one layer, as rowdy's own image is. rowdy's own is exempt. */
 export const checkSource = (from: string, platforms: SourcePlatform[]): void => {
+  if (from === ROWDY_LAYERS) {
+    return;
+  }
   for (const source of platforms) {
     const rule = brokenRule(source);
     if (rule) {
       throw new Error(
-        `layers-from ${from} (${source.platform}): ${rule}; a layers-from image must be one small layer, as rowdy's is (FROM scratch, one COPY, ENTRYPOINT)`
+        `layers-from ${from} (${source.platform}): ${rule}; a layers-from image must be one layer, as rowdy's is (FROM scratch, one COPY, ENTRYPOINT)`
       );
     }
   }

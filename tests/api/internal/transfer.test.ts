@@ -1,5 +1,6 @@
 import { lastValueFrom, of, toArray } from 'rxjs';
-import { Transfer, External, ImageManifest } from '../../../src/api/internal/transfer';
+import { Transfer, External, ImageManifest, sourceHeaders } from '../../../src/api/internal/transfer';
+import { HttpHeaders } from '../../../src/proxy/http';
 import { ROWDY_LAYERS } from '../../../src/api/internal/layers';
 import { Logger, Rowdy } from '@scaffoldly/rowdy';
 // eslint-disable-next-line @typescript-eslint/no-unused-vars
@@ -295,9 +296,27 @@ describe('transfers', () => {
     }, 60000);
 
     describe('layers-from', () => {
+      it("reads a layers-from blob without the app image's credentials", () => {
+        const app = HttpHeaders.from({ authorization: 'Basic c2VjcmV0', accept: 'application/json' });
+        const ref = { annotations: { 'run.rowdy.index.url': 'https://ghcr.io/v2/scaffoldly/rowdy/manifests/beta' } };
+        expect(sourceHeaders(app, ref).get('authorization')).toBeUndefined();
+        expect(sourceHeaders(app, {}).get('authorization')).toBe('Basic c2VjcmV0');
+      });
+
       const busybox = 'mirror.gcr.io/library/busybox:latest';
+      const TUNNELD = 'ghcr.io/tunnel-pizza/tunneld:latest';
       const platformOf = (img: ImageManifest['images'][number]): string =>
         `${img.manifest.platform?.os}/${img.manifest.platform?.architecture}`;
+
+      it('reads a layers-from blob anonymously from its own registry', async () => {
+        const source = await lastValueFrom(Transfer.source(logger, rowdy.http, ROWDY_LAYERS));
+        const layer = source.manifest.images[0]!.image.layers![0]!;
+        const url = `${source.manifest.url.split('/').slice(0, -2).join('/')}/blobs/${layer.digest}`;
+        const ref = { ...layer, annotations: { 'run.rowdy.index.url': source.manifest.url } };
+        const app = HttpHeaders.from({ authorization: 'Bearer not-for-this-registry' });
+        const response = await rowdy.http.head(url, { headers: sourceHeaders(app, ref).intoAxios() });
+        expect(response.status).toBe(200);
+      }, 120000);
 
       it('checks rowdy:beta as a layers-from source', async () => {
         const source = await lastValueFrom(Transfer.source(logger, rowdy.http, ROWDY_LAYERS));
@@ -305,10 +324,15 @@ describe('transfers', () => {
         expect(source.configs.size).toBeGreaterThanOrEqual(2);
       }, 120000);
 
+      it('accepts a third-party source built like rowdy', async () => {
+        const source = await lastValueFrom(Transfer.source(logger, rowdy.http, TUNNELD));
+        expect(source.configs.size).toBeGreaterThanOrEqual(2);
+      }, 120000);
+
       it('refuses a source that is more than one layer', async () => {
         await expect(
-          lastValueFrom(Transfer.source(logger, rowdy.http, 'ghcr.io/tunnel-pizza/tunneld:latest'))
-        ).rejects.toThrow(/layers-from ghcr.io\/tunnel-pizza\/tunneld:latest \(linux\/(amd64|arm64)\): 2 layers/);
+          lastValueFrom(Transfer.source(logger, rowdy.http, 'mirror.gcr.io/library/nginx:alpine'))
+        ).rejects.toThrow(/layers-from mirror.gcr.io\/library\/nginx:alpine \(linux\/[^)]+\): \d+ layers/);
       }, 120000);
 
       describe('collected with two sources', () => {
@@ -318,7 +342,7 @@ describe('transfers', () => {
         beforeAll(async () => {
           plain = await lastValueFrom(of(busybox).pipe(Transfer.normalize(), Transfer.collect(logger, rowdy.http)));
           layered = await lastValueFrom(
-            of(busybox).pipe(Transfer.normalize(), Transfer.collect(logger, rowdy.http, [ROWDY_LAYERS, ROWDY_LAYERS]))
+            of(busybox).pipe(Transfer.normalize(), Transfer.collect(logger, rowdy.http, [TUNNELD, ROWDY_LAYERS]))
           );
         }, 120000);
 
@@ -332,9 +356,9 @@ describe('transfers', () => {
             const layers = img.image.layers!;
             const config = JSON.parse(img.config!.toString('utf-8')) as External['Config'];
             expect(layers.length).toBe(appLayers(img.manifest.digest) + 2);
-            for (const layer of layers.slice(-2)) {
-              expect(layer.annotations?.['run.rowdy.index.url']).toContain('scaffoldly/rowdy');
-            }
+            const [tunneld, rowdyLayer] = layers.slice(-2);
+            expect(tunneld!.annotations?.['run.rowdy.index.url']).toContain('tunnel-pizza/tunneld');
+            expect(rowdyLayer!.annotations?.['run.rowdy.index.url']).toContain('scaffoldly/rowdy');
             expect(config.rootfs!.diff_ids!.length).toBe(layers.length);
             expect(config.history!.filter((h) => h.empty_layer !== true).length).toBe(layers.length);
           }

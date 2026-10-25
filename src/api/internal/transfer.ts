@@ -21,7 +21,7 @@ import { createHash } from 'crypto';
 import { ILoggable, Logger } from '../../log';
 import { AxiosInstance, AxiosResponse, isAxiosError } from 'axios';
 import { PullImageOptions, TRegistry } from '../types';
-import { checkSource } from './layers';
+import { checkSource, skippedLevel } from './layers';
 import { homedir } from 'os';
 import { Readable } from 'stream';
 import promiseRetry from 'promise-retry';
@@ -93,6 +93,10 @@ export type ImageManifest = Image & {
 
 /** A layers-from image as collected and checked: its configs keyed by platform manifest digest. */
 export type Source = { from: string; manifest: ImageManifest; configs: Map<string, External['Config']> };
+
+/** What a blob is read with: a layers-from source's anonymously, never with the app image's credentials. */
+export const sourceHeaders = (app: HttpHeaders, ref: External['Ref']): HttpHeaders =>
+  ref.annotations?.['run.rowdy.index.url'] ? HttpHeaders.from({}) : app;
 
 type Response<T> = { data: T | undefined; headers: HttpHeaders; status: number; method: string; url: string };
 
@@ -216,7 +220,7 @@ export class Transfer implements ILoggable {
 
   /**
    * A layers-from image, collected and checked: every platform but attestations, with its config. Errors for an
-   * image that is not one small layer, before anything is uploaded.
+   * image that is not one layer, before anything is uploaded.
    */
   static source(log: Logger, http: AxiosInstance, ref: string): Observable<Source> {
     return of(ref).pipe(
@@ -378,7 +382,7 @@ export class Transfer implements ILoggable {
                             const runtime = source.manifest.images.find((img) => img.manifest.digest === match?.digest);
                             const rtCfg = source.configs.get(match?.digest ?? '');
                             if (!match || !runtime || !rtCfg) {
-                              log.warn('Layers Skipped', {
+                              log[skippedLevel(platform)]('Layers Skipped', {
                                 from: source.from,
                                 platform,
                                 reason: 'not published for this platform',
@@ -879,7 +883,7 @@ export class Upload implements ILoggable {
               responseType: 'stream',
               maxBodyLength: Infinity,
               maxContentLength: Infinity,
-              headers: this.transfer.fromHeaders.with('accept', this.mediaType).intoAxios(),
+              headers: sourceHeaders(this.transfer.fromHeaders, this.ref).with('accept', this.mediaType).intoAxios(),
               onDownloadProgress: (e) => (this.bytes.received += e.bytes),
             })
           )

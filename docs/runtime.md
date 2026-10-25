@@ -37,23 +37,22 @@ The function runs the `linux/amd64` copy, by digest: its image URI is
 
 ### Your own layers
 
-`--layers-from <image>` (repeatable; `ROWDY_LAYERS_FROM`, one per line, or `layers-from:` in the
-GitHub Action) adds another image's layer the same way, so a tool is on the deployed image without
+`--layers-from <image>` (repeatable, or `ROWDY_LAYERS_FROM`, one per line) adds another image's
+layer the same way, so a tool is on the deployed image without
 the app's Dockerfile installing it:
 
 ```sh
-rowdy create aws lambda ghcr.io/owner/app:latest --layers-from ghcr.io/tunnel-pizza/tunneld:latest-layer
+rowdy create aws lambda ghcr.io/owner/app:latest --layers-from ghcr.io/tunnel-pizza/tunneld:latest
 ```
 
 The layers go on in the order given, then rowdy's last, so `/usr/local/bin/rowdy` is always rowdy's.
 A repeated image is added once, and naming rowdy's own image adds nothing. A source is read
-anonymously, so it must be public.
+anonymously, never with the app image's registry credentials, so it must be public.
 
 A source must be built like rowdy's own final stage: `FROM scratch`, one `COPY` of a static binary,
 an `ENTRYPOINT`. On every platform it publishes, before anything is copied, rowdy checks:
 
 - one layer, and one entry in `rootfs.diff_ids`;
-- that layer is at most 64 MiB compressed;
 - a `history`, whose one non-empty entry is a `COPY` or `ADD`;
 - no other step but `ENTRYPOINT`, `CMD` or `LABEL`: no `RUN`, `ENV`, `ARG`, `USER`, `WORKDIR` and the
   like;
@@ -62,10 +61,11 @@ an `ENTRYPOINT`. On every platform it publishes, before anything is copied, rowd
 A source that breaks any of them fails the deploy, naming the image, the platform and the rule:
 
 ```
-layers-from ghcr.io/tunnel-pizza/tunneld:latest (linux/amd64): 2 layers; a layers-from image must be one small layer, as rowdy's is (FROM scratch, one COPY, ENTRYPOINT)
+layers-from ghcr.io/owner/tool:latest (linux/amd64): 2 layers; a layers-from image must be one layer, as rowdy's is (FROM scratch, one COPY, ENTRYPOINT)
 ```
 
-The layer's files themselves are not inspected. A platform a source does not publish is copied
+The layer's size and files are not inspected. rowdy's own image is built by this repository and
+is not checked. A platform a source does not publish is copied
 without it, with a `Layers Skipped` warning.
 
 ## `ENTRYPOINT` and `CMD`
