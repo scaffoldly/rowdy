@@ -451,6 +451,20 @@ describe('S3Adapter', () => {
       expect(s3.objects.get('excl.txt')?.body.toString()).toBe('theirs');
     });
 
+    it('an O_EXCL create that lost drops its copy: the next read is the object that won', async () => {
+      writeFileSync(join(backing, 'lost.txt'), 'mine');
+      await adapter.open(`${mount}/lost.txt`, 0o301); // O_WRONLY|O_CREAT|O_EXCL
+      s3.put('lost.txt', 'theirs');
+      await expect(adapter.flush(`${mount}/lost.txt`)).rejects.toMatchObject({ errno: 17 });
+      await adapter.fetch(`${mount}/lost.txt`);
+      expect(readFileSync(join(backing, 'lost.txt'), 'utf8')).toBe('theirs');
+      // A later write is an ordinary overwrite of that object, not another lost create.
+      await adapter.open(`${mount}/lost.txt`, 0o1001); // O_WRONLY|O_TRUNC
+      writeFileSync(join(backing, 'lost.txt'), 'again');
+      await adapter.flush(`${mount}/lost.txt`);
+      expect(s3.objects.get('lost.txt')?.body.toString()).toBe('again');
+    });
+
     it('an O_EXCL create of an object that already exists is refused before any write', async () => {
       s3.put('taken.txt', 'theirs');
       await adapter.open(`${mount}/taken.txt`, 0o301); // HEAD finds it: not exclusive-new
