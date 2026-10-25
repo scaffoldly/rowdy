@@ -47,6 +47,10 @@ inputs:
     description: "Volumes to mount, one per line: <scheme>://<locator>:<mountpoint>[:<flags>]. Added to any in routes."
     required: false
     default: ""
+  layers-from:
+    description: "Images whose one layer is added to the deployed image, one per line (public; FROM scratch, one COPY, as rowdy's is)."
+    required: false
+    default: ""
 outputs:
   url:
     description: The URL of the deployed application.
@@ -157,3 +161,4 @@ runs:
         ROWDY_ROUTES: "${{ inputs.routes }}"
         ROWDY_SECRETS: "${{ inputs.secrets }}"
         ROWDY_VOLUMES: "${{ inputs.volumes }}"
+        ROWDY_LAYERS_FROM: "${{ inputs.layers-from }}"

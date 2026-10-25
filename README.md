@@ -91,19 +91,20 @@ the environment if set and `us-east-1` otherwise.
 
 ## Inputs
 
-| Input        | Required | Default                  | Description                                                                                                                                                                                                                                |
-| ------------ | -------- | ------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `cloud`      | yes      |                          | Cloud provider. `aws` today.                                                                                                                                                                                                               |
-| `compute`    | yes      |                          | Compute type. `lambda` today.                                                                                                                                                                                                              |
-| `dockerfile` | one of   |                          | Dockerfile to build, push to `ghcr.io/<owner>/<repo>:rowdy` and deploy as `:rowdy@<digest>`. The build context is its directory. See [Building the image](#building-the-image).                                                                       |
-| `image`      | one of   |                          | Container image to deploy, such as `ghcr.io/owner/repo@sha256:…`. Ignored when `dockerfile` is set.                                                                                                                                        |
-| `name`       | no       | the execution role's id  | Application name. Becomes the function name, sanitized.                                                                                                                                                                                    |
-| `command`    | no       | image `ENTRYPOINT`+`CMD` | Override the command the container runs.                                                                                                                                                                                                   |
-| `memory`     | no       | `256`                    | Memory for the container, in megabytes.                                                                                                                                                                                                    |
-| `cri`        | no       | `false`                  | Enable the Container Runtime Interface.                                                                                                                                                                                                    |
-| `routes`     | no       |                          | Path to, or inline YAML/JSON of, a Routes manifest. Accepts a path, `file://`, `data:`, or the manifest inline. A bare spec is accepted. See [Routes](https://github.com/scaffoldly/rowdy/blob/main/README.md#routes) on `main`.           |
-| `secrets`    | no       |                          | Environment variables for the function: `NAME=value` lines and JSON objects such as `${{ toJSON(secrets) }}`, in any mix; lines override the JSON. See [Secrets](https://github.com/scaffoldly/rowdy/blob/main/docs/secrets.md) on `main`. |
-| `volumes`    | no       |                          | Volumes to mount, one per line, such as `s3://my-bucket:/data`. Added to any `volumes` in `routes`. See [Volumes](https://github.com/scaffoldly/rowdy/blob/main/docs/volumes.md) on `main`.                                                |
+| Input         | Required | Default                  | Description                                                                                                                                                                                                                                                                                                                                                  |
+| ------------- | -------- | ------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `cloud`       | yes      |                          | Cloud provider. `aws` today.                                                                                                                                                                                                                                                                                                                                 |
+| `compute`     | yes      |                          | Compute type. `lambda` today.                                                                                                                                                                                                                                                                                                                                |
+| `dockerfile`  | one of   |                          | Dockerfile to build, push to `ghcr.io/<owner>/<repo>:rowdy` and deploy as `:rowdy@<digest>`. The build context is its directory. See [Building the image](#building-the-image).                                                                                                                                                                              |
+| `image`       | one of   |                          | Container image to deploy, such as `ghcr.io/owner/repo@sha256:…`. Ignored when `dockerfile` is set.                                                                                                                                                                                                                                                          |
+| `name`        | no       | the execution role's id  | Application name. Becomes the function name, sanitized.                                                                                                                                                                                                                                                                                                      |
+| `command`     | no       | image `ENTRYPOINT`+`CMD` | Override the command the container runs.                                                                                                                                                                                                                                                                                                                     |
+| `memory`      | no       | `256`                    | Memory for the container, in megabytes.                                                                                                                                                                                                                                                                                                                      |
+| `cri`         | no       | `false`                  | Enable the Container Runtime Interface.                                                                                                                                                                                                                                                                                                                      |
+| `routes`      | no       |                          | Path to, or inline YAML/JSON of, a Routes manifest. Accepts a path, `file://`, `data:`, or the manifest inline. A bare spec is accepted. See [Routes](https://github.com/scaffoldly/rowdy/blob/main/README.md#routes) on `main`.                                                                                                                             |
+| `secrets`     | no       |                          | Environment variables for the function: `NAME=value` lines and JSON objects such as `${{ toJSON(secrets) }}`, in any mix; lines override the JSON. See [Secrets](https://github.com/scaffoldly/rowdy/blob/main/docs/secrets.md) on `main`.                                                                                                                   |
+| `volumes`     | no       |                          | Volumes to mount, one per line, such as `s3://my-bucket:/data`. Added to any `volumes` in `routes`. See [Volumes](https://github.com/scaffoldly/rowdy/blob/main/docs/volumes.md) on `main`.                                                                                                                                                                  |
+| `layers-from` | no       |                          | Images whose one layer is added to the deployed image before rowdy's, one per line, such as `ghcr.io/tunnel-pizza/tunneld:latest`. Each must be public and built like rowdy's final stage (`FROM scratch`, one `COPY`), or the deploy fails. See [Your own layers](https://github.com/scaffoldly/rowdy/blob/main/docs/runtime.md#your-own-layers) on `main`. |
 
 | Output  | Description                            |
 | ------- | -------------------------------------- |
@@ -154,7 +155,7 @@ How the app trusts the scheduled request, from
 
 ```ts
 export function fromRowdyCron(headers: Headers): boolean {
-  return headers.has("x-rowdy-cron");
+  return headers.has('x-rowdy-cron');
 }
 ```
 
@@ -164,7 +165,7 @@ And the route that consumes it, from
 ```ts
 export async function POST(req: NextRequest) {
   if (!fromRowdyCron(req.headers)) {
-    const auth = await authorizeAdmin(req.headers.get("authorization"));
+    const auth = await authorizeAdmin(req.headers.get('authorization'));
     if (!auth.ok) return unauthorized(auth.reason);
   }
   // ... sweep
