@@ -65,7 +65,7 @@ export class LambdaImageService implements ILambdaImageService {
     }
 
     if (this._layersFrom) {
-      opts.layersFrom = this._layersFrom;
+      opts.layersFrom = [this._layersFrom];
     }
 
     // TODO: consider req.auth

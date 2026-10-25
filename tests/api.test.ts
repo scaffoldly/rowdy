@@ -1,6 +1,7 @@
 import { Rowdy, Logger } from '@scaffoldly/rowdy';
 import { lastValueFrom } from 'rxjs';
 import { PullImageOptions } from 'src/api/types';
+import { ROWDY_LAYERS } from '../src/api/internal/layers';
 
 describe('api', () => {
   const logger = new Logger();
@@ -58,7 +59,7 @@ describe('api', () => {
 
       aws('should inject layers', async () => {
         const { Image: pulledImage, ImageUri: pulledImageRef } = await lastValueFrom(
-          rowdy.images.pullImage('busybox', { layersFrom: 'ghcr.io/scaffoldly/rowdy:beta' })
+          rowdy.images.pullImage('busybox', { layersFrom: [ROWDY_LAYERS] })
         );
         console.log('Pulled Image Ref:', pulledImageRef);
         console.log('Pulled Image:', pulledImage);
