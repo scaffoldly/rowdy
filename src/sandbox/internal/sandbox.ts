@@ -10,11 +10,15 @@ import type {
   SandboxOptions,
   WriteFile,
 } from '..';
+import { Environment, Logger } from '../..';
+import { LambdaCri } from '../../aws/lambda/cri';
 
 export class SandboxImpl implements Sandbox {
   private constructor() {}
 
   static async create(_options?: SandboxOptions): Promise<Sandbox> {
+    const cri = new LambdaCri(new Environment(new Logger('sandbox'), []));
+
     throw new Error('not implemented');
   }
 
@@ -46,10 +50,6 @@ export class SandboxImpl implements Sandbox {
   }
 
   async mkDir(_path: string): Promise<void> {
-    throw new Error('not implemented');
-  }
-
-  async extendTimeout(_duration: number): Promise<void> {
     throw new Error('not implemented');
   }
 

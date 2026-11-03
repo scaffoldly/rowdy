@@ -79,6 +79,52 @@ describe('entrypoint --volumes', () => {
     }
   });
 
+  describe('with explicit arguments', () => {
+    const withArgv = (argv: string[], run: () => void): void => {
+      const original = process.argv;
+      process.argv = argv;
+      try {
+        run();
+      } finally {
+        process.argv = original;
+      }
+    };
+
+    it('ignores the host process arguments', () => {
+      withArgv(['node', 'app', '-v', '/tmp/scratch:/scratch', '--', 'true'], () => {
+        const env = new Environment(new Logger(), []);
+
+        expect(env.routes.volumes).toEqual([]);
+        expect(env.command).toBeUndefined();
+      });
+    });
+
+    it('does not act on the host process --help', () => {
+      const exit = jest.spyOn(process, 'exit').mockImplementation(() => {
+        throw new Error('process.exit');
+      });
+      const log = jest.spyOn(console, 'log').mockImplementation(() => undefined);
+      try {
+        withArgv(['node', 'app', '--help'], () => {
+          new Environment(new Logger(), []);
+        });
+        expect(exit).not.toHaveBeenCalled();
+      } finally {
+        exit.mockRestore();
+        log.mockRestore();
+      }
+    });
+
+    it('parses the arguments it was given', () => {
+      withArgv(['node', 'app'], () => {
+        const env = new Environment(new Logger(), ['-v', '/tmp/scratch:/scratch', '--', 'true']);
+
+        expect(env.routes.volumes).toEqual(['file:///tmp/scratch:/scratch']);
+        expect(env.command).toEqual(['true']);
+      });
+    });
+  });
+
   it('takes a single -v', () => {
     const env = setup({ volume: 's3://example-bucket:/data' });
 

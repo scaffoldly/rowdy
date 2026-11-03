@@ -90,8 +90,6 @@ export interface Sandbox {
   /** Resolves to null when the file does not exist. */
   readFileToBuffer(file: ReadFile): Promise<Buffer | null>;
   mkDir(path: string): Promise<void>;
-  /** Adds milliseconds to the sandbox's timeout. */
-  extendTimeout(duration: number): Promise<void>;
   /** Safe to call more than once. */
   stop(): Promise<void>;
 }

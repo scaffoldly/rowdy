@@ -45,10 +45,13 @@ describe('sandbox', () => {
       ['writeFiles', () => sandbox.writeFiles([{ path: 'a', content: Buffer.from('a') }])],
       ['readFileToBuffer', () => sandbox.readFileToBuffer({ path: 'a' })],
       ['mkDir', () => sandbox.mkDir('a')],
-      ['extendTimeout', () => sandbox.extendTimeout(1000)],
       ['stop', () => sandbox.stop()],
     ])('does not implement %s', async (_name, call) => {
       await expect(call()).rejects.toThrow(NOT_IMPLEMENTED);
+    });
+
+    it('has no extendTimeout', () => {
+      expect('extendTimeout' in sandbox).toBe(false);
     });
 
     it('does not implement sandboxId', () => {

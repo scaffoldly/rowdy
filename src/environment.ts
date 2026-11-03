@@ -200,7 +200,11 @@ export class Environment implements ILoggable {
   private _registry: string | undefined;
   private _vfs?: Promise<P9Server>;
 
-  constructor(public readonly log: Logger) {
+  /** `argv` defaults to the process's own; a library caller passes its own so the host's CLI stays the host's. */
+  constructor(
+    public readonly log: Logger,
+    argv: string[] = hideBin(process.argv)
+  ) {
     this.signal.addEventListener('abort', () => {
       this.log.debug(`Aborting environment: ${this.signal.reason}`);
       this._subscriptions.forEach((s) => s.unsubscribe());
@@ -215,7 +219,7 @@ export class Environment implements ILoggable {
       .withEnv('HTTP_UA', `${packageJson.name}/${packageJson.version}`)
       .withEnv('NET_PRIVATE_IPV4', internalIpV4Sync());
 
-    const parsed = yargs(hideBin(process.argv))
+    const parsed = yargs(argv)
       .parserConfiguration({ 'populate--': true, 'boolean-negation': true })
       .scriptName(this.bin!)
       .env(this.bin!.toUpperCase())
