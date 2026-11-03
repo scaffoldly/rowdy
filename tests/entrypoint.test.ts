@@ -115,6 +115,64 @@ describe('entrypoint --volumes', () => {
       }
     });
 
+    describe('and ROWDY_ variables set', () => {
+      beforeEach(() => {
+        process.env.ROWDY_VOLUMES = 's3://example-bucket:/data';
+        process.env.ROWDY_WORKDIR = '/tmp';
+      });
+
+      afterEach(() => {
+        delete process.env.ROWDY_VOLUMES;
+        delete process.env.ROWDY_WORKDIR;
+      });
+
+      it('does not read them', () => {
+        const chdir = jest.spyOn(process, 'chdir').mockImplementation(() => undefined);
+        try {
+          withArgv(['node', 'app'], () => {
+            const env = new Environment(new Logger(), []);
+
+            expect(env.routes.volumes).toEqual([]);
+            expect(chdir).not.toHaveBeenCalled();
+          });
+        } finally {
+          chdir.mockRestore();
+        }
+      });
+
+      it('still reads them for the process itself', () => {
+        const chdir = jest.spyOn(process, 'chdir').mockImplementation(() => undefined);
+        try {
+          withArgv(['node', 'rowdy'], () => {
+            const env = new Environment(new Logger());
+
+            expect(env.routes.volumes).toEqual(['s3://example-bucket:/data']);
+            expect(chdir).toHaveBeenCalledWith('/tmp');
+          });
+        } finally {
+          chdir.mockRestore();
+        }
+      });
+    });
+
+    it('does not announce itself', () => {
+      const logger = new Logger();
+      const info = jest.spyOn(logger, 'info');
+      withArgv(['node', 'app'], () => {
+        new Environment(logger, []);
+      });
+      expect(info).not.toHaveBeenCalled();
+    });
+
+    it('announces itself for the process itself', () => {
+      const logger = new Logger();
+      const info = jest.spyOn(logger, 'info');
+      withArgv(['node', 'rowdy'], () => {
+        new Environment(logger);
+      });
+      expect(info).toHaveBeenCalledWith('Rowdy Started', expect.anything());
+    });
+
     it('parses the arguments it was given', () => {
       withArgv(['node', 'app'], () => {
         const env = new Environment(new Logger(), ['-v', '/tmp/scratch:/scratch', '--', 'true']);

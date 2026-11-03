@@ -200,10 +200,13 @@ export class Environment implements ILoggable {
   private _registry: string | undefined;
   private _vfs?: Promise<P9Server>;
 
-  /** `argv` defaults to the process's own; a library caller passes its own so the host's CLI stays the host's. */
+  /**
+   * Without `argv`, this is rowdy's own process: it reads the process's arguments and ROWDY_ variables and
+   * announces itself. With `argv`, it is a library inside a host program, and takes neither from the host.
+   */
   constructor(
     public readonly log: Logger,
-    argv: string[] = hideBin(process.argv)
+    argv?: string[]
   ) {
     this.signal.addEventListener('abort', () => {
       this.log.debug(`Aborting environment: ${this.signal.reason}`);
@@ -219,10 +222,11 @@ export class Environment implements ILoggable {
       .withEnv('HTTP_UA', `${packageJson.name}/${packageJson.version}`)
       .withEnv('NET_PRIVATE_IPV4', internalIpV4Sync());
 
-    const parsed = yargs(argv)
+    const cli = yargs(argv ?? hideBin(process.argv))
       .parserConfiguration({ 'populate--': true, 'boolean-negation': true })
-      .scriptName(this.bin!)
-      .env(this.bin!.toUpperCase())
+      .scriptName(this.bin!);
+
+    const parsed = (argv ? cli.env(false) : cli.env(this.bin!.toUpperCase()))
       .version(packageJson.version)
       // DEVNOTE: No `choices`: this also arrives as ROWDY_LOG_LEVEL, and a bad value in a deployed
       // function's environment must fall back to the default rather than fail startup.
@@ -519,11 +523,13 @@ export class Environment implements ILoggable {
       this.log.withDebugging();
     }
 
-    log.info('Rowdy Started', { version: packageJson.version });
     log.debug(`Arguments parsed`, { parsed: maskJson(parsed), env: maskEnv(process.env) });
 
-    if (isatty(process.stdout.fd)) {
-      log.info('Press Ctrl+C to exit.');
+    if (!argv) {
+      log.info('Rowdy Started', { version: packageJson.version });
+      if (isatty(process.stdout.fd)) {
+        log.info('Press Ctrl+C to exit.');
+      }
     }
   }
 
