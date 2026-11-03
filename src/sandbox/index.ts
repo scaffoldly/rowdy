@@ -1,0 +1,109 @@
+import type { Writable } from 'stream';
+import { SandboxImpl } from './internal/sandbox';
+
+export interface SandboxOptions {
+  /** The container image to run. */
+  image?: string;
+  /** A name for the sandbox. */
+  name?: string;
+  /** Milliseconds until the sandbox stops. */
+  timeout?: number;
+  /** Memory in megabytes. */
+  memory?: number;
+  /** Environment variables for every command; a command's own `env` overrides them. */
+  env?: Record<string, string>;
+  /** Cancels the creation. */
+  signal?: AbortSignal;
+}
+
+export interface SandboxLookup {
+  sandboxId: string;
+  signal?: AbortSignal;
+}
+
+export interface RunCommandParams {
+  /** The binary to run. There is no shell: pipes and redirects need `sh -c`. */
+  cmd: string;
+  args?: string[];
+  cwd?: string;
+  env?: Record<string, string>;
+  /** Receives the command's stdout as it is written. */
+  stdout?: Writable;
+  /** Receives the command's stderr as it is written. */
+  stderr?: Writable;
+  /** Resolves once the command has started instead of when it exits. */
+  detached?: boolean;
+  /** Cancels the command. */
+  signal?: AbortSignal;
+}
+
+export interface DetachedRunCommandParams extends RunCommandParams {
+  detached: true;
+}
+
+export interface RunCommandOptions {
+  /** Cancels the command. */
+  signal?: AbortSignal;
+}
+
+export interface WriteFile {
+  /** Relative to the sandbox's working directory, unless absolute. */
+  path: string;
+  content: Buffer;
+  mode?: number;
+}
+
+export interface ReadFile {
+  /** Relative to the sandbox's working directory, unless absolute. */
+  path: string;
+  signal?: AbortSignal;
+}
+
+/** A command in a sandbox, running or exited. */
+export interface Command {
+  readonly cmdId: string;
+  /** Undefined while the command runs. */
+  readonly exitCode: number | undefined;
+  /** The stdout written so far, or all of it once the command has exited. */
+  stdout(): Promise<string>;
+  /** The stderr written so far, or all of it once the command has exited. */
+  stderr(): Promise<string>;
+  /** Resolves when the command exits, whatever its exit code. */
+  wait(): Promise<CommandFinished>;
+  kill(signal?: NodeJS.Signals): Promise<void>;
+}
+
+export interface CommandFinished extends Command {
+  readonly exitCode: number;
+}
+
+/** A running sandbox. */
+export interface Sandbox {
+  readonly sandboxId: string;
+  /** Resolves when the command exits, whatever its exit code; rejects only if it could not run. */
+  runCommand(cmd: string, args?: string[], options?: RunCommandOptions): Promise<CommandFinished>;
+  /** Resolves once the command has started. */
+  runCommand(params: DetachedRunCommandParams): Promise<Command>;
+  /** Resolves when the command exits, whatever its exit code; rejects only if it could not run. */
+  runCommand(params: RunCommandParams): Promise<CommandFinished>;
+  writeFiles(files: WriteFile[]): Promise<void>;
+  /** Resolves to null when the file does not exist. */
+  readFileToBuffer(file: ReadFile): Promise<Buffer | null>;
+  mkDir(path: string): Promise<void>;
+  /** Adds milliseconds to the sandbox's timeout. */
+  extendTimeout(duration: number): Promise<void>;
+  /** Safe to call more than once. */
+  stop(): Promise<void>;
+}
+
+export interface SandboxFactory {
+  /** Starts a new sandbox. */
+  create(options?: SandboxOptions): Promise<Sandbox>;
+  /** Connects to a sandbox that is already running. */
+  get(lookup: SandboxLookup): Promise<Sandbox>;
+}
+
+export const Sandbox: SandboxFactory = {
+  create: (options) => SandboxImpl.create(options),
+  get: (lookup) => SandboxImpl.get(lookup),
+};

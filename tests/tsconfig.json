@@ -10,7 +10,8 @@
     "esModuleInterop": true,
     "baseUrl": "..",
     "paths": {
-      "@scaffoldly/rowdy": ["src/index"]
+      "@scaffoldly/rowdy": ["src/index"],
+      "@scaffoldly/rowdy/sandbox": ["src/sandbox/index"]
     }
   },
   "include": ["**/*.ts", "../src/**/*.ts"]
