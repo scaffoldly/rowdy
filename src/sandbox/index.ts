@@ -1,6 +1,7 @@
 import type { Writable } from 'stream';
+import { SandboxImpl } from './internal/sandbox';
 
-export type SandboxOptions = {
+export interface SandboxOptions {
   /** The container image to run. */
   image?: string;
   /** A name for the sandbox. */
@@ -13,14 +14,14 @@ export type SandboxOptions = {
   env?: Record<string, string>;
   /** Cancels the creation. */
   signal?: AbortSignal;
-};
+}
 
-export type SandboxLookup = {
+export interface SandboxLookup {
   sandboxId: string;
   signal?: AbortSignal;
-};
+}
 
-export type RunCommandParams = {
+export interface RunCommandParams {
   /** The binary to run. There is no shell: pipes and redirects need `sh -c`. */
   cmd: string;
   args?: string[];
@@ -34,22 +35,29 @@ export type RunCommandParams = {
   detached?: boolean;
   /** Cancels the command. */
   signal?: AbortSignal;
-};
+}
 
-export type RunCommandOptions = Pick<RunCommandParams, 'signal'>;
+export interface DetachedRunCommandParams extends RunCommandParams {
+  detached: true;
+}
 
-export type WriteFile = {
+export interface RunCommandOptions {
+  /** Cancels the command. */
+  signal?: AbortSignal;
+}
+
+export interface WriteFile {
   /** Relative to the sandbox's working directory, unless absolute. */
   path: string;
   content: Buffer;
   mode?: number;
-};
+}
 
-export type ReadFile = {
+export interface ReadFile {
   /** Relative to the sandbox's working directory, unless absolute. */
   path: string;
   signal?: AbortSignal;
-};
+}
 
 /** A command in a sandbox, running or exited. */
 export interface Command {
@@ -69,55 +77,33 @@ export interface CommandFinished extends Command {
   readonly exitCode: number;
 }
 
-export class Sandbox {
-  private constructor() {}
-
-  /** Starts a new sandbox. */
-  static async create(_options?: SandboxOptions): Promise<Sandbox> {
-    throw new Error('not implemented');
-  }
-
-  /** Connects to a sandbox that is already running. */
-  static async get(_lookup: SandboxLookup): Promise<Sandbox> {
-    throw new Error('not implemented');
-  }
-
-  get sandboxId(): string {
-    throw new Error('not implemented');
-  }
-
+/** A running sandbox. */
+export interface Sandbox {
+  readonly sandboxId: string;
   /** Resolves when the command exits, whatever its exit code; rejects only if it could not run. */
   runCommand(cmd: string, args?: string[], options?: RunCommandOptions): Promise<CommandFinished>;
-  runCommand(params: RunCommandParams & { detached: true }): Promise<Command>;
+  /** Resolves once the command has started. */
+  runCommand(params: DetachedRunCommandParams): Promise<Command>;
+  /** Resolves when the command exits, whatever its exit code; rejects only if it could not run. */
   runCommand(params: RunCommandParams): Promise<CommandFinished>;
-  async runCommand(
-    _command: string | RunCommandParams,
-    _args?: string[],
-    _options?: RunCommandOptions
-  ): Promise<Command> {
-    throw new Error('not implemented');
-  }
-
-  async writeFiles(_files: WriteFile[]): Promise<void> {
-    throw new Error('not implemented');
-  }
-
+  writeFiles(files: WriteFile[]): Promise<void>;
   /** Resolves to null when the file does not exist. */
-  async readFileToBuffer(_file: ReadFile): Promise<Buffer | null> {
-    throw new Error('not implemented');
-  }
-
-  async mkDir(_path: string): Promise<void> {
-    throw new Error('not implemented');
-  }
-
+  readFileToBuffer(file: ReadFile): Promise<Buffer | null>;
+  mkDir(path: string): Promise<void>;
   /** Adds milliseconds to the sandbox's timeout. */
-  async extendTimeout(_duration: number): Promise<void> {
-    throw new Error('not implemented');
-  }
-
+  extendTimeout(duration: number): Promise<void>;
   /** Safe to call more than once. */
-  async stop(): Promise<void> {
-    throw new Error('not implemented');
-  }
+  stop(): Promise<void>;
 }
+
+export interface SandboxFactory {
+  /** Starts a new sandbox. */
+  create(options?: SandboxOptions): Promise<Sandbox>;
+  /** Connects to a sandbox that is already running. */
+  get(lookup: SandboxLookup): Promise<Sandbox>;
+}
+
+export const Sandbox: SandboxFactory = {
+  create: (options) => SandboxImpl.create(options),
+  get: (lookup) => SandboxImpl.get(lookup),
+};

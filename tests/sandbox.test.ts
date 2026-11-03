@@ -1,4 +1,5 @@
 import { Command, CommandFinished, Sandbox } from '@scaffoldly/rowdy/sandbox';
+import { SandboxImpl } from '../src/sandbox/internal/sandbox';
 
 const NOT_IMPLEMENTED = 'not implemented';
 
@@ -28,12 +29,16 @@ describe('sandbox', () => {
     await expect(main()).rejects.toThrow(NOT_IMPLEMENTED);
   });
 
+  it('exposes only create and get', () => {
+    expect(Object.keys(Sandbox).sort()).toEqual(['create', 'get']);
+  });
+
   it('does not implement get', async () => {
     await expect(Sandbox.get({ sandboxId: 'sandbox' })).rejects.toThrow(NOT_IMPLEMENTED);
   });
 
   describe('an instance', () => {
-    const sandbox: Sandbox = Object.create(Sandbox.prototype);
+    const sandbox: Sandbox = Object.create(SandboxImpl.prototype);
 
     it.each<[string, () => Promise<unknown>]>([
       ['runCommand', () => sandbox.runCommand('echo')],
