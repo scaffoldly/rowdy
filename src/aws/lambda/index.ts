@@ -958,6 +958,7 @@ export class LambdaFunction implements Logger {
             FunctionName,
             Qualifier: '$LATEST',
             Payload: Buffer.from(JSON.stringify(event)),
+            LogType: 'Tail',
           }),
           { abortSignal: AbortSignal.any([this.signal, controller.signal]) }
         )
@@ -1001,7 +1002,9 @@ export class LambdaFunction implements Logger {
                 .pipe(
                   concatMap(({ PayloadChunk, InvokeComplete }) => {
                     if (InvokeComplete?.ErrorCode) {
-                      throw new Error(`${InvokeComplete.ErrorCode}: ${InvokeComplete.ErrorDetails}`);
+                      const { ErrorCode, ErrorDetails, LogResult = '' } = InvokeComplete;
+                      const tail = Buffer.from(LogResult, 'base64').toString();
+                      throw new Error([ErrorCode, ErrorDetails, tail].filter(Boolean).join(': '));
                     }
                     // A frame can span PayloadChunks, and a PayloadChunk can hold several frames.
                     buffer = Buffer.concat([buffer, PayloadChunk?.Payload ?? Buffer.alloc(0)]);

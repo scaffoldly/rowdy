@@ -1,4 +1,4 @@
-import { AsyncSubject, defer, map, NEVER, Observable, of, race, switchMap, tap } from 'rxjs';
+import { AsyncSubject, defer, EMPTY, map, NEVER, Observable, of, race, switchMap, tap } from 'rxjs';
 import { Proxy, Pipeline, Request, Response, Result, Chunk } from '../pipeline';
 import { Environment } from '../environment';
 import axios from 'axios';
@@ -150,7 +150,7 @@ export class LambdaRequest extends Request<LambdaPipeline> {
         bytes: this.data.length,
         stack: error instanceof Error ? error.stack : undefined,
       });
-      return NEVER;
+      return of(new LambdaRefusedProxy(this.pipeline, this, 'Unsupported Event'));
     }
 
     if (isFunctionUrlEvent(data)) {
@@ -227,7 +227,7 @@ export class LambdaRequest extends Request<LambdaPipeline> {
     }
 
     log.warn('Unsupported Event', { request: this });
-    return NEVER;
+    return of(new LambdaRefusedProxy(this.pipeline, this, 'Unsupported Event'));
   }
 
   protected intoCron(event: CronSchema): Observable<Proxy<LambdaPipeline, HttpResponse>> {
@@ -314,7 +314,7 @@ export class LambdaRequest extends Request<LambdaPipeline> {
     // Exec is arbitrary code for anyone with lambda:InvokeFunction, so only a sandbox runs it.
     if (process.env.ROWDY_SANDBOX !== 'true') {
       log.warn('Exec Refused', { reason: 'not a sandbox' });
-      return NEVER;
+      return of(new LambdaRefusedProxy(this.pipeline, this, 'Exec Refused: not a sandbox'));
     }
 
     const { cmd, args = [], cwd, env } = data.spec!;
@@ -453,6 +453,31 @@ export class LambdaCronProxy extends LambdaHttpProxy {
         return response;
       })
     );
+  }
+}
+
+// An unanswered invocation holds the runtime open, and with no command to keep it alive rowdy exits.
+export class LambdaRefusedProxy extends Proxy<LambdaPipeline, never> {
+  constructor(
+    pipeline: LambdaPipeline,
+    request: Request<LambdaPipeline>,
+    private readonly reason: string
+  ) {
+    super(pipeline, request);
+  }
+
+  override invoke(): Observable<never> {
+    return EMPTY;
+  }
+
+  override into(): Observable<Response<LambdaPipeline>> {
+    const response = new LambdaResponse(this.pipeline, this.request);
+    response.error(new Error(this.reason));
+    return of(response);
+  }
+
+  override repr(): string {
+    return `LambdaRefusedProxy(reason=${this.reason})`;
   }
 }
 

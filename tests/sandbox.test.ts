@@ -481,6 +481,22 @@ describe('sandbox', () => {
       await expect(sandbox.runCommand('sh')).rejects.toThrow('Runtime.Error: Request deadline reached');
     });
 
+    it('reports the end of the function log on a failed invocation', async () => {
+      const LogResult = Buffer.from('Runtime.ExitError').toString('base64');
+      const { sandbox } = await start({ InvokeComplete: { ErrorCode: 'Unhandled', LogResult } });
+
+      await expect(sandbox.runCommand('sh')).rejects.toThrow('Unhandled: Runtime.ExitError');
+    });
+
+    it('asks for the function log', async () => {
+      const { sandbox, send } = await start(exited);
+
+      await sandbox.runCommand('sh');
+
+      const { input } = send.mock.calls[0]![0] as { input: { LogType: string } };
+      expect(input.LogType).toBe('Tail');
+    });
+
     it('rejects a stream that ends without an exit', async () => {
       const { sandbox } = await start(payload(execFrame(EXEC_STREAM.STDOUT, Buffer.from('out'))), {
         InvokeComplete: {},

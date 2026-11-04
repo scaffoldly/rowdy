@@ -5,7 +5,7 @@ import { FileDescriptors, Result } from '../../src/pipeline';
 import { ShellResponse } from '../../src/proxy/shell';
 import { HttpProxy } from '../../src/proxy/http';
 import { APIGatewayProxyEventV2 } from 'aws-lambda';
-import { lastValueFrom } from 'rxjs';
+import { firstValueFrom, lastValueFrom } from 'rxjs';
 
 const CRON_LINE = '*/15 * * * * POST https://localhost:3000/tunnel/gc';
 
@@ -206,6 +206,30 @@ describe('aws lambda runtime', () => {
       expect(isExecEvent({ ...exec, spec: { cmd: 'echo', args: 'hi' } })).toBe(false);
       expect(isExecEvent(cronEvent(CRON_LINE))).toBe(false);
       expect(isExecEvent(null)).toBe(false);
+    });
+
+    const answer = async (event: unknown): Promise<unknown> => {
+      const pipeline = new LambdaPipeline(new Environment(new Logger()));
+      const proxy = await firstValueFrom(new LambdaRequest(pipeline, JSON.stringify(event)).into());
+      const response = await firstValueFrom(proxy.into());
+      return lastValueFrom(response);
+    };
+
+    it('answers a refused exec with an error', async () => {
+      delete process.env.ROWDY_SANDBOX;
+
+      await expect(answer(exec)).rejects.toThrow('Exec Refused: not a sandbox');
+    });
+
+    it('answers an unsupported event with an error', async () => {
+      await expect(answer({ hello: 'world' })).rejects.toThrow('Unsupported Event');
+    });
+
+    it('answers a payload that is not JSON with an error', async () => {
+      const pipeline = new LambdaPipeline(new Environment(new Logger()));
+      const proxy = await firstValueFrom(new LambdaRequest(pipeline, 'not json').into());
+
+      await expect(lastValueFrom(await firstValueFrom(proxy.into()))).rejects.toThrow('Unsupported Event');
     });
 
     it('refuses exec outside a sandbox', () => {
