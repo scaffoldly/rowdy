@@ -1,4 +1,5 @@
 import type { Writable } from 'stream';
+import type { Level } from '../log';
 import { SandboxImpl } from './internal/sandbox';
 
 export interface SandboxOptions {
@@ -12,6 +13,8 @@ export interface SandboxOptions {
   memory?: number;
   /** Environment variables for every command; a command's own `env` overrides them. */
   env?: Record<string, string>;
+  /** Applies to the whole process. Defaults to ROWDY_LOG_LEVEL, ROWDY_DEBUG or ROWDY_TRACE, then `warn`. */
+  logLevel?: Level;
   /** Aborts the sandbox's work in progress, including its creation. */
   signal?: AbortSignal;
 }

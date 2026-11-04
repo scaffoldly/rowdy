@@ -1,3 +1,4 @@
+import { Logger } from '@scaffoldly/rowdy';
 import { Command, CommandFinished, Sandbox } from '@scaffoldly/rowdy/sandbox';
 import { NEVER, Observable, of, Subject, throwError } from 'rxjs';
 import { ROWDY_LAYERS } from '../src/api/internal/layers';
@@ -122,6 +123,65 @@ describe('sandbox', () => {
         await expect(SandboxImpl.create(options)).resolves.toBeInstanceOf(SandboxImpl);
       }
     );
+
+    it('aborts its environment when the deploy fails', async () => {
+      const error = new Error('Region is missing');
+      const abort = jest.spyOn(AbortController.prototype, 'abort');
+      observe.mockReturnValue(throwError(() => error));
+
+      await expect(SandboxImpl.create()).rejects.toBe(error);
+
+      expect(abort).toHaveBeenCalledWith(error);
+    });
+
+    describe('log level', () => {
+      const { ROWDY_LOG_LEVEL } = process.env;
+
+      beforeEach(() => {
+        delete process.env.ROWDY_LOG_LEVEL;
+        new Logger().withLevel(undefined);
+      });
+
+      afterEach(() => {
+        delete process.env.ROWDY_DEBUG;
+        if (ROWDY_LOG_LEVEL === undefined) {
+          delete process.env.ROWDY_LOG_LEVEL;
+        } else {
+          process.env.ROWDY_LOG_LEVEL = ROWDY_LOG_LEVEL;
+        }
+        new Logger().withLevel(undefined);
+      });
+
+      it('is warn by default', async () => {
+        await SandboxImpl.create();
+
+        expect(new Logger().level).toBe('warn');
+      });
+
+      it('takes logLevel over ROWDY_LOG_LEVEL', async () => {
+        process.env.ROWDY_LOG_LEVEL = 'trace';
+
+        await SandboxImpl.create({ logLevel: 'error' });
+
+        expect(new Logger().level).toBe('error');
+      });
+
+      it('follows ROWDY_LOG_LEVEL', async () => {
+        process.env.ROWDY_LOG_LEVEL = 'info';
+
+        await SandboxImpl.create();
+
+        expect(new Logger().level).toBe('info');
+      });
+
+      it('follows ROWDY_DEBUG', async () => {
+        process.env.ROWDY_DEBUG = 'true';
+
+        await SandboxImpl.create();
+
+        expect(new Logger().level).toBe('debug');
+      });
+    });
 
     it('rejects when the deploy fails', async () => {
       observe.mockReturnValue(throwError(() => new Error('AccessDenied')));

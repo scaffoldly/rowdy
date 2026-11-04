@@ -10,7 +10,7 @@ import type {
   SandboxOptions,
   WriteFile,
 } from '..';
-import { defer, fromEvent, iif, last, lastValueFrom, map, of, race, switchMap, throwError } from 'rxjs';
+import { defer, fromEvent, iif, last, lastValueFrom, map, of, race, switchMap, tap, throwError } from 'rxjs';
 import { Environment, Logger } from '../..';
 import { deploySources } from '../../api/internal/layers';
 import { LambdaImageService } from '../../aws/lambda/image';
@@ -26,9 +26,17 @@ export class SandboxImpl implements Sandbox {
     timeout,
     memory,
     env,
+    logLevel,
     signal,
-  }: Required<Omit<SandboxOptions, 'name'>> & Pick<SandboxOptions, 'name'>) {
-    this.environment = new Environment(new Logger('sandbox'), { signal });
+  }: Required<Omit<SandboxOptions, 'name' | 'logLevel'>> & Pick<SandboxOptions, 'name' | 'logLevel'>) {
+    // A host's terminal stays quiet unless logLevel, ROWDY_LOG_LEVEL, ROWDY_DEBUG or ROWDY_TRACE says otherwise.
+    const log = new Logger('sandbox');
+    if (logLevel) {
+      log.withLevel(logLevel);
+    } else if (!process.env.ROWDY_LOG_LEVEL && log.level === 'info') {
+      log.withLevel('warn');
+    }
+    this.environment = new Environment(log, { signal });
 
     let lambda = new LambdaFunction(
       'Container',
@@ -62,6 +70,7 @@ export class SandboxImpl implements Sandbox {
       timeout,
       memory,
       env: options?.env ?? {},
+      logLevel: options?.logLevel,
       signal: options?.signal ?? new AbortController().signal,
     });
     const { signal } = sandbox.environment;
@@ -75,6 +84,9 @@ export class SandboxImpl implements Sandbox {
           last(),
           map(() => sandbox)
         )
+      ).pipe(
+        // A failed step leaves the others in flight until the environment aborts.
+        tap({ error: (error) => sandbox.environment.abort.abort(error) })
       )
     );
   }

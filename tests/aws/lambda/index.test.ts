@@ -13,7 +13,7 @@ import {
 import { inspect } from 'util';
 import { readFileSync } from 'fs';
 import { join } from 'path';
-import { lastValueFrom, Observable, of, toArray } from 'rxjs';
+import { finalize, lastValueFrom, NEVER, Observable, of, toArray } from 'rxjs';
 import { CdnStore, Written } from '../../../src/cdn';
 import { Statement } from 'aws-lambda';
 
@@ -820,6 +820,30 @@ describe('aws lambda working directory', () => {
     const input = await deployConfiguration(undefined);
     expect((input.ImageConfig as Record<string, unknown>).WorkingDirectory).toBe('/');
     expect((input.Environment as { Variables: Record<string, string> }).Variables.ROWDY_WORKDIR).toBe('/');
+  });
+});
+
+describe('aws lambda image pull', () => {
+  it('stops pulling when its environment aborts', async () => {
+    const environment = new Environment(new Logger(), {});
+    const service = new LambdaImageService(environment);
+    const stopped = jest.fn();
+    jest.spyOn(environment.rowdy.images, 'pullImage').mockReturnValue(NEVER.pipe(finalize(stopped)));
+
+    const pull = service.pullImage({
+      $typeName: 'runtime.v1.PullImageRequest',
+      image: {
+        $typeName: 'runtime.v1.ImageSpec',
+        image: 'busybox',
+        annotations: {},
+        runtimeHandler: '',
+        userSpecifiedImage: '',
+      },
+    });
+    environment.abort.abort(new Error('Region is missing'));
+
+    await expect(pull).rejects.toThrow();
+    expect(stopped).toHaveBeenCalled();
   });
 });
 
