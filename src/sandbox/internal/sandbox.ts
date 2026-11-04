@@ -3,13 +3,14 @@ import { isAxiosError } from 'axios';
 import {
   catchError,
   defer,
-  endWith,
+  from,
   fromEvent,
   ignoreElements,
   iif,
   last,
   lastValueFrom,
   map,
+  merge,
   NEVER,
   of,
   race,
@@ -22,7 +23,7 @@ import { deploySources } from '../../api/internal/layers';
 import { Transfer } from '../../api/internal/transfer';
 import { LambdaImageService } from '../../aws/lambda/image';
 import { LambdaFunction } from '../../aws/lambda/index';
-import { EXEC_STREAM, ShellExit } from '../../proxy/shell';
+import { EXEC_STREAM } from '../../proxy/shell';
 
 export class SandboxImpl implements Sandbox {
   private environment: Environment;
@@ -133,11 +134,6 @@ export class SandboxImpl implements Sandbox {
       typeof command === 'string' ? { cmd: command, args, signal: options?.signal } : command;
     const { signal } = params;
 
-    const stdout: Buffer[] = [];
-    const stderr: Buffer[] = [];
-    let exit: ShellExit | undefined;
-    let cmdId = '';
-
     return lastValueFrom(
       race(
         signal
@@ -153,36 +149,18 @@ export class SandboxImpl implements Sandbox {
             status: undefined,
           })
           .pipe(
-            tap(({ requestId, stream, payload }) => {
-              cmdId = requestId;
-              if (stream === EXEC_STREAM.STDOUT) {
-                stdout.push(payload);
-                params.stdout?.write(payload);
-              }
-              if (stream === EXEC_STREAM.STDERR) {
-                stderr.push(payload);
-                params.stderr?.write(payload);
-              }
-              if (stream === EXEC_STREAM.EXIT) {
-                exit = JSON.parse(payload.toString());
-              }
-            }),
-            ignoreElements(),
-            endWith(undefined),
-            map(() => {
-              if (!exit) {
-                throw new Error('Command ended without an exit');
-              }
-              const finished: CommandFinished = {
-                cmdId,
-                exitCode: exit.code,
-                stdout: async () => Buffer.concat(stdout).toString(),
-                stderr: async () => Buffer.concat(stderr).toString(),
-                wait: async () => finished,
-                kill: async () => undefined,
-              };
-              return finished;
-            })
+            switchMap((exec) =>
+              merge(
+                exec.frames.pipe(
+                  tap(({ stream, payload }) => {
+                    if (stream === EXEC_STREAM.STDOUT) params.stdout?.write(payload);
+                    if (stream === EXEC_STREAM.STDERR) params.stderr?.write(payload);
+                  }),
+                  ignoreElements()
+                ),
+                from(exec.wait())
+              )
+            )
           )
       )
     );

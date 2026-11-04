@@ -12,6 +12,8 @@ export type ApiSchema<Spec, Status> = {
   status: Status;
 };
 
+export type ExecFrame = { stream: number; payload: Buffer };
+
 /** A command in a sandbox, running or exited. */
 export interface Exec {
   readonly cmdId: string;
@@ -23,7 +25,10 @@ export interface Exec {
   stderr(): Promise<string>;
   /** Resolves when the command exits, whatever its exit code. */
   wait(): Promise<ExecFinished>;
-  kill(signal?: NodeJS.Signals): Promise<void>;
+  /** Every frame so far, then each as it arrives. Completes with the command. */
+  readonly frames: Observable<ExecFrame>;
+  // TODO: kill
+  // kill(signal?: NodeJS.Signals): Promise<void>;
 }
 
 export interface ExecFinished extends Exec {

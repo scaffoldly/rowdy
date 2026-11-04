@@ -85,12 +85,16 @@ import {
   toArray,
   concatMap,
   finalize,
+  endWith,
+  ignoreElements,
+  lastValueFrom,
 } from 'rxjs';
 import promiseRetry from 'promise-retry';
 import { inspect } from 'util';
 import { Environment, Routes } from '../..';
 import { Crontab, ExecSchema, Volume } from '../../routes';
-import type { ExecFrame } from '../../proxy/shell';
+import { EXEC_STREAM, ShellExit } from '../../proxy/shell';
+import { Exec, ExecFinished, ExecFrame } from '../../api/types';
 import { mask, maskJson } from '../../log';
 import { CdnStore, cdnStore } from '../../cdn';
 import { TPulledImage } from '../../api/types';
@@ -935,8 +939,11 @@ export class LambdaFunction implements Logger {
     });
   }
 
-  /** Runs a command in this sandbox, emitting its frames. Unsubscribing stops waiting, not the command. */
-  exec(event: ExecSchema): Observable<ExecFrame> {
+  /**
+   * Runs a command in this sandbox, emitting its handle once and completing with the command. Unsubscribing
+   * stops waiting and fails the handle; the command runs on until it exits or times out.
+   */
+  exec(event: ExecSchema): Observable<Exec> {
     return defer(() => {
       const { FunctionArn: FunctionName } = this.State;
       if (!this.isSandbox() || !FunctionName) {
@@ -944,7 +951,6 @@ export class LambdaFunction implements Logger {
       }
 
       const controller = new AbortController();
-      let buffer = Buffer.alloc(0);
 
       return from(
         this.invoker.send(
@@ -956,27 +962,80 @@ export class LambdaFunction implements Logger {
           { abortSignal: AbortSignal.any([this.signal, controller.signal]) }
         )
       ).pipe(
-        switchMap(({ EventStream, $metadata }) =>
-          from(EventStream ?? []).pipe(
-            concatMap(({ PayloadChunk, InvokeComplete }) => {
-              if (InvokeComplete?.ErrorCode) {
-                throw new Error(`${InvokeComplete.ErrorCode}: ${InvokeComplete.ErrorDetails}`);
-              }
-              // A frame can span PayloadChunks, and a PayloadChunk can hold several frames.
-              buffer = Buffer.concat([buffer, PayloadChunk?.Payload ?? Buffer.alloc(0)]);
-              const frames: ExecFrame[] = [];
-              while (buffer.length >= 8 && buffer.length >= 8 + buffer.readUInt32BE(4)) {
-                const size = buffer.readUInt32BE(4);
-                frames.push({
-                  requestId: $metadata.requestId ?? '',
-                  stream: buffer.readUInt8(0),
-                  payload: Buffer.from(buffer.subarray(8, 8 + size)),
+        switchMap(
+          ({ EventStream, $metadata }) =>
+            new Observable<Exec>((subscriber) => {
+              const frames = new ReplaySubject<ExecFrame>();
+              const stdout: Buffer[] = [];
+              const stderr: Buffer[] = [];
+              let exit: ShellExit | undefined;
+              let buffer = Buffer.alloc(0);
+
+              const exec: Exec = {
+                cmdId: $metadata.requestId ?? '',
+                get exitCode() {
+                  return exit?.code;
+                },
+                frames: frames.asObservable(),
+                stdout: async () => Buffer.concat(stdout).toString(),
+                stderr: async () => Buffer.concat(stderr).toString(),
+                wait: () =>
+                  lastValueFrom(
+                    frames.pipe(
+                      ignoreElements(),
+                      endWith(undefined),
+                      map(() => {
+                        if (!exit) {
+                          throw new Error('Command ended without an exit');
+                        }
+                        const finished: ExecFinished = { ...exec, exitCode: exit.code, wait: async () => finished };
+                        return finished;
+                      })
+                    )
+                  ),
+              };
+
+              subscriber.next(exec);
+
+              const subscription = from(EventStream ?? [])
+                .pipe(
+                  concatMap(({ PayloadChunk, InvokeComplete }) => {
+                    if (InvokeComplete?.ErrorCode) {
+                      throw new Error(`${InvokeComplete.ErrorCode}: ${InvokeComplete.ErrorDetails}`);
+                    }
+                    // A frame can span PayloadChunks, and a PayloadChunk can hold several frames.
+                    buffer = Buffer.concat([buffer, PayloadChunk?.Payload ?? Buffer.alloc(0)]);
+                    const decoded: ExecFrame[] = [];
+                    while (buffer.length >= 8 && buffer.length >= 8 + buffer.readUInt32BE(4)) {
+                      const size = buffer.readUInt32BE(4);
+                      decoded.push({ stream: buffer.readUInt8(0), payload: Buffer.from(buffer.subarray(8, 8 + size)) });
+                      buffer = buffer.subarray(8 + size);
+                    }
+                    return decoded;
+                  }),
+                  tap(({ stream, payload }) => {
+                    if (stream === EXEC_STREAM.STDOUT) stdout.push(payload);
+                    if (stream === EXEC_STREAM.STDERR) stderr.push(payload);
+                    if (stream === EXEC_STREAM.EXIT) exit = JSON.parse(payload.toString());
+                  })
+                )
+                .subscribe({
+                  next: (frame) => frames.next(frame),
+                  error: (error) => {
+                    frames.error(error);
+                    subscriber.error(error);
+                  },
+                  complete: () => {
+                    frames.complete();
+                    subscriber.complete();
+                  },
                 });
-                buffer = buffer.subarray(8 + size);
-              }
-              return frames;
+
+              return () => {
+                subscription.unsubscribe();
+                frames.error(new Error('Exec abandoned'));
+              };
             })
-          )
         ),
         finalize(() => controller.abort())
       );

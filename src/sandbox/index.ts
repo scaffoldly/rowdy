@@ -67,8 +67,8 @@ export interface RunCommandOptions {
 //   signal?: AbortSignal;
 // }
 
-export type Command = Exec;
-export type CommandFinished = ExecFinished;
+export type Command = Omit<Exec, 'frames'>;
+export type CommandFinished = Omit<ExecFinished, 'frames'>;
 
 /** A running sandbox. */
 export interface Sandbox {

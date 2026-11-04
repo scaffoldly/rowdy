@@ -2,10 +2,11 @@ import { Logger } from '@scaffoldly/rowdy';
 import { CommandFinished, Sandbox } from '@scaffoldly/rowdy/sandbox';
 import { AxiosError, AxiosHeaders, InternalAxiosRequestConfig } from 'axios';
 import { InvokeWithResponseStreamResponseEvent, LambdaClient } from '@aws-sdk/client-lambda';
-import { NEVER, Observable, of, Subject, throwError } from 'rxjs';
+import { lastValueFrom, NEVER, Observable, of, Subject, throwError, toArray } from 'rxjs';
 import { PassThrough } from 'stream';
 import { ROWDY_LAYERS } from '../src/api/internal/layers';
 import { LambdaFunction } from '../src/aws/lambda/index';
+import { Exec } from '../src/api/types';
 import { EXEC_STREAM, execFrame } from '../src/proxy/shell';
 import { SandboxImpl } from '../src/sandbox/internal/sandbox';
 
@@ -297,7 +298,7 @@ describe('sandbox', () => {
   });
 
   describe('runCommand', () => {
-    const start = async (...events: Event[]): Promise<{ sandbox: Sandbox; send: jest.SpyInstance }> => {
+    const start = async (...events: Event[]): Promise<{ sandbox: SandboxImpl; send: jest.SpyInstance }> => {
       const send = jest.spyOn(LambdaClient.prototype, 'send');
       send.mockImplementation(() =>
         Promise.resolve({ $metadata: { requestId: 'req' }, EventStream: stream(...events) })
@@ -404,6 +405,72 @@ describe('sandbox', () => {
       );
 
       expect(await (await sandbox.runCommand('sh')).stdout()).toBe('€');
+    });
+
+    describe('exec', () => {
+      const run = (lambda: LambdaFunction) =>
+        lambda.exec({ apiVersion: 'rowdy.run/v1alpha1', kind: 'Exec', spec: { cmd: 'sh' }, status: undefined });
+
+      it('emits one handle, running until the exit arrives', async () => {
+        let release: () => void = () => undefined;
+        const held = new Promise<void>((resolve) => (release = resolve));
+        const { sandbox, send } = await start();
+        send.mockImplementation(() =>
+          Promise.resolve({
+            $metadata: { requestId: 'req' },
+            EventStream: (async function* (): AsyncGenerator<Event> {
+              yield payload(execFrame(EXEC_STREAM.STDOUT, Buffer.from('out')));
+              await held;
+              yield exited;
+            })(),
+          })
+        );
+
+        const handles: Exec[] = [];
+        const subscription = run(sandbox['lambda']).subscribe((handle) => handles.push(handle));
+        await new Promise((resolve) => setTimeout(resolve, 10));
+
+        expect(handles).toHaveLength(1);
+        expect(handles[0]!.cmdId).toBe('req');
+        expect(handles[0]!.exitCode).toBeUndefined();
+        expect(await handles[0]!.stdout()).toBe('out');
+
+        release();
+        const finished = await handles[0]!.wait();
+
+        expect(finished.exitCode).toBe(0);
+        expect(handles[0]!.exitCode).toBe(0);
+        subscription.unsubscribe();
+      });
+
+      it('replays frames to a late subscriber', async () => {
+        const { sandbox } = await start(payload(execFrame(EXEC_STREAM.STDOUT, Buffer.from('out'))), exited);
+
+        const exec = await lastValueFrom(run(sandbox['lambda']));
+        const frames = await lastValueFrom(exec.frames.pipe(toArray()));
+
+        expect(frames.map(({ stream }) => stream)).toEqual([EXEC_STREAM.STDOUT, EXEC_STREAM.EXIT]);
+      });
+
+      it('fails the handle when abandoned', async () => {
+        const { sandbox, send } = await start();
+        send.mockImplementation(() =>
+          Promise.resolve({
+            $metadata: {},
+            EventStream: (async function* (): AsyncGenerator<Event> {
+              yield await new Promise<never>(() => undefined);
+            })(),
+          })
+        );
+        const handles: Exec[] = [];
+
+        const subscription = run(sandbox['lambda']).subscribe((handle) => handles.push(handle));
+        await new Promise((resolve) => setTimeout(resolve, 10));
+        const waiting = handles[0]!.wait();
+        subscription.unsubscribe();
+
+        await expect(waiting).rejects.toThrow('Exec abandoned');
+      });
     });
 
     it('rejects a failed invocation', async () => {
