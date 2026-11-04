@@ -10,8 +10,22 @@ import type {
   SandboxOptions,
   WriteFile,
 } from '..';
-import { defer, fromEvent, iif, last, lastValueFrom, map, of, race, switchMap, tap, throwError } from 'rxjs';
-import { Environment, Logger } from '../..';
+import { isAxiosError } from 'axios';
+import {
+  catchError,
+  defer,
+  fromEvent,
+  iif,
+  last,
+  lastValueFrom,
+  map,
+  of,
+  race,
+  switchMap,
+  tap,
+  throwError,
+} from 'rxjs';
+import { Environment, Logger, maskUrl } from '../..';
 import { deploySources } from '../../api/internal/layers';
 import { LambdaImageService } from '../../aws/lambda/image';
 import { LambdaFunction } from '../../aws/lambda/index';
@@ -85,6 +99,16 @@ export class SandboxImpl implements Sandbox {
           map(() => sandbox)
         )
       ).pipe(
+        // An AxiosError carries its request headers and sockets into a caller's logs.
+        catchError((error) =>
+          throwError(() =>
+            isAxiosError(error)
+              ? new Error(
+                  `${error.config?.method?.toUpperCase()} ${maskUrl(error.config?.url ?? '')}: ${error.response?.status ?? error.code}`
+                )
+              : error
+          )
+        ),
         // A failed step leaves the others in flight until the environment aborts.
         tap({ error: (error) => sandbox.environment.abort.abort(error) })
       )

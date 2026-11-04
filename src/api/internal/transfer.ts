@@ -19,7 +19,7 @@ import {
 import { HttpHeaders } from '../../proxy/http';
 import { createHash } from 'crypto';
 import { ILoggable, Logger } from '../../log';
-import { AxiosInstance, AxiosResponse, isAxiosError } from 'axios';
+import { AxiosError, AxiosInstance, AxiosResponse, isAxiosError } from 'axios';
 import { PullImageOptions, TRegistry } from '../types';
 import { checkSource, skippedLevel } from './layers';
 import { homedir } from 'os';
@@ -95,6 +95,22 @@ export type ImageManifest = Image & {
 export type Source = { from: string; manifest: ImageManifest; configs: Map<string, External['Config']> };
 
 /** What a blob is read with: a layers-from source's anonymously, never with the app image's credentials. */
+// `unref` keeps a backoff from holding the process open once its transfer is torn down.
+export const RETRY = { retries: 6, minTimeout: 1_000, maxTimeout: 15_000, unref: true };
+const RETRYABLE: ReadonlySet<number | undefined> = new Set([429, 500, 502, 503, 504]);
+
+/**
+ * A `.catch` for a promiseRetry attempt: retries a retryable status, or `also`. A connection lost before any
+ * response counts as a 500. `replayable` is false when the request body is a stream, consumed by its first attempt.
+ */
+const retryOn =
+  (retry: (error: unknown) => never, { also, replayable = true }: { also?: number; replayable?: boolean } = {}) =>
+  (error: AxiosError | (Error & { status?: number })): never => {
+    const status = isAxiosError(error) ? (error.response?.status ?? 500) : error.status;
+    if (replayable && status && (status === also || RETRYABLE.has(status))) return retry(error);
+    throw error;
+  };
+
 export const sourceHeaders = (app: HttpHeaders, ref: External['Ref']): HttpHeaders =>
   ref.annotations?.['run.rowdy.index.url'] ? HttpHeaders.from({}) : app;
 
@@ -592,12 +608,16 @@ export class Transfer implements ILoggable {
             reduce((acc, cur) => {
               cur.finalize();
               return acc.withStatus(cur);
-            }, status)
+            }, status),
+            tap({
+              complete: () => {
+                if (latest) log.info(`Transfer complete: ${summary(latest)}`);
+              },
+            })
           )
           .subscribe(subscriber);
 
         return () => {
-          if (latest) log.info(`Transfer complete: ${summary(latest)}`);
           subscription.unsubscribe();
           clearInterval(proc);
         };
@@ -829,13 +849,17 @@ export class Upload implements ILoggable {
 
       if (this.type !== 'manifest') {
         if (
-          await promiseRetry(() =>
-            status.intercept(
-              this.http.head(this.verifyUrl, {
-                validateStatus: (status) => [200, 404].includes(status),
-                headers: this.transfer.toHeaders.intoAxios(),
-              })
-            )
+          await promiseRetry(
+            (retry) =>
+              status
+                .intercept(
+                  this.http.head(this.verifyUrl, {
+                    validateStatus: (status) => [200, 404].includes(status),
+                    headers: this.transfer.toHeaders.intoAxios(),
+                  })
+                )
+                .catch(retryOn(retry)),
+            RETRY
           ).then(
             (res) =>
               res.status === 200 &&
@@ -851,14 +875,17 @@ export class Upload implements ILoggable {
           }
         }
 
-        const location = await promiseRetry(() =>
-          status
-            .intercept(
-              this.http.post(toUrl, null, {
-                headers: this.transfer.toHeaders.with('Content-Type', this.mediaType).intoAxios(),
-              })
-            )
-            .then((res) => res.headers.get('location') as string | undefined)
+        const location = await promiseRetry(
+          (retry) =>
+            status
+              .intercept(
+                this.http.post(toUrl, null, {
+                  headers: this.transfer.toHeaders.with('Content-Type', this.mediaType).intoAxios(),
+                })
+              )
+              .then((res) => res.headers.get('location') as string | undefined)
+              .catch(retryOn(retry)),
+          RETRY
         );
 
         if (!location) {
@@ -878,14 +905,21 @@ export class Upload implements ILoggable {
         download = this.content;
       } else if (this.type !== 'manifest') {
         download = (
-          await promiseRetry(() =>
-            this.http.get<Readable>(fromUrl, {
-              responseType: 'stream',
-              maxBodyLength: Infinity,
-              maxContentLength: Infinity,
-              headers: sourceHeaders(this.transfer.fromHeaders, this.ref).with('accept', this.mediaType).intoAxios(),
-              onDownloadProgress: (e) => (this.bytes.received += e.bytes),
-            })
+          await promiseRetry(
+            (retry) =>
+              this.http
+                .get<Readable>(fromUrl, {
+                  responseType: 'stream',
+                  maxBodyLength: Infinity,
+                  maxContentLength: Infinity,
+                  headers: sourceHeaders(this.transfer.fromHeaders, this.ref)
+                    .with('accept', this.mediaType)
+                    .intoAxios(),
+                  onDownloadProgress: (e) => (this.bytes.received += e.bytes),
+                })
+                // A mirror can 404 a blob its manifest lists until the blob is cached.
+                .catch(retryOn(retry, { also: 404 })),
+            RETRY
           )
         ).data;
 
@@ -900,28 +934,36 @@ export class Upload implements ILoggable {
       }
 
       if (this.type !== 'manifest') {
-        await promiseRetry(() => {
-          return status.intercept(
-            this.http.patch(toUrl, download, {
-              headers: this.transfer.toHeaders.with('Content-Type', 'application/octet-stream').intoAxios(),
-              onUploadProgress: (e) => (this.bytes.sent += e.bytes),
-            })
-          );
-        });
+        await promiseRetry(
+          (retry) =>
+            status
+              .intercept(
+                this.http.patch(toUrl, download, {
+                  headers: this.transfer.toHeaders.with('Content-Type', 'application/octet-stream').intoAxios(),
+                  onUploadProgress: (e) => (this.bytes.sent += e.bytes),
+                })
+              )
+              .catch(retryOn(retry, { replayable: Buffer.isBuffer(download) })),
+          RETRY
+        );
         toUrl = `${toUrl}?digest=${this.digest}`;
         download = Readable.from('');
       }
 
-      await promiseRetry(() => {
-        return status.intercept(
-          this.http.put(toUrl, download, {
-            maxBodyLength: Infinity,
-            maxContentLength: Infinity,
-            headers: this.transfer.toHeaders.with('Content-Type', this.mediaType).intoAxios(),
-            onUploadProgress: (e) => (this.bytes.sent += e.bytes),
-          })
-        );
-      });
+      await promiseRetry(
+        (retry) =>
+          status
+            .intercept(
+              this.http.put(toUrl, download, {
+                maxBodyLength: Infinity,
+                maxContentLength: Infinity,
+                headers: this.transfer.toHeaders.with('Content-Type', this.mediaType).intoAxios(),
+                onUploadProgress: (e) => (this.bytes.sent += e.bytes),
+              })
+            )
+            .catch(retryOn(retry, { replayable: Buffer.isBuffer(download) })),
+        RETRY
+      );
 
       this._complete = true;
       return status;
@@ -1017,8 +1059,10 @@ class UploadStatus implements ILoggable {
           throw err;
         }
         this._codes.push(err.response?.status || 500);
-        this._reasons.push(this.reason(err.response!));
-        throw new Error(`Upload failed: ${this.reasons.reverse().join('\n\t')}`);
+        this._reasons.push(err.response ? this.reason(err.response) : err.message);
+        throw Object.assign(new Error(`Upload failed: ${this.reasons.reverse().join('\n\t')}`), {
+          status: err.response?.status || 500,
+        });
       });
   }
 

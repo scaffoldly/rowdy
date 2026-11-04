@@ -1,5 +1,6 @@
 import { Logger } from '@scaffoldly/rowdy';
 import { Command, CommandFinished, Sandbox } from '@scaffoldly/rowdy/sandbox';
+import { AxiosError, AxiosHeaders, InternalAxiosRequestConfig } from 'axios';
 import { NEVER, Observable, of, Subject, throwError } from 'rxjs';
 import { ROWDY_LAYERS } from '../src/api/internal/layers';
 import { LambdaFunction } from '../src/aws/lambda/index';
@@ -123,6 +124,21 @@ describe('sandbox', () => {
         await expect(SandboxImpl.create(options)).resolves.toBeInstanceOf(SandboxImpl);
       }
     );
+
+    it('reduces an http failure to its method, url and status', async () => {
+      const config: InternalAxiosRequestConfig = {
+        headers: new AxiosHeaders({ Authorization: 'Bearer secret' }),
+        method: 'get',
+        url: 'https://mirror.gcr.io/v2/e2bdev/base/blobs/sha256:abc',
+      };
+      const response = { status: 404, statusText: '', data: '', headers: {}, config };
+      observe.mockReturnValue(throwError(() => new AxiosError('failed', 'ERR_BAD_REQUEST', config, null, response)));
+
+      const error = await SandboxImpl.create().catch((e) => e);
+
+      expect(error).not.toBeInstanceOf(AxiosError);
+      expect(error.message).toBe('GET https://mirror.gcr.io/v2/e2bdev/base/blobs/sha256:abc: 404');
+    });
 
     it('aborts its environment when the deploy fails', async () => {
       const error = new Error('Region is missing');
