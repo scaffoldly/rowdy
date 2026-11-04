@@ -29,17 +29,23 @@ const log = root.child('shell');
 export class ShellRequest<P extends Pipeline> extends Request<P> {
   constructor(
     pipeline: P,
-    public readonly command: string[]
+    public readonly command: string[],
+    public readonly options: { cwd?: string; env?: Record<string, string> } = {}
   ) {
     super(pipeline);
   }
 
-  override into(): Observable<Proxy<P, unknown>> {
-    throw new Error('Method not implemented.');
+  override brief(): Record<string, string | number | boolean> {
+    return { exec: this.command[0] ?? '' };
   }
 
+  override into(): Observable<Proxy<P, unknown>> {
+    return of(new ShellProxy(this.pipeline, this));
+  }
+
+  // Arguments and env can carry secrets, so neither is logged.
   override repr(): string {
-    throw new Error('Method not implemented.');
+    return `ShellRequest(bin=${this.command[0]}, args=${this.command.length - 1})`;
   }
 }
 
@@ -75,7 +81,8 @@ export class ShellProxy<P extends Pipeline> extends Proxy<P, ShellResponse> {
           stdin: 'pipe',
           stdout: 'pipe',
           stderr: 'pipe',
-          env,
+          env: { ...env, ...this._request.options.env },
+          cwd: this._request.options.cwd,
           signal: this.signal,
           detached: this._background,
         };
@@ -142,7 +149,7 @@ export class ShellProxy<P extends Pipeline> extends Proxy<P, ShellResponse> {
   }
 
   override repr(): string {
-    throw new Error('Method not implemented.');
+    return `ShellProxy(request=${this._request.repr()}, background=${this._background})`;
   }
 }
 

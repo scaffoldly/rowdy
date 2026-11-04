@@ -328,6 +328,9 @@ export class LambdaRequest extends Request<LambdaPipeline> {
     if (isCronEvent(event)) {
       return { cron: event.spec?.line ?? '' };
     }
+    if (isExecEvent(event)) {
+      return { exec: event.spec?.cmd ?? '' };
+    }
     return { kind: 'unknown' };
   }
 
@@ -353,6 +356,9 @@ export class LambdaRequest extends Request<LambdaPipeline> {
     }
     if (isCronEvent(event)) {
       return `cron line=[${event.spec?.line ?? ''}]`;
+    }
+    if (isExecEvent(event)) {
+      return `exec cmd=[${event.spec?.cmd ?? ''}] args=${event.spec?.args?.length ?? 0}`;
     }
     return `unknown keys=[${event && typeof event === 'object' ? Object.keys(event).join(',') : typeof event}]`;
   }
