@@ -16,6 +16,7 @@ import {
 } from 'rxjs';
 import { Environment, Logger, maskUrl } from '../..';
 import { deploySources } from '../../api/internal/layers';
+import { Transfer } from '../../api/internal/transfer';
 import { LambdaImageService } from '../../aws/lambda/image';
 import { LambdaFunction } from '../../aws/lambda/index';
 
@@ -31,7 +32,7 @@ export class SandboxImpl implements Sandbox {
     env,
     logLevel,
     signal,
-  }: Required<Omit<SandboxOptions, 'name' | 'logLevel'>> & Pick<SandboxOptions, 'name' | 'logLevel'>) {
+  }: Required<Omit<SandboxOptions, 'logLevel'>> & Pick<SandboxOptions, 'logLevel'>) {
     // A host's terminal stays quiet unless logLevel, ROWDY_LOG_LEVEL, ROWDY_DEBUG or ROWDY_TRACE says otherwise.
     const log = new Logger('sandbox');
     if (logLevel) {
@@ -41,17 +42,15 @@ export class SandboxImpl implements Sandbox {
     }
     this.environment = new Environment(log, { signal });
 
-    let lambda = new LambdaFunction(
+    const lambda = new LambdaFunction(
       'Sandbox',
       new LambdaImageService(this.environment).withLayersFrom(deploySources(undefined))
     )
       .withImage(image)
       .withCommand([])
       .withTimeout(timeout / 1000)
-      .withMemory(memory);
-    if (name) {
-      lambda = lambda.withName(name);
-    }
+      .withMemory(memory)
+      .withName(name);
     this.lambda = Object.entries(env).reduce((fn, [key, value]) => fn.withEnvironment(key, value), lambda);
   }
 
@@ -67,10 +66,14 @@ export class SandboxImpl implements Sandbox {
       throw new RangeError(`memory must be whole MB from 128 to 10240, got ${memory}`);
     }
 
+    // TODO: bake our own image
+    const image = options?.image ?? 'e2bdev/base';
+    const { namespace, name, tags } = Transfer.normalizeImage(image);
+
     const sandbox = new SandboxImpl({
-      // TODO: bake our own image
-      image: options?.image ?? 'e2bdev/base',
-      name: options?.name,
+      image,
+      // The prefix keeps a sandbox off a function deployed any other way, whose exec must stay off.
+      name: `sandbox-${options?.name || `${namespace}-${name}-${tags[0]}`}`,
       timeout,
       memory,
       env: options?.env ?? {},

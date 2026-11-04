@@ -92,12 +92,32 @@ describe('sandbox', () => {
       expect(timeout).toHaveBeenCalledWith(900);
     });
 
-    it('leaves an unnamed function unnamed', async () => {
+    it.each([
+      [undefined, 'sandbox-e2bdev-base-latest'],
+      [{ image: 'python:3.14' }, 'sandbox-library-python-3.14'],
+      [{ name: '' }, 'sandbox-e2bdev-base-latest'],
+      [{ image: 'ghcr.io/acme/app:v1', name: 'box' }, 'sandbox-box'],
+    ])('names %j %s', async (options, expected) => {
       const name = jest.spyOn(LambdaFunction.prototype, 'withName');
 
-      await SandboxImpl.create();
+      await SandboxImpl.create(options);
 
-      expect(name).not.toHaveBeenCalled();
+      expect(name).toHaveBeenCalledWith(expected);
+    });
+
+    it('keeps a sandbox off the function of an unnamed deploy', async () => {
+      const sandbox = await SandboxImpl.create();
+      const { value } = sandbox['lambda']['Image'];
+
+      expect(LambdaFunction.roleName(value.normalized, sandbox['lambda']['Name'].value)).not.toBe(
+        LambdaFunction.roleName(value.normalized)
+      );
+    });
+
+    it('rejects an image it cannot name before deploying', async () => {
+      await expect(SandboxImpl.create({ image: 'acme/' })).rejects.toThrow('Unable to normalize');
+
+      expect(observe).not.toHaveBeenCalled();
     });
 
     it('applies its options to the function', async () => {
@@ -109,7 +129,7 @@ describe('sandbox', () => {
       await SandboxImpl.create({ image: 'busybox', name: 'box', memory: 512, env: { FOO: 'bar' } });
 
       expect(image).toHaveBeenCalledWith('busybox');
-      expect(name).toHaveBeenCalledWith('box');
+      expect(name).toHaveBeenCalledWith('sandbox-box');
       expect(memory).toHaveBeenCalledWith(512);
       expect(env).toHaveBeenCalledWith('FOO', 'bar');
     });

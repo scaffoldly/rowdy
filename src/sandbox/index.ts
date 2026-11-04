@@ -5,7 +5,7 @@ import { SandboxImpl } from './internal/sandbox';
 export interface SandboxOptions {
   /** The container image to run. Defaults to `e2bdev/base`. */
   image?: string;
-  /** A name for the sandbox. */
+  /** Prefixed with `sandbox-`. Defaults to the image, so unnamed sandboxes of an image share a function and its `env`. */
   name?: string;
   /** Milliseconds until the sandbox stops: whole seconds, 1000 to 900000. */
   timeout?: number;
