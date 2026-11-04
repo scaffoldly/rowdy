@@ -159,6 +159,12 @@ const PLAIN_ENV: ReadonlySet<keyof ProcessEnv> = new Set<keyof ProcessEnv>([
   'NET_PRIVATE_IPV4',
 ]);
 
+/** Environment inside a host program: its own arguments, default none, and what aborts it. */
+export interface LibraryOptions {
+  argv?: string[];
+  signal?: AbortSignal;
+}
+
 export class Environment implements ILoggable {
   // How long a graceful shutdown gets after the command exits before rowdy exits outright.
   static readonly EXIT_GRACE_MS = 2000;
@@ -181,8 +187,8 @@ export class Environment implements ILoggable {
     return Environment._CONCURRENCY.CURRENT;
   }
 
-  public abort: AbortController = ABORT;
-  public readonly signal: AbortSignal = this.abort.signal;
+  public abort: AbortController;
+  public readonly signal: AbortSignal;
   public readonly bin = Object.keys(packageJson.bin)[0];
 
   private _pipelines: Pipeline[] = [new LambdaPipeline(this)];
@@ -201,18 +207,28 @@ export class Environment implements ILoggable {
   private _vfs?: Promise<P9Server>;
 
   /**
-   * Without `argv`, this is rowdy's own process: it reads the process's arguments and ROWDY_ variables and
-   * announces itself. With `argv`, it is a library inside a host program, and takes neither from the host.
+   * Without `library`, this is rowdy's own process: it reads the process's arguments and ROWDY_ variables,
+   * announces itself, and shares ABORT. With `library`, it is inside a host program and takes none of that from
+   * the host: it aborts alone, or when `library.signal` does.
    */
   constructor(
     public readonly log: Logger,
-    argv?: string[]
+    library?: LibraryOptions
   ) {
+    this.abort = library ? new AbortController() : ABORT;
+    this.signal = this.abort.signal;
+
     this.signal.addEventListener('abort', () => {
       this.log.debug(`Aborting environment: ${this.signal.reason}`);
       this._subscriptions.forEach((s) => s.unsubscribe());
       this._pipelines = [];
     });
+    const signal = library?.signal;
+    if (signal?.aborted) {
+      this.abort.abort(signal.reason);
+    }
+    signal?.addEventListener('abort', () => this.abort.abort(signal.reason), { once: true });
+
     this._rowdy = new Rowdy(this.log, this.signal);
     this._routes = Routes.default();
     this.withEnv('HTTP_HOST', 'localhost')
@@ -222,11 +238,11 @@ export class Environment implements ILoggable {
       .withEnv('HTTP_UA', `${packageJson.name}/${packageJson.version}`)
       .withEnv('NET_PRIVATE_IPV4', internalIpV4Sync());
 
-    const cli = yargs(argv ?? hideBin(process.argv))
+    const cli = yargs(library ? (library.argv ?? []) : hideBin(process.argv))
       .parserConfiguration({ 'populate--': true, 'boolean-negation': true })
       .scriptName(this.bin!);
 
-    const parsed = (argv ? cli.env(false) : cli.env(this.bin!.toUpperCase()))
+    const parsed = (library ? cli.env(false) : cli.env(this.bin!.toUpperCase()))
       .version(packageJson.version)
       // DEVNOTE: No `choices`: this also arrives as ROWDY_LOG_LEVEL, and a bad value in a deployed
       // function's environment must fall back to the default rather than fail startup.
@@ -525,7 +541,7 @@ export class Environment implements ILoggable {
 
     log.debug(`Arguments parsed`, { parsed: maskJson(parsed), env: maskEnv(process.env) });
 
-    if (!argv) {
+    if (!library) {
       log.info('Rowdy Started', { version: packageJson.version });
       if (isatty(process.stdout.fd)) {
         log.info('Press Ctrl+C to exit.');
