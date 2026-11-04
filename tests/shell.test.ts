@@ -172,7 +172,12 @@ describe('shell', () => {
 
     it('reports a cwd that does not exist', async () => {
       const { exit } = await run([process.execPath, '-e', ''], { cwd: '/nonexistent/rowdy-test-dir' });
-      expect(exit.code).not.toBe(0);
+      expect(exit).toEqual({ code: 1, message: 'Working directory does not exist: /nonexistent/rowdy-test-dir' });
+    });
+
+    it('reports a missing binary in a cwd that exists', async () => {
+      const { exit } = await run(['/nonexistent/rowdy-test-bin'], { cwd: '/tmp' });
+      expect(exit.code).toBe(127);
     });
 
     it('logs no arguments or env', () => {

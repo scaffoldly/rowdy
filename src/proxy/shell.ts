@@ -22,6 +22,7 @@ import { ILoggable, log as root, Logger, Trace } from '../log';
 import { execa } from 'execa';
 import type { ExecaError, Options } from 'execa';
 import { constants } from 'os';
+import { existsSync } from 'fs';
 import { readdir, readFile } from 'fs/promises';
 
 const log = root.child('shell');
@@ -109,7 +110,7 @@ export class ShellProxy<P extends Pipeline> extends Proxy<P, ShellResponse> {
                   response.settle({ code: exitCode });
                 },
                 (error: ExecaError) => {
-                  const exit = exitOf(error);
+                  const exit = exitOf(error, this._request.options.cwd);
                   log.debug(`${bin} exited`, { bin, code: exit.code, signal: exit.signal ?? '' });
                   response.settle(exit);
                 }
@@ -161,7 +162,11 @@ const isSignal = (name: string): name is NodeJS.Signals => name in constants.sig
 // The exit a failed run stands for: a signal as 128 + its number, a command that never started (an
 // `error` event, which is what sets `originalMessage`) as 127. execa types `exitCode` as a number but
 // leaves it undefined in both of those cases, so it is checked rather than trusted.
-const exitOf = (error: ExecaError): ShellExit => {
+const exitOf = (error: ExecaError, cwd?: string): ShellExit => {
+  // spawn reports a missing cwd as ENOENT on the binary.
+  if (cwd && error.originalMessage !== undefined && !existsSync(cwd)) {
+    return { code: 1, message: `Working directory does not exist: ${cwd}` };
+  }
   const message = error.shortMessage;
   if (error.signal && isSignal(error.signal)) {
     const code = 128 + constants.signals[error.signal];
