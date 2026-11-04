@@ -34,33 +34,37 @@ export interface RunCommandParams {
   stdout?: Writable;
   /** Receives the command's stderr as it is written. */
   stderr?: Writable;
-  /** Resolves once the command has started instead of when it exits. */
-  detached?: boolean;
+  // TODO: detached
+  // /** Resolves once the command has started instead of when it exits. */
+  // detached?: boolean;
   /** Cancels the command. */
   signal?: AbortSignal;
 }
 
-export interface DetachedRunCommandParams extends RunCommandParams {
-  detached: true;
-}
+// TODO: detached
+// export interface DetachedRunCommandParams extends RunCommandParams {
+//   detached: true;
+// }
 
 export interface RunCommandOptions {
   /** Cancels the command. */
   signal?: AbortSignal;
 }
 
-export interface WriteFile {
-  /** Relative to the sandbox's working directory, unless absolute. */
-  path: string;
-  content: Buffer;
-  mode?: number;
-}
+// TODO: writeFiles
+// export interface WriteFile {
+//   /** Relative to the sandbox's working directory, unless absolute. */
+//   path: string;
+//   content: Buffer;
+//   mode?: number;
+// }
 
-export interface ReadFile {
-  /** Relative to the sandbox's working directory, unless absolute. */
-  path: string;
-  signal?: AbortSignal;
-}
+// TODO: readFileToBuffer
+// export interface ReadFile {
+//   /** Relative to the sandbox's working directory, unless absolute. */
+//   path: string;
+//   signal?: AbortSignal;
+// }
 
 /** A command in a sandbox, running or exited. */
 export interface Command {
@@ -85,14 +89,18 @@ export interface Sandbox {
   readonly sandboxId: string;
   /** Resolves when the command exits, whatever its exit code; rejects only if it could not run. */
   runCommand(cmd: string, args?: string[], options?: RunCommandOptions): Promise<CommandFinished>;
-  /** Resolves once the command has started. */
-  runCommand(params: DetachedRunCommandParams): Promise<Command>;
+  // TODO: detached
+  // /** Resolves once the command has started. */
+  // runCommand(params: DetachedRunCommandParams): Promise<Command>;
   /** Resolves when the command exits, whatever its exit code; rejects only if it could not run. */
   runCommand(params: RunCommandParams): Promise<CommandFinished>;
-  writeFiles(files: WriteFile[]): Promise<void>;
-  /** Resolves to null when the file does not exist. */
-  readFileToBuffer(file: ReadFile): Promise<Buffer | null>;
-  mkDir(path: string): Promise<void>;
+  // TODO: writeFiles
+  // writeFiles(files: WriteFile[]): Promise<void>;
+  // TODO: readFileToBuffer
+  // /** Resolves to null when the file does not exist. */
+  // readFileToBuffer(file: ReadFile): Promise<Buffer | null>;
+  // TODO: mkDir
+  // mkDir(path: string): Promise<void>;
   /** Safe to call more than once. */
   stop(): Promise<void>;
 }

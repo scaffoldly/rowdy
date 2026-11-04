@@ -6,7 +6,7 @@ import { log as root, Logger, maskHeaders, maskQuery, maskUrl, Trace } from '../
 import { APIGatewayProxyEventV2 } from 'aws-lambda';
 import { HttpProxy, HttpHeaders, HttpResponse, Source } from '../proxy/http';
 import { ShellResponse } from '../proxy/shell';
-import { Crontab, CronSchema, URI } from '../routes';
+import { Crontab, CronSchema, ExecSchema, URI } from '../routes';
 import { defaultPort, forwardedHeaders, reachedBy } from '../cdn';
 import { CRI, GrpcRouter, RuntimeService } from '@scaffoldly/rowdy-grpc';
 import { LambdaCri } from './lambda/cri';
@@ -35,6 +35,15 @@ const isCronEvent = (data: unknown): data is CronSchema => {
 
   const event = data as Partial<CronSchema>;
   return event.apiVersion === 'rowdy.run/v1alpha1' && event.kind === 'Cron' && typeof event.spec?.line === 'string';
+};
+
+export const isExecEvent = (data: unknown): data is ExecSchema => {
+  if (typeof data !== 'object' || data === null) {
+    return false;
+  }
+
+  const event = data as Partial<ExecSchema>;
+  return event.apiVersion === 'rowdy.run/v1alpha1' && event.kind === 'Exec' && typeof event.spec?.cmd === 'string';
 };
 
 export class LambdaPipeline extends Pipeline {
@@ -207,6 +216,10 @@ export class LambdaRequest extends Request<LambdaPipeline> {
       return this.intoCron(data);
     }
 
+    if (isExecEvent(data)) {
+      return NEVER;
+    }
+
     log.warn('Unsupported Event', { request: this });
     return NEVER;
   }
@@ -281,6 +294,24 @@ export class LambdaRequest extends Request<LambdaPipeline> {
 
   @Trace(log)
   protected intoShell(): Observable<Proxy<LambdaPipeline, ShellResponse>> {
+    let data: unknown;
+    try {
+      data = JSON.parse(this.data);
+    } catch {
+      return NEVER;
+    }
+
+    if (!isExecEvent(data)) {
+      return NEVER;
+    }
+
+    // Exec is arbitrary code for anyone with lambda:InvokeFunction, so only a sandbox runs it.
+    if (process.env.ROWDY_SANDBOX !== 'true') {
+      log.warn('Exec Refused', { reason: 'not a sandbox' });
+      return NEVER;
+    }
+
+    log.debug('Exec Event', { cmd: data.spec?.cmd });
     return NEVER;
   }
 

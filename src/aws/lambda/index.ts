@@ -303,6 +303,9 @@ export class LambdaFunction implements Logger {
     public readonly imageService: LambdaImageService
   ) {
     this.type = _type;
+    if (this.isSandbox()) {
+      this.withEnvironment('ROWDY_SANDBOX', 'true');
+    }
     this.withTag('run.rowdy', 'aws');
     this.withTag('run.rowdy.aws', 'lambda');
     this.withTag('run.rowdy.user.agent', this.userAgent);
@@ -571,7 +574,7 @@ export class LambdaFunction implements Logger {
         .split(' ')
         .filter((s) => s.length);
     }
-    if (!command.length) {
+    if (!command.length && !this.isSandbox()) {
       return this;
     }
     this.Command.next(command);
@@ -1159,7 +1162,7 @@ export class LambdaFunction implements Logger {
           ),
         ];
 
-    if (this.isSandbox() || this.isDeleting()) {
+    if (this.isDeleting()) {
       return { creates, updates: [], tags, deletes };
     }
 
@@ -1311,7 +1314,7 @@ export class LambdaFunction implements Logger {
               .then(waitForSuccess(this.lambda));
           }
 
-          if (update.code || update.config) {
+          if (!this.isSandbox() && (update.code || update.config)) {
             deploy = deploy
               .then(({ RevisionId }) =>
                 this.lambda.send(
@@ -1340,88 +1343,93 @@ export class LambdaFunction implements Logger {
           );
         })
       ),
-      // Function Alias
-      combineLatest([
-        this.FunctionArn.pipe(take(1)),
-        this.Qualifier.pipe(take(1)),
-        this.FunctionVersion.pipe(take(1)),
-      ]).pipe(
-        switchMap(([FunctionArn, Qualifier, FunctionVersion]) =>
-          this.lambda
-            .send(
-              new UpdateAliasCommand({
-                FunctionName: FunctionArn,
-                Name: Qualifier!,
-                FunctionVersion: FunctionVersion!,
-              })
-            )
-            .catch(() =>
-              this.lambda.send(
-                new CreateAliasCommand({
-                  FunctionName: FunctionArn,
-                  Name: Qualifier!,
-                  FunctionVersion: FunctionVersion!,
-                })
+      // A sandbox is invoked directly at $LATEST: no alias, url or schedules.
+      ...(this.isSandbox()
+        ? []
+        : [
+            // Function Alias
+            combineLatest([
+              this.FunctionArn.pipe(take(1)),
+              this.Qualifier.pipe(take(1)),
+              this.FunctionVersion.pipe(take(1)),
+            ]).pipe(
+              switchMap(([FunctionArn, Qualifier, FunctionVersion]) =>
+                this.lambda
+                  .send(
+                    new UpdateAliasCommand({
+                      FunctionName: FunctionArn,
+                      Name: Qualifier!,
+                      FunctionVersion: FunctionVersion!,
+                    })
+                  )
+                  .catch(() =>
+                    this.lambda.send(
+                      new CreateAliasCommand({
+                        FunctionName: FunctionArn,
+                        Name: Qualifier!,
+                        FunctionVersion: FunctionVersion!,
+                      })
+                    )
+                  )
+                  .then((alias) => {
+                    this.AliasArn.next(alias.AliasArn);
+                    return alias;
+                  })
               )
-            )
-            .then((alias) => {
-              this.AliasArn.next(alias.AliasArn);
-              return alias;
-            })
-        )
-      ),
-      // Fuction URL
-      combineLatest([this.FunctionArn.pipe(take(1)), this.AliasArn.pipe(take(1))]).pipe(
-        map(([FunctionArn, AliasArn]) => ({ FunctionArn, Qualifier: AliasArn?.split(':').pop() })),
-        switchMap(({ FunctionArn, Qualifier }) =>
-          this.lambda
-            .send(
-              new UpdateFunctionUrlConfigCommand({
-                FunctionName: FunctionArn,
-                Qualifier,
-                AuthType: 'NONE',
-                InvokeMode: 'RESPONSE_STREAM',
-                // DEVNOTE: Function URL CORS is per URL and Lambda appends it to the app's own CORS
-                // headers. CORS is per route in the manifest instead; an empty config clears it.
-                Cors: {},
-              })
-            )
-            .catch(() =>
-              this.lambda.send(
-                new CreateFunctionUrlConfigCommand({
-                  FunctionName: FunctionArn,
-                  Qualifier,
-                  InvokeMode: 'RESPONSE_STREAM',
-                  AuthType: 'NONE',
-                })
+            ),
+            // Fuction URL
+            combineLatest([this.FunctionArn.pipe(take(1)), this.AliasArn.pipe(take(1))]).pipe(
+              map(([FunctionArn, AliasArn]) => ({ FunctionArn, Qualifier: AliasArn?.split(':').pop() })),
+              switchMap(({ FunctionArn, Qualifier }) =>
+                this.lambda
+                  .send(
+                    new UpdateFunctionUrlConfigCommand({
+                      FunctionName: FunctionArn,
+                      Qualifier,
+                      AuthType: 'NONE',
+                      InvokeMode: 'RESPONSE_STREAM',
+                      // DEVNOTE: Function URL CORS is per URL and Lambda appends it to the app's own CORS
+                      // headers. CORS is per route in the manifest instead; an empty config clears it.
+                      Cors: {},
+                    })
+                  )
+                  .catch(() =>
+                    this.lambda.send(
+                      new CreateFunctionUrlConfigCommand({
+                        FunctionName: FunctionArn,
+                        Qualifier,
+                        InvokeMode: 'RESPONSE_STREAM',
+                        AuthType: 'NONE',
+                      })
+                    )
+                  )
+                  .then((url) => {
+                    this.FunctionUrl.next(url.FunctionUrl);
+                    return url;
+                  })
               )
-            )
-            .then((url) => {
-              this.FunctionUrl.next(url.FunctionUrl);
-              return url;
-            })
-        )
-      ),
-      // Function URL Permissions
-      this.AliasArn.pipe(take(1)).pipe(switchMap((AliasArn) => this.functionUrlPermissions(AliasArn!))),
-      // Host Stores
-      ...this.stores.map((store) => this.writeStore(store)),
-      // EventBridge Schedules
-      combineLatest({
-        FunctionArn: this.FunctionArn.pipe(take(1)),
-        AliasArn: this.AliasArn.pipe(take(1)),
-        RoleArn: this.RoleArn.pipe(take(1)),
-        Tags: this.Tags.pipe(take(1)),
-      }).pipe(
-        switchMap(({ FunctionArn, AliasArn, RoleArn, Tags }) =>
-          this.reconcileSchedules(FunctionArn!, AliasArn!, RoleArn!, Tags)
-        )
-      ),
-      // Superseded Aliases (after the schedules have moved to the new alias)
-      combineLatest({
-        FunctionArn: this.FunctionArn.pipe(take(1)),
-        AliasArn: this.AliasArn.pipe(take(1)),
-      }).pipe(switchMap(({ FunctionArn, AliasArn }) => this.pruneAliases(FunctionArn!, AliasArn!))),
+            ),
+            // Function URL Permissions
+            this.AliasArn.pipe(take(1)).pipe(switchMap((AliasArn) => this.functionUrlPermissions(AliasArn!))),
+            // Host Stores
+            ...this.stores.map((store) => this.writeStore(store)),
+            // EventBridge Schedules
+            combineLatest({
+              FunctionArn: this.FunctionArn.pipe(take(1)),
+              AliasArn: this.AliasArn.pipe(take(1)),
+              RoleArn: this.RoleArn.pipe(take(1)),
+              Tags: this.Tags.pipe(take(1)),
+            }).pipe(
+              switchMap(({ FunctionArn, AliasArn, RoleArn, Tags }) =>
+                this.reconcileSchedules(FunctionArn!, AliasArn!, RoleArn!, Tags)
+              )
+            ),
+            // Superseded Aliases (after the schedules have moved to the new alias)
+            combineLatest({
+              FunctionArn: this.FunctionArn.pipe(take(1)),
+              AliasArn: this.AliasArn.pipe(take(1)),
+            }).pipe(switchMap(({ FunctionArn, AliasArn }) => this.pruneAliases(FunctionArn!, AliasArn!))),
+          ]),
     ];
 
     return { creates, updates, tags, deletes };

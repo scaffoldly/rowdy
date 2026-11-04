@@ -4,7 +4,7 @@ import { MonoTypeOperatorFunction, Observable } from 'rxjs';
 import { Environment } from '../environment';
 
 export type ApiVersion = 'rowdy.run/v1alpha1';
-export type ApiKind = 'Routes' | 'Cron';
+export type ApiKind = 'Routes' | 'Cron' | 'Exec';
 export type ApiSchema<Spec, Status> = {
   apiVersion: ApiVersion;
   kind: ApiKind;

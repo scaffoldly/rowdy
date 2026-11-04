@@ -231,6 +231,10 @@ export class URI extends URL implements ILoggable {
 export type CronSpec = { line: string };
 export type CronSchema = ApiSchema<CronSpec, undefined>;
 
+// The payload that runs a command in a sandbox, as a direct Invoke.
+export type ExecSpec = { cmd: string; args?: string[]; cwd?: string; env?: Record<string, string> };
+export type ExecSchema = ApiSchema<ExecSpec, undefined>;
+
 export type CrontabMethod = 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE' | 'HEAD' | 'OPTIONS';
 
 const CRONTAB_METHODS: CrontabMethod[] = ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD', 'OPTIONS'];

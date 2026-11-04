@@ -1,5 +1,5 @@
 import { Logger } from '@scaffoldly/rowdy';
-import { Command, CommandFinished, Sandbox } from '@scaffoldly/rowdy/sandbox';
+import { CommandFinished, Sandbox } from '@scaffoldly/rowdy/sandbox';
 import { AxiosError, AxiosHeaders, InternalAxiosRequestConfig } from 'axios';
 import { NEVER, Observable, of, Subject, throwError } from 'rxjs';
 import { ROWDY_LAYERS } from '../src/api/internal/layers';
@@ -13,9 +13,6 @@ const _shapes = async (sandbox: Sandbox): Promise<void> => {
   const finished: CommandFinished = await sandbox.runCommand('echo', ['hello world']);
   const _exitCode: number = finished.exitCode;
   const _output: string = await finished.stdout();
-  const detached: Command = await sandbox.runCommand({ cmd: 'sleep', args: ['60'], detached: true });
-  const _waited: CommandFinished = await detached.wait();
-  const _file: Buffer | null = await sandbox.readFileToBuffer({ path: 'out.txt' });
 };
 
 describe('sandbox', () => {
@@ -64,6 +61,19 @@ describe('sandbox', () => {
       await SandboxImpl.create(options);
 
       expect(image).toHaveBeenCalledWith('e2bdev/base');
+    });
+
+    it('deploys a sandbox, marked so it may exec', async () => {
+      const sandbox = await SandboxImpl.create();
+
+      expect(sandbox['lambda'].isSandbox()).toBe(true);
+      expect(sandbox['lambda']['Environment'].value.ROWDY_SANDBOX).toBe('true');
+    });
+
+    it("drops the image's command", async () => {
+      const sandbox = await SandboxImpl.create();
+
+      expect(sandbox['lambda']['Command'].value).toEqual([]);
     });
 
     it('applies its timeout in seconds', async () => {
@@ -267,9 +277,6 @@ describe('sandbox', () => {
 
     it.each<[string, () => Promise<unknown>]>([
       ['runCommand', () => sandbox.runCommand('echo')],
-      ['writeFiles', () => sandbox.writeFiles([{ path: 'a', content: Buffer.from('a') }])],
-      ['readFileToBuffer', () => sandbox.readFileToBuffer({ path: 'a' })],
-      ['mkDir', () => sandbox.mkDir('a')],
       ['stop', () => sandbox.stop()],
     ])('does not implement %s', async (_name, call) => {
       await expect(call()).rejects.toThrow(NOT_IMPLEMENTED);

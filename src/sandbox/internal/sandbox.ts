@@ -1,15 +1,4 @@
-import type {
-  Command,
-  CommandFinished,
-  DetachedRunCommandParams,
-  ReadFile,
-  RunCommandOptions,
-  RunCommandParams,
-  Sandbox,
-  SandboxLookup,
-  SandboxOptions,
-  WriteFile,
-} from '..';
+import type { CommandFinished, RunCommandOptions, RunCommandParams, Sandbox, SandboxLookup, SandboxOptions } from '..';
 import { isAxiosError } from 'axios';
 import {
   catchError,
@@ -53,10 +42,11 @@ export class SandboxImpl implements Sandbox {
     this.environment = new Environment(log, { signal });
 
     let lambda = new LambdaFunction(
-      'Container',
+      'Sandbox',
       new LambdaImageService(this.environment).withLayersFrom(deploySources(undefined))
     )
       .withImage(image)
+      .withCommand([])
       .withTimeout(timeout / 1000)
       .withMemory(memory);
     if (name) {
@@ -124,27 +114,31 @@ export class SandboxImpl implements Sandbox {
   }
 
   runCommand(cmd: string, args?: string[], options?: RunCommandOptions): Promise<CommandFinished>;
-  runCommand(params: DetachedRunCommandParams): Promise<Command>;
+  // TODO: detached
+  // runCommand(params: DetachedRunCommandParams): Promise<Command>;
   runCommand(params: RunCommandParams): Promise<CommandFinished>;
   async runCommand(
     _command: string | RunCommandParams,
     _args?: string[],
     _options?: RunCommandOptions
-  ): Promise<Command> {
+  ): Promise<CommandFinished> {
     throw new Error('not implemented');
   }
 
-  async writeFiles(_files: WriteFile[]): Promise<void> {
-    throw new Error('not implemented');
-  }
+  // TODO: writeFiles
+  // async writeFiles(_files: WriteFile[]): Promise<void> {
+  //   throw new Error('not implemented');
+  // }
 
-  async readFileToBuffer(_file: ReadFile): Promise<Buffer | null> {
-    throw new Error('not implemented');
-  }
+  // TODO: readFileToBuffer
+  // async readFileToBuffer(_file: ReadFile): Promise<Buffer | null> {
+  //   throw new Error('not implemented');
+  // }
 
-  async mkDir(_path: string): Promise<void> {
-    throw new Error('not implemented');
-  }
+  // TODO: mkDir
+  // async mkDir(_path: string): Promise<void> {
+  //   throw new Error('not implemented');
+  // }
 
   async stop(): Promise<void> {
     throw new Error('not implemented');

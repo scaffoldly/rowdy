@@ -847,6 +847,60 @@ describe('aws lambda image pull', () => {
   });
 });
 
+describe('aws lambda sandbox', () => {
+  const imageService = new LambdaImageService(new Environment(new Logger(), {}));
+  const FUNCTION_ARN = 'arn:aws:lambda:us-east-1:123456789012:function:acme_app';
+
+  it('marks only a sandbox', () => {
+    expect(new LambdaFunction('Sandbox', imageService)['Environment'].value.ROWDY_SANDBOX).toBe('true');
+    expect(new LambdaFunction('Container', imageService)['Environment'].value.ROWDY_SANDBOX).toBeUndefined();
+  });
+
+  it('takes an empty command only on a sandbox', () => {
+    expect(new LambdaFunction('Sandbox', imageService).withCommand([])['Command'].value).toEqual([]);
+    expect(new LambdaFunction('Container', imageService).withCommand([])['Command'].value).toBeUndefined();
+  });
+
+  it('configures a sandbox without an alias, url or schedules', () => {
+    const fn = new LambdaFunction('Sandbox', imageService);
+
+    expect(fn['prepare']().updates).toHaveLength(2);
+  });
+
+  it('applies its configuration at $LATEST without publishing', async () => {
+    const fn = new LambdaFunction('Sandbox', imageService).withMemory(512).withTimeout(60).withCommand([]);
+    fn['FunctionArn'].next(FUNCTION_ARN);
+    fn['Qualifier'].next('$LATEST');
+    fn['ImageUri'].next('123456789012.dkr.ecr.us-east-1.amazonaws.com/acme/app@sha256:abc');
+    fn['WorkingDirectory'].next(undefined);
+
+    const configuration = {
+      FunctionName: 'acme_app',
+      Version: '$LATEST',
+      State: 'Active',
+      LastUpdateStatus: 'Successful',
+      Environment: { Variables: {} },
+    };
+    const sent: { name: string; input: Record<string, unknown> }[] = [];
+    const send = (command: { constructor: { name: string }; input: Record<string, unknown> }): Promise<unknown> => {
+      sent.push({ name: command.constructor.name, input: command.input });
+      return Promise.resolve(
+        command.constructor.name === 'GetFunctionCommand'
+          ? { Code: {}, Configuration: { ...configuration } }
+          : configuration
+      );
+    };
+    (fn['lambda'] as unknown as { send: typeof send }).send = send;
+
+    await lastValueFrom(fn['prepare']().updates[1]!);
+
+    const update = sent.find(({ name }) => name === 'UpdateFunctionConfigurationCommand')!.input;
+    expect(update).toMatchObject({ MemorySize: 512, Timeout: 60, ImageConfig: { Command: [] } });
+    expect((update.Environment as { Variables: Record<string, string> }).Variables.ROWDY_SANDBOX).toBe('true');
+    expect(sent.map(({ name }) => name)).not.toContain('PublishVersionCommand');
+  });
+});
+
 describe('aws lambda timeout', () => {
   const imageService = new LambdaImageService(new Environment(new Logger()));
   const FUNCTION_ARN = 'arn:aws:lambda:us-east-1:123456789012:function:acme_app';
