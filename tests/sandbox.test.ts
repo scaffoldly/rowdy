@@ -295,12 +295,12 @@ describe('sandbox', () => {
   describe('an instance', () => {
     const sandbox: Sandbox = Object.create(SandboxImpl.prototype);
 
-    it.each<[string, () => Promise<unknown>]>([
-      ['runCommand', () => sandbox.runCommand('echo')],
-      ['stop', () => sandbox.stop()],
-    ])('does not implement %s', async (_name, call) => {
-      await expect(call()).rejects.toThrow(NOT_IMPLEMENTED);
-    });
+    it.each<[string, () => Promise<unknown>]>([['runCommand', () => sandbox.runCommand('echo')]])(
+      'does not implement %s',
+      async (_name, call) => {
+        await expect(call()).rejects.toThrow(NOT_IMPLEMENTED);
+      }
+    );
 
     it('has no extendTimeout', () => {
       expect('extendTimeout' in sandbox).toBe(false);

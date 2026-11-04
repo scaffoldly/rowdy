@@ -78,6 +78,10 @@ export abstract class Request<P extends Pipeline> implements ILoggable {
     return this;
   }
 
+  get deadline(): Date | undefined {
+    return this._deadline;
+  }
+
   public onDeadline(callback?: () => void): { cancel: (callback?: () => void) => void } {
     if (!this._deadline) {
       return { cancel: (cb?: () => void) => cb?.() };

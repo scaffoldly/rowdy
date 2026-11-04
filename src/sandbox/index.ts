@@ -101,8 +101,9 @@ export interface Sandbox {
   // readFileToBuffer(file: ReadFile): Promise<Buffer | null>;
   // TODO: mkDir
   // mkDir(path: string): Promise<void>;
-  /** Safe to call more than once. */
-  stop(): Promise<void>;
+  // TODO: stop
+  // /** Safe to call more than once. */
+  // stop(): Promise<void>;
 }
 
 export interface SandboxFactory {

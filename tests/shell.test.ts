@@ -1,5 +1,15 @@
 import { Environment, Logger } from '@scaffoldly/rowdy';
-import { ExitContext, parseStatus, ShellExit, ShellProxy, ShellRequest, ShellResponse } from '../src/proxy/shell';
+import {
+  EXEC_CONTENT_TYPE,
+  EXEC_STREAM,
+  execFrame,
+  ExitContext,
+  parseStatus,
+  ShellExit,
+  ShellProxy,
+  ShellRequest,
+  ShellResponse,
+} from '../src/proxy/shell';
 import { log } from '../src/log';
 import { existsSync, mkdtempSync, realpathSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
@@ -7,6 +17,7 @@ import { join } from 'path';
 import { ShellPipeline } from '../src/shell/pipeline';
 import {
   config,
+  toArray,
   EMPTY,
   firstValueFrom,
   lastValueFrom,
@@ -17,11 +28,12 @@ import {
   take,
   timeout,
 } from 'rxjs';
-import { Pipeline, Proxy, Request } from '../src/pipeline';
+import { Chunk, Pipeline, Proxy, Request } from '../src/pipeline';
+import { createServer as createHttpServer } from 'http';
 import type { CRI } from '@scaffoldly/rowdy-grpc';
 import { createServer, Server, AddressInfo } from 'net';
 import { Routes } from '@scaffoldly/rowdy';
-import { LambdaPipeline, LambdaRequest } from '../src/aws/lambda';
+import { LambdaPipeline, LambdaRequest, LambdaResponse } from '../src/aws/lambda';
 import { HttpProxy } from '../src/proxy/http';
 import type { ChildProcess } from 'child_process';
 import type { ExecaError, ExecaReturnValue, Options } from 'execa';
@@ -187,6 +199,138 @@ describe('shell', () => {
       expect(request.repr()).toBe('ShellRequest(bin=curl, args=2)');
       expect(request.brief()).toEqual({ exec: 'curl' });
       expect(new ShellProxy(shell, request).repr()).not.toContain('secret');
+    });
+  });
+
+  describe('exec over lambda', () => {
+    const { ROWDY_SANDBOX } = process.env;
+    beforeEach(() => {
+      process.env.ROWDY_SANDBOX = 'true';
+    });
+    afterEach(() => {
+      if (ROWDY_SANDBOX === undefined) {
+        delete process.env.ROWDY_SANDBOX;
+      } else {
+        process.env.ROWDY_SANDBOX = ROWDY_SANDBOX;
+      }
+    });
+
+    const lambda = (): LambdaPipeline => {
+      const environment = new Environment(new Logger());
+      Object.defineProperty(environment, 'Env', { get: () => of({ ...process.env }) });
+      return new LambdaPipeline(environment);
+    };
+
+    const exec = (spec: Record<string, unknown>): string =>
+      JSON.stringify({ apiVersion: 'rowdy.run/v1alpha1', kind: 'Exec', spec });
+
+    const proxy = (data: string, deadline?: Date): Promise<Proxy<LambdaPipeline, unknown>> => {
+      const request = new LambdaRequest(lambda(), data);
+      if (deadline) {
+        request.withDeadline(deadline);
+      }
+      return firstValueFrom(request.into());
+    };
+
+    const frames = (chunks: Chunk[]): { stream: number; payload: string }[] => {
+      let buffer = Buffer.concat(chunks.map((c) => Buffer.from(c.data)));
+      const out: { stream: number; payload: string }[] = [];
+      while (buffer.length) {
+        const size = buffer.readUInt32BE(4);
+        expect(buffer.subarray(1, 4)).toEqual(Buffer.alloc(3));
+        out.push({ stream: buffer.readUInt8(0), payload: buffer.subarray(8, 8 + size).toString() });
+        buffer = buffer.subarray(8 + size);
+      }
+      return out;
+    };
+
+    const collect = async (data: string): Promise<{ stream: number; payload: string }[]> => {
+      const response = await firstValueFrom((await proxy(data)).into());
+      return frames(await lastValueFrom(response.pipe(toArray(), timeout(5000))));
+    };
+
+    it('frames stdout and stderr, ending with the exit', async () => {
+      const script = 'process.stdout.write("out"); process.stderr.write("err"); process.exitCode = 3';
+      const sent = await collect(exec({ cmd: process.execPath, args: ['-e', script] }));
+
+      expect(sent).toContainEqual({ stream: EXEC_STREAM.STDOUT, payload: 'out' });
+      expect(sent).toContainEqual({ stream: EXEC_STREAM.STDERR, payload: 'err' });
+      expect(sent[sent.length - 1]!.stream).toBe(EXEC_STREAM.EXIT);
+      expect(JSON.parse(sent[sent.length - 1]!.payload).code).toBe(3);
+    });
+
+    it('applies the event cwd and env', async () => {
+      const script = 'process.stdout.write(process.env.FOO)';
+      const sent = await collect(
+        exec({ cmd: process.execPath, args: ['-e', script], cwd: '/tmp', env: { FOO: 'bar' } })
+      );
+
+      expect(sent).toContainEqual({ stream: EXEC_STREAM.STDOUT, payload: 'bar' });
+    });
+
+    it('closes stdin', async () => {
+      const script = 'process.stdin.resume().on("end", () => process.exit(7))';
+      const sent = await collect(exec({ cmd: process.execPath, args: ['-e', script] }));
+
+      expect(JSON.parse(sent[sent.length - 1]!.payload).code).toBe(7);
+    });
+
+    it('reports a command that cannot start through its exit', async () => {
+      const sent = await collect(exec({ cmd: '/nonexistent/rowdy-test-bin' }));
+
+      expect(sent).toHaveLength(1);
+      expect(JSON.parse(sent[0]!.payload).code).toBe(127);
+    });
+
+    it('carries binary output intact', async () => {
+      const script = 'process.stdout.write(Buffer.from([0, 255, 10]))';
+      const data = exec({ cmd: process.execPath, args: ['-e', script] });
+      const response = await firstValueFrom((await proxy(data)).into());
+      const chunks = await lastValueFrom(response.pipe(toArray(), timeout(5000)));
+      const first = Buffer.from(chunks[0]!.data);
+
+      expect(first.subarray(8)).toEqual(Buffer.from([0, 255, 10]));
+    });
+
+    it('fails the response at the deadline', async () => {
+      const data = exec({ cmd: process.execPath, args: ['-e', 'setTimeout(() => {}, 5000)'] });
+      const response = await firstValueFrom((await proxy(data, new Date(Date.now() + 200))).into());
+
+      await expect(lastValueFrom(response.pipe(toArray(), timeout(3000)))).rejects.toThrow('Request deadline reached');
+    });
+
+    it('posts to the runtime with its content type', async () => {
+      const posted = new Promise<{ type?: string; mode?: unknown; body: Buffer }>((resolve) => {
+        const server = createHttpServer((req, res) => {
+          const body: Buffer[] = [];
+          req.on('data', (chunk: Buffer) => body.push(chunk));
+          req.on('end', () => {
+            res.end();
+            server.close();
+            resolve({
+              type: req.headers['content-type'],
+              mode: req.headers['lambda-runtime-function-response-mode'],
+              body: Buffer.concat(body),
+            });
+          });
+        });
+        server.listen(0, '127.0.0.1', () => {
+          const { port } = server.address() as AddressInfo;
+          const pipeline = lambda();
+          Object.defineProperty(pipeline, 'runtimeApi', { get: () => `127.0.0.1:${port}` });
+          Object.defineProperty(pipeline, 'requestId', { get: () => 'abc' });
+          const response = new LambdaResponse(pipeline, new LambdaRequest(pipeline, '{}'));
+          response.withContentType(EXEC_CONTENT_TYPE);
+          response.next(new Chunk(execFrame(EXEC_STREAM.STDOUT, Buffer.from('hi')), 2));
+          response.complete();
+          response.into().subscribe();
+        });
+      });
+
+      const { type, mode, body } = await posted;
+      expect(type).toBe('application/vnd.rowdy.multiplexed-stream');
+      expect(mode).toBe('streaming');
+      expect(body).toEqual(Buffer.from([1, 0, 0, 0, 0, 0, 0, 2, 104, 105]));
     });
   });
 

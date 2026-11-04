@@ -202,6 +202,8 @@ describe('aws lambda runtime', () => {
       expect(isExecEvent(exec)).toBe(true);
       expect(isExecEvent({ ...exec, kind: 'Cron' })).toBe(false);
       expect(isExecEvent({ ...exec, spec: {} })).toBe(false);
+      expect(isExecEvent({ ...exec, spec: { cmd: '' } })).toBe(false);
+      expect(isExecEvent({ ...exec, spec: { cmd: 'echo', args: 'hi' } })).toBe(false);
       expect(isExecEvent(cronEvent(CRON_LINE))).toBe(false);
       expect(isExecEvent(null)).toBe(false);
     });

@@ -5,7 +5,7 @@ import axios from 'axios';
 import { log as root, Logger, maskHeaders, maskQuery, maskUrl, Trace } from '../log';
 import { APIGatewayProxyEventV2 } from 'aws-lambda';
 import { HttpProxy, HttpHeaders, HttpResponse, Source } from '../proxy/http';
-import { ShellResponse } from '../proxy/shell';
+import { EXEC_CONTENT_TYPE, EXEC_STREAM, execFrame, ShellProxy, ShellRequest, ShellResponse } from '../proxy/shell';
 import { Crontab, CronSchema, ExecSchema, URI } from '../routes';
 import { defaultPort, forwardedHeaders, reachedBy } from '../cdn';
 import { CRI, GrpcRouter, RuntimeService } from '@scaffoldly/rowdy-grpc';
@@ -43,7 +43,13 @@ export const isExecEvent = (data: unknown): data is ExecSchema => {
   }
 
   const event = data as Partial<ExecSchema>;
-  return event.apiVersion === 'rowdy.run/v1alpha1' && event.kind === 'Exec' && typeof event.spec?.cmd === 'string';
+  return (
+    event.apiVersion === 'rowdy.run/v1alpha1' &&
+    event.kind === 'Exec' &&
+    typeof event.spec?.cmd === 'string' &&
+    !!event.spec.cmd &&
+    (event.spec.args === undefined || Array.isArray(event.spec.args))
+  );
 };
 
 export class LambdaPipeline extends Pipeline {
@@ -311,8 +317,17 @@ export class LambdaRequest extends Request<LambdaPipeline> {
       return NEVER;
     }
 
-    log.debug('Exec Event', { cmd: data.spec?.cmd });
-    return NEVER;
+    const { cmd, args = [], cwd, env } = data.spec!;
+    log.debug('Exec Event', { cmd });
+
+    const request = new ShellRequest(this.pipeline, [cmd, ...args], { cwd, env });
+    if (this.deadline) {
+      request.withDeadline(this.deadline);
+    }
+    // A command gets no input: a read would otherwise wait on stdin until the deadline.
+    request.fds.stdin.end();
+
+    return of(new LambdaShellProxy(this.pipeline, request).background());
   }
 
   override brief(): Record<string, string | number | boolean> {
@@ -441,13 +456,46 @@ export class LambdaCronProxy extends LambdaHttpProxy {
   }
 }
 
+export class LambdaShellProxy extends ShellProxy<LambdaPipeline> {
+  @Trace(log)
+  override into(): Observable<Response<LambdaPipeline>> {
+    return this.invoke().pipe(
+      map((shell) => {
+        const response = new LambdaResponse(this.pipeline, this.request).withContentType(EXEC_CONTENT_TYPE);
+        const send = (stream: number, payload: Buffer): void =>
+          response.next(new Chunk(execFrame(stream, payload), payload.length));
+        const { cancel: cancelDeadline } = this.request.onDeadline(() => {
+          log.warn('Request Deadline Reached');
+          response.error(new Error('Request deadline reached'));
+        });
+
+        shell.fds.stdout.on('data', (chunk: Buffer) => send(EXEC_STREAM.STDOUT, chunk));
+        shell.fds.stderr.on('data', (chunk: Buffer) => send(EXEC_STREAM.STDERR, chunk));
+        shell.subscribe({
+          next: (exit) => send(EXEC_STREAM.EXIT, Buffer.from(JSON.stringify(exit))),
+          error: (error: Error) => cancelDeadline(() => response.error(error)),
+          complete: () => cancelDeadline(() => response.complete()),
+        });
+
+        return response;
+      })
+    );
+  }
+}
+
 export class LambdaResponse extends Response<LambdaPipeline> {
   private chunks: number = 0;
   private bytes: number = 0;
   private status?: number;
+  private contentType = 'application/vnd.awslambda.http-integration-response';
 
   withStatus(status: number): this {
     this.status = status;
+    return this;
+  }
+
+  withContentType(contentType: string): this {
+    this.contentType = contentType;
     return this;
   }
 
@@ -466,7 +514,7 @@ export class LambdaResponse extends Response<LambdaPipeline> {
       port: url.port,
       path: url.pathname,
       headers: {
-        'Content-Type': 'application/vnd.awslambda.http-integration-response',
+        'Content-Type': this.contentType,
         'Lambda-Runtime-Function-Response-Mode': 'streaming',
         'Transfer-Encoding': 'chunked',
         Trailer: ['Lambda-Runtime-Function-Error-Type', 'Lambda-Runtime-Function-Error-Body'],
