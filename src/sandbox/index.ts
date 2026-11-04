@@ -1,4 +1,5 @@
 import type { Writable } from 'stream';
+import type { Exec, ExecFinished } from '../api/types';
 import type { Level } from '../log';
 import { SandboxImpl } from './internal/sandbox';
 
@@ -37,7 +38,7 @@ export interface RunCommandParams {
   // TODO: detached
   // /** Resolves once the command has started instead of when it exits. */
   // detached?: boolean;
-  /** Cancels the command. */
+  /** Stops waiting for the command. It runs on in the sandbox until it exits or times out. */
   signal?: AbortSignal;
 }
 
@@ -47,7 +48,7 @@ export interface RunCommandParams {
 // }
 
 export interface RunCommandOptions {
-  /** Cancels the command. */
+  /** Stops waiting for the command. It runs on in the sandbox until it exits or times out. */
   signal?: AbortSignal;
 }
 
@@ -66,23 +67,8 @@ export interface RunCommandOptions {
 //   signal?: AbortSignal;
 // }
 
-/** A command in a sandbox, running or exited. */
-export interface Command {
-  readonly cmdId: string;
-  /** Undefined while the command runs. */
-  readonly exitCode: number | undefined;
-  /** The stdout written so far, or all of it once the command has exited. */
-  stdout(): Promise<string>;
-  /** The stderr written so far, or all of it once the command has exited. */
-  stderr(): Promise<string>;
-  /** Resolves when the command exits, whatever its exit code. */
-  wait(): Promise<CommandFinished>;
-  kill(signal?: NodeJS.Signals): Promise<void>;
-}
-
-export interface CommandFinished extends Command {
-  readonly exitCode: number;
-}
+export type Command = Exec;
+export type CommandFinished = ExecFinished;
 
 /** A running sandbox. */
 export interface Sandbox {

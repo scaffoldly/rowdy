@@ -12,6 +12,24 @@ export type ApiSchema<Spec, Status> = {
   status: Status;
 };
 
+/** A command in a sandbox, running or exited. */
+export interface Exec {
+  readonly cmdId: string;
+  /** Undefined while the command runs. */
+  readonly exitCode: number | undefined;
+  /** The stdout written so far, or all of it once the command has exited. */
+  stdout(): Promise<string>;
+  /** The stderr written so far, or all of it once the command has exited. */
+  stderr(): Promise<string>;
+  /** Resolves when the command exits, whatever its exit code. */
+  wait(): Promise<ExecFinished>;
+  kill(signal?: NodeJS.Signals): Promise<void>;
+}
+
+export interface ExecFinished extends Exec {
+  readonly exitCode: number;
+}
+
 export interface IApi {
   http: AxiosInstance;
   log: Logger;

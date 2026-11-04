@@ -159,6 +159,8 @@ export class ShellProxy<P extends Pipeline> extends Proxy<P, ShellResponse> {
 export const EXEC_STREAM = { STDOUT: 1, STDERR: 2, EXIT: 4 } as const;
 export const EXEC_CONTENT_TYPE = 'application/vnd.rowdy.multiplexed-stream';
 
+export type ExecFrame = { requestId: string; stream: number; payload: Buffer };
+
 export const execFrame = (stream: number, payload: Buffer): Buffer => {
   const header = Buffer.alloc(8);
   header.writeUInt8(stream, 0);

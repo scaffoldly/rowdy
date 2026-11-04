@@ -13,6 +13,7 @@ import {
 } from '@aws-sdk/client-iam';
 import {
   CreateFunctionCommand,
+  InvokeWithResponseStreamCommand,
   LambdaClient,
   GetFunctionCommand,
   TagResourceCommand,
@@ -82,11 +83,14 @@ import {
   tap,
   timer,
   toArray,
+  concatMap,
+  finalize,
 } from 'rxjs';
 import promiseRetry from 'promise-retry';
 import { inspect } from 'util';
 import { Environment, Routes } from '../..';
-import { Crontab, Volume } from '../../routes';
+import { Crontab, ExecSchema, Volume } from '../../routes';
+import type { ExecFrame } from '../../proxy/shell';
 import { mask, maskJson } from '../../log';
 import { CdnStore, cdnStore } from '../../cdn';
 import { TPulledImage } from '../../api/types';
@@ -245,6 +249,8 @@ export class LambdaFunction implements Logger {
 
   private iam = new IAMClient({ logger: this });
   private lambda = new LambdaClient({ logger: this });
+  // The SDK's default retries would run a command a second time, and its logger would log the event's env.
+  private invoker = new LambdaClient({ maxAttempts: 1 });
   private scheduler = new SchedulerClient({ logger: this });
   private s3 = new S3Client({ logger: this });
 
@@ -926,6 +932,54 @@ export class LambdaFunction implements Logger {
       return () => {
         subscription.unsubscribe();
       };
+    });
+  }
+
+  /** Runs a command in this sandbox, emitting its frames. Unsubscribing stops waiting, not the command. */
+  exec(event: ExecSchema): Observable<ExecFrame> {
+    return defer(() => {
+      const { FunctionArn: FunctionName } = this.State;
+      if (!this.isSandbox() || !FunctionName) {
+        throw new Error('Exec needs a deployed sandbox');
+      }
+
+      const controller = new AbortController();
+      let buffer = Buffer.alloc(0);
+
+      return from(
+        this.invoker.send(
+          new InvokeWithResponseStreamCommand({
+            FunctionName,
+            Qualifier: '$LATEST',
+            Payload: Buffer.from(JSON.stringify(event)),
+          }),
+          { abortSignal: AbortSignal.any([this.signal, controller.signal]) }
+        )
+      ).pipe(
+        switchMap(({ EventStream, $metadata }) =>
+          from(EventStream ?? []).pipe(
+            concatMap(({ PayloadChunk, InvokeComplete }) => {
+              if (InvokeComplete?.ErrorCode) {
+                throw new Error(`${InvokeComplete.ErrorCode}: ${InvokeComplete.ErrorDetails}`);
+              }
+              // A frame can span PayloadChunks, and a PayloadChunk can hold several frames.
+              buffer = Buffer.concat([buffer, PayloadChunk?.Payload ?? Buffer.alloc(0)]);
+              const frames: ExecFrame[] = [];
+              while (buffer.length >= 8 && buffer.length >= 8 + buffer.readUInt32BE(4)) {
+                const size = buffer.readUInt32BE(4);
+                frames.push({
+                  requestId: $metadata.requestId ?? '',
+                  stream: buffer.readUInt8(0),
+                  payload: Buffer.from(buffer.subarray(8, 8 + size)),
+                });
+                buffer = buffer.subarray(8 + size);
+              }
+              return frames;
+            })
+          )
+        ),
+        finalize(() => controller.abort())
+      );
     });
   }
 

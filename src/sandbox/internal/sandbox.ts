@@ -3,11 +3,14 @@ import { isAxiosError } from 'axios';
 import {
   catchError,
   defer,
+  endWith,
   fromEvent,
+  ignoreElements,
   iif,
   last,
   lastValueFrom,
   map,
+  NEVER,
   of,
   race,
   switchMap,
@@ -19,6 +22,7 @@ import { deploySources } from '../../api/internal/layers';
 import { Transfer } from '../../api/internal/transfer';
 import { LambdaImageService } from '../../aws/lambda/image';
 import { LambdaFunction } from '../../aws/lambda/index';
+import { EXEC_STREAM, ShellExit } from '../../proxy/shell';
 
 export class SandboxImpl implements Sandbox {
   private environment: Environment;
@@ -121,11 +125,67 @@ export class SandboxImpl implements Sandbox {
   // runCommand(params: DetachedRunCommandParams): Promise<Command>;
   runCommand(params: RunCommandParams): Promise<CommandFinished>;
   async runCommand(
-    _command: string | RunCommandParams,
-    _args?: string[],
-    _options?: RunCommandOptions
+    command: string | RunCommandParams,
+    args?: string[],
+    options?: RunCommandOptions
   ): Promise<CommandFinished> {
-    throw new Error('not implemented');
+    const params: RunCommandParams =
+      typeof command === 'string' ? { cmd: command, args, signal: options?.signal } : command;
+    const { signal } = params;
+
+    const stdout: Buffer[] = [];
+    const stderr: Buffer[] = [];
+    let exit: ShellExit | undefined;
+    let cmdId = '';
+
+    return lastValueFrom(
+      race(
+        signal
+          ? iif(() => signal.aborted, of(signal), fromEvent(signal, 'abort')).pipe(
+              switchMap(() => throwError(() => signal.reason))
+            )
+          : NEVER,
+        this.lambda
+          .exec({
+            apiVersion: 'rowdy.run/v1alpha1',
+            kind: 'Exec',
+            spec: { cmd: params.cmd, args: params.args, cwd: params.cwd, env: params.env },
+            status: undefined,
+          })
+          .pipe(
+            tap(({ requestId, stream, payload }) => {
+              cmdId = requestId;
+              if (stream === EXEC_STREAM.STDOUT) {
+                stdout.push(payload);
+                params.stdout?.write(payload);
+              }
+              if (stream === EXEC_STREAM.STDERR) {
+                stderr.push(payload);
+                params.stderr?.write(payload);
+              }
+              if (stream === EXEC_STREAM.EXIT) {
+                exit = JSON.parse(payload.toString());
+              }
+            }),
+            ignoreElements(),
+            endWith(undefined),
+            map(() => {
+              if (!exit) {
+                throw new Error('Command ended without an exit');
+              }
+              const finished: CommandFinished = {
+                cmdId,
+                exitCode: exit.code,
+                stdout: async () => Buffer.concat(stdout).toString(),
+                stderr: async () => Buffer.concat(stderr).toString(),
+                wait: async () => finished,
+                kill: async () => undefined,
+              };
+              return finished;
+            })
+          )
+      )
+    );
   }
 
   // TODO: writeFiles

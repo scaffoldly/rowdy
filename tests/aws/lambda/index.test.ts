@@ -851,6 +851,15 @@ describe('aws lambda sandbox', () => {
   const imageService = new LambdaImageService(new Environment(new Logger(), {}));
   const FUNCTION_ARN = 'arn:aws:lambda:us-east-1:123456789012:function:acme_app';
 
+  it('refuses to exec outside a sandbox', async () => {
+    const fn = new LambdaFunction('Container', imageService);
+    fn.State.FunctionArn = FUNCTION_ARN;
+
+    await expect(
+      lastValueFrom(fn.exec({ apiVersion: 'rowdy.run/v1alpha1', kind: 'Exec', spec: { cmd: 'ls' }, status: undefined }))
+    ).rejects.toThrow('Exec needs a deployed sandbox');
+  });
+
   it('marks only a sandbox', () => {
     expect(new LambdaFunction('Sandbox', imageService)['Environment'].value.ROWDY_SANDBOX).toBe('true');
     expect(new LambdaFunction('Container', imageService)['Environment'].value.ROWDY_SANDBOX).toBeUndefined();

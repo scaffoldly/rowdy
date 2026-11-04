@@ -1,12 +1,24 @@
 import { Logger } from '@scaffoldly/rowdy';
 import { CommandFinished, Sandbox } from '@scaffoldly/rowdy/sandbox';
 import { AxiosError, AxiosHeaders, InternalAxiosRequestConfig } from 'axios';
+import { InvokeWithResponseStreamResponseEvent, LambdaClient } from '@aws-sdk/client-lambda';
 import { NEVER, Observable, of, Subject, throwError } from 'rxjs';
+import { PassThrough } from 'stream';
 import { ROWDY_LAYERS } from '../src/api/internal/layers';
 import { LambdaFunction } from '../src/aws/lambda/index';
+import { EXEC_STREAM, execFrame } from '../src/proxy/shell';
 import { SandboxImpl } from '../src/sandbox/internal/sandbox';
 
 const NOT_IMPLEMENTED = 'not implemented';
+const FUNCTION_ARN = 'arn:aws:lambda:us-east-1:123456789012:function:sandbox-box';
+
+type Event = InvokeWithResponseStreamResponseEvent;
+
+const payload = (Payload: Buffer): Event => ({ PayloadChunk: { Payload } });
+
+async function* stream(...events: Event[]): AsyncGenerator<Event> {
+  yield* events;
+}
 
 // Compiled, not called: ts-jest fails the suite if the types drift from these shapes.
 const _shapes = async (sandbox: Sandbox): Promise<void> => {
@@ -260,19 +272,191 @@ describe('sandbox', () => {
     });
   });
 
-  it('compiles the documented example, which stops at the first unimplemented call', async () => {
-    const main = async (): Promise<void> => {
-      const sandbox = await Sandbox.create({ timeout: 15 * 60 * 1000 });
+  it('runs the documented example', async () => {
+    const send = jest.spyOn(LambdaClient.prototype, 'send');
+    send.mockImplementation(() =>
+      Promise.resolve({
+        $metadata: { requestId: 'req' },
+        EventStream: stream(payload(execFrame(EXEC_STREAM.EXIT, Buffer.from('{"code":0}')))),
+      })
+    );
+    observe.mockImplementation(function (this: LambdaFunction) {
+      this.State.FunctionArn = FUNCTION_ARN;
+      return of(this);
+    });
 
-      await sandbox.runCommand({
-        cmd: 'echo',
-        args: ['hello world'],
-        stdout: process.stdout,
-        stderr: process.stderr,
-      });
+    const sandbox = await Sandbox.create({ timeout: 15 * 60 * 1000 });
+    const finished = await sandbox.runCommand({
+      cmd: 'echo',
+      args: ['hello world'],
+      stdout: process.stdout,
+      stderr: process.stderr,
+    });
+
+    expect(finished.exitCode).toBe(0);
+  });
+
+  describe('runCommand', () => {
+    const start = async (...events: Event[]): Promise<{ sandbox: Sandbox; send: jest.SpyInstance }> => {
+      const send = jest.spyOn(LambdaClient.prototype, 'send');
+      send.mockImplementation(() =>
+        Promise.resolve({ $metadata: { requestId: 'req' }, EventStream: stream(...events) })
+      );
+      const sandbox = await SandboxImpl.create();
+      sandbox['lambda'].State.FunctionArn = FUNCTION_ARN;
+      return { sandbox, send };
     };
 
-    await expect(main()).rejects.toThrow(NOT_IMPLEMENTED);
+    const exited = payload(execFrame(EXEC_STREAM.EXIT, Buffer.from('{"code":0}')));
+
+    it('invokes $LATEST with an Exec event', async () => {
+      const { sandbox, send } = await start(exited);
+
+      await sandbox.runCommand({ cmd: 'ls', args: ['-l'], cwd: '/tmp', env: { FOO: 'bar' } });
+
+      const { input } = send.mock.calls[0]![0] as {
+        input: { FunctionName: string; Qualifier: string; Payload: Buffer };
+      };
+      expect(input.FunctionName).toBe(FUNCTION_ARN);
+      expect(input.Qualifier).toBe('$LATEST');
+      expect(JSON.parse(input.Payload.toString())).toEqual({
+        apiVersion: 'rowdy.run/v1alpha1',
+        kind: 'Exec',
+        spec: { cmd: 'ls', args: ['-l'], cwd: '/tmp', env: { FOO: 'bar' } },
+      });
+    });
+
+    it('takes a cmd and args', async () => {
+      const { sandbox, send } = await start(exited);
+
+      await sandbox.runCommand('echo', ['hi']);
+
+      const { input } = send.mock.calls[0]![0] as { input: { Payload: Buffer } };
+      expect(JSON.parse(input.Payload.toString()).spec).toEqual({ cmd: 'echo', args: ['hi'] });
+    });
+
+    it('does not retry a command', async () => {
+      const sandbox = await SandboxImpl.create();
+
+      await expect(sandbox['lambda']['invoker'].config.maxAttempts()).resolves.toBe(1);
+    });
+
+    it('collects stdout, stderr and the exit code', async () => {
+      const { sandbox } = await start(
+        payload(execFrame(EXEC_STREAM.STDOUT, Buffer.from('out'))),
+        payload(execFrame(EXEC_STREAM.STDERR, Buffer.from('err'))),
+        payload(execFrame(EXEC_STREAM.EXIT, Buffer.from('{"code":3}')))
+      );
+
+      const finished = await sandbox.runCommand('sh');
+
+      expect(finished.cmdId).toBe('req');
+      expect(finished.exitCode).toBe(3);
+      expect(await finished.stdout()).toBe('out');
+      expect(await finished.stderr()).toBe('err');
+      expect(await finished.wait()).toBe(finished);
+    });
+
+    it('resolves a non-zero exit', async () => {
+      const { sandbox } = await start(payload(execFrame(EXEC_STREAM.EXIT, Buffer.from('{"code":127}'))));
+
+      await expect(sandbox.runCommand('nope')).resolves.toMatchObject({ exitCode: 127 });
+    });
+
+    it('writes to the given streams as frames arrive', async () => {
+      const { sandbox } = await start(
+        payload(execFrame(EXEC_STREAM.STDOUT, Buffer.from('out'))),
+        payload(execFrame(EXEC_STREAM.STDERR, Buffer.from('err'))),
+        exited
+      );
+      const stdout = new PassThrough();
+      const stderr = new PassThrough();
+
+      await sandbox.runCommand({ cmd: 'sh', stdout, stderr });
+
+      expect(stdout.read().toString()).toBe('out');
+      expect(stderr.read().toString()).toBe('err');
+    });
+
+    it('reassembles a frame split across chunks, and several frames in one', async () => {
+      const bytes = Buffer.concat([
+        execFrame(EXEC_STREAM.STDOUT, Buffer.from('hello ')),
+        execFrame(EXEC_STREAM.STDOUT, Buffer.from('world')),
+        execFrame(EXEC_STREAM.EXIT, Buffer.from('{"code":0}')),
+      ]);
+      const { sandbox } = await start(
+        payload(bytes.subarray(0, 3)),
+        payload(bytes.subarray(3, 20)),
+        payload(bytes.subarray(20))
+      );
+
+      const finished = await sandbox.runCommand('sh');
+
+      expect(await finished.stdout()).toBe('hello world');
+    });
+
+    it('keeps a multi-byte character split across frames', async () => {
+      const euro = Buffer.from('€');
+      const { sandbox } = await start(
+        payload(execFrame(EXEC_STREAM.STDOUT, euro.subarray(0, 1))),
+        payload(execFrame(EXEC_STREAM.STDOUT, euro.subarray(1))),
+        exited
+      );
+
+      expect(await (await sandbox.runCommand('sh')).stdout()).toBe('€');
+    });
+
+    it('rejects a failed invocation', async () => {
+      const { sandbox } = await start({
+        InvokeComplete: { ErrorCode: 'Runtime.Error', ErrorDetails: 'Request deadline reached' },
+      });
+
+      await expect(sandbox.runCommand('sh')).rejects.toThrow('Runtime.Error: Request deadline reached');
+    });
+
+    it('rejects a stream that ends without an exit', async () => {
+      const { sandbox } = await start(payload(execFrame(EXEC_STREAM.STDOUT, Buffer.from('out'))), {
+        InvokeComplete: {},
+      });
+
+      await expect(sandbox.runCommand('sh')).rejects.toThrow('Command ended without an exit');
+    });
+
+    it('rejects before a function exists', async () => {
+      const sandbox = await SandboxImpl.create();
+
+      await expect(sandbox.runCommand('sh')).rejects.toThrow('Exec needs a deployed sandbox');
+    });
+
+    it('stops waiting when its signal aborts', async () => {
+      const { sandbox, send } = await start();
+      const pending = new Promise<never>(() => undefined);
+      send.mockImplementation(() =>
+        Promise.resolve({
+          $metadata: {},
+          EventStream: (async function* (): AsyncGenerator<Event> {
+            yield await pending;
+          })(),
+        })
+      );
+      const controller = new AbortController();
+
+      const running = sandbox.runCommand({ cmd: 'sh', signal: controller.signal });
+      await Promise.resolve();
+      controller.abort('stop');
+
+      await expect(running).rejects.toBe('stop');
+      const { abortSignal } = send.mock.calls[0]![1] as { abortSignal: AbortSignal };
+      expect(abortSignal.aborted).toBe(true);
+    });
+
+    it('does not invoke when its signal has already aborted', async () => {
+      const { sandbox, send } = await start(exited);
+
+      await expect(sandbox.runCommand({ cmd: 'sh', signal: AbortSignal.abort('stop') })).rejects.toBe('stop');
+
+      expect(send).not.toHaveBeenCalled();
+    });
   });
 
   it('exposes only create and get', () => {
@@ -294,13 +478,6 @@ describe('sandbox', () => {
 
   describe('an instance', () => {
     const sandbox: Sandbox = Object.create(SandboxImpl.prototype);
-
-    it.each<[string, () => Promise<unknown>]>([['runCommand', () => sandbox.runCommand('echo')]])(
-      'does not implement %s',
-      async (_name, call) => {
-        await expect(call()).rejects.toThrow(NOT_IMPLEMENTED);
-      }
-    );
 
     it('has no extendTimeout', () => {
       expect('extendTimeout' in sandbox).toBe(false);
