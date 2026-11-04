@@ -258,6 +258,7 @@ export class LambdaFunction implements Logger {
     normalized: Transfer.normalizeImage('ghcr.io/scaffoldly/rowdy:beta'),
   });
   private MemorySize = new BehaviorSubject(128);
+  private Timeout = new BehaviorSubject<number | undefined>(undefined);
   private Environment = new BehaviorSubject<Record<string, string>>({});
   private Tags = new BehaviorSubject<Record<string, string>>({});
   private EntryPoint = new BehaviorSubject<string[]>([ROWDY_BIN]);
@@ -518,6 +519,11 @@ export class LambdaFunction implements Logger {
       memory = 128;
     }
     this.MemorySize.next(memory);
+    return this;
+  }
+
+  withTimeout(seconds: number): this {
+    this.Timeout.next(seconds);
     return this;
   }
 
@@ -1012,8 +1018,9 @@ export class LambdaFunction implements Logger {
         PulledImage: this.Image.pipe(take(1), pullImage(this)),
         Command: this.Command.pipe(take(1)),
         WorkingDirectory: this.WorkingDirectory.pipe(take(1)),
+        Timeout: this.Timeout.pipe(take(1)),
       }).pipe(
-        map(({ Name, Qualifier, RoleArn, RoleId, PulledImage, Command, WorkingDirectory }) => ({
+        map(({ Name, Qualifier, RoleArn, RoleId, PulledImage, Command, WorkingDirectory, Timeout }) => ({
           FunctionName: LambdaFunction.functionName(RoleId!, Name),
           Qualifier,
           Description: `A function to run the ${PulledImage.Image} container in AWS Lambda`,
@@ -1021,8 +1028,9 @@ export class LambdaFunction implements Logger {
           PulledImage,
           Command,
           WorkingDirectory,
+          Timeout,
         })),
-        switchMap(({ FunctionName, Qualifier, Role, PulledImage, Command, WorkingDirectory }) =>
+        switchMap(({ FunctionName, Qualifier, Role, PulledImage, Command, WorkingDirectory, Timeout }) =>
           _create(
             () =>
               this.lambda
@@ -1040,7 +1048,7 @@ export class LambdaFunction implements Logger {
                         PackageType: 'Image',
                         // TODO: Support for platform annotation
                         Architectures: ['x86_64'],
-                        Timeout: 900,
+                        Timeout: Timeout ?? 900,
                         Publish: false,
                       })
                     )
@@ -1203,6 +1211,7 @@ export class LambdaFunction implements Logger {
         FunctionArn: this.FunctionArn.pipe(take(1)),
         Qualifier: this.Qualifier.pipe(take(1)),
         MemorySize: this.MemorySize.pipe(take(1)),
+        Timeout: this.Timeout.pipe(take(1)),
         Environment: this.Environment.pipe(take(1)),
         ImageUri: this.ImageUri.pipe(take(1)),
         EntryPoint: this.EntryPoint.pipe(take(1)),
@@ -1210,7 +1219,17 @@ export class LambdaFunction implements Logger {
         WorkingDirectory: this.WorkingDirectory.pipe(take(1)),
       }).pipe(
         switchMap(
-          ({ FunctionArn, Qualifier, MemorySize, Environment, ImageUri, EntryPoint, Command, WorkingDirectory }) =>
+          ({
+            FunctionArn,
+            Qualifier,
+            MemorySize,
+            Timeout,
+            Environment,
+            ImageUri,
+            EntryPoint,
+            Command,
+            WorkingDirectory,
+          }) =>
             from(
               this.lambda
                 .send(new GetFunctionCommand({ FunctionName: FunctionArn, Qualifier: Qualifier }))
@@ -1219,6 +1238,7 @@ export class LambdaFunction implements Logger {
               map((Function) => ({
                 Function,
                 MemorySize,
+                Timeout,
                 // DEVNOTE: Lambda runs the entrypoint as its own user, not the image USER, so it cannot
                 // start in a WORKDIR only that user can enter (distroless :nonroot's /home/nonroot is
                 // 0700). Lambda starts rowdy in `/`, and rowdy changes to ROWDY_WORKDIR itself.
@@ -1230,11 +1250,12 @@ export class LambdaFunction implements Logger {
               }))
             )
         ),
-        switchMap(({ Function, MemorySize, Environment, ImageUri, EntryPoint, Command, WorkingDirectory }) => {
+        switchMap(({ Function, MemorySize, Timeout, Environment, ImageUri, EntryPoint, Command, WorkingDirectory }) => {
           const { Code = {} } = Function;
           const { Configuration = {} } = Function;
           const { FunctionName } = Configuration;
           let { Version } = Configuration;
+          const FunctionTimeout = Timeout ?? Configuration.Timeout;
 
           const update: { code: boolean; config: boolean } = {
             code: !isEqual(Code?.ImageUri, ImageUri),
@@ -1244,6 +1265,7 @@ export class LambdaFunction implements Logger {
               !isEqual(Configuration.ImageConfigResponse?.ImageConfig?.Command, Command) ||
               !isEqual(Configuration.ImageConfigResponse?.ImageConfig?.WorkingDirectory, WorkingDirectory) ||
               !isEqual(Configuration.MemorySize, MemorySize) ||
+              !isEqual(Configuration.Timeout, FunctionTimeout) ||
               !isSubset(Environment, Configuration.Environment?.Variables || {}),
           };
 
@@ -1252,6 +1274,7 @@ export class LambdaFunction implements Logger {
           if (update.config) {
             delete Configuration.RevisionId;
             Configuration.MemorySize = MemorySize;
+            Configuration.Timeout = FunctionTimeout;
             Configuration.Environment = {
               Variables: { ...Configuration.Environment?.Variables, ...Environment },
             };

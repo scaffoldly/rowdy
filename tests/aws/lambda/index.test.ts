@@ -823,6 +823,104 @@ describe('aws lambda working directory', () => {
   });
 });
 
+describe('aws lambda timeout', () => {
+  const imageService = new LambdaImageService(new Environment(new Logger()));
+  const FUNCTION_ARN = 'arn:aws:lambda:us-east-1:123456789012:function:acme_app';
+  const IMAGE_URI = '123456789012.dkr.ecr.us-east-1.amazonaws.com/acme/app@sha256:abc';
+
+  type Sent = { name: string; input: Record<string, unknown> };
+  type Send = (command: { constructor: { name: string }; input: Record<string, unknown> }) => Promise<unknown>;
+
+  afterEach(() => jest.restoreAllMocks());
+
+  const created = async (fn: LambdaFunction): Promise<Record<string, unknown>> => {
+    fn['RoleArn'].next('arn:aws:iam::123456789012:role/acme+app@rowdy.run');
+    fn['RoleId'].next('AROAEXAMPLE');
+    fn['Qualifier'].next('sha256-abc');
+    jest
+      .spyOn(imageService, 'pullImage')
+      .mockResolvedValue({ $typeName: 'runtime.v1.PullImageResponse', imageRef: IMAGE_URI });
+    jest.spyOn(imageService, 'pulledImage').mockReturnValue({ Image: 'acme/app', ImageUri: IMAGE_URI });
+
+    const configuration = { FunctionName: 'acme_app', Version: '1', State: 'Active', LastUpdateStatus: 'Successful' };
+    const sent: Sent[] = [];
+    const send: Send = (command) => {
+      sent.push({ name: command.constructor.name, input: command.input });
+      if (command.constructor.name !== 'GetFunctionCommand') return Promise.resolve(configuration);
+      return sent.some(({ name }) => name === 'CreateFunctionCommand')
+        ? Promise.resolve({ Configuration: configuration })
+        : Promise.reject(Object.assign(new Error('missing'), { name: 'ResourceNotFoundException' }));
+    };
+    (fn['lambda'] as unknown as { send: Send }).send = send;
+
+    await lastValueFrom(fn['prepare']().creates[1]!);
+    return sent.find(({ name }) => name === 'CreateFunctionCommand')!.input;
+  };
+
+  const updated = async (fn: LambdaFunction): Promise<Record<string, unknown>> => {
+    fn['FunctionArn'].next(FUNCTION_ARN);
+    fn['Qualifier'].next('sha256-abc');
+    fn['ImageUri'].next(IMAGE_URI);
+    fn['Command'].next(['/app-binary']);
+    fn['WorkingDirectory'].next(undefined);
+
+    const configuration = {
+      FunctionName: 'acme_app',
+      Version: '1',
+      State: 'Active',
+      LastUpdateStatus: 'Successful',
+      MemorySize: 128,
+      Timeout: 300,
+      ImageConfigResponse: {
+        ImageConfig: { EntryPoint: [ROWDY_BIN, '--'], Command: ['/app-binary'], WorkingDirectory: '/' },
+      },
+      Environment: { Variables: { ROWDY_WORKDIR: '/' } },
+    };
+    const sent: Sent[] = [];
+    const send: Send = (command) => {
+      sent.push({ name: command.constructor.name, input: command.input });
+      if (command.constructor.name === 'GetFunctionCommand') {
+        return Promise.resolve({ Code: { ImageUri: IMAGE_URI }, Configuration: { ...configuration } });
+      }
+      return Promise.resolve({ ...configuration, Version: '2' });
+    };
+    (fn['lambda'] as unknown as { send: Send }).send = send;
+
+    await lastValueFrom(fn['prepare']().updates[1]!);
+    return sent.find(({ name }) => name === 'UpdateFunctionConfigurationCommand')!.input;
+  };
+
+  it('creates with 900 seconds by default', async () => {
+    const input = await created(new LambdaFunction('Container', imageService));
+
+    expect(input.Timeout).toBe(900);
+  });
+
+  it('creates with the given timeout', async () => {
+    const input = await created(new LambdaFunction('Container', imageService).withTimeout(60));
+
+    expect(input.Timeout).toBe(60);
+  });
+
+  it('updates an existing function to the given timeout', async () => {
+    const input = await updated(new LambdaFunction('Container', imageService).withTimeout(60));
+
+    expect(input.Timeout).toBe(60);
+  });
+
+  it('keeps an existing timeout when none is given', async () => {
+    const input = await updated(new LambdaFunction('Container', imageService));
+
+    expect(input.Timeout).toBe(300);
+  });
+
+  it('keeps a matching timeout', async () => {
+    const input = await updated(new LambdaFunction('Container', imageService).withTimeout(300));
+
+    expect(input.Timeout).toBe(300);
+  });
+});
+
 describe('aws lambda function url', () => {
   const FUNCTION_ARN = 'arn:aws:lambda:us-east-1:123456789012:function:acme_app';
 
