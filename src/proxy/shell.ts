@@ -22,6 +22,7 @@ import { ILoggable, log as root, Logger, Trace } from '../log';
 import { execa } from 'execa';
 import type { ExecaError, Options } from 'execa';
 import { constants } from 'os';
+import { existsSync } from 'fs';
 import { readdir, readFile } from 'fs/promises';
 
 const log = root.child('shell');
@@ -29,17 +30,23 @@ const log = root.child('shell');
 export class ShellRequest<P extends Pipeline> extends Request<P> {
   constructor(
     pipeline: P,
-    public readonly command: string[]
+    public readonly command: string[],
+    public readonly options: { cwd?: string; env?: Record<string, string> } = {}
   ) {
     super(pipeline);
   }
 
-  override into(): Observable<Proxy<P, unknown>> {
-    throw new Error('Method not implemented.');
+  override brief(): Record<string, string | number | boolean> {
+    return { exec: this.command[0] ?? '' };
   }
 
+  override into(): Observable<Proxy<P, unknown>> {
+    return of(new ShellProxy(this.pipeline, this));
+  }
+
+  // Arguments and env can carry secrets, so neither is logged.
   override repr(): string {
-    throw new Error('Method not implemented.');
+    return `ShellRequest(bin=${this.command[0]}, args=${this.command.length - 1})`;
   }
 }
 
@@ -75,7 +82,8 @@ export class ShellProxy<P extends Pipeline> extends Proxy<P, ShellResponse> {
           stdin: 'pipe',
           stdout: 'pipe',
           stderr: 'pipe',
-          env,
+          env: { ...env, ...this._request.options.env },
+          cwd: this._request.options.cwd,
           signal: this.signal,
           detached: this._background,
         };
@@ -102,7 +110,7 @@ export class ShellProxy<P extends Pipeline> extends Proxy<P, ShellResponse> {
                   response.settle({ code: exitCode });
                 },
                 (error: ExecaError) => {
-                  const exit = exitOf(error);
+                  const exit = exitOf(error, this._request.options.cwd);
                   log.debug(`${bin} exited`, { bin, code: exit.code, signal: exit.signal ?? '' });
                   response.settle(exit);
                 }
@@ -142,9 +150,21 @@ export class ShellProxy<P extends Pipeline> extends Proxy<P, ShellResponse> {
   }
 
   override repr(): string {
-    throw new Error('Method not implemented.');
+    return `ShellProxy(request=${this._request.repr()}, background=${this._background})`;
   }
 }
+
+// Docker's exec multiplexing: an 8-byte header of stream type, 3 zero bytes and big-endian payload size. Docker
+// reports an exit out of band, so EXIT is rowdy's own type, past Docker's stdin 0, stdout 1, stderr 2, systemerr 3.
+export const EXEC_STREAM = { STDOUT: 1, STDERR: 2, EXIT: 4 } as const;
+export const EXEC_CONTENT_TYPE = 'application/vnd.rowdy.multiplexed-stream';
+
+export const execFrame = (stream: number, payload: Buffer): Buffer => {
+  const header = Buffer.alloc(8);
+  header.writeUInt8(stream, 0);
+  header.writeUInt32BE(payload.length, 4);
+  return Buffer.concat([header, payload]);
+};
 
 /** How a command ended. `message` is execa's summary, e.g. `Command was killed with SIGSEGV (Segmentation fault): node server.js`. */
 export type ShellExit = { code: number; signal?: NodeJS.Signals; message?: string };
@@ -154,7 +174,11 @@ const isSignal = (name: string): name is NodeJS.Signals => name in constants.sig
 // The exit a failed run stands for: a signal as 128 + its number, a command that never started (an
 // `error` event, which is what sets `originalMessage`) as 127. execa types `exitCode` as a number but
 // leaves it undefined in both of those cases, so it is checked rather than trusted.
-const exitOf = (error: ExecaError): ShellExit => {
+const exitOf = (error: ExecaError, cwd?: string): ShellExit => {
+  // spawn reports a missing cwd as ENOENT on the binary.
+  if (cwd && error.originalMessage !== undefined && !existsSync(cwd)) {
+    return { code: 1, message: `Working directory does not exist: ${cwd}` };
+  }
   const message = error.shortMessage;
   if (error.signal && isSignal(error.signal)) {
     const code = 128 + constants.signals[error.signal];

@@ -1,11 +1,177 @@
+import { AxiosError, AxiosHeaders, InternalAxiosRequestConfig } from 'axios';
 import { lastValueFrom, of, toArray } from 'rxjs';
-import { Transfer, External, ImageManifest, sourceHeaders } from '../../../src/api/internal/transfer';
+import { Readable } from 'stream';
+import { RETRY, Transfer, External, ImageManifest, sourceHeaders, Upload } from '../../../src/api/internal/transfer';
 import { HttpHeaders } from '../../../src/proxy/http';
 import { ROWDY_LAYERS } from '../../../src/api/internal/layers';
 import { Logger, Rowdy } from '@scaffoldly/rowdy';
 // eslint-disable-next-line @typescript-eslint/no-unused-vars
 import { readFileSync, writeFileSync } from 'fs';
 import { createHash } from 'crypto';
+
+describe('upload', () => {
+  const timing = { ...RETRY };
+  beforeAll(() => Object.assign(RETRY, { minTimeout: 1, maxTimeout: 1 }));
+  afterAll(() => Object.assign(RETRY, timing));
+
+  const config = (): InternalAxiosRequestConfig => ({ headers: new AxiosHeaders(), method: 'get', url: 'https://x/' });
+  const response = (status: number, headers: Record<string, string> = {}): unknown => ({
+    status,
+    statusText: '',
+    data: Readable.from(['x']),
+    headers: new AxiosHeaders(headers),
+    config: config(),
+  });
+  const failure = (status?: number): AxiosError =>
+    new AxiosError(
+      'failed',
+      status ? 'ERR_BAD_RESPONSE' : 'ECONNRESET',
+      config(),
+      null,
+      status ? { status, statusText: '', data: '', headers: {}, config: config() } : undefined
+    );
+
+  const mocks = () => ({
+    head: jest.fn().mockResolvedValue(response(404)),
+    post: jest.fn().mockResolvedValue(response(202, { location: 'https://ecr.example/upload' })),
+    get: jest.fn().mockResolvedValue(response(200)),
+    patch: jest.fn().mockResolvedValue(response(202)),
+    put: jest.fn().mockResolvedValue(response(201)),
+  });
+
+  const upload = (
+    http: ReturnType<typeof mocks>,
+    type: 'blob' | 'manifest' = 'blob',
+    content?: Buffer,
+    log: Logger = new Logger()
+  ): Upload =>
+    new Upload(
+      {
+        log,
+        http,
+        toHeaders: HttpHeaders.fromAxios(new AxiosHeaders()),
+        fromHeaders: HttpHeaders.fromAxios(new AxiosHeaders()),
+        manifest: { url: 'https://mirror.gcr.io/v2/acme/app/manifests/latest' },
+        registry: { registry: 'ecr.example' },
+      } as unknown as Transfer,
+      type,
+      { digest: 'sha256:abc', size: 1, mediaType: 'application/vnd.oci.image.layer.v1.tar+gzip' },
+      content
+    );
+
+  const run = (u: Upload): Promise<unknown> => lastValueFrom(Upload.observe([u]));
+
+  it.each([404, 429, 503, undefined])('retries a source download that fails with %s', async (status) => {
+    const http = mocks();
+    http.get.mockRejectedValueOnce(failure(status)).mockRejectedValueOnce(failure(status));
+
+    await run(upload(http));
+
+    expect(http.get).toHaveBeenCalledTimes(3);
+    expect(http.patch).toHaveBeenCalledTimes(1);
+  });
+
+  it('gives up on a source download that keeps failing', async () => {
+    const http = mocks();
+    http.get.mockRejectedValue(failure(404));
+
+    await expect(run(upload(http))).rejects.toThrow('failed');
+
+    expect(http.get).toHaveBeenCalledTimes(RETRY.retries + 1);
+  });
+
+  it('does not retry a source download the registry refuses', async () => {
+    const http = mocks();
+    http.get.mockRejectedValue(failure(403));
+
+    await expect(run(upload(http))).rejects.toThrow('failed');
+
+    expect(http.get).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(['head', 'post'] as const)('retries a %s the registry fails', async (method) => {
+    const http = mocks();
+    http[method].mockRejectedValueOnce(failure(503));
+
+    await run(upload(http));
+
+    expect(http[method]).toHaveBeenCalledTimes(2);
+  });
+
+  it('retries a post that loses its connection', async () => {
+    const http = mocks();
+    http.post.mockRejectedValueOnce(failure());
+
+    await run(upload(http));
+
+    expect(http.post).toHaveBeenCalledTimes(2);
+  });
+
+  it.each(['head', 'post'] as const)('does not retry a %s that 403s', async (method) => {
+    const http = mocks();
+    http[method].mockRejectedValue(failure(403));
+
+    await expect(run(upload(http))).rejects.toThrow('Upload failed');
+
+    expect(http[method]).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not retry an error without a status', async () => {
+    const http = mocks();
+    http.head.mockRejectedValue(new TypeError('boom'));
+
+    await expect(run(upload(http))).rejects.toThrow('boom');
+
+    expect(http.head).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not retry a patch of a consumed stream', async () => {
+    const http = mocks();
+    http.patch.mockRejectedValue(failure(503));
+
+    await expect(run(upload(http))).rejects.toThrow('Upload failed');
+
+    expect(http.patch).toHaveBeenCalledTimes(1);
+  });
+
+  it('retries a put of a buffer', async () => {
+    const http = mocks();
+    http.put.mockRejectedValueOnce(failure(503));
+
+    await run(upload(http, 'manifest', Buffer.from('{}')));
+
+    expect(http.put).toHaveBeenCalledTimes(2);
+  });
+
+  describe('transfer complete', () => {
+    const transfer = (http: ReturnType<typeof mocks>, log: Logger): Transfer => {
+      const u = upload(http, 'blob', undefined, log);
+      return { uploads: [[u]], _uploads: [[u]] } as unknown as Transfer;
+    };
+
+    it('logs on success', async () => {
+      const log = new Logger();
+      const info = jest.spyOn(log, 'info');
+
+      await lastValueFrom(of(transfer(mocks(), log)).pipe(Transfer.upload(log, mocks() as never)));
+
+      expect(info).toHaveBeenCalledWith(expect.stringContaining('Transfer complete'));
+    });
+
+    it('stays silent on failure', async () => {
+      const log = new Logger();
+      const info = jest.spyOn(log, 'info');
+      const http = mocks();
+      http.get.mockRejectedValue(failure(403));
+
+      await expect(
+        lastValueFrom(of(transfer(http, log)).pipe(Transfer.upload(log, mocks() as never)))
+      ).rejects.toThrow();
+
+      expect(info).not.toHaveBeenCalledWith(expect.stringContaining('Transfer complete'));
+    });
+  });
+});
 
 describe('transfers', () => {
   const logger = new Logger();

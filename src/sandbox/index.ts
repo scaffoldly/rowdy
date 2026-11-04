@@ -1,18 +1,22 @@
 import type { Writable } from 'stream';
+import type { Exec, ExecFinished } from '../api/types';
+import type { Level } from '../log';
 import { SandboxImpl } from './internal/sandbox';
 
 export interface SandboxOptions {
-  /** The container image to run. */
+  /** The container image to run. Defaults to `e2bdev/base`. */
   image?: string;
-  /** A name for the sandbox. */
+  /** Prefixed with `sandbox-`. Defaults to the image, so unnamed sandboxes of an image share a function and its `env`. */
   name?: string;
-  /** Milliseconds until the sandbox stops. */
+  /** Milliseconds until the sandbox stops: whole seconds, 1000 to 900000. */
   timeout?: number;
-  /** Memory in megabytes. */
+  /** Memory in megabytes: a whole number, 128 to 10240. */
   memory?: number;
   /** Environment variables for every command; a command's own `env` overrides them. */
   env?: Record<string, string>;
-  /** Cancels the creation. */
+  /** Applies to the whole process. Defaults to ROWDY_LOG_LEVEL, ROWDY_DEBUG or ROWDY_TRACE, then `warn`. */
+  logLevel?: Level;
+  /** Aborts the sandbox's work in progress, including its creation. */
   signal?: AbortSignal;
 }
 
@@ -31,69 +35,61 @@ export interface RunCommandParams {
   stdout?: Writable;
   /** Receives the command's stderr as it is written. */
   stderr?: Writable;
-  /** Resolves once the command has started instead of when it exits. */
-  detached?: boolean;
-  /** Cancels the command. */
+  // TODO: detached
+  // /** Resolves once the command has started instead of when it exits. */
+  // detached?: boolean;
+  /** Stops waiting for the command. It runs on in the sandbox until it exits or times out. */
   signal?: AbortSignal;
 }
 
-export interface DetachedRunCommandParams extends RunCommandParams {
-  detached: true;
-}
+// TODO: detached
+// export interface DetachedRunCommandParams extends RunCommandParams {
+//   detached: true;
+// }
 
 export interface RunCommandOptions {
-  /** Cancels the command. */
+  /** Stops waiting for the command. It runs on in the sandbox until it exits or times out. */
   signal?: AbortSignal;
 }
 
-export interface WriteFile {
-  /** Relative to the sandbox's working directory, unless absolute. */
-  path: string;
-  content: Buffer;
-  mode?: number;
-}
+// TODO: writeFiles
+// export interface WriteFile {
+//   /** Relative to the sandbox's working directory, unless absolute. */
+//   path: string;
+//   content: Buffer;
+//   mode?: number;
+// }
 
-export interface ReadFile {
-  /** Relative to the sandbox's working directory, unless absolute. */
-  path: string;
-  signal?: AbortSignal;
-}
+// TODO: readFileToBuffer
+// export interface ReadFile {
+//   /** Relative to the sandbox's working directory, unless absolute. */
+//   path: string;
+//   signal?: AbortSignal;
+// }
 
-/** A command in a sandbox, running or exited. */
-export interface Command {
-  readonly cmdId: string;
-  /** Undefined while the command runs. */
-  readonly exitCode: number | undefined;
-  /** The stdout written so far, or all of it once the command has exited. */
-  stdout(): Promise<string>;
-  /** The stderr written so far, or all of it once the command has exited. */
-  stderr(): Promise<string>;
-  /** Resolves when the command exits, whatever its exit code. */
-  wait(): Promise<CommandFinished>;
-  kill(signal?: NodeJS.Signals): Promise<void>;
-}
-
-export interface CommandFinished extends Command {
-  readonly exitCode: number;
-}
+export type Command = Omit<Exec, 'frames'>;
+export type CommandFinished = Omit<ExecFinished, 'frames'>;
 
 /** A running sandbox. */
 export interface Sandbox {
   readonly sandboxId: string;
   /** Resolves when the command exits, whatever its exit code; rejects only if it could not run. */
   runCommand(cmd: string, args?: string[], options?: RunCommandOptions): Promise<CommandFinished>;
-  /** Resolves once the command has started. */
-  runCommand(params: DetachedRunCommandParams): Promise<Command>;
+  // TODO: detached
+  // /** Resolves once the command has started. */
+  // runCommand(params: DetachedRunCommandParams): Promise<Command>;
   /** Resolves when the command exits, whatever its exit code; rejects only if it could not run. */
   runCommand(params: RunCommandParams): Promise<CommandFinished>;
-  writeFiles(files: WriteFile[]): Promise<void>;
-  /** Resolves to null when the file does not exist. */
-  readFileToBuffer(file: ReadFile): Promise<Buffer | null>;
-  mkDir(path: string): Promise<void>;
-  /** Adds milliseconds to the sandbox's timeout. */
-  extendTimeout(duration: number): Promise<void>;
-  /** Safe to call more than once. */
-  stop(): Promise<void>;
+  // TODO: writeFiles
+  // writeFiles(files: WriteFile[]): Promise<void>;
+  // TODO: readFileToBuffer
+  // /** Resolves to null when the file does not exist. */
+  // readFileToBuffer(file: ReadFile): Promise<Buffer | null>;
+  // TODO: mkDir
+  // mkDir(path: string): Promise<void>;
+  // TODO: stop
+  // /** Safe to call more than once. */
+  // stop(): Promise<void>;
 }
 
 export interface SandboxFactory {

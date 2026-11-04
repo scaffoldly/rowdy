@@ -13,7 +13,7 @@ import {
 import { inspect } from 'util';
 import { readFileSync } from 'fs';
 import { join } from 'path';
-import { lastValueFrom, Observable, of, toArray } from 'rxjs';
+import { finalize, lastValueFrom, NEVER, Observable, of, toArray } from 'rxjs';
 import { CdnStore, Written } from '../../../src/cdn';
 import { Statement } from 'aws-lambda';
 
@@ -820,6 +820,191 @@ describe('aws lambda working directory', () => {
     const input = await deployConfiguration(undefined);
     expect((input.ImageConfig as Record<string, unknown>).WorkingDirectory).toBe('/');
     expect((input.Environment as { Variables: Record<string, string> }).Variables.ROWDY_WORKDIR).toBe('/');
+  });
+});
+
+describe('aws lambda image pull', () => {
+  it('stops pulling when its environment aborts', async () => {
+    const environment = new Environment(new Logger(), {});
+    const service = new LambdaImageService(environment);
+    const stopped = jest.fn();
+    jest.spyOn(environment.rowdy.images, 'pullImage').mockReturnValue(NEVER.pipe(finalize(stopped)));
+
+    const pull = service.pullImage({
+      $typeName: 'runtime.v1.PullImageRequest',
+      image: {
+        $typeName: 'runtime.v1.ImageSpec',
+        image: 'busybox',
+        annotations: {},
+        runtimeHandler: '',
+        userSpecifiedImage: '',
+      },
+    });
+    environment.abort.abort(new Error('Region is missing'));
+
+    await expect(pull).rejects.toThrow();
+    expect(stopped).toHaveBeenCalled();
+  });
+});
+
+describe('aws lambda sandbox', () => {
+  const imageService = new LambdaImageService(new Environment(new Logger(), {}));
+  const FUNCTION_ARN = 'arn:aws:lambda:us-east-1:123456789012:function:acme_app';
+
+  it('refuses to exec outside a sandbox', async () => {
+    const fn = new LambdaFunction('Container', imageService);
+    fn.State.FunctionArn = FUNCTION_ARN;
+
+    await expect(
+      lastValueFrom(fn.exec({ apiVersion: 'rowdy.run/v1alpha1', kind: 'Exec', spec: { cmd: 'ls' }, status: undefined }))
+    ).rejects.toThrow('Exec needs a deployed sandbox');
+  });
+
+  it('marks only a sandbox', () => {
+    expect(new LambdaFunction('Sandbox', imageService)['Environment'].value.ROWDY_SANDBOX).toBe('true');
+    expect(new LambdaFunction('Container', imageService)['Environment'].value.ROWDY_SANDBOX).toBeUndefined();
+  });
+
+  it('takes an empty command only on a sandbox', () => {
+    expect(new LambdaFunction('Sandbox', imageService).withCommand([])['Command'].value).toEqual([]);
+    expect(new LambdaFunction('Container', imageService).withCommand([])['Command'].value).toBeUndefined();
+  });
+
+  it('configures a sandbox without an alias, url or schedules', () => {
+    const fn = new LambdaFunction('Sandbox', imageService);
+
+    expect(fn['prepare']().updates).toHaveLength(2);
+  });
+
+  it('applies its configuration at $LATEST without publishing', async () => {
+    const fn = new LambdaFunction('Sandbox', imageService).withMemory(512).withTimeout(60).withCommand([]);
+    fn['FunctionArn'].next(FUNCTION_ARN);
+    fn['Qualifier'].next('$LATEST');
+    fn['ImageUri'].next('123456789012.dkr.ecr.us-east-1.amazonaws.com/acme/app@sha256:abc');
+    fn['WorkingDirectory'].next(undefined);
+
+    const configuration = {
+      FunctionName: 'acme_app',
+      Version: '$LATEST',
+      State: 'Active',
+      LastUpdateStatus: 'Successful',
+      Environment: { Variables: {} },
+    };
+    const sent: { name: string; input: Record<string, unknown> }[] = [];
+    const send = (command: { constructor: { name: string }; input: Record<string, unknown> }): Promise<unknown> => {
+      sent.push({ name: command.constructor.name, input: command.input });
+      return Promise.resolve(
+        command.constructor.name === 'GetFunctionCommand'
+          ? { Code: {}, Configuration: { ...configuration } }
+          : configuration
+      );
+    };
+    (fn['lambda'] as unknown as { send: typeof send }).send = send;
+
+    await lastValueFrom(fn['prepare']().updates[1]!);
+
+    const update = sent.find(({ name }) => name === 'UpdateFunctionConfigurationCommand')!.input;
+    expect(update).toMatchObject({ MemorySize: 512, Timeout: 60, ImageConfig: { Command: [] } });
+    expect((update.Environment as { Variables: Record<string, string> }).Variables.ROWDY_SANDBOX).toBe('true');
+    expect(sent.map(({ name }) => name)).not.toContain('PublishVersionCommand');
+  });
+});
+
+describe('aws lambda timeout', () => {
+  const imageService = new LambdaImageService(new Environment(new Logger()));
+  const FUNCTION_ARN = 'arn:aws:lambda:us-east-1:123456789012:function:acme_app';
+  const IMAGE_URI = '123456789012.dkr.ecr.us-east-1.amazonaws.com/acme/app@sha256:abc';
+
+  type Sent = { name: string; input: Record<string, unknown> };
+  type Send = (command: { constructor: { name: string }; input: Record<string, unknown> }) => Promise<unknown>;
+
+  afterEach(() => jest.restoreAllMocks());
+
+  const created = async (fn: LambdaFunction): Promise<Record<string, unknown>> => {
+    fn['RoleArn'].next('arn:aws:iam::123456789012:role/acme+app@rowdy.run');
+    fn['RoleId'].next('AROAEXAMPLE');
+    fn['Qualifier'].next('sha256-abc');
+    jest
+      .spyOn(imageService, 'pullImage')
+      .mockResolvedValue({ $typeName: 'runtime.v1.PullImageResponse', imageRef: IMAGE_URI });
+    jest.spyOn(imageService, 'pulledImage').mockReturnValue({ Image: 'acme/app', ImageUri: IMAGE_URI });
+
+    const configuration = { FunctionName: 'acme_app', Version: '1', State: 'Active', LastUpdateStatus: 'Successful' };
+    const sent: Sent[] = [];
+    const send: Send = (command) => {
+      sent.push({ name: command.constructor.name, input: command.input });
+      if (command.constructor.name !== 'GetFunctionCommand') return Promise.resolve(configuration);
+      return sent.some(({ name }) => name === 'CreateFunctionCommand')
+        ? Promise.resolve({ Configuration: configuration })
+        : Promise.reject(Object.assign(new Error('missing'), { name: 'ResourceNotFoundException' }));
+    };
+    (fn['lambda'] as unknown as { send: Send }).send = send;
+
+    await lastValueFrom(fn['prepare']().creates[1]!);
+    return sent.find(({ name }) => name === 'CreateFunctionCommand')!.input;
+  };
+
+  const updated = async (fn: LambdaFunction): Promise<Record<string, unknown>> => {
+    fn['FunctionArn'].next(FUNCTION_ARN);
+    fn['Qualifier'].next('sha256-abc');
+    fn['ImageUri'].next(IMAGE_URI);
+    fn['Command'].next(['/app-binary']);
+    fn['WorkingDirectory'].next(undefined);
+
+    const configuration = {
+      FunctionName: 'acme_app',
+      Version: '1',
+      State: 'Active',
+      LastUpdateStatus: 'Successful',
+      MemorySize: 128,
+      Timeout: 300,
+      ImageConfigResponse: {
+        ImageConfig: { EntryPoint: [ROWDY_BIN, '--'], Command: ['/app-binary'], WorkingDirectory: '/' },
+      },
+      Environment: { Variables: { ROWDY_WORKDIR: '/' } },
+    };
+    const sent: Sent[] = [];
+    const send: Send = (command) => {
+      sent.push({ name: command.constructor.name, input: command.input });
+      if (command.constructor.name === 'GetFunctionCommand') {
+        return Promise.resolve({ Code: { ImageUri: IMAGE_URI }, Configuration: { ...configuration } });
+      }
+      return Promise.resolve({ ...configuration, Version: '2' });
+    };
+    (fn['lambda'] as unknown as { send: Send }).send = send;
+
+    await lastValueFrom(fn['prepare']().updates[1]!);
+    return sent.find(({ name }) => name === 'UpdateFunctionConfigurationCommand')!.input;
+  };
+
+  it('creates with 900 seconds by default', async () => {
+    const input = await created(new LambdaFunction('Container', imageService));
+
+    expect(input.Timeout).toBe(900);
+  });
+
+  it('creates with the given timeout', async () => {
+    const input = await created(new LambdaFunction('Container', imageService).withTimeout(60));
+
+    expect(input.Timeout).toBe(60);
+  });
+
+  it('updates an existing function to the given timeout', async () => {
+    const input = await updated(new LambdaFunction('Container', imageService).withTimeout(60));
+
+    expect(input.Timeout).toBe(60);
+  });
+
+  it('keeps an existing timeout when none is given', async () => {
+    const input = await updated(new LambdaFunction('Container', imageService));
+
+    expect(input.Timeout).toBe(300);
+  });
+
+  it('keeps a matching timeout', async () => {
+    const input = await updated(new LambdaFunction('Container', imageService).withTimeout(300));
+
+    expect(input.Timeout).toBe(300);
   });
 });
 

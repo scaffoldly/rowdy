@@ -13,6 +13,7 @@ import {
 } from '@aws-sdk/client-iam';
 import {
   CreateFunctionCommand,
+  InvokeWithResponseStreamCommand,
   LambdaClient,
   GetFunctionCommand,
   TagResourceCommand,
@@ -82,11 +83,18 @@ import {
   tap,
   timer,
   toArray,
+  concatMap,
+  finalize,
+  endWith,
+  ignoreElements,
+  lastValueFrom,
 } from 'rxjs';
 import promiseRetry from 'promise-retry';
 import { inspect } from 'util';
 import { Environment, Routes } from '../..';
-import { Crontab, Volume } from '../../routes';
+import { Crontab, ExecSchema, Volume } from '../../routes';
+import { EXEC_STREAM, ShellExit } from '../../proxy/shell';
+import { Exec, ExecFinished, ExecFrame } from '../../api/types';
 import { mask, maskJson } from '../../log';
 import { CdnStore, cdnStore } from '../../cdn';
 import { TPulledImage } from '../../api/types';
@@ -245,6 +253,8 @@ export class LambdaFunction implements Logger {
 
   private iam = new IAMClient({ logger: this });
   private lambda = new LambdaClient({ logger: this });
+  // The SDK's default retries would run a command a second time, and its logger would log the event's env.
+  private invoker = new LambdaClient({ maxAttempts: 1 });
   private scheduler = new SchedulerClient({ logger: this });
   private s3 = new S3Client({ logger: this });
 
@@ -258,6 +268,7 @@ export class LambdaFunction implements Logger {
     normalized: Transfer.normalizeImage('ghcr.io/scaffoldly/rowdy:beta'),
   });
   private MemorySize = new BehaviorSubject(128);
+  private Timeout = new BehaviorSubject<number | undefined>(undefined);
   private Environment = new BehaviorSubject<Record<string, string>>({});
   private Tags = new BehaviorSubject<Record<string, string>>({});
   private EntryPoint = new BehaviorSubject<string[]>([ROWDY_BIN]);
@@ -302,6 +313,9 @@ export class LambdaFunction implements Logger {
     public readonly imageService: LambdaImageService
   ) {
     this.type = _type;
+    if (this.isSandbox()) {
+      this.withEnvironment('ROWDY_SANDBOX', 'true');
+    }
     this.withTag('run.rowdy', 'aws');
     this.withTag('run.rowdy.aws', 'lambda');
     this.withTag('run.rowdy.user.agent', this.userAgent);
@@ -521,6 +535,11 @@ export class LambdaFunction implements Logger {
     return this;
   }
 
+  withTimeout(seconds: number): this {
+    this.Timeout.next(seconds);
+    return this;
+  }
+
   withEnvironment(key: string, value: string, overwrite = true): this {
     this.log.debug(`withEnvironment(key=${key}, value=${mask(value)}, overwrite=${overwrite})`);
 
@@ -565,7 +584,7 @@ export class LambdaFunction implements Logger {
         .split(' ')
         .filter((s) => s.length);
     }
-    if (!command.length) {
+    if (!command.length && !this.isSandbox()) {
       return this;
     }
     this.Command.next(command);
@@ -920,6 +939,112 @@ export class LambdaFunction implements Logger {
     });
   }
 
+  /**
+   * Runs a command in this sandbox, emitting its handle once and completing with the command. Unsubscribing
+   * stops waiting and fails the handle; the command runs on until it exits or times out.
+   */
+  exec(event: ExecSchema): Observable<Exec> {
+    return defer(() => {
+      const { FunctionArn: FunctionName } = this.State;
+      if (!this.isSandbox() || !FunctionName) {
+        throw new Error('Exec needs a deployed sandbox');
+      }
+
+      const controller = new AbortController();
+
+      return from(
+        this.invoker.send(
+          new InvokeWithResponseStreamCommand({
+            FunctionName,
+            Qualifier: '$LATEST',
+            Payload: Buffer.from(JSON.stringify(event)),
+            LogType: 'Tail',
+          }),
+          { abortSignal: AbortSignal.any([this.signal, controller.signal]) }
+        )
+      ).pipe(
+        switchMap(
+          ({ EventStream, $metadata }) =>
+            new Observable<Exec>((subscriber) => {
+              const frames = new ReplaySubject<ExecFrame>();
+              const stdout: Buffer[] = [];
+              const stderr: Buffer[] = [];
+              let exit: ShellExit | undefined;
+              let buffer = Buffer.alloc(0);
+
+              const exec: Exec = {
+                cmdId: $metadata.requestId ?? '',
+                get exitCode() {
+                  return exit?.code;
+                },
+                frames: frames.asObservable(),
+                stdout: async () => Buffer.concat(stdout).toString(),
+                stderr: async () => Buffer.concat(stderr).toString(),
+                wait: () =>
+                  lastValueFrom(
+                    frames.pipe(
+                      ignoreElements(),
+                      endWith(undefined),
+                      map(() => {
+                        if (!exit) {
+                          throw new Error('Command ended without an exit');
+                        }
+                        const finished: ExecFinished = { ...exec, exitCode: exit.code, wait: async () => finished };
+                        return finished;
+                      })
+                    )
+                  ),
+              };
+
+              subscriber.next(exec);
+
+              const subscription = from(EventStream ?? [])
+                .pipe(
+                  concatMap(({ PayloadChunk, InvokeComplete }) => {
+                    if (InvokeComplete?.ErrorCode) {
+                      const { ErrorCode, ErrorDetails, LogResult = '' } = InvokeComplete;
+                      const tail = Buffer.from(LogResult, 'base64').toString();
+                      throw new Error([ErrorCode, ErrorDetails, tail].filter(Boolean).join(': '));
+                    }
+                    // A frame can span PayloadChunks, and a PayloadChunk can hold several frames.
+                    buffer = Buffer.concat([buffer, PayloadChunk?.Payload ?? Buffer.alloc(0)]);
+                    const decoded: ExecFrame[] = [];
+                    while (buffer.length >= 8 && buffer.length >= 8 + buffer.readUInt32BE(4)) {
+                      const size = buffer.readUInt32BE(4);
+                      decoded.push({ stream: buffer.readUInt8(0), payload: Buffer.from(buffer.subarray(8, 8 + size)) });
+                      buffer = buffer.subarray(8 + size);
+                    }
+                    return decoded;
+                  }),
+                  tap(({ stream, payload }) => {
+                    if (stream === EXEC_STREAM.STDOUT) stdout.push(payload);
+                    if (stream === EXEC_STREAM.STDERR) stderr.push(payload);
+                    if (stream === EXEC_STREAM.EXIT) exit = JSON.parse(payload.toString());
+                  })
+                )
+                .subscribe({
+                  next: (frame) => frames.next(frame),
+                  error: (error) => {
+                    frames.error(error);
+                    subscriber.error(error);
+                  },
+                  complete: () => {
+                    frames.complete();
+                    subscriber.complete();
+                  },
+                });
+
+              return () => {
+                subscription.unsubscribe();
+                frames.error(new Error('Exec abandoned'));
+              };
+            })
+        ),
+        finalize(() => controller.abort())
+      );
+    });
+  }
+
   delete(): Observable<this> {
     return new Observable<this>((subscriber) => {
       this.deleting = true;
@@ -1012,8 +1137,9 @@ export class LambdaFunction implements Logger {
         PulledImage: this.Image.pipe(take(1), pullImage(this)),
         Command: this.Command.pipe(take(1)),
         WorkingDirectory: this.WorkingDirectory.pipe(take(1)),
+        Timeout: this.Timeout.pipe(take(1)),
       }).pipe(
-        map(({ Name, Qualifier, RoleArn, RoleId, PulledImage, Command, WorkingDirectory }) => ({
+        map(({ Name, Qualifier, RoleArn, RoleId, PulledImage, Command, WorkingDirectory, Timeout }) => ({
           FunctionName: LambdaFunction.functionName(RoleId!, Name),
           Qualifier,
           Description: `A function to run the ${PulledImage.Image} container in AWS Lambda`,
@@ -1021,8 +1147,9 @@ export class LambdaFunction implements Logger {
           PulledImage,
           Command,
           WorkingDirectory,
+          Timeout,
         })),
-        switchMap(({ FunctionName, Qualifier, Role, PulledImage, Command, WorkingDirectory }) =>
+        switchMap(({ FunctionName, Qualifier, Role, PulledImage, Command, WorkingDirectory, Timeout }) =>
           _create(
             () =>
               this.lambda
@@ -1040,7 +1167,7 @@ export class LambdaFunction implements Logger {
                         PackageType: 'Image',
                         // TODO: Support for platform annotation
                         Architectures: ['x86_64'],
-                        Timeout: 900,
+                        Timeout: Timeout ?? 900,
                         Publish: false,
                       })
                     )
@@ -1151,7 +1278,7 @@ export class LambdaFunction implements Logger {
           ),
         ];
 
-    if (this.isSandbox() || this.isDeleting()) {
+    if (this.isDeleting()) {
       return { creates, updates: [], tags, deletes };
     }
 
@@ -1203,6 +1330,7 @@ export class LambdaFunction implements Logger {
         FunctionArn: this.FunctionArn.pipe(take(1)),
         Qualifier: this.Qualifier.pipe(take(1)),
         MemorySize: this.MemorySize.pipe(take(1)),
+        Timeout: this.Timeout.pipe(take(1)),
         Environment: this.Environment.pipe(take(1)),
         ImageUri: this.ImageUri.pipe(take(1)),
         EntryPoint: this.EntryPoint.pipe(take(1)),
@@ -1210,7 +1338,17 @@ export class LambdaFunction implements Logger {
         WorkingDirectory: this.WorkingDirectory.pipe(take(1)),
       }).pipe(
         switchMap(
-          ({ FunctionArn, Qualifier, MemorySize, Environment, ImageUri, EntryPoint, Command, WorkingDirectory }) =>
+          ({
+            FunctionArn,
+            Qualifier,
+            MemorySize,
+            Timeout,
+            Environment,
+            ImageUri,
+            EntryPoint,
+            Command,
+            WorkingDirectory,
+          }) =>
             from(
               this.lambda
                 .send(new GetFunctionCommand({ FunctionName: FunctionArn, Qualifier: Qualifier }))
@@ -1219,6 +1357,7 @@ export class LambdaFunction implements Logger {
               map((Function) => ({
                 Function,
                 MemorySize,
+                Timeout,
                 // DEVNOTE: Lambda runs the entrypoint as its own user, not the image USER, so it cannot
                 // start in a WORKDIR only that user can enter (distroless :nonroot's /home/nonroot is
                 // 0700). Lambda starts rowdy in `/`, and rowdy changes to ROWDY_WORKDIR itself.
@@ -1230,11 +1369,12 @@ export class LambdaFunction implements Logger {
               }))
             )
         ),
-        switchMap(({ Function, MemorySize, Environment, ImageUri, EntryPoint, Command, WorkingDirectory }) => {
+        switchMap(({ Function, MemorySize, Timeout, Environment, ImageUri, EntryPoint, Command, WorkingDirectory }) => {
           const { Code = {} } = Function;
           const { Configuration = {} } = Function;
           const { FunctionName } = Configuration;
           let { Version } = Configuration;
+          const FunctionTimeout = Timeout ?? Configuration.Timeout;
 
           const update: { code: boolean; config: boolean } = {
             code: !isEqual(Code?.ImageUri, ImageUri),
@@ -1244,6 +1384,7 @@ export class LambdaFunction implements Logger {
               !isEqual(Configuration.ImageConfigResponse?.ImageConfig?.Command, Command) ||
               !isEqual(Configuration.ImageConfigResponse?.ImageConfig?.WorkingDirectory, WorkingDirectory) ||
               !isEqual(Configuration.MemorySize, MemorySize) ||
+              !isEqual(Configuration.Timeout, FunctionTimeout) ||
               !isSubset(Environment, Configuration.Environment?.Variables || {}),
           };
 
@@ -1252,6 +1393,7 @@ export class LambdaFunction implements Logger {
           if (update.config) {
             delete Configuration.RevisionId;
             Configuration.MemorySize = MemorySize;
+            Configuration.Timeout = FunctionTimeout;
             Configuration.Environment = {
               Variables: { ...Configuration.Environment?.Variables, ...Environment },
             };
@@ -1288,7 +1430,7 @@ export class LambdaFunction implements Logger {
               .then(waitForSuccess(this.lambda));
           }
 
-          if (update.code || update.config) {
+          if (!this.isSandbox() && (update.code || update.config)) {
             deploy = deploy
               .then(({ RevisionId }) =>
                 this.lambda.send(
@@ -1317,88 +1459,93 @@ export class LambdaFunction implements Logger {
           );
         })
       ),
-      // Function Alias
-      combineLatest([
-        this.FunctionArn.pipe(take(1)),
-        this.Qualifier.pipe(take(1)),
-        this.FunctionVersion.pipe(take(1)),
-      ]).pipe(
-        switchMap(([FunctionArn, Qualifier, FunctionVersion]) =>
-          this.lambda
-            .send(
-              new UpdateAliasCommand({
-                FunctionName: FunctionArn,
-                Name: Qualifier!,
-                FunctionVersion: FunctionVersion!,
-              })
-            )
-            .catch(() =>
-              this.lambda.send(
-                new CreateAliasCommand({
-                  FunctionName: FunctionArn,
-                  Name: Qualifier!,
-                  FunctionVersion: FunctionVersion!,
-                })
+      // A sandbox is invoked directly at $LATEST: no alias, url or schedules.
+      ...(this.isSandbox()
+        ? []
+        : [
+            // Function Alias
+            combineLatest([
+              this.FunctionArn.pipe(take(1)),
+              this.Qualifier.pipe(take(1)),
+              this.FunctionVersion.pipe(take(1)),
+            ]).pipe(
+              switchMap(([FunctionArn, Qualifier, FunctionVersion]) =>
+                this.lambda
+                  .send(
+                    new UpdateAliasCommand({
+                      FunctionName: FunctionArn,
+                      Name: Qualifier!,
+                      FunctionVersion: FunctionVersion!,
+                    })
+                  )
+                  .catch(() =>
+                    this.lambda.send(
+                      new CreateAliasCommand({
+                        FunctionName: FunctionArn,
+                        Name: Qualifier!,
+                        FunctionVersion: FunctionVersion!,
+                      })
+                    )
+                  )
+                  .then((alias) => {
+                    this.AliasArn.next(alias.AliasArn);
+                    return alias;
+                  })
               )
-            )
-            .then((alias) => {
-              this.AliasArn.next(alias.AliasArn);
-              return alias;
-            })
-        )
-      ),
-      // Fuction URL
-      combineLatest([this.FunctionArn.pipe(take(1)), this.AliasArn.pipe(take(1))]).pipe(
-        map(([FunctionArn, AliasArn]) => ({ FunctionArn, Qualifier: AliasArn?.split(':').pop() })),
-        switchMap(({ FunctionArn, Qualifier }) =>
-          this.lambda
-            .send(
-              new UpdateFunctionUrlConfigCommand({
-                FunctionName: FunctionArn,
-                Qualifier,
-                AuthType: 'NONE',
-                InvokeMode: 'RESPONSE_STREAM',
-                // DEVNOTE: Function URL CORS is per URL and Lambda appends it to the app's own CORS
-                // headers. CORS is per route in the manifest instead; an empty config clears it.
-                Cors: {},
-              })
-            )
-            .catch(() =>
-              this.lambda.send(
-                new CreateFunctionUrlConfigCommand({
-                  FunctionName: FunctionArn,
-                  Qualifier,
-                  InvokeMode: 'RESPONSE_STREAM',
-                  AuthType: 'NONE',
-                })
+            ),
+            // Fuction URL
+            combineLatest([this.FunctionArn.pipe(take(1)), this.AliasArn.pipe(take(1))]).pipe(
+              map(([FunctionArn, AliasArn]) => ({ FunctionArn, Qualifier: AliasArn?.split(':').pop() })),
+              switchMap(({ FunctionArn, Qualifier }) =>
+                this.lambda
+                  .send(
+                    new UpdateFunctionUrlConfigCommand({
+                      FunctionName: FunctionArn,
+                      Qualifier,
+                      AuthType: 'NONE',
+                      InvokeMode: 'RESPONSE_STREAM',
+                      // DEVNOTE: Function URL CORS is per URL and Lambda appends it to the app's own CORS
+                      // headers. CORS is per route in the manifest instead; an empty config clears it.
+                      Cors: {},
+                    })
+                  )
+                  .catch(() =>
+                    this.lambda.send(
+                      new CreateFunctionUrlConfigCommand({
+                        FunctionName: FunctionArn,
+                        Qualifier,
+                        InvokeMode: 'RESPONSE_STREAM',
+                        AuthType: 'NONE',
+                      })
+                    )
+                  )
+                  .then((url) => {
+                    this.FunctionUrl.next(url.FunctionUrl);
+                    return url;
+                  })
               )
-            )
-            .then((url) => {
-              this.FunctionUrl.next(url.FunctionUrl);
-              return url;
-            })
-        )
-      ),
-      // Function URL Permissions
-      this.AliasArn.pipe(take(1)).pipe(switchMap((AliasArn) => this.functionUrlPermissions(AliasArn!))),
-      // Host Stores
-      ...this.stores.map((store) => this.writeStore(store)),
-      // EventBridge Schedules
-      combineLatest({
-        FunctionArn: this.FunctionArn.pipe(take(1)),
-        AliasArn: this.AliasArn.pipe(take(1)),
-        RoleArn: this.RoleArn.pipe(take(1)),
-        Tags: this.Tags.pipe(take(1)),
-      }).pipe(
-        switchMap(({ FunctionArn, AliasArn, RoleArn, Tags }) =>
-          this.reconcileSchedules(FunctionArn!, AliasArn!, RoleArn!, Tags)
-        )
-      ),
-      // Superseded Aliases (after the schedules have moved to the new alias)
-      combineLatest({
-        FunctionArn: this.FunctionArn.pipe(take(1)),
-        AliasArn: this.AliasArn.pipe(take(1)),
-      }).pipe(switchMap(({ FunctionArn, AliasArn }) => this.pruneAliases(FunctionArn!, AliasArn!))),
+            ),
+            // Function URL Permissions
+            this.AliasArn.pipe(take(1)).pipe(switchMap((AliasArn) => this.functionUrlPermissions(AliasArn!))),
+            // Host Stores
+            ...this.stores.map((store) => this.writeStore(store)),
+            // EventBridge Schedules
+            combineLatest({
+              FunctionArn: this.FunctionArn.pipe(take(1)),
+              AliasArn: this.AliasArn.pipe(take(1)),
+              RoleArn: this.RoleArn.pipe(take(1)),
+              Tags: this.Tags.pipe(take(1)),
+            }).pipe(
+              switchMap(({ FunctionArn, AliasArn, RoleArn, Tags }) =>
+                this.reconcileSchedules(FunctionArn!, AliasArn!, RoleArn!, Tags)
+              )
+            ),
+            // Superseded Aliases (after the schedules have moved to the new alias)
+            combineLatest({
+              FunctionArn: this.FunctionArn.pipe(take(1)),
+              AliasArn: this.AliasArn.pipe(take(1)),
+            }).pipe(switchMap(({ FunctionArn, AliasArn }) => this.pruneAliases(FunctionArn!, AliasArn!))),
+          ]),
     ];
 
     return { creates, updates, tags, deletes };

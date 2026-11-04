@@ -1,10 +1,11 @@
 import { Environment, Logger, Rowdy } from '@scaffoldly/rowdy';
-import { LambdaPipeline, LambdaRequest } from '../../src/aws/lambda';
+import { isExecEvent, LambdaPipeline, LambdaRequest } from '../../src/aws/lambda';
+import { log } from '../../src/log';
 import { FileDescriptors, Result } from '../../src/pipeline';
 import { ShellResponse } from '../../src/proxy/shell';
 import { HttpProxy } from '../../src/proxy/http';
 import { APIGatewayProxyEventV2 } from 'aws-lambda';
-import { lastValueFrom } from 'rxjs';
+import { firstValueFrom, lastValueFrom } from 'rxjs';
 
 const CRON_LINE = '*/15 * * * * POST https://localhost:3000/tunnel/gc';
 
@@ -175,6 +176,91 @@ describe('aws lambda runtime', () => {
 
       expect(cron.uri.protocol).toBe('rowdy:');
       expect(cron.uri.error).toContain('Unparseable Cron Event');
+    });
+  });
+
+  describe('exec events', () => {
+    const lambda = log.child('lambda');
+    const exec = { apiVersion: 'rowdy.run/v1alpha1', kind: 'Exec', spec: { cmd: 'echo', args: ['hi'] } };
+    const { ROWDY_SANDBOX } = process.env;
+
+    const shell = (event: unknown): void => {
+      const pipeline = new LambdaPipeline(new Environment(new Logger()));
+      new LambdaRequest(pipeline, JSON.stringify(event))['intoShell']().subscribe().unsubscribe();
+    };
+
+    afterEach(() => {
+      jest.restoreAllMocks();
+      if (ROWDY_SANDBOX === undefined) {
+        delete process.env.ROWDY_SANDBOX;
+      } else {
+        process.env.ROWDY_SANDBOX = ROWDY_SANDBOX;
+      }
+    });
+
+    it('recognizes an exec event', () => {
+      expect(isExecEvent(exec)).toBe(true);
+      expect(isExecEvent({ ...exec, kind: 'Cron' })).toBe(false);
+      expect(isExecEvent({ ...exec, spec: {} })).toBe(false);
+      expect(isExecEvent({ ...exec, spec: { cmd: '' } })).toBe(false);
+      expect(isExecEvent({ ...exec, spec: { cmd: 'echo', args: 'hi' } })).toBe(false);
+      expect(isExecEvent(cronEvent(CRON_LINE))).toBe(false);
+      expect(isExecEvent(null)).toBe(false);
+    });
+
+    const answer = async (event: unknown): Promise<unknown> => {
+      const pipeline = new LambdaPipeline(new Environment(new Logger()));
+      const proxy = await firstValueFrom(new LambdaRequest(pipeline, JSON.stringify(event)).into());
+      const response = await firstValueFrom(proxy.into());
+      return lastValueFrom(response);
+    };
+
+    it('answers a refused exec with an error', async () => {
+      delete process.env.ROWDY_SANDBOX;
+
+      await expect(answer(exec)).rejects.toThrow('Exec Refused: not a sandbox');
+    });
+
+    it('answers an unsupported event with an error', async () => {
+      await expect(answer({ hello: 'world' })).rejects.toThrow('Unsupported Event');
+    });
+
+    it('answers a payload that is not JSON with an error', async () => {
+      const pipeline = new LambdaPipeline(new Environment(new Logger()));
+      const proxy = await firstValueFrom(new LambdaRequest(pipeline, 'not json').into());
+
+      await expect(lastValueFrom(await firstValueFrom(proxy.into()))).rejects.toThrow('Unsupported Event');
+    });
+
+    it('refuses exec outside a sandbox', () => {
+      delete process.env.ROWDY_SANDBOX;
+      const warn = jest.spyOn(lambda, 'warn');
+      const debug = jest.spyOn(lambda, 'debug');
+
+      shell(exec);
+
+      expect(warn).toHaveBeenCalledWith('Exec Refused', { reason: 'not a sandbox' });
+      expect(debug).not.toHaveBeenCalledWith('Exec Event', expect.anything());
+    });
+
+    it('accepts exec in a sandbox', () => {
+      process.env.ROWDY_SANDBOX = 'true';
+      const warn = jest.spyOn(lambda, 'warn');
+      const debug = jest.spyOn(lambda, 'debug');
+
+      shell(exec);
+
+      expect(warn).not.toHaveBeenCalled();
+      expect(debug).toHaveBeenCalledWith('Exec Event', { cmd: 'echo' });
+    });
+
+    it('does not read exec from a function url body', () => {
+      process.env.ROWDY_SANDBOX = 'true';
+      const debug = jest.spyOn(lambda, 'debug');
+
+      shell({ ...functionUrlEvent({}), body: JSON.stringify(exec) });
+
+      expect(debug).not.toHaveBeenCalledWith('Exec Event', expect.anything());
     });
   });
 

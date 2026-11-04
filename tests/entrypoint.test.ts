@@ -1,4 +1,4 @@
-import { Environment, Logger } from '../src';
+import { ABORT, Environment, Logger } from '../src';
 
 describe('entrypoint --volumes', () => {
   const setup = (argv: Record<string, unknown>): Environment => {
@@ -77,6 +77,161 @@ describe('entrypoint --volumes', () => {
     } finally {
       process.argv = argv;
     }
+  });
+
+  describe('with explicit arguments', () => {
+    const withArgv = (argv: string[], run: () => void): void => {
+      const original = process.argv;
+      process.argv = argv;
+      try {
+        run();
+      } finally {
+        process.argv = original;
+      }
+    };
+
+    it('ignores the host process arguments', () => {
+      withArgv(['node', 'app', '-v', '/tmp/scratch:/scratch', '--', 'true'], () => {
+        const env = new Environment(new Logger(), {});
+
+        expect(env.routes.volumes).toEqual([]);
+        expect(env.command).toBeUndefined();
+      });
+    });
+
+    it('does not act on the host process --help', () => {
+      const exit = jest.spyOn(process, 'exit').mockImplementation(() => {
+        throw new Error('process.exit');
+      });
+      const log = jest.spyOn(console, 'log').mockImplementation(() => undefined);
+      try {
+        withArgv(['node', 'app', '--help'], () => {
+          new Environment(new Logger(), {});
+        });
+        expect(exit).not.toHaveBeenCalled();
+      } finally {
+        exit.mockRestore();
+        log.mockRestore();
+      }
+    });
+
+    describe('and ROWDY_ variables set', () => {
+      beforeEach(() => {
+        process.env.ROWDY_VOLUMES = 's3://example-bucket:/data';
+        process.env.ROWDY_WORKDIR = '/tmp';
+      });
+
+      afterEach(() => {
+        delete process.env.ROWDY_VOLUMES;
+        delete process.env.ROWDY_WORKDIR;
+      });
+
+      it('does not read them', () => {
+        const chdir = jest.spyOn(process, 'chdir').mockImplementation(() => undefined);
+        try {
+          withArgv(['node', 'app'], () => {
+            const env = new Environment(new Logger(), {});
+
+            expect(env.routes.volumes).toEqual([]);
+            expect(chdir).not.toHaveBeenCalled();
+          });
+        } finally {
+          chdir.mockRestore();
+        }
+      });
+
+      it('still reads them for the process itself', () => {
+        const chdir = jest.spyOn(process, 'chdir').mockImplementation(() => undefined);
+        try {
+          withArgv(['node', 'rowdy'], () => {
+            const env = new Environment(new Logger());
+
+            expect(env.routes.volumes).toEqual(['s3://example-bucket:/data']);
+            expect(chdir).toHaveBeenCalledWith('/tmp');
+          });
+        } finally {
+          chdir.mockRestore();
+        }
+      });
+    });
+
+    describe('abort', () => {
+      it("shares ABORT in rowdy's own process", () => {
+        expect(new Environment(new Logger()).abort).toBe(ABORT);
+      });
+
+      it('has its own, with the signal that belongs to it', () => {
+        const env = new Environment(new Logger(), {});
+
+        expect(env.abort).not.toBe(ABORT);
+        expect(env.signal).toBe(env.abort.signal);
+      });
+
+      it('aborts alone', () => {
+        const one = new Environment(new Logger(), {});
+        const other = new Environment(new Logger(), {});
+
+        one.abort.abort('done');
+
+        expect(one.signal.aborted).toBe(true);
+        expect(other.signal.aborted).toBe(false);
+        expect(ABORT.signal.aborted).toBe(false);
+      });
+
+      it('follows the signal it is given, with its reason', () => {
+        const controller = new AbortController();
+        const env = new Environment(new Logger(), { signal: controller.signal });
+        expect(env.signal.aborted).toBe(false);
+
+        controller.abort('stop');
+
+        expect(env.signal.aborted).toBe(true);
+        expect(env.signal.reason).toBe('stop');
+      });
+
+      it('starts aborted when the signal it is given already is', () => {
+        const env = new Environment(new Logger(), { signal: AbortSignal.abort('stop') });
+
+        expect(env.signal.aborted).toBe(true);
+        expect(env.signal.reason).toBe('stop');
+      });
+
+      it('does not abort the signal it is given', () => {
+        const controller = new AbortController();
+        const env = new Environment(new Logger(), { signal: controller.signal });
+
+        env.abort.abort('done');
+
+        expect(controller.signal.aborted).toBe(false);
+      });
+    });
+
+    it('does not announce itself', () => {
+      const logger = new Logger();
+      const info = jest.spyOn(logger, 'info');
+      withArgv(['node', 'app'], () => {
+        new Environment(logger, {});
+      });
+      expect(info).not.toHaveBeenCalled();
+    });
+
+    it('announces itself for the process itself', () => {
+      const logger = new Logger();
+      const info = jest.spyOn(logger, 'info');
+      withArgv(['node', 'rowdy'], () => {
+        new Environment(logger);
+      });
+      expect(info).toHaveBeenCalledWith('Rowdy Started', expect.anything());
+    });
+
+    it('parses the arguments it was given', () => {
+      withArgv(['node', 'app'], () => {
+        const env = new Environment(new Logger(), { argv: ['-v', '/tmp/scratch:/scratch', '--', 'true'] });
+
+        expect(env.routes.volumes).toEqual(['file:///tmp/scratch:/scratch']);
+        expect(env.command).toEqual(['true']);
+      });
+    });
   });
 
   it('takes a single -v', () => {

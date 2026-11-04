@@ -4,13 +4,36 @@ import { MonoTypeOperatorFunction, Observable } from 'rxjs';
 import { Environment } from '../environment';
 
 export type ApiVersion = 'rowdy.run/v1alpha1';
-export type ApiKind = 'Routes' | 'Cron';
+export type ApiKind = 'Routes' | 'Cron' | 'Exec';
 export type ApiSchema<Spec, Status> = {
   apiVersion: ApiVersion;
   kind: ApiKind;
   spec?: Spec;
   status: Status;
 };
+
+export type ExecFrame = { stream: number; payload: Buffer };
+
+/** A command in a sandbox, running or exited. */
+export interface Exec {
+  readonly cmdId: string;
+  /** Undefined while the command runs. */
+  readonly exitCode: number | undefined;
+  /** The stdout written so far, or all of it once the command has exited. */
+  stdout(): Promise<string>;
+  /** The stderr written so far, or all of it once the command has exited. */
+  stderr(): Promise<string>;
+  /** Resolves when the command exits, whatever its exit code. */
+  wait(): Promise<ExecFinished>;
+  /** Every frame so far, then each as it arrives. Completes with the command. */
+  readonly frames: Observable<ExecFrame>;
+  // TODO: kill
+  // kill(signal?: NodeJS.Signals): Promise<void>;
+}
+
+export interface ExecFinished extends Exec {
+  readonly exitCode: number;
+}
 
 export interface IApi {
   http: AxiosInstance;

@@ -1,7 +1,7 @@
 import { ConnectError, ServiceImpl } from '@connectrpc/connect';
 import { CRI } from '@scaffoldly/rowdy-grpc';
 import { Logger } from '../../log';
-import { lastValueFrom } from 'rxjs';
+import { fromEvent, lastValueFrom, takeUntil } from 'rxjs';
 import { Rowdy } from '../../api';
 import { Environment } from '../../environment';
 import { PullImageOptions, TPulledImage } from '../../api/types';
@@ -73,7 +73,9 @@ export class LambdaImageService implements ILambdaImageService {
       opts.authorization = this._authorization;
     }
 
-    const { ImageUri } = this.intercept(await lastValueFrom(this.images.pullImage(req.image.image, opts)));
+    const { ImageUri } = this.intercept(
+      await lastValueFrom(this.images.pullImage(req.image.image, opts).pipe(takeUntil(fromEvent(this.signal, 'abort'))))
+    );
 
     return {
       $typeName: 'runtime.v1.PullImageResponse',
