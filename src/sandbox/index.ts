@@ -2,17 +2,17 @@ import type { Writable } from 'stream';
 import { SandboxImpl } from './internal/sandbox';
 
 export interface SandboxOptions {
-  /** The container image to run. */
+  /** The container image to run. Defaults to `e2bdev/base`. */
   image?: string;
   /** A name for the sandbox. */
   name?: string;
-  /** Milliseconds until the sandbox stops. */
+  /** Milliseconds until the sandbox stops: whole seconds, 1000 to 900000. */
   timeout?: number;
-  /** Memory in megabytes. */
+  /** Memory in megabytes: a whole number, 128 to 10240. */
   memory?: number;
   /** Environment variables for every command; a command's own `env` overrides them. */
   env?: Record<string, string>;
-  /** Cancels the creation. */
+  /** Aborts the sandbox's work in progress, including its creation. */
   signal?: AbortSignal;
 }
 

@@ -1,4 +1,7 @@
 import { Command, CommandFinished, Sandbox } from '@scaffoldly/rowdy/sandbox';
+import { NEVER, Observable, of, Subject, throwError } from 'rxjs';
+import { ROWDY_LAYERS } from '../src/api/internal/layers';
+import { LambdaFunction } from '../src/aws/lambda/index';
 import { SandboxImpl } from '../src/sandbox/internal/sandbox';
 
 const NOT_IMPLEMENTED = 'not implemented';
@@ -14,6 +17,143 @@ const _shapes = async (sandbox: Sandbox): Promise<void> => {
 };
 
 describe('sandbox', () => {
+  const deployed = (): Observable<LambdaFunction> => of(LambdaFunction.prototype);
+  let observe: jest.SpyInstance<Observable<LambdaFunction>>;
+
+  beforeEach(() => {
+    observe = jest.spyOn(LambdaFunction.prototype, 'observe').mockImplementation(deployed);
+  });
+
+  afterEach(() => jest.restoreAllMocks());
+
+  describe('create', () => {
+    it('deploys once, then resolves to the sandbox', async () => {
+      const deploy = new Subject<LambdaFunction>();
+      observe.mockReturnValue(deploy);
+      let resolved = false;
+
+      const created = SandboxImpl.create().then((sandbox) => {
+        resolved = true;
+        return sandbox;
+      });
+      await Promise.resolve();
+      deploy.next(LambdaFunction.prototype);
+      await Promise.resolve();
+      expect(resolved).toBe(false);
+
+      deploy.complete();
+
+      expect(await created).toBeInstanceOf(SandboxImpl);
+      expect(observe).toHaveBeenCalledTimes(1);
+    });
+
+    it("adds rowdy's layer", async () => {
+      const sandbox = await SandboxImpl.create();
+
+      expect(sandbox['lambda'].imageService['_layersFrom']).toEqual([ROWDY_LAYERS]);
+    });
+
+    it.each([
+      ['no options', undefined],
+      ['an undefined image', { image: undefined }],
+    ])('defaults to e2bdev/base with %s', async (_, options) => {
+      const image = jest.spyOn(LambdaFunction.prototype, 'withImage');
+
+      await SandboxImpl.create(options);
+
+      expect(image).toHaveBeenCalledWith('e2bdev/base');
+    });
+
+    it('applies its timeout in seconds', async () => {
+      const timeout = jest.spyOn(LambdaFunction.prototype, 'withTimeout');
+
+      await SandboxImpl.create({ timeout: 60_000 });
+
+      expect(timeout).toHaveBeenCalledWith(60);
+    });
+
+    it('defaults to the 15 minute timeout', async () => {
+      const timeout = jest.spyOn(LambdaFunction.prototype, 'withTimeout');
+
+      await SandboxImpl.create();
+
+      expect(timeout).toHaveBeenCalledWith(900);
+    });
+
+    it('leaves an unnamed function unnamed', async () => {
+      const name = jest.spyOn(LambdaFunction.prototype, 'withName');
+
+      await SandboxImpl.create();
+
+      expect(name).not.toHaveBeenCalled();
+    });
+
+    it('applies its options to the function', async () => {
+      const image = jest.spyOn(LambdaFunction.prototype, 'withImage');
+      const name = jest.spyOn(LambdaFunction.prototype, 'withName');
+      const memory = jest.spyOn(LambdaFunction.prototype, 'withMemory');
+      const env = jest.spyOn(LambdaFunction.prototype, 'withEnvironment');
+
+      await SandboxImpl.create({ image: 'busybox', name: 'box', memory: 512, env: { FOO: 'bar' } });
+
+      expect(image).toHaveBeenCalledWith('busybox');
+      expect(name).toHaveBeenCalledWith('box');
+      expect(memory).toHaveBeenCalledWith(512);
+      expect(env).toHaveBeenCalledWith('FOO', 'bar');
+    });
+
+    it.each([
+      ['a timeout under 1 second', { timeout: 999 }],
+      ['a timeout over 15 minutes', { timeout: 900_001 }],
+      ['a timeout of partial seconds', { timeout: 1500 }],
+      ['a timeout that is not a number', { timeout: NaN }],
+      ['memory under 128 MB', { memory: 127 }],
+      ['memory over 10240 MB', { memory: 10241 }],
+      ['memory of partial MB', { memory: 512.5 }],
+    ])('rejects %s before deploying', async (_, options) => {
+      await expect(SandboxImpl.create(options)).rejects.toThrow(RangeError);
+
+      expect(observe).not.toHaveBeenCalled();
+    });
+
+    it.each([[{ timeout: 1000, memory: 128 }], [{ timeout: 900_000, memory: 10240 }]])(
+      'accepts the limits %j',
+      async (options) => {
+        await expect(SandboxImpl.create(options)).resolves.toBeInstanceOf(SandboxImpl);
+      }
+    );
+
+    it('rejects when the deploy fails', async () => {
+      observe.mockReturnValue(throwError(() => new Error('AccessDenied')));
+
+      await expect(SandboxImpl.create()).rejects.toThrow('AccessDenied');
+    });
+
+    it('rejects with the reason and stops the deploy when aborted', async () => {
+      let stopped = false;
+      observe.mockReturnValue(
+        new Observable<LambdaFunction>(() => () => {
+          stopped = true;
+        })
+      );
+      const controller = new AbortController();
+
+      const created = SandboxImpl.create({ signal: controller.signal });
+      await Promise.resolve();
+      controller.abort('stop');
+
+      await expect(created).rejects.toBe('stop');
+      expect(stopped).toBe(true);
+    });
+
+    it('does not deploy when already aborted', async () => {
+      observe.mockReturnValue(NEVER);
+
+      await expect(SandboxImpl.create({ signal: AbortSignal.abort('stop') })).rejects.toBe('stop');
+      expect(observe).not.toHaveBeenCalled();
+    });
+  });
+
   it('compiles the documented example, which stops at the first unimplemented call', async () => {
     const main = async (): Promise<void> => {
       const sandbox = await Sandbox.create({ timeout: 15 * 60 * 1000 });
@@ -31,6 +171,15 @@ describe('sandbox', () => {
 
   it('exposes only create and get', () => {
     expect(Object.keys(Sandbox).sort()).toEqual(['create', 'get']);
+  });
+
+  it('feeds its signal to its environment', async () => {
+    const controller = new AbortController();
+    const sandbox = await SandboxImpl.create({ signal: controller.signal });
+
+    controller.abort('stop');
+
+    expect(sandbox['environment'].signal.reason).toBe('stop');
   });
 
   it('does not implement get', async () => {

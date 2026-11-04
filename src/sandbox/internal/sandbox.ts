@@ -10,16 +10,73 @@ import type {
   SandboxOptions,
   WriteFile,
 } from '..';
+import { defer, fromEvent, iif, last, lastValueFrom, map, of, race, switchMap, throwError } from 'rxjs';
 import { Environment, Logger } from '../..';
-import { LambdaCri } from '../../aws/lambda/cri';
+import { deploySources } from '../../api/internal/layers';
+import { LambdaImageService } from '../../aws/lambda/image';
+import { LambdaFunction } from '../../aws/lambda/index';
 
 export class SandboxImpl implements Sandbox {
-  private constructor() {}
+  private environment: Environment;
+  private lambda: LambdaFunction;
 
-  static async create(_options?: SandboxOptions): Promise<Sandbox> {
-    const cri = new LambdaCri(new Environment(new Logger('sandbox'), []));
+  private constructor({
+    image,
+    name,
+    timeout,
+    memory,
+    env,
+    signal,
+  }: Required<Omit<SandboxOptions, 'name'>> & Pick<SandboxOptions, 'name'>) {
+    this.environment = new Environment(new Logger('sandbox'), { signal });
 
-    throw new Error('not implemented');
+    let lambda = new LambdaFunction(
+      'Container',
+      new LambdaImageService(this.environment).withLayersFrom(deploySources(undefined))
+    )
+      .withImage(image)
+      .withTimeout(timeout / 1000)
+      .withMemory(memory);
+    if (name) {
+      lambda = lambda.withName(name);
+    }
+    this.lambda = Object.entries(env).reduce((fn, [key, value]) => fn.withEnvironment(key, value), lambda);
+  }
+
+  static async create(options?: SandboxOptions): Promise<SandboxImpl> {
+    const timeout = options?.timeout ?? 15 * 60 * 1000;
+    const memory = options?.memory ?? 512;
+
+    // Lambda takes Timeout in whole seconds, 1 to 900, and MemorySize in whole MB, 128 to 10240.
+    if (!Number.isInteger(timeout / 1000) || timeout < 1000 || timeout > 900_000) {
+      throw new RangeError(`timeout must be whole seconds from 1000 to 900000 ms, got ${timeout}`);
+    }
+    if (!Number.isInteger(memory) || memory < 128 || memory > 10240) {
+      throw new RangeError(`memory must be whole MB from 128 to 10240, got ${memory}`);
+    }
+
+    const sandbox = new SandboxImpl({
+      // TODO: bake our own image
+      image: options?.image ?? 'e2bdev/base',
+      name: options?.name,
+      timeout,
+      memory,
+      env: options?.env ?? {},
+      signal: options?.signal ?? new AbortController().signal,
+    });
+    const { signal } = sandbox.environment;
+
+    return lastValueFrom(
+      race(
+        iif(() => signal.aborted, of(signal), fromEvent(signal, 'abort')).pipe(
+          switchMap(() => throwError(() => signal.reason))
+        ),
+        defer(() => sandbox.lambda.observe()).pipe(
+          last(),
+          map(() => sandbox)
+        )
+      )
+    );
   }
 
   static async get(_lookup: SandboxLookup): Promise<Sandbox> {
