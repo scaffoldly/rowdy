@@ -136,7 +136,7 @@ describe('sandbox', () => {
       };
 
       it('hashes the resolved config as its pod template', async () => {
-        expect(await named()).toBe('sandbox-5d7cf9cbb');
+        expect(await named()).toBe('sandbox-f9f976546');
       });
 
       it('is the same for the same options', async () => {
@@ -222,6 +222,28 @@ describe('sandbox', () => {
         await expect(SandboxImpl.create(options)).resolves.toBeInstanceOf(SandboxImpl);
       }
     );
+
+    it('keeps HOME and the XDG directories under /tmp, apart', async () => {
+      const sandbox = await SandboxImpl.create();
+
+      expect(sandbox['lambda']['Environment'].value).toMatchObject({
+        HOME: '/tmp',
+        XDG_CACHE_HOME: '/tmp/.cache',
+        XDG_CONFIG_HOME: '/tmp/.config',
+        XDG_DATA_HOME: '/tmp/.local/share',
+        XDG_STATE_HOME: '/tmp/.local/state',
+      });
+    });
+
+    it('lets env override the defaults', async () => {
+      const sandbox = await SandboxImpl.create({ env: { HOME: '/mnt', FOO: 'bar' } });
+
+      expect(sandbox['lambda']['Environment'].value).toMatchObject({
+        HOME: '/mnt',
+        FOO: 'bar',
+        XDG_DATA_HOME: '/tmp/.local/share',
+      });
+    });
 
     it('reduces an http failure to its method, url and status', async () => {
       const config: InternalAxiosRequestConfig = {

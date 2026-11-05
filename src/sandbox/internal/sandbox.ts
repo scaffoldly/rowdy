@@ -68,7 +68,15 @@ export class SandboxImpl implements Sandbox {
     // TODO: bake our own image
     const image = options?.image ?? 'e2bdev/base';
 
-    const env = options?.env ?? {};
+    // Only /tmp is writable on Lambda. The XDG directories are the spec's defaults under that HOME.
+    const env = {
+      HOME: '/tmp',
+      XDG_CACHE_HOME: '/tmp/.cache',
+      XDG_CONFIG_HOME: '/tmp/.config',
+      XDG_DATA_HOME: '/tmp/.local/share',
+      XDG_STATE_HOME: '/tmp/.local/state',
+      ...options?.env,
+    };
 
     // The same options reuse a function, and different ones share no env or config.
     const suffix = computeHash(JSON.stringify({ image, timeout, memory, env: Object.entries(env).sort() }));

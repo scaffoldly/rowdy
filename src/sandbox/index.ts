@@ -12,7 +12,10 @@ export interface SandboxOptions {
   timeout?: number;
   /** Memory in megabytes: a whole number, 128 to 10240. */
   memory?: number;
-  /** Environment variables for every command; a command's own `env` overrides them. */
+  /**
+   * Environment variables for every command; a command's own `env` overrides them. `HOME` defaults to `/tmp`, the
+   * only writable path, and the `XDG_*` base directories to their usual places under it.
+   */
   env?: Record<string, string>;
   /** Applies to the whole process. Defaults to ROWDY_LOG_LEVEL, ROWDY_DEBUG or ROWDY_TRACE, then `warn`. */
   logLevel?: Level;
