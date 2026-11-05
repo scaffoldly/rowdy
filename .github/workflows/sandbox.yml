@@ -1,0 +1,14 @@
+name: CI/CD (scaffoldly/sandbox)
+
+# The workflow lives on the sandbox branch. This copy only makes it dispatchable, which needs the file on the default
+# branch: `gh workflow run sandbox.yml --ref sandbox` runs that branch's version.
+on:
+  workflow_dispatch: {}
+
+permissions: {}
+
+jobs:
+  noop:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "Dispatch this with --ref sandbox"

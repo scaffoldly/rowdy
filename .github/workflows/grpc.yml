@@ -1,133 +1,14 @@
 name: CI/CD (@scaffoldly/rowdy-grpc)
 
+# The workflow lives on the grpc branch. This copy only makes it dispatchable, which needs the file on the default
+# branch: `gh workflow run grpc.yml --ref grpc` runs that branch's version.
 on:
-  push:
-    branches:
-      - grpc
-      - grpc/**
-  pull_request_target:
-    branches:
-      - grpc
   workflow_dispatch: {}
 
-permissions: write-all
-
-concurrency:
-  group: ${{ github.workflow }}-${{ github.ref_name }}
-  cancel-in-progress: true
+permissions: {}
 
 jobs:
-  lint:
+  noop:
     runs-on: ubuntu-latest
-    name: Lint
-
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v5
-
-      - name: Use Node.js 22.x
-        uses: actions/setup-node@v6
-        with:
-          node-version: 22.x
-          cache: 'yarn'
-
-      - name: Lint
-        run: yarn && yarn lint
-
-  test:
-    strategy:
-      matrix:
-        node-version: [22.x, 24.x]
-    runs-on: ubuntu-latest
-    name: Test
-
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v5
-
-      - name: Use Node.js ${{ matrix.node-version }}
-        uses: actions/setup-node@v6
-        with:
-          node-version: ${{ matrix.node-version }}
-          cache: 'yarn'
-
-      - name: Test
-        run: yarn && yarn test
-
-  build-publish:
-    runs-on: ubuntu-latest
-    needs: [lint, test]
-    name: Build and Publish to NPM
-    if: |
-      success() &&
-      github.ref == 'refs/heads/grpc' &&
-      github.event_name != 'pull_request_target' &&
-      !contains(github.event.head_commit.message, '[skip-prerelease]')
-
-    permissions:
-      contents: read
-      id-token: write
-
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Use Node.js 22.x
-        uses: actions/setup-node@v4
-        with:
-          node-version: 22.x
-          cache: 'yarn'
-          registry-url: 'https://registry.npmjs.org'
-
-      - name: Build package
-        run: yarn && yarn build
-
-      - name: Generate pre-release version
-        id: version
-        run: |
-          CURRENT_NAME=$(node -p "require('./package.json').name")
-          CURRENT_VERSION=$(node -p "require('./package.json').version")
-          TIMESTAMP=$(date +%Y%m%d%H%M%S)
-          SHORT_SHA=${GITHUB_SHA:0:7}
-          PRERELEASE_VERSION="${CURRENT_VERSION}-beta.${TIMESTAMP}.${SHORT_SHA}"
-          echo "name=${CURRENT_NAME}" >> $GITHUB_OUTPUT
-          echo "version=${PRERELEASE_VERSION}" >> $GITHUB_OUTPUT
-          echo "current=${CURRENT_VERSION}" >> $GITHUB_OUTPUT
-
-      - name: Update package.json version
-        run: |
-          yarn version --new-version ${{ steps.version.outputs.version }} --no-git-tag-version
-
-      # DEVNOTE: The OIDC token isn't an npm token. The registry exchanges it for a short-lived
-      # publish token scoped to this package, the same exchange `npm publish` does internally.
-      # Trusted publishing is configured on npmjs.com for this repository and grpc.yml.
-      - name: Get npm token
-        id: identity
-        uses: cnuss/actions-identity@v1
-        with:
-          id-token-audience: npm:registry.npmjs.org
-          exchange-url: https://registry.npmjs.org/-/npm/v1/oidc/token/exchange/package/@scaffoldly%2frowdy-grpc
-
-      - name: Publish pre-release to NPM
-        run: yarn publish --tag beta --access public
-        env:
-          NODE_AUTH_TOKEN: ${{ steps.identity.outputs.exchange-token }}
-
-      - name: Create pre-release summary
-        run: |
-          echo "## 🚀 Pre-release Published" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "**Package:** ${{ steps.version.outputs.name }}" >> $GITHUB_STEP_SUMMARY
-          echo "**Version:** ${{ steps.version.outputs.version }}" >> $GITHUB_STEP_SUMMARY
-          echo "**Tag:** beta" >> $GITHUB_STEP_SUMMARY
-          echo "**Commit:** ${GITHUB_SHA:0:7}" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "### 📦 NPM Package" >> $GITHUB_STEP_SUMMARY
-          echo "Install the pre-release version:" >> $GITHUB_STEP_SUMMARY
-          echo '```bash' >> $GITHUB_STEP_SUMMARY
-          echo "npm install ${{ steps.version.outputs.name }}@beta" >> $GITHUB_STEP_SUMMARY
-          echo "# or specific version:" >> $GITHUB_STEP_SUMMARY
-          echo "npm install ${{ steps.version.outputs.name }}@${{ steps.version.outputs.version }}" >> $GITHUB_STEP_SUMMARY
-          echo '```' >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "**Note:** Add \`[skip-prerelease]\` to commit message to skip pre-release publishing." >> $GITHUB_STEP_SUMMARY
+      - run: echo "Dispatch this with --ref grpc"
