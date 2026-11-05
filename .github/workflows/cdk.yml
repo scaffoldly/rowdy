@@ -5,7 +5,7 @@ on:
     branches:
       - cdk
       - cdk/**
-  pull_request_target:
+  pull_request:
     branches:
       - cdk
   workflow_dispatch: {}
@@ -61,7 +61,7 @@ jobs:
     if: |
       success() &&
       github.ref == 'refs/heads/cdk' &&
-      github.event_name != 'pull_request_target' &&
+      github.event_name != 'pull_request' &&
       !contains(github.event.head_commit.message, '[skip-prerelease]')
 
     permissions:
