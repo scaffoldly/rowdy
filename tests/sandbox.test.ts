@@ -10,7 +10,6 @@ import { Exec } from '../src/api/types';
 import { EXEC_STREAM, execFrame } from '../src/proxy/shell';
 import { computeHash, SandboxImpl } from '../src/sandbox/internal/sandbox';
 
-const NOT_IMPLEMENTED = 'not implemented';
 const FUNCTION_ARN = 'arn:aws:lambda:us-east-1:123456789012:function:sandbox-box';
 
 type Event = InvokeWithResponseStreamResponseEvent;
@@ -626,8 +625,57 @@ describe('sandbox', () => {
     expect(sandbox['environment'].signal.reason).toBe('stop');
   });
 
-  it('does not implement get', async () => {
-    await expect(Sandbox.get({ sandboxId: 'sandbox' })).rejects.toThrow(NOT_IMPLEMENTED);
+  describe('get', () => {
+    let withArn: jest.SpyInstance;
+    const hydrate = (Variables: Record<string, string>) =>
+      function (this: LambdaFunction): Observable<LambdaFunction> {
+        this.State.FunctionArn = FUNCTION_ARN;
+        this['_status'] = { Configuration: { Environment: { Variables } } };
+        return of(this);
+      };
+
+    beforeEach(() => {
+      withArn = jest.spyOn(LambdaFunction.prototype, 'withArn').mockImplementation(hydrate({ ROWDY_SANDBOX: 'true' }));
+    });
+
+    it('connects to the sandbox without deploying', async () => {
+      const sandbox = await Sandbox.get({ sandboxId: FUNCTION_ARN });
+
+      expect(withArn).toHaveBeenCalledWith(FUNCTION_ARN);
+      expect(observe).not.toHaveBeenCalled();
+      expect(sandbox.sandboxId).toBe(FUNCTION_ARN);
+    });
+
+    it('rejects a function that is not a sandbox', async () => {
+      withArn.mockImplementation(hydrate({}));
+
+      await expect(Sandbox.get({ sandboxId: FUNCTION_ARN })).rejects.toThrow(`Not a sandbox: ${FUNCTION_ARN}`);
+    });
+
+    it('rejects a lookup that fails', async () => {
+      withArn.mockReturnValue(throwError(() => new Error('ResourceNotFoundException')));
+
+      await expect(Sandbox.get({ sandboxId: FUNCTION_ARN })).rejects.toThrow('ResourceNotFoundException');
+    });
+
+    it('rejects with the reason when aborted', async () => {
+      await expect(Sandbox.get({ sandboxId: FUNCTION_ARN, signal: AbortSignal.abort('stop') })).rejects.toBe('stop');
+
+      expect(withArn).not.toHaveBeenCalled();
+    });
+
+    it('runs commands', async () => {
+      jest.spyOn(LambdaClient.prototype, 'send').mockImplementation(() =>
+        Promise.resolve({
+          $metadata: {},
+          EventStream: stream(payload(execFrame(EXEC_STREAM.EXIT, Buffer.from('{"code":0}')))),
+        })
+      );
+
+      const sandbox = await Sandbox.get({ sandboxId: FUNCTION_ARN });
+
+      await expect(sandbox.runCommand('ls')).resolves.toMatchObject({ exitCode: 0 });
+    });
   });
 
   describe('an instance', () => {

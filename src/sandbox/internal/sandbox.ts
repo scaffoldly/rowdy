@@ -37,15 +37,7 @@ export class SandboxImpl implements Sandbox {
   private environment: Environment;
   private lambda: LambdaFunction;
 
-  private constructor({
-    image,
-    name,
-    timeout,
-    memory,
-    env,
-    logLevel,
-    signal,
-  }: Required<Omit<SandboxOptions, 'logLevel'>> & Pick<SandboxOptions, 'logLevel'>) {
+  private constructor({ logLevel, signal }: Pick<SandboxOptions, 'logLevel' | 'signal'>) {
     // A host's terminal stays quiet unless logLevel, ROWDY_LOG_LEVEL, ROWDY_DEBUG or ROWDY_TRACE says otherwise.
     const log = new Logger('sandbox');
     if (logLevel) {
@@ -55,16 +47,10 @@ export class SandboxImpl implements Sandbox {
     }
     this.environment = new Environment(log, { signal });
 
-    const lambda = new LambdaFunction(
+    this.lambda = new LambdaFunction(
       'Sandbox',
       new LambdaImageService(this.environment).withLayersFrom(deploySources(undefined))
-    )
-      .withImage(image)
-      .withCommand([])
-      .withTimeout(timeout / 1000)
-      .withMemory(memory)
-      .withName(name);
-    this.lambda = Object.entries(env).reduce((fn, [key, value]) => fn.withEnvironment(key, value), lambda);
+    );
   }
 
   static async create(options?: SandboxOptions): Promise<SandboxImpl> {
@@ -91,16 +77,16 @@ export class SandboxImpl implements Sandbox {
     // Kubernetes' generateName suffix: 5 random characters.
     // const suffix = Array.from({ length: 5 }, () => ALPHANUMS[randomInt(ALPHANUMS.length)]).join('');
 
-    const sandbox = new SandboxImpl({
-      image,
+    const sandbox = new SandboxImpl({ logLevel: options?.logLevel, signal: options?.signal });
+    sandbox.lambda
+      .withImage(image)
+      .withCommand([])
+      .withTimeout(timeout / 1000)
+      .withMemory(memory)
       // The suffix keeps a sandbox off a function deployed any other way, whose exec must stay off.
-      name: `${options?.name || 'sandbox'}-${suffix}`,
-      timeout,
-      memory,
-      env,
-      logLevel: options?.logLevel,
-      signal: options?.signal ?? new AbortController().signal,
-    });
+      .withName(`${options?.name || 'sandbox'}-${suffix}`);
+    Object.entries(env).forEach(([key, value]) => sandbox.lambda.withEnvironment(key, value));
+
     const { signal } = sandbox.environment;
 
     return lastValueFrom(
@@ -129,8 +115,26 @@ export class SandboxImpl implements Sandbox {
     );
   }
 
-  static async get(_lookup: SandboxLookup): Promise<Sandbox> {
-    throw new Error('not implemented');
+  static async get({ sandboxId, signal: abort }: SandboxLookup): Promise<SandboxImpl> {
+    const sandbox = new SandboxImpl({ signal: abort });
+    const { signal } = sandbox.environment;
+
+    return lastValueFrom(
+      race(
+        iif(() => signal.aborted, of(signal), fromEvent(signal, 'abort')).pipe(
+          switchMap(() => throwError(() => signal.reason))
+        ),
+        defer(() => sandbox.lambda.withArn(sandboxId)).pipe(
+          map((lambda) => {
+            // Exec is refused on any other function, so a handle to one could never run a command.
+            if (lambda.Status.Configuration?.Environment?.Variables?.ROWDY_SANDBOX !== 'true') {
+              throw new Error(`Not a sandbox: ${sandboxId}`);
+            }
+            return sandbox;
+          })
+        )
+      )
+    );
   }
 
   get sandboxId(): string {
