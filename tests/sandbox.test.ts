@@ -67,12 +67,12 @@ describe('sandbox', () => {
     it.each([
       ['no options', undefined],
       ['an undefined image', { image: undefined }],
-    ])('defaults to e2bdev/base with %s', async (_, options) => {
+    ])('defaults to the sandbox image with %s', async (_, options) => {
       const image = jest.spyOn(LambdaFunction.prototype, 'withImage');
 
       await SandboxImpl.create(options);
 
-      expect(image).toHaveBeenCalledWith('e2bdev/base');
+      expect(image).toHaveBeenCalledWith('scaffoldly/sandbox');
     });
 
     it('deploys a sandbox, marked so it may exec', async () => {
@@ -136,7 +136,7 @@ describe('sandbox', () => {
       };
 
       it('hashes the resolved config as its pod template', async () => {
-        expect(await named()).toBe('sandbox-f9f976546');
+        expect(await named()).toBe('sandbox-87bc69597');
       });
 
       it('is the same for the same options', async () => {
@@ -144,7 +144,9 @@ describe('sandbox', () => {
       });
 
       it('resolves defaults first', async () => {
-        expect(await named()).toBe(await named({ image: 'e2bdev/base', memory: 512, timeout: 900_000, env: {} }));
+        expect(await named()).toBe(
+          await named({ image: 'scaffoldly/sandbox', memory: 512, timeout: 900_000, env: {} })
+        );
       });
 
       it.each<[string, SandboxOptions]>([

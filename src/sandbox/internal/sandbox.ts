@@ -65,8 +65,7 @@ export class SandboxImpl implements Sandbox {
       throw new RangeError(`memory must be whole MB from 128 to 10240, got ${memory}`);
     }
 
-    // TODO: bake our own image
-    const image = options?.image ?? 'e2bdev/base';
+    const image = options?.image ?? 'scaffoldly/sandbox';
 
     // Only /tmp is writable on Lambda. The XDG directories are the spec's defaults under that HOME.
     const env = {

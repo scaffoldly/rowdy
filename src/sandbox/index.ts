@@ -4,7 +4,7 @@ import type { Level } from '../log';
 import { SandboxImpl } from './internal/sandbox';
 
 export interface SandboxOptions {
-  /** The container image to run. Defaults to `e2bdev/base`. */
+  /** The container image to run. Defaults to `scaffoldly/sandbox`. */
   image?: string;
   /** The prefix of a generated name, `{name}-{suffix}`. Defaults to `sandbox`. */
   name?: string;
