@@ -353,6 +353,21 @@ describe('sandbox', () => {
     expect(finished.exitCode).toBe(0);
   });
 
+  describe('sandboxId', () => {
+    it('is the function arn', async () => {
+      const sandbox = await SandboxImpl.create();
+      sandbox['lambda'].State.FunctionArn = FUNCTION_ARN;
+
+      expect(sandbox.sandboxId).toBe(FUNCTION_ARN);
+    });
+
+    it('throws before a function exists', async () => {
+      const sandbox = await SandboxImpl.create();
+
+      expect(() => sandbox.sandboxId).toThrow('Sandbox has no function');
+    });
+  });
+
   describe('runCommand', () => {
     const start = async (...events: Event[]): Promise<{ sandbox: SandboxImpl; send: jest.SpyInstance }> => {
       const send = jest.spyOn(LambdaClient.prototype, 'send');
@@ -620,10 +635,6 @@ describe('sandbox', () => {
 
     it('has no extendTimeout', () => {
       expect('extendTimeout' in sandbox).toBe(false);
-    });
-
-    it('does not implement sandboxId', () => {
-      expect(() => sandbox.sandboxId).toThrow(NOT_IMPLEMENTED);
     });
   });
 });

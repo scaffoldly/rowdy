@@ -134,7 +134,11 @@ export class SandboxImpl implements Sandbox {
   }
 
   get sandboxId(): string {
-    throw new Error('not implemented');
+    const { FunctionArn } = this.lambda.State;
+    if (!FunctionArn) {
+      throw new Error('Sandbox has no function');
+    }
+    return FunctionArn;
   }
 
   runCommand(cmd: string, args?: string[], options?: RunCommandOptions): Promise<CommandFinished>;
