@@ -143,6 +143,32 @@ describe('upload', () => {
     expect(http.put).toHaveBeenCalledTimes(2);
   });
 
+  describe('image manifest', () => {
+    const collect = (http: ReturnType<typeof mocks>): Promise<unknown> =>
+      lastValueFrom(of('acme/app').pipe(Transfer.normalize(), Transfer.collect(new Logger(), http as never)));
+
+    it.each([404, 429, 503, undefined])('retries a manifest that fails with %s', async (status) => {
+      const http = mocks();
+      http.get
+        .mockRejectedValueOnce(failure(status))
+        .mockRejectedValueOnce(failure(status))
+        .mockRejectedValue(failure(403));
+
+      await expect(collect(http)).rejects.toThrow('failed');
+
+      expect(http.get).toHaveBeenCalledTimes(3);
+    });
+
+    it('gives up on a manifest that keeps failing', async () => {
+      const http = mocks();
+      http.get.mockRejectedValue(failure(404));
+
+      await expect(collect(http)).rejects.toThrow('failed');
+
+      expect(http.get).toHaveBeenCalledTimes(RETRY.retries + 1);
+    });
+  });
+
   describe('transfer complete', () => {
     const transfer = (http: ReturnType<typeof mocks>, log: Logger): Transfer => {
       const u = upload(http, 'blob', undefined, log);

@@ -458,9 +458,12 @@ export class LambdaFunction implements Logger {
           )
         ),
         switchMap(({ Configuration, Code, Tags, Role, Policy }) =>
-          from(this.lambda.send(new GetFunctionUrlConfigCommand({ FunctionName: Configuration?.FunctionArn }))).pipe(
-            map((FunctionUrl) => ({ Configuration, Code, Tags, Role, Policy, FunctionUrl }))
-          )
+          // A sandbox has no Function URL.
+          from(
+            this.isSandbox()
+              ? Promise.resolve(undefined)
+              : this.lambda.send(new GetFunctionUrlConfigCommand({ FunctionName: Configuration?.FunctionArn }))
+          ).pipe(map((FunctionUrl) => ({ Configuration, Code, Tags, Role, Policy, FunctionUrl })))
         ),
         tap(({ Configuration, Code, Tags, Role, Policy, FunctionUrl }) => {
           // Reactive Properties
@@ -496,7 +499,7 @@ export class LambdaFunction implements Logger {
           if (Role?.RoleId) this.RoleId.next(Role.RoleId);
           if (Code?.ImageUri) this.ImageUri.next(Code.ImageUri);
           if (Configuration?.Version !== '$LATEST') this.FunctionVersion.next(Configuration?.Version);
-          if (FunctionUrl.FunctionUrl) this.FunctionUrl.next(FunctionUrl.FunctionUrl);
+          if (FunctionUrl?.FunctionUrl) this.FunctionUrl.next(FunctionUrl.FunctionUrl);
 
           this._status = {
             Configuration,

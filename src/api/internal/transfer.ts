@@ -250,9 +250,11 @@ export class Transfer implements ILoggable {
               throw new Error(`layers-from ${ref}: manifest ${img.manifest.digest} has no config`);
             }
             const url = `${manifest.url.split('/').slice(0, -2).join('/')}/blobs/${img.image.config.digest}`;
-            const { data } = await http.get<External['Config']>(url, {
-              headers: manifest.headers.with('accept', img.image.config.mediaType).intoAxios(),
-            });
+            const accept = manifest.headers.with('accept', img.image.config.mediaType).intoAxios();
+            const { data } = await promiseRetry(
+              (retry) => http.get<External['Config']>(url, { headers: accept }).catch(retryOn(retry, { also: 404 })),
+              RETRY
+            );
             return { img, config: data };
           }, Environment.CONCURRENCY),
           toArray(),
@@ -297,17 +299,22 @@ export class Transfer implements ILoggable {
           // TODO: Fetch tags from Registry and infer tags[]
           // Ref: https://distribution.github.io/distribution/spec/api/
           return from(
-            http
-              .get<External['Index']>(image.url, {
-                headers: headers.override('authorization', image.authorization).intoAxios(),
-              })
-              .then((response) => {
-                headers.override(
-                  'authorization',
-                  response.config?.headers?.get('authorization') || headers.get('authorization')
-                );
-                return response;
-              })
+            promiseRetry(
+              (retry) =>
+                http
+                  .get<External['Index']>(image.url, {
+                    headers: headers.override('authorization', image.authorization).intoAxios(),
+                  })
+                  // A mirror can 404 an image until it is cached.
+                  .catch(retryOn(retry, { also: 404 })),
+              RETRY
+            ).then((response) => {
+              headers.override(
+                'authorization',
+                response.config?.headers?.get('authorization') || headers.get('authorization')
+              );
+              return response;
+            })
           ).pipe(
             switchMap(async (response) => {
               const responseHeaders = response.headers;
@@ -375,7 +382,15 @@ export class Transfer implements ILoggable {
                   tap(({ url }) => log.debug(`Fetching manifest from URL: ${url}`)),
                   mergeMap(
                     ({ manifest, url }) =>
-                      from(http.get<External['Image']>(url, { headers: headers.intoAxios() })).pipe(
+                      from(
+                        promiseRetry(
+                          (retry) =>
+                            http
+                              .get<External['Image']>(url, { headers: headers.intoAxios() })
+                              .catch(retryOn(retry, { also: 404 })),
+                          RETRY
+                        )
+                      ).pipe(
                         switchMap(async ({ data }) => {
                           if (data.schemaVersion !== 2) {
                             throw new Error(`Unsupported schemaVersion on manifest: ${data.schemaVersion}`);
@@ -423,11 +438,14 @@ export class Transfer implements ILoggable {
                           }
 
                           const appCfgUrl = `${image.url.split('/').slice(0, -2).join('/')}/blobs/${data.config.digest}`;
-                          const appCfg = await http
-                            .get<External['Config']>(appCfgUrl, {
-                              headers: headers.with('accept', data.config.mediaType).intoAxios(),
-                            })
-                            .then((r) => r.data);
+                          const accept = headers.with('accept', data.config.mediaType).intoAxios();
+                          const appCfg = await promiseRetry(
+                            (retry) =>
+                              http
+                                .get<External['Config']>(appCfgUrl, { headers: accept })
+                                .catch(retryOn(retry, { also: 404 })),
+                            RETRY
+                          ).then((r) => r.data);
 
                           data.layers = data.layers || [];
                           appCfg.rootfs = appCfg.rootfs || { type: 'layers', diff_ids: [] };
@@ -495,9 +513,11 @@ export class Transfer implements ILoggable {
       throw new Error(`Bare image manifest has no config; cannot determine platform`);
     }
     const configUrl = `${manifestUrl.split('/').slice(0, -2).join('/')}/blobs/${image.config.digest}`;
-    const { data } = await http.get<External['Config']>(configUrl, {
-      headers: headers.with('accept', image.config.mediaType).intoAxios(),
-    });
+    const accept = headers.with('accept', image.config.mediaType).intoAxios();
+    const { data } = await promiseRetry(
+      (retry) => http.get<External['Config']>(configUrl, { headers: accept }).catch(retryOn(retry, { also: 404 })),
+      RETRY
+    );
     if (!data.architecture || !data.os) {
       throw new Error(`Bare image config is missing architecture/os`);
     }

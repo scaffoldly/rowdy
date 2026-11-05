@@ -1,5 +1,5 @@
 import { Logger } from '@scaffoldly/rowdy';
-import { CommandFinished, Sandbox } from '@scaffoldly/rowdy/sandbox';
+import { CommandFinished, Sandbox, SandboxOptions } from '@scaffoldly/rowdy/sandbox';
 import { AxiosError, AxiosHeaders, InternalAxiosRequestConfig } from 'axios';
 import { InvokeWithResponseStreamResponseEvent, LambdaClient } from '@aws-sdk/client-lambda';
 import { lastValueFrom, NEVER, Observable, of, Subject, throwError, toArray } from 'rxjs';
@@ -8,9 +8,8 @@ import { ROWDY_LAYERS } from '../src/api/internal/layers';
 import { LambdaFunction } from '../src/aws/lambda/index';
 import { Exec } from '../src/api/types';
 import { EXEC_STREAM, execFrame } from '../src/proxy/shell';
-import { SandboxImpl } from '../src/sandbox/internal/sandbox';
+import { computeHash, SandboxImpl } from '../src/sandbox/internal/sandbox';
 
-const NOT_IMPLEMENTED = 'not implemented';
 const FUNCTION_ARN = 'arn:aws:lambda:us-east-1:123456789012:function:sandbox-box';
 
 type Event = InvokeWithResponseStreamResponseEvent;
@@ -68,12 +67,12 @@ describe('sandbox', () => {
     it.each([
       ['no options', undefined],
       ['an undefined image', { image: undefined }],
-    ])('defaults to e2bdev/base with %s', async (_, options) => {
+    ])('defaults to the sandbox image with %s', async (_, options) => {
       const image = jest.spyOn(LambdaFunction.prototype, 'withImage');
 
       await SandboxImpl.create(options);
 
-      expect(image).toHaveBeenCalledWith('e2bdev/base');
+      expect(image).toHaveBeenCalledWith('scaffoldly/sandbox');
     });
 
     it('deploys a sandbox, marked so it may exec', async () => {
@@ -106,16 +105,74 @@ describe('sandbox', () => {
     });
 
     it.each([
-      [undefined, 'sandbox-e2bdev-base-latest'],
-      [{ image: 'python:3.14' }, 'sandbox-library-python-3.14'],
-      [{ name: '' }, 'sandbox-e2bdev-base-latest'],
-      [{ image: 'ghcr.io/acme/app:v1', name: 'box' }, 'sandbox-box'],
+      [undefined, /^sandbox-[bcdfghjklmnpqrstvwxz2456789]{1,10}$/],
+      [{ image: 'python:3.14' }, /^sandbox-[bcdfghjklmnpqrstvwxz2456789]{1,10}$/],
+      [{ name: '' }, /^sandbox-[bcdfghjklmnpqrstvwxz2456789]{1,10}$/],
+      [{ image: 'ghcr.io/acme/app:v1', name: 'box' }, /^box-[bcdfghjklmnpqrstvwxz2456789]{1,10}$/],
     ])('names %j %s', async (options, expected) => {
       const name = jest.spyOn(LambdaFunction.prototype, 'withName');
 
       await SandboxImpl.create(options);
 
-      expect(name).toHaveBeenCalledWith(expected);
+      expect(name).toHaveBeenCalledWith(expect.stringMatching(expected));
+    });
+
+    it.each([
+      ['', '65bb57b6b5'],
+      ['a', '7d6b446664'],
+      ['foobar', '7658c79c64'],
+      ['{"image":"e2bdev/base","timeout":900000,"memory":512,"env":[]}', '5d7cf9cbb'],
+    ])("matches Kubernetes' ComputeHash for %j", (template, expected) => {
+      expect(computeHash(template)).toBe(expected);
+    });
+
+    describe('suffix', () => {
+      const named = async (options?: SandboxOptions): Promise<string> => {
+        const name = jest.spyOn(LambdaFunction.prototype, 'withName');
+        await SandboxImpl.create(options);
+        const generated = name.mock.calls[name.mock.calls.length - 1]![0];
+        name.mockRestore();
+        return generated;
+      };
+
+      it('hashes the resolved config as its pod template', async () => {
+        expect(await named()).toBe('sandbox-87bc69597');
+      });
+
+      it('is the same for the same options', async () => {
+        expect(await named({ memory: 1024 })).toBe(await named({ memory: 1024 }));
+      });
+
+      it('resolves defaults first', async () => {
+        expect(await named()).toBe(
+          await named({ image: 'scaffoldly/sandbox', memory: 512, timeout: 900_000, env: {} })
+        );
+      });
+
+      it.each<[string, SandboxOptions]>([
+        ['image', { image: 'python:3.14' }],
+        ['memory', { memory: 1024 }],
+        ['timeout', { timeout: 60_000 }],
+        ['env', { env: { FOO: 'bar' } }],
+      ])('changes with %s', async (_, options) => {
+        expect(await named(options)).not.toBe(await named());
+      });
+
+      it('ignores the order of env', async () => {
+        expect(await named({ env: { A: '1', B: '2' } })).toBe(await named({ env: { B: '2', A: '1' } }));
+      });
+
+      it('ignores logLevel and signal, which do not reach the function', async () => {
+        const options: SandboxOptions = { logLevel: 'warn', signal: new AbortController().signal };
+
+        expect(await named(options)).toBe(await named());
+      });
+
+      it('leaves the suffix to the options, not the name', async () => {
+        const [box, bag] = [await named({ name: 'box' }), await named({ name: 'bag' })];
+
+        expect(box.replace('box-', '')).toBe(bag.replace('bag-', ''));
+      });
     });
 
     it('keeps a sandbox off the function of an unnamed deploy', async () => {
@@ -127,7 +184,7 @@ describe('sandbox', () => {
       );
     });
 
-    it('rejects an image it cannot name before deploying', async () => {
+    it('rejects an invalid image before deploying', async () => {
       await expect(SandboxImpl.create({ image: 'acme/' })).rejects.toThrow('Unable to normalize');
 
       expect(observe).not.toHaveBeenCalled();
@@ -142,7 +199,7 @@ describe('sandbox', () => {
       await SandboxImpl.create({ image: 'busybox', name: 'box', memory: 512, env: { FOO: 'bar' } });
 
       expect(image).toHaveBeenCalledWith('busybox');
-      expect(name).toHaveBeenCalledWith('sandbox-box');
+      expect(name).toHaveBeenCalledWith(expect.stringMatching(/^box-/));
       expect(memory).toHaveBeenCalledWith(512);
       expect(env).toHaveBeenCalledWith('FOO', 'bar');
     });
@@ -167,6 +224,28 @@ describe('sandbox', () => {
         await expect(SandboxImpl.create(options)).resolves.toBeInstanceOf(SandboxImpl);
       }
     );
+
+    it('keeps HOME and the XDG directories under /tmp, apart', async () => {
+      const sandbox = await SandboxImpl.create();
+
+      expect(sandbox['lambda']['Environment'].value).toMatchObject({
+        HOME: '/tmp',
+        XDG_CACHE_HOME: '/tmp/.cache',
+        XDG_CONFIG_HOME: '/tmp/.config',
+        XDG_DATA_HOME: '/tmp/.local/share',
+        XDG_STATE_HOME: '/tmp/.local/state',
+      });
+    });
+
+    it('lets env override the defaults', async () => {
+      const sandbox = await SandboxImpl.create({ env: { HOME: '/mnt', FOO: 'bar' } });
+
+      expect(sandbox['lambda']['Environment'].value).toMatchObject({
+        HOME: '/mnt',
+        FOO: 'bar',
+        XDG_DATA_HOME: '/tmp/.local/share',
+      });
+    });
 
     it('reduces an http failure to its method, url and status', async () => {
       const config: InternalAxiosRequestConfig = {
@@ -295,6 +374,21 @@ describe('sandbox', () => {
     });
 
     expect(finished.exitCode).toBe(0);
+  });
+
+  describe('sandboxId', () => {
+    it('is the function arn', async () => {
+      const sandbox = await SandboxImpl.create();
+      sandbox['lambda'].State.FunctionArn = FUNCTION_ARN;
+
+      expect(sandbox.sandboxId).toBe(FUNCTION_ARN);
+    });
+
+    it('throws before a function exists', async () => {
+      const sandbox = await SandboxImpl.create();
+
+      expect(() => sandbox.sandboxId).toThrow('Sandbox has no function');
+    });
   });
 
   describe('runCommand', () => {
@@ -555,8 +649,57 @@ describe('sandbox', () => {
     expect(sandbox['environment'].signal.reason).toBe('stop');
   });
 
-  it('does not implement get', async () => {
-    await expect(Sandbox.get({ sandboxId: 'sandbox' })).rejects.toThrow(NOT_IMPLEMENTED);
+  describe('get', () => {
+    let withArn: jest.SpyInstance;
+    const hydrate = (Variables: Record<string, string>) =>
+      function (this: LambdaFunction): Observable<LambdaFunction> {
+        this.State.FunctionArn = FUNCTION_ARN;
+        this['_status'] = { Configuration: { Environment: { Variables } } };
+        return of(this);
+      };
+
+    beforeEach(() => {
+      withArn = jest.spyOn(LambdaFunction.prototype, 'withArn').mockImplementation(hydrate({ ROWDY_SANDBOX: 'true' }));
+    });
+
+    it('connects to the sandbox without deploying', async () => {
+      const sandbox = await Sandbox.get({ sandboxId: FUNCTION_ARN });
+
+      expect(withArn).toHaveBeenCalledWith(FUNCTION_ARN);
+      expect(observe).not.toHaveBeenCalled();
+      expect(sandbox.sandboxId).toBe(FUNCTION_ARN);
+    });
+
+    it('rejects a function that is not a sandbox', async () => {
+      withArn.mockImplementation(hydrate({}));
+
+      await expect(Sandbox.get({ sandboxId: FUNCTION_ARN })).rejects.toThrow(`Not a sandbox: ${FUNCTION_ARN}`);
+    });
+
+    it('rejects a lookup that fails', async () => {
+      withArn.mockReturnValue(throwError(() => new Error('ResourceNotFoundException')));
+
+      await expect(Sandbox.get({ sandboxId: FUNCTION_ARN })).rejects.toThrow('ResourceNotFoundException');
+    });
+
+    it('rejects with the reason when aborted', async () => {
+      await expect(Sandbox.get({ sandboxId: FUNCTION_ARN, signal: AbortSignal.abort('stop') })).rejects.toBe('stop');
+
+      expect(withArn).not.toHaveBeenCalled();
+    });
+
+    it('runs commands', async () => {
+      jest.spyOn(LambdaClient.prototype, 'send').mockImplementation(() =>
+        Promise.resolve({
+          $metadata: {},
+          EventStream: stream(payload(execFrame(EXEC_STREAM.EXIT, Buffer.from('{"code":0}')))),
+        })
+      );
+
+      const sandbox = await Sandbox.get({ sandboxId: FUNCTION_ARN });
+
+      await expect(sandbox.runCommand('ls')).resolves.toMatchObject({ exitCode: 0 });
+    });
   });
 
   describe('an instance', () => {
@@ -564,10 +707,6 @@ describe('sandbox', () => {
 
     it('has no extendTimeout', () => {
       expect('extendTimeout' in sandbox).toBe(false);
-    });
-
-    it('does not implement sandboxId', () => {
-      expect(() => sandbox.sandboxId).toThrow(NOT_IMPLEMENTED);
     });
   });
 });

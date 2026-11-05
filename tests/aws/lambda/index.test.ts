@@ -851,6 +851,29 @@ describe('aws lambda sandbox', () => {
   const imageService = new LambdaImageService(new Environment(new Logger(), {}));
   const FUNCTION_ARN = 'arn:aws:lambda:us-east-1:123456789012:function:acme_app';
 
+  it('hydrates a sandbox without a function url', async () => {
+    const fn = new LambdaFunction('Sandbox', imageService);
+    const lambda: string[] = [];
+    const send = (command: { constructor: { name: string } }): Promise<unknown> => {
+      lambda.push(command.constructor.name);
+      return Promise.resolve({
+        Code: { ImageUri: '123456789012.dkr.ecr.us-east-1.amazonaws.com/acme/app@sha256:abc' },
+        Configuration: {
+          FunctionArn: FUNCTION_ARN,
+          Role: 'arn:aws:iam::123456789012:role/acme+app',
+          Environment: { Variables: { ROWDY_SANDBOX: 'true' } },
+        },
+      });
+    };
+    (fn['lambda'] as unknown as { send: typeof send }).send = send;
+    (fn['iam'] as unknown as { send: () => Promise<unknown> }).send = () => Promise.resolve({ Role: {} });
+
+    await lastValueFrom(fn.withArn(FUNCTION_ARN));
+
+    expect(fn.State.FunctionArn).toBe(FUNCTION_ARN);
+    expect(lambda).not.toContain('GetFunctionUrlConfigCommand');
+  });
+
   it('refuses to exec outside a sandbox', async () => {
     const fn = new LambdaFunction('Container', imageService);
     fn.State.FunctionArn = FUNCTION_ARN;
