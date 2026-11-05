@@ -13,7 +13,7 @@ concurrency:
   cancel-in-progress: ${{ github.ref != 'refs/heads/sandbox' }}
 
 permissions:
-  contents: write
+  contents: read
   packages: write
   id-token: write
   attestations: write
@@ -197,37 +197,11 @@ jobs:
           jq '.["linux/arm64"].SPDX' "$RUNNER_TEMP/sboms.json" > "$RUNNER_TEMP/sbom/sbom-arm64.spdx.json"
           jq -e '.packages | length > 0' "$RUNNER_TEMP/sbom/sbom.spdx.json"
 
-      - name: Strip Debian epochs for dependency graph
-        run: |
-          mkdir -p "$RUNNER_TEMP/depgraph"
-          # The submission action parses the purl in externalRefs, not versionInfo, and drops a
-          # package carrying an epoch while the job stays green. Strip both.
-          jq '.packages[].externalRefs[]? |= (
-                if .referenceType == "purl"
-                then .referenceLocator |= sub("@[0-9]+%3A"; "@")
-                else . end
-              )
-              | .packages[] |= (if .versionInfo then .versionInfo |= sub("^[0-9]+:"; "") else . end)' \
-            "$RUNNER_TEMP/sbom/sbom.spdx.json" > "$RUNNER_TEMP/depgraph/depgraph.spdx.json"
-
-          remaining=$(jq '[.packages[]
-            | (.externalRefs[]? | select(.referenceType == "purl") | .referenceLocator)
-            | select(test("@[0-9]+%3A"))] | length' "$RUNNER_TEMP/depgraph/depgraph.spdx.json")
-          if [ "$remaining" != "0" ]; then
-            echo "::error::$remaining purl(s) still carry a Debian epoch; they would be dropped from the dependency graph"
-            exit 1
-          fi
-
       - name: Upload SBOM artifacts
         uses: actions/upload-artifact@v7
         with:
           name: sbom
           path: ${{ runner.temp }}/sbom/
-
-      - name: Submit SBOMs to dependency graph
-        uses: advanced-security/spdx-dependency-submission-action@v0.2.0
-        with:
-          filePath: ${{ runner.temp }}/depgraph/
 
       - name: Attest build provenance (GHCR)
         uses: actions/attest-build-provenance@v4
