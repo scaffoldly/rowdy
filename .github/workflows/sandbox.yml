@@ -1,0 +1,275 @@
+name: CI/CD (scaffoldly/sandbox)
+
+on:
+  push:
+    branches:
+      - sandbox
+      - sandbox/**
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event_name }}
+  # Never cancel a run on sandbox out from under a publish.
+  cancel-in-progress: ${{ github.ref != 'refs/heads/sandbox' }}
+
+permissions:
+  contents: write
+  packages: write
+  id-token: write
+  attestations: write
+
+env:
+  GHCR_IMAGE: ghcr.io/scaffoldly/sandbox
+  DOCKERHUB_IMAGE: scaffoldly/sandbox
+  IMAGE_METADATA: |
+    org.opencontainers.image.title=scaffoldly/sandbox
+    org.opencontainers.image.description=Python, Node, git and curl for a rowdy sandbox
+    org.opencontainers.image.url=https://rowdy.run
+    org.opencontainers.image.vendor=Scaffoldly
+    org.opencontainers.image.licenses=PSF-2.0 AND MIT AND Artistic-2.0 AND MPL-2.0 AND GPL-2.0-only AND curl
+
+jobs:
+  build-amd:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v6
+        with:
+          images: ${{ env.GHCR_IMAGE }}
+          labels: ${{ env.IMAGE_METADATA }}
+
+      - name: Build image
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          platforms: linux/amd64
+          pull: true
+          push: true
+          # A manual run is a rebuild for base image and package updates, which a cache would defeat.
+          no-cache: ${{ github.event_name == 'workflow_dispatch' }}
+          provenance: mode=max
+          sbom: true
+          labels: ${{ steps.meta.outputs.labels }}
+          tags: ${{ env.GHCR_IMAGE }}:amd-sha-${{ github.sha }}
+          cache-from: type=gha,scope=amd
+          cache-to: type=gha,mode=max,scope=amd
+
+  build-arm:
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v6
+        with:
+          images: ${{ env.GHCR_IMAGE }}
+          labels: ${{ env.IMAGE_METADATA }}
+
+      - name: Build image
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          platforms: linux/arm64
+          pull: true
+          push: true
+          # A manual run is a rebuild for base image and package updates, which a cache would defeat.
+          no-cache: ${{ github.event_name == 'workflow_dispatch' }}
+          provenance: mode=max
+          sbom: true
+          labels: ${{ steps.meta.outputs.labels }}
+          tags: ${{ env.GHCR_IMAGE }}:arm-sha-${{ github.sha }}
+          cache-from: type=gha,scope=arm
+          cache-to: type=gha,mode=max,scope=arm
+
+  smoke-amd:
+    needs: build-amd
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    container:
+      image: ghcr.io/scaffoldly/sandbox:amd-sha-${{ github.sha }}
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - name: Checkout smoke script
+        uses: actions/checkout@v7
+
+      - name: Smoke test
+        run: ./smoke.sh
+
+  smoke-arm:
+    needs: build-arm
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 10
+    container:
+      image: ghcr.io/scaffoldly/sandbox:arm-sha-${{ github.sha }}
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - name: Checkout smoke script
+        uses: actions/checkout@v7
+
+      - name: Smoke test
+        run: ./smoke.sh
+
+  push:
+    needs: [smoke-amd, smoke-arm]
+    if: github.ref == 'refs/heads/sandbox'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Login to DockerHub
+        uses: docker/login-action@v4
+        with:
+          username: ${{ github.repository_owner }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v6
+        env:
+          DOCKER_METADATA_ANNOTATIONS_LEVELS: index
+        with:
+          images: |
+            ${{ env.GHCR_IMAGE }}
+            index.docker.io/${{ env.DOCKERHUB_IMAGE }}
+          flavor: latest=false
+          annotations: ${{ env.IMAGE_METADATA }}
+          tags: |
+            type=raw,value=latest
+            type=raw,value=beta
+            type=sha,format=long
+
+      - name: Create and push multi-arch manifest
+        run: |
+          ARGS=()
+          while IFS= read -r tag; do ARGS+=(--tag "$tag"); done < <(jq -r '.tags[]' <<< "$DOCKER_METADATA_OUTPUT_JSON")
+          while IFS= read -r annotation; do ARGS+=(--annotation "$annotation"); done < <(jq -r '.annotations[]' <<< "$DOCKER_METADATA_OUTPUT_JSON")
+          docker buildx imagetools create "${ARGS[@]}" \
+            "$GHCR_IMAGE:amd-sha-$GITHUB_SHA" \
+            "$GHCR_IMAGE:arm-sha-$GITHUB_SHA"
+
+      - name: Get manifest digest
+        id: digest
+        run: echo "digest=sha256:$(docker buildx imagetools inspect --raw "$GHCR_IMAGE:sha-$GITHUB_SHA" | sha256sum | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+
+      - name: Extract SBOMs from image
+        run: |
+          mkdir -p "$RUNNER_TEMP/sbom"
+          docker buildx imagetools inspect "$GHCR_IMAGE:sha-$GITHUB_SHA" --format '{{ json .SBOM }}' > "$RUNNER_TEMP/sboms.json"
+          jq '.["linux/amd64"].SPDX' "$RUNNER_TEMP/sboms.json" > "$RUNNER_TEMP/sbom/sbom.spdx.json"
+          jq '.["linux/arm64"].SPDX' "$RUNNER_TEMP/sboms.json" > "$RUNNER_TEMP/sbom/sbom-arm64.spdx.json"
+          jq -e '.packages | length > 0' "$RUNNER_TEMP/sbom/sbom.spdx.json"
+
+      - name: Strip Debian epochs for dependency graph
+        run: |
+          mkdir -p "$RUNNER_TEMP/depgraph"
+          # The submission action parses the purl in externalRefs, not versionInfo, and drops a
+          # package carrying an epoch while the job stays green. Strip both.
+          jq '.packages[].externalRefs[]? |= (
+                if .referenceType == "purl"
+                then .referenceLocator |= sub("@[0-9]+%3A"; "@")
+                else . end
+              )
+              | .packages[] |= (if .versionInfo then .versionInfo |= sub("^[0-9]+:"; "") else . end)' \
+            "$RUNNER_TEMP/sbom/sbom.spdx.json" > "$RUNNER_TEMP/depgraph/depgraph.spdx.json"
+
+          remaining=$(jq '[.packages[]
+            | (.externalRefs[]? | select(.referenceType == "purl") | .referenceLocator)
+            | select(test("@[0-9]+%3A"))] | length' "$RUNNER_TEMP/depgraph/depgraph.spdx.json")
+          if [ "$remaining" != "0" ]; then
+            echo "::error::$remaining purl(s) still carry a Debian epoch; they would be dropped from the dependency graph"
+            exit 1
+          fi
+
+      - name: Upload SBOM artifacts
+        uses: actions/upload-artifact@v7
+        with:
+          name: sbom
+          path: ${{ runner.temp }}/sbom/
+
+      - name: Submit SBOMs to dependency graph
+        uses: advanced-security/spdx-dependency-submission-action@v0.2.0
+        with:
+          filePath: ${{ runner.temp }}/depgraph/
+
+      - name: Attest build provenance (GHCR)
+        uses: actions/attest-build-provenance@v4
+        with:
+          subject-name: ${{ env.GHCR_IMAGE }}
+          subject-digest: ${{ steps.digest.outputs.digest }}
+          push-to-registry: true
+
+      - name: Attest build provenance (DockerHub)
+        uses: actions/attest-build-provenance@v4
+        with:
+          subject-name: index.docker.io/${{ env.DOCKERHUB_IMAGE }}
+          subject-digest: ${{ steps.digest.outputs.digest }}
+          push-to-registry: true
+
+      - name: Attest SBOM (GHCR)
+        uses: actions/attest@v4
+        with:
+          subject-name: ${{ env.GHCR_IMAGE }}
+          subject-digest: ${{ steps.digest.outputs.digest }}
+          predicate-type: https://spdx.dev/Document
+          predicate-path: ${{ runner.temp }}/sbom/sbom.spdx.json
+          push-to-registry: true
+
+      - name: Attest SBOM (DockerHub)
+        uses: actions/attest@v4
+        with:
+          subject-name: index.docker.io/${{ env.DOCKERHUB_IMAGE }}
+          subject-digest: ${{ steps.digest.outputs.digest }}
+          predicate-type: https://spdx.dev/Document
+          predicate-path: ${{ runner.temp }}/sbom/sbom.spdx.json
+          push-to-registry: true
+
+  verify:
+    needs: push
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    container:
+      image: scaffoldly/sandbox:latest
+    steps:
+      - name: Checkout smoke script
+        uses: actions/checkout@v7
+
+      - name: Smoke test
+        run: ./smoke.sh
