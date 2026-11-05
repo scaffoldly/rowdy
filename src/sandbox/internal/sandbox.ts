@@ -20,10 +20,18 @@ import {
 } from 'rxjs';
 import { Environment, Logger, maskUrl } from '../..';
 import { deploySources } from '../../api/internal/layers';
-import { Transfer } from '../../api/internal/transfer';
 import { LambdaImageService } from '../../aws/lambda/image';
 import { LambdaFunction } from '../../aws/lambda/index';
 import { EXEC_STREAM } from '../../proxy/shell';
+
+// Kubernetes' alphabet for generated names: no vowels, so a name spells no words.
+const ALPHANUMS = 'bcdfghjklmnpqrstvwxz2456789';
+
+/** Kubernetes' ComputeHash: FNV-1a 32 over the template, its decimal digits encoded with SafeEncodeString. */
+export const computeHash = (template: string): string => {
+  const hash = Buffer.from(template).reduce((sum, byte) => Math.imul(sum ^ byte, 16777619) >>> 0, 2166136261);
+  return [...String(hash)].map((digit) => ALPHANUMS[digit.charCodeAt(0) % ALPHANUMS.length]).join('');
+};
 
 export class SandboxImpl implements Sandbox {
   private environment: Environment;
@@ -73,15 +81,23 @@ export class SandboxImpl implements Sandbox {
 
     // TODO: bake our own image
     const image = options?.image ?? 'e2bdev/base';
-    const { namespace, name, tags } = Transfer.normalizeImage(image);
+
+    const env = options?.env ?? {};
+
+    // The same options reuse a function, and different ones share no env or config.
+    const suffix = computeHash(JSON.stringify({ image, timeout, memory, env: Object.entries(env).sort() }));
+
+    // TODO: a generated suffix, once a sandbox can be deleted: a new name is a new function and role on every create.
+    // Kubernetes' generateName suffix: 5 random characters.
+    // const suffix = Array.from({ length: 5 }, () => ALPHANUMS[randomInt(ALPHANUMS.length)]).join('');
 
     const sandbox = new SandboxImpl({
       image,
-      // The prefix keeps a sandbox off a function deployed any other way, whose exec must stay off.
-      name: `sandbox-${options?.name || `${namespace}-${name}-${tags[0]}`}`,
+      // The suffix keeps a sandbox off a function deployed any other way, whose exec must stay off.
+      name: `${options?.name || 'sandbox'}-${suffix}`,
       timeout,
       memory,
-      env: options?.env ?? {},
+      env,
       logLevel: options?.logLevel,
       signal: options?.signal ?? new AbortController().signal,
     });

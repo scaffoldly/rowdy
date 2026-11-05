@@ -1,5 +1,5 @@
 import { Logger } from '@scaffoldly/rowdy';
-import { CommandFinished, Sandbox } from '@scaffoldly/rowdy/sandbox';
+import { CommandFinished, Sandbox, SandboxOptions } from '@scaffoldly/rowdy/sandbox';
 import { AxiosError, AxiosHeaders, InternalAxiosRequestConfig } from 'axios';
 import { InvokeWithResponseStreamResponseEvent, LambdaClient } from '@aws-sdk/client-lambda';
 import { lastValueFrom, NEVER, Observable, of, Subject, throwError, toArray } from 'rxjs';
@@ -8,7 +8,7 @@ import { ROWDY_LAYERS } from '../src/api/internal/layers';
 import { LambdaFunction } from '../src/aws/lambda/index';
 import { Exec } from '../src/api/types';
 import { EXEC_STREAM, execFrame } from '../src/proxy/shell';
-import { SandboxImpl } from '../src/sandbox/internal/sandbox';
+import { computeHash, SandboxImpl } from '../src/sandbox/internal/sandbox';
 
 const NOT_IMPLEMENTED = 'not implemented';
 const FUNCTION_ARN = 'arn:aws:lambda:us-east-1:123456789012:function:sandbox-box';
@@ -106,16 +106,72 @@ describe('sandbox', () => {
     });
 
     it.each([
-      [undefined, 'sandbox-e2bdev-base-latest'],
-      [{ image: 'python:3.14' }, 'sandbox-library-python-3.14'],
-      [{ name: '' }, 'sandbox-e2bdev-base-latest'],
-      [{ image: 'ghcr.io/acme/app:v1', name: 'box' }, 'sandbox-box'],
+      [undefined, /^sandbox-[bcdfghjklmnpqrstvwxz2456789]{1,10}$/],
+      [{ image: 'python:3.14' }, /^sandbox-[bcdfghjklmnpqrstvwxz2456789]{1,10}$/],
+      [{ name: '' }, /^sandbox-[bcdfghjklmnpqrstvwxz2456789]{1,10}$/],
+      [{ image: 'ghcr.io/acme/app:v1', name: 'box' }, /^box-[bcdfghjklmnpqrstvwxz2456789]{1,10}$/],
     ])('names %j %s', async (options, expected) => {
       const name = jest.spyOn(LambdaFunction.prototype, 'withName');
 
       await SandboxImpl.create(options);
 
-      expect(name).toHaveBeenCalledWith(expected);
+      expect(name).toHaveBeenCalledWith(expect.stringMatching(expected));
+    });
+
+    it.each([
+      ['', '65bb57b6b5'],
+      ['a', '7d6b446664'],
+      ['foobar', '7658c79c64'],
+      ['{"image":"e2bdev/base","timeout":900000,"memory":512,"env":[]}', '5d7cf9cbb'],
+    ])("matches Kubernetes' ComputeHash for %j", (template, expected) => {
+      expect(computeHash(template)).toBe(expected);
+    });
+
+    describe('suffix', () => {
+      const named = async (options?: SandboxOptions): Promise<string> => {
+        const name = jest.spyOn(LambdaFunction.prototype, 'withName');
+        await SandboxImpl.create(options);
+        const generated = name.mock.calls[name.mock.calls.length - 1]![0];
+        name.mockRestore();
+        return generated;
+      };
+
+      it('hashes the resolved config as its pod template', async () => {
+        expect(await named()).toBe('sandbox-5d7cf9cbb');
+      });
+
+      it('is the same for the same options', async () => {
+        expect(await named({ memory: 1024 })).toBe(await named({ memory: 1024 }));
+      });
+
+      it('resolves defaults first', async () => {
+        expect(await named()).toBe(await named({ image: 'e2bdev/base', memory: 512, timeout: 900_000, env: {} }));
+      });
+
+      it.each<[string, SandboxOptions]>([
+        ['image', { image: 'python:3.14' }],
+        ['memory', { memory: 1024 }],
+        ['timeout', { timeout: 60_000 }],
+        ['env', { env: { FOO: 'bar' } }],
+      ])('changes with %s', async (_, options) => {
+        expect(await named(options)).not.toBe(await named());
+      });
+
+      it('ignores the order of env', async () => {
+        expect(await named({ env: { A: '1', B: '2' } })).toBe(await named({ env: { B: '2', A: '1' } }));
+      });
+
+      it('ignores logLevel and signal, which do not reach the function', async () => {
+        const options: SandboxOptions = { logLevel: 'warn', signal: new AbortController().signal };
+
+        expect(await named(options)).toBe(await named());
+      });
+
+      it('leaves the suffix to the options, not the name', async () => {
+        const [box, bag] = [await named({ name: 'box' }), await named({ name: 'bag' })];
+
+        expect(box.replace('box-', '')).toBe(bag.replace('bag-', ''));
+      });
     });
 
     it('keeps a sandbox off the function of an unnamed deploy', async () => {
@@ -127,7 +183,7 @@ describe('sandbox', () => {
       );
     });
 
-    it('rejects an image it cannot name before deploying', async () => {
+    it('rejects an invalid image before deploying', async () => {
       await expect(SandboxImpl.create({ image: 'acme/' })).rejects.toThrow('Unable to normalize');
 
       expect(observe).not.toHaveBeenCalled();
@@ -142,7 +198,7 @@ describe('sandbox', () => {
       await SandboxImpl.create({ image: 'busybox', name: 'box', memory: 512, env: { FOO: 'bar' } });
 
       expect(image).toHaveBeenCalledWith('busybox');
-      expect(name).toHaveBeenCalledWith('sandbox-box');
+      expect(name).toHaveBeenCalledWith(expect.stringMatching(/^box-/));
       expect(memory).toHaveBeenCalledWith(512);
       expect(env).toHaveBeenCalledWith('FOO', 'bar');
     });
