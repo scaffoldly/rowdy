@@ -1,4 +1,4 @@
-import { MetadataBearer, Logger } from '@smithy/types';
+import { MetadataBearer } from '@smithy/types';
 import {
   CreateRoleCommand,
   GetRoleCommand,
@@ -52,9 +52,11 @@ import {
   FlexibleTimeWindowMode,
   ScheduleState,
 } from '@aws-sdk/client-scheduler';
-import { BucketLocationConstraint, CreateBucketCommand, HeadBucketCommand, S3Client } from '@aws-sdk/client-s3';
+import { S3Client } from '@aws-sdk/client-s3';
 import { PolicyDocument, Statement } from 'aws-lambda';
 import { createHash, randomUUID } from 'crypto';
+import { AwsClientLogger } from '../logger';
+import { ensureBucket } from '../s3';
 import { LambdaImageService } from './image';
 import { Image, Transfer } from '../../api/internal/transfer';
 import {
@@ -83,19 +85,14 @@ import {
   tap,
   timer,
   toArray,
-  concatMap,
   finalize,
-  endWith,
-  ignoreElements,
-  lastValueFrom,
 } from 'rxjs';
 import promiseRetry from 'promise-retry';
-import { inspect } from 'util';
 import { Environment, Routes } from '../..';
 import { Crontab, ExecSchema, Volume } from '../../routes';
-import { EXEC_STREAM, ShellExit } from '../../proxy/shell';
-import { Exec, ExecFinished, ExecFrame } from '../../api/types';
-import { mask, maskJson } from '../../log';
+import { Exec } from '../../api/types';
+import { execOf, framesOf } from '../exec';
+import { Logger, mask } from '../../log';
 import { CdnStore, cdnStore } from '../../cdn';
 import { TPulledImage } from '../../api/types';
 import { parseSecrets } from '../../secrets';
@@ -138,9 +135,6 @@ type AwsError = { name?: string; message?: string; $fault?: string; $retryable?:
 export const isNotFound = (error: unknown): boolean =>
   ['ResourceNotFoundException', 'NoSuchEntityException'].includes(`${(error as AwsError)?.name}`);
 
-const isLocationConstraint = (region: string): region is BucketLocationConstraint =>
-  Object.values<string>(BucketLocationConstraint).includes(region);
-
 export const isTransient = (error: unknown): boolean => {
   const { name, $fault, $retryable } = (error as AwsError) ?? {};
   return !!$retryable || $fault === 'server' || ['ThrottlingException', 'TooManyRequestsException'].includes(`${name}`);
@@ -182,7 +176,11 @@ const isEqual = <T extends number | string | string[]>(a?: T, b?: T): boolean =>
 
 // DEVNOTE: A missing resource is created, a propagating error re-reads after a backoff, and anything
 // else (ValidationError, or a propagating error past PROPAGATION.retries) fails the deploy.
-const _create = <T>(read: () => Promise<T>, write: () => Promise<unknown>, cb?: (res: T) => void): Observable<T> => {
+export const _create = <T>(
+  read: () => Promise<T>,
+  write: () => Promise<unknown>,
+  cb?: (res: T) => void
+): Observable<T> => {
   let attempt = 0;
   return defer(() => read())
     .pipe(
@@ -238,7 +236,7 @@ const pullImage = (
     );
 };
 
-export class LambdaFunction implements Logger {
+export class LambdaFunction extends AwsClientLogger {
   static functionName(roleId: string, name?: string): string {
     return fit((name || roleId).replace(/[^a-zA-Z0-9_-]/g, '_'));
   }
@@ -315,6 +313,7 @@ export class LambdaFunction implements Logger {
     _type: LambdaFunction['type'],
     public readonly imageService: LambdaImageService
   ) {
+    super();
     this.type = _type;
     if (this.isSandbox()) {
       this.withEnvironment('ROWDY_SANDBOX', 'true');
@@ -365,7 +364,7 @@ export class LambdaFunction implements Logger {
     return this.imageService.userAgent;
   }
 
-  get log(): Logger {
+  override get log(): Logger {
     return this.imageService.log.child('deploy');
   }
 
@@ -720,36 +719,6 @@ export class LambdaFunction implements Logger {
     );
   }
 
-  // DEVNOTE: Created when missing, never deleted or reconfigured: S3's defaults (Block Public
-  // Access, SSE-S3, bucket-owner-enforced ownership) apply.
-  private ensureBucket(Bucket: string): Observable<MetadataBearer> {
-    return defer(() => this.s3.send(new HeadBucketCommand({ Bucket }))).pipe(
-      tap(() => this.log.debug('Bucket Exists', { bucket: Bucket })),
-      catchError((error: unknown) => {
-        if ((error as AwsError)?.name !== 'NotFound') {
-          throw error;
-        }
-        return from(this.s3.config.region()).pipe(
-          switchMap((region) => {
-            this.log.info('Bucket Creating', { bucket: Bucket, region });
-            return this.s3.send(
-              new CreateBucketCommand({
-                Bucket,
-                ...(region !== 'us-east-1' && isLocationConstraint(region)
-                  ? { CreateBucketConfiguration: { LocationConstraint: region } }
-                  : {}),
-              })
-            );
-          }),
-          catchError((created: unknown) => {
-            if ((created as AwsError)?.name === 'BucketAlreadyOwnedByYou') return of({ $metadata: {} });
-            throw created;
-          })
-        );
-      })
-    );
-  }
-
   // DEVNOTE: One AddPermission at a time: Lambda refuses a policy change while another is in
   // progress (ResourceConflictException). Each is deferred so it is sent only once the one before
   // it has finished, and so its failure fails the deploy instead of going unhandled.
@@ -983,82 +952,21 @@ export class LambdaFunction implements Logger {
           { abortSignal: AbortSignal.any([this.signal, controller.signal]) }
         )
       ).pipe(
-        switchMap(
-          ({ EventStream, $metadata }) =>
-            new Observable<Exec>((subscriber) => {
-              const frames = new ReplaySubject<ExecFrame>();
-              const stdout: Buffer[] = [];
-              const stderr: Buffer[] = [];
-              let exit: ShellExit | undefined;
-              let buffer = Buffer.alloc(0);
-
-              const exec: Exec = {
-                cmdId: $metadata.requestId ?? '',
-                get exitCode() {
-                  return exit?.code;
-                },
-                frames: frames.asObservable(),
-                stdout: async () => Buffer.concat(stdout).toString(),
-                stderr: async () => Buffer.concat(stderr).toString(),
-                wait: () =>
-                  lastValueFrom(
-                    frames.pipe(
-                      ignoreElements(),
-                      endWith(undefined),
-                      map(() => {
-                        if (!exit) {
-                          throw new Error('Command ended without an exit');
-                        }
-                        const finished: ExecFinished = { ...exec, exitCode: exit.code, wait: async () => finished };
-                        return finished;
-                      })
-                    )
-                  ),
-              };
-
-              subscriber.next(exec);
-
-              const subscription = from(EventStream ?? [])
-                .pipe(
-                  concatMap(({ PayloadChunk, InvokeComplete }) => {
-                    if (InvokeComplete?.ErrorCode) {
-                      const { ErrorCode, ErrorDetails, LogResult = '' } = InvokeComplete;
-                      const tail = Buffer.from(LogResult, 'base64').toString();
-                      throw new Error([ErrorCode, ErrorDetails, tail].filter(Boolean).join(': '));
-                    }
-                    // A frame can span PayloadChunks, and a PayloadChunk can hold several frames.
-                    buffer = Buffer.concat([buffer, PayloadChunk?.Payload ?? Buffer.alloc(0)]);
-                    const decoded: ExecFrame[] = [];
-                    while (buffer.length >= 8 && buffer.length >= 8 + buffer.readUInt32BE(4)) {
-                      const size = buffer.readUInt32BE(4);
-                      decoded.push({ stream: buffer.readUInt8(0), payload: Buffer.from(buffer.subarray(8, 8 + size)) });
-                      buffer = buffer.subarray(8 + size);
-                    }
-                    return decoded;
-                  }),
-                  tap(({ stream, payload }) => {
-                    if (stream === EXEC_STREAM.STDOUT) stdout.push(payload);
-                    if (stream === EXEC_STREAM.STDERR) stderr.push(payload);
-                    if (stream === EXEC_STREAM.EXIT) exit = JSON.parse(payload.toString());
-                  })
-                )
-                .subscribe({
-                  next: (frame) => frames.next(frame),
-                  error: (error) => {
-                    frames.error(error);
-                    subscriber.error(error);
-                  },
-                  complete: () => {
-                    frames.complete();
-                    subscriber.complete();
-                  },
-                });
-
-              return () => {
-                subscription.unsubscribe();
-                frames.error(new Error('Exec abandoned'));
-              };
-            })
+        switchMap(({ EventStream, $metadata }) =>
+          execOf(
+            $metadata.requestId ?? '',
+            from(EventStream ?? []).pipe(
+              map(({ PayloadChunk, InvokeComplete }) => {
+                if (InvokeComplete?.ErrorCode) {
+                  const { ErrorCode, ErrorDetails, LogResult = '' } = InvokeComplete;
+                  const tail = Buffer.from(LogResult, 'base64').toString();
+                  throw new Error([ErrorCode, ErrorDetails, tail].filter(Boolean).join(': '));
+                }
+                return PayloadChunk?.Payload ?? Buffer.alloc(0);
+              }),
+              framesOf()
+            )
+          )
         ),
         finalize(() => controller.abort())
       );
@@ -1310,7 +1218,7 @@ export class LambdaFunction implements Logger {
             this.RoleId.pipe(take(1)).pipe(
               map((RoleId) => LambdaFunction.bucketName(RoleId!)),
               switchMap((Bucket) =>
-                this.ensureBucket(Bucket).pipe(
+                ensureBucket(this.s3, this.log, Bucket).pipe(
                   tap(() => {
                     this.State.Bucket = Bucket;
                     this.withEnvironment('ROWDY_BUCKET', Bucket);
@@ -1603,46 +1511,6 @@ export class LambdaFunction implements Logger {
       map(() => ({ $metadata: {} }))
     );
   }
-
-  debug = (..._content: unknown[]): void => {};
-  info = (...content: unknown[]): void => {
-    const obj = Array.isArray(content) && content.length === 1 ? content[0] : content;
-    if (typeof obj === 'object') {
-      const { clientName, commandName, input, output } = obj as {
-        clientName?: string;
-        commandName?: string;
-        input?: unknown;
-        output?: unknown;
-      };
-      this.log.debug(`[${clientName ?? 'UnknownClient'}] [${commandName ?? 'UnknownCommand'}]`, {
-        input: maskJson(input),
-        output: maskJson(output),
-      });
-      if (/^(Create|Update|Delete|Put|Publish|Add|Remove)/.test(`${commandName}`)) {
-        // Names only: an input can carry the function's environment.
-        const { FunctionName, RoleName, Name, Key, Bucket } = (input ?? {}) as Record<string, unknown>;
-        const name = FunctionName ?? RoleName ?? Name ?? Key ?? Bucket;
-        this.log.info(`${commandName?.replace(/Command$/, '')}${name ? `: ${name}` : ''}`);
-      }
-    }
-  };
-  warn = (..._content: unknown[]): void => {};
-  error = (..._content: unknown[]): void => {
-    const obj = Array.isArray(_content) && _content.length === 1 ? _content[0] : _content;
-    if (typeof obj === 'object') {
-      const { clientName, commandName, input, error } = obj as {
-        clientName?: string;
-        commandName?: string;
-        input?: unknown;
-        error?: unknown;
-      };
-      this.log.debug(`[${clientName ?? 'UnknownClient'}] [${commandName ?? 'UnknownCommand'}]`, {
-        input: maskJson(input),
-        error: inspect(error),
-      });
-      return;
-    }
-  };
 
   private get AssumeRolePolicyDocument(): PolicyDocument {
     const document: PolicyDocument = {

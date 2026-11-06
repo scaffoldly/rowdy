@@ -1,13 +1,23 @@
 import type { Writable } from 'stream';
 import type { Exec, ExecFinished } from '../api/types';
 import type { Level } from '../log';
+import type { MICROVM_MEMORY } from './internal/compute';
 import { SandboxImpl } from './internal/sandbox';
 
-export interface SandboxOptions {
+interface BaseSandboxOptions {
   /** The container image to run. Defaults to `scaffoldly/sandbox`. */
   image?: string;
   /** The prefix of a generated name, `{name}-{suffix}`. Defaults to `sandbox`. */
   name?: string;
+  /** Applies to the whole process. Defaults to ROWDY_LOG_LEVEL, ROWDY_DEBUG or ROWDY_TRACE, then `warn`. */
+  logLevel?: Level;
+  /** Aborts the sandbox's work in progress, including its creation. */
+  signal?: AbortSignal;
+}
+
+export interface LambdaSandboxOptions extends BaseSandboxOptions {
+  /** Where the sandbox runs. Defaults to `lambda`. */
+  compute?: 'lambda';
   /** Milliseconds until the sandbox stops: whole seconds, 1000 to 900000. */
   timeout?: number;
   /** Memory in megabytes: a whole number, 128 to 10240. */
@@ -17,11 +27,20 @@ export interface SandboxOptions {
    * only writable path, and the `XDG_*` base directories to their usual places under it.
    */
   env?: Record<string, string>;
-  /** Applies to the whole process. Defaults to ROWDY_LOG_LEVEL, ROWDY_DEBUG or ROWDY_TRACE, then `warn`. */
-  logLevel?: Level;
-  /** Aborts the sandbox's work in progress, including its creation. */
-  signal?: AbortSignal;
 }
+
+export interface MicrovmSandboxOptions extends BaseSandboxOptions {
+  /** Where the sandbox runs. */
+  compute: 'microvm';
+  /** Milliseconds until the sandbox stops: whole seconds, 1000 to 28800000. */
+  timeout?: number;
+  /** Baseline memory in megabytes. */
+  memory?: (typeof MICROVM_MEMORY)[number];
+  /** Environment variables for every command, at most 50; a command's own `env` overrides them. */
+  env?: Record<string, string>;
+}
+
+export type SandboxOptions = LambdaSandboxOptions | MicrovmSandboxOptions;
 
 export interface SandboxLookup {
   sandboxId: string;
@@ -81,7 +100,10 @@ export interface Sandbox {
   // TODO: detached
   // /** Resolves once the command has started. */
   // runCommand(params: DetachedRunCommandParams): Promise<Command>;
-  /** Resolves when the command exits, whatever its exit code; rejects only if it could not run. */
+  /**
+   * Resolves when the command exits, whatever its exit code; rejects only if it could not run. On a sandbox that can
+   * `stop`, Ctrl+C during a command stops it, then exits as usual, so nothing is left running. A second Ctrl+C quits.
+   */
   runCommand(params: RunCommandParams): Promise<CommandFinished>;
   // TODO: writeFiles
   // writeFiles(files: WriteFile[]): Promise<void>;
@@ -90,9 +112,11 @@ export interface Sandbox {
   // readFileToBuffer(file: ReadFile): Promise<Buffer | null>;
   // TODO: mkDir
   // mkDir(path: string): Promise<void>;
-  // TODO: stop
-  // /** Safe to call more than once. */
-  // stop(): Promise<void>;
+  /**
+   * Ends everything running in this sandbox, including a command in progress, and everything a `Sandbox.get` of it
+   * started. Safe to call more than once. The next command starts it again. `compute: 'lambda'` rejects for now.
+   */
+  stop(): Promise<void>;
 }
 
 export interface SandboxFactory {

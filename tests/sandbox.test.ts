@@ -2,15 +2,19 @@ import { Logger } from '@scaffoldly/rowdy';
 import { CommandFinished, Sandbox, SandboxOptions } from '@scaffoldly/rowdy/sandbox';
 import { AxiosError, AxiosHeaders, InternalAxiosRequestConfig } from 'axios';
 import { InvokeWithResponseStreamResponseEvent, LambdaClient } from '@aws-sdk/client-lambda';
-import { lastValueFrom, NEVER, Observable, of, Subject, throwError, toArray } from 'rxjs';
+import { EMPTY, lastValueFrom, NEVER, Observable, of, Subject, throwError, toArray } from 'rxjs';
 import { PassThrough } from 'stream';
 import { ROWDY_LAYERS } from '../src/api/internal/layers';
+import { LambdaCompute } from '../src/aws/lambda/compute';
 import { LambdaFunction } from '../src/aws/lambda/index';
-import { Exec } from '../src/api/types';
+import { MicrovmCompute } from '../src/aws/microvm/compute';
+import { Exec, ExecFinished } from '../src/api/types';
 import { EXEC_STREAM, execFrame } from '../src/proxy/shell';
 import { computeHash, SandboxImpl } from '../src/sandbox/internal/sandbox';
 
 const FUNCTION_ARN = 'arn:aws:lambda:us-east-1:123456789012:function:sandbox-box';
+
+const lambdaOf = (sandbox: SandboxImpl): LambdaFunction => (sandbox['compute'] as LambdaCompute)['lambda'];
 
 type Event = InvokeWithResponseStreamResponseEvent;
 
@@ -26,6 +30,18 @@ const _shapes = async (sandbox: Sandbox): Promise<void> => {
   const _exitCode: number = finished.exitCode;
   const _output: string = await finished.stdout();
 };
+
+const _options: SandboxOptions[] = [
+  { memory: 600 },
+  { compute: 'lambda', memory: 600 },
+  { compute: 'microvm', memory: 1024 },
+  // @ts-expect-error A microVM's memory is one of AWS's sizes.
+  { compute: 'microvm', memory: 600 },
+];
+
+// The default options as they were hashed before compute joined them.
+const UNHASHED =
+  '{"image":"scaffoldly/sandbox","timeout":900000,"memory":512,"env":[["HOME","/tmp"],["XDG_CACHE_HOME","/tmp/.cache"],["XDG_CONFIG_HOME","/tmp/.config"],["XDG_DATA_HOME","/tmp/.local/share"],["XDG_STATE_HOME","/tmp/.local/state"]]}';
 
 describe('sandbox', () => {
   const deployed = (): Observable<LambdaFunction> => of(LambdaFunction.prototype);
@@ -61,7 +77,7 @@ describe('sandbox', () => {
     it("adds rowdy's layer", async () => {
       const sandbox = await SandboxImpl.create();
 
-      expect(sandbox['lambda'].imageService['_layersFrom']).toEqual([ROWDY_LAYERS]);
+      expect(lambdaOf(sandbox).imageService['_layersFrom']).toEqual([ROWDY_LAYERS]);
     });
 
     it.each([
@@ -75,17 +91,64 @@ describe('sandbox', () => {
       expect(image).toHaveBeenCalledWith('scaffoldly/sandbox');
     });
 
+    it('runs a microvm on its own compute', async () => {
+      const create = jest.spyOn(MicrovmCompute.prototype, 'create').mockImplementation(function (this: MicrovmCompute) {
+        return of(this);
+      });
+
+      const sandbox = await SandboxImpl.create({ compute: 'microvm' });
+
+      expect(sandbox['compute']).toBeInstanceOf(MicrovmCompute);
+      expect(create).toHaveBeenCalledWith(
+        expect.objectContaining({ image: 'scaffoldly/sandbox', memory: 512, env: {} })
+      );
+      expect(observe).not.toHaveBeenCalled();
+    });
+
+    it('holds a microvm to its own limits, before anything reaches AWS', async () => {
+      const create = jest.spyOn(MicrovmCompute.prototype, 'create');
+
+      await expect(SandboxImpl.create({ compute: 'microvm', memory: 600 as never })).rejects.toThrow(
+        'memory must be one of'
+      );
+      expect(create).not.toHaveBeenCalled();
+    });
+
+    it('gives the same options a different name on each compute', async () => {
+      const name = jest.fn();
+      jest.spyOn(MicrovmCompute.prototype, 'create').mockImplementation(function (this: MicrovmCompute, spec) {
+        name(spec.name);
+        return of(this);
+      });
+      const lambda = jest.spyOn(LambdaFunction.prototype, 'withName');
+
+      await SandboxImpl.create();
+      await SandboxImpl.create({ compute: 'microvm' });
+
+      expect(name.mock.calls[0]?.[0]).not.toEqual(lambda.mock.calls[0]?.[0]);
+    });
+
+    it('hashes the compute', async () => {
+      const name = jest.spyOn(LambdaFunction.prototype, 'withName');
+
+      await SandboxImpl.create();
+      await SandboxImpl.create({ compute: 'lambda' });
+
+      expect(name.mock.calls[0]).toEqual(name.mock.calls[1]);
+      expect(name.mock.calls[0]).not.toEqual([`sandbox-${computeHash(UNHASHED)}`]);
+    });
+
     it('deploys a sandbox, marked so it may exec', async () => {
       const sandbox = await SandboxImpl.create();
 
-      expect(sandbox['lambda'].isSandbox()).toBe(true);
-      expect(sandbox['lambda']['Environment'].value.ROWDY_SANDBOX).toBe('true');
+      expect(lambdaOf(sandbox).isSandbox()).toBe(true);
+      expect(lambdaOf(sandbox)['Environment'].value.ROWDY_SANDBOX).toBe('true');
     });
 
     it("drops the image's command", async () => {
       const sandbox = await SandboxImpl.create();
 
-      expect(sandbox['lambda']['Command'].value).toEqual([]);
+      expect(lambdaOf(sandbox)['Command'].value).toEqual([]);
     });
 
     it('applies its timeout in seconds', async () => {
@@ -136,7 +199,7 @@ describe('sandbox', () => {
       };
 
       it('hashes the resolved config as its pod template', async () => {
-        expect(await named()).toBe('sandbox-87bc69597');
+        expect(await named()).toBe('sandbox-559ddc7c4c');
       });
 
       it('is the same for the same options', async () => {
@@ -177,9 +240,9 @@ describe('sandbox', () => {
 
     it('keeps a sandbox off the function of an unnamed deploy', async () => {
       const sandbox = await SandboxImpl.create();
-      const { value } = sandbox['lambda']['Image'];
+      const { value } = lambdaOf(sandbox)['Image'];
 
-      expect(LambdaFunction.roleName(value.normalized, sandbox['lambda']['Name'].value)).not.toBe(
+      expect(LambdaFunction.roleName(value.normalized, lambdaOf(sandbox)['Name'].value)).not.toBe(
         LambdaFunction.roleName(value.normalized)
       );
     });
@@ -228,7 +291,7 @@ describe('sandbox', () => {
     it('keeps HOME and the XDG directories under /tmp, apart', async () => {
       const sandbox = await SandboxImpl.create();
 
-      expect(sandbox['lambda']['Environment'].value).toMatchObject({
+      expect(lambdaOf(sandbox)['Environment'].value).toMatchObject({
         HOME: '/tmp',
         XDG_CACHE_HOME: '/tmp/.cache',
         XDG_CONFIG_HOME: '/tmp/.config',
@@ -240,7 +303,7 @@ describe('sandbox', () => {
     it('lets env override the defaults', async () => {
       const sandbox = await SandboxImpl.create({ env: { HOME: '/mnt', FOO: 'bar' } });
 
-      expect(sandbox['lambda']['Environment'].value).toMatchObject({
+      expect(lambdaOf(sandbox)['Environment'].value).toMatchObject({
         HOME: '/mnt',
         FOO: 'bar',
         XDG_DATA_HOME: '/tmp/.local/share',
@@ -376,10 +439,149 @@ describe('sandbox', () => {
     expect(finished.exitCode).toBe(0);
   });
 
+  describe('ctrl+c during a command', () => {
+    const listeners = process.listeners('SIGINT');
+    let kill: jest.SpyInstance;
+    let stop: jest.SpyInstance;
+
+    const microvm = async (): Promise<Sandbox> => {
+      jest.spyOn(MicrovmCompute.prototype, 'create').mockImplementation(function (this: MicrovmCompute) {
+        return of(this);
+      });
+      jest.spyOn(MicrovmCompute.prototype, 'exec').mockReturnValue(NEVER);
+      return Sandbox.create({ compute: 'microvm' });
+    };
+
+    const settled = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 10));
+
+    beforeEach(() => {
+      process.removeAllListeners('SIGINT');
+      kill = jest.spyOn(process, 'kill').mockReturnValue(true);
+      stop = jest.spyOn(MicrovmCompute.prototype, 'stop').mockImplementation(function (this: MicrovmCompute) {
+        return of(this);
+      });
+    });
+
+    afterEach(() => {
+      process.removeAllListeners('SIGINT');
+      listeners.forEach((listener) => process.on('SIGINT', listener));
+    });
+
+    it('stops the sandbox, then exits as usual', async () => {
+      const sandbox = await microvm();
+      void sandbox.runCommand('sleep', ['60']);
+      await settled();
+
+      process.emit('SIGINT');
+      await settled();
+
+      expect(stop).toHaveBeenCalledTimes(1);
+      expect(kill).toHaveBeenCalledWith(process.pid, 'SIGINT');
+    });
+
+    it('still exits when stop fails', async () => {
+      stop.mockReturnValue(throwError(() => new Error('nope')));
+      const sandbox = await microvm();
+      void sandbox.runCommand('sleep', ['60']);
+      await settled();
+
+      process.emit('SIGINT');
+      await settled();
+
+      expect(kill).toHaveBeenCalledWith(process.pid, 'SIGINT');
+    });
+
+    it("rejects with the command's own failure", async () => {
+      const failed = new Subject<never>();
+      jest.spyOn(MicrovmCompute.prototype, 'create').mockImplementation(function (this: MicrovmCompute) {
+        return of(this);
+      });
+      jest.spyOn(MicrovmCompute.prototype, 'exec').mockReturnValue(failed);
+      const sandbox = await Sandbox.create({ compute: 'microvm' });
+      const command = sandbox.runCommand('sleep', ['60']);
+      await settled();
+
+      process.emit('SIGINT');
+      failed.error(new Error('Sandbox stopped'));
+
+      await expect(command).rejects.toThrow('Sandbox stopped');
+    });
+
+    it("leaves the exit to a host's own handler", async () => {
+      const host = jest.fn();
+      const sandbox = await microvm();
+      void sandbox.runCommand('sleep', ['60']);
+      await settled();
+      process.on('SIGINT', host);
+
+      process.emit('SIGINT');
+      await settled();
+
+      expect(stop).toHaveBeenCalledTimes(1);
+      expect(host).toHaveBeenCalledTimes(1);
+      expect(kill).not.toHaveBeenCalled();
+    });
+
+    it('lets go after the first, so a second quits', async () => {
+      const sandbox = await microvm();
+      void sandbox.runCommand('sleep', ['60']);
+      await settled();
+
+      process.emit('SIGINT');
+
+      expect(process.listenerCount('SIGINT')).toBe(0);
+    });
+
+    it('listens only while a command runs', async () => {
+      jest.spyOn(MicrovmCompute.prototype, 'create').mockImplementation(function (this: MicrovmCompute) {
+        return of(this);
+      });
+      const exec = { cmdId: 'c', exitCode: 0, frames: EMPTY, wait: async () => exec } as unknown as ExecFinished;
+      jest.spyOn(MicrovmCompute.prototype, 'exec').mockReturnValue(of(exec));
+      const sandbox = await Sandbox.create({ compute: 'microvm' });
+
+      expect(process.listenerCount('SIGINT')).toBe(0);
+      await sandbox.runCommand('echo', ['hi']);
+
+      expect(process.listenerCount('SIGINT')).toBe(0);
+    });
+
+    it("leaves Ctrl+C alone where a sandbox can't stop", async () => {
+      jest.spyOn(LambdaFunction.prototype, 'exec').mockReturnValue(NEVER);
+      const sandbox = await Sandbox.create();
+      void sandbox.runCommand('sleep', ['60']);
+      await settled();
+
+      expect(process.listenerCount('SIGINT')).toBe(0);
+    });
+  });
+
+  describe('stop', () => {
+    it('stops its compute', async () => {
+      const stop = jest.spyOn(MicrovmCompute.prototype, 'stop').mockImplementation(function (this: MicrovmCompute) {
+        return of(this);
+      });
+      jest.spyOn(MicrovmCompute.prototype, 'create').mockImplementation(function (this: MicrovmCompute) {
+        return of(this);
+      });
+      const sandbox = await Sandbox.create({ compute: 'microvm' });
+
+      await expect(sandbox.stop()).resolves.toBeUndefined();
+
+      expect(stop).toHaveBeenCalledTimes(1);
+    });
+
+    it('rejects on lambda for now', async () => {
+      const sandbox = await Sandbox.create();
+
+      await expect(sandbox.stop()).rejects.toThrow('stop is not implemented on compute lambda');
+    });
+  });
+
   describe('sandboxId', () => {
     it('is the function arn', async () => {
       const sandbox = await SandboxImpl.create();
-      sandbox['lambda'].State.FunctionArn = FUNCTION_ARN;
+      lambdaOf(sandbox).State.FunctionArn = FUNCTION_ARN;
 
       expect(sandbox.sandboxId).toBe(FUNCTION_ARN);
     });
@@ -398,7 +600,7 @@ describe('sandbox', () => {
         Promise.resolve({ $metadata: { requestId: 'req' }, EventStream: stream(...events) })
       );
       const sandbox = await SandboxImpl.create();
-      sandbox['lambda'].State.FunctionArn = FUNCTION_ARN;
+      lambdaOf(sandbox).State.FunctionArn = FUNCTION_ARN;
       return { sandbox, send };
     };
 
@@ -433,7 +635,7 @@ describe('sandbox', () => {
     it('does not retry a command', async () => {
       const sandbox = await SandboxImpl.create();
 
-      await expect(sandbox['lambda']['invoker'].config.maxAttempts()).resolves.toBe(1);
+      await expect(lambdaOf(sandbox)['invoker'].config.maxAttempts()).resolves.toBe(1);
     });
 
     it('collects stdout, stderr and the exit code', async () => {
@@ -521,7 +723,7 @@ describe('sandbox', () => {
         );
 
         const handles: Exec[] = [];
-        const subscription = run(sandbox['lambda']).subscribe((handle) => handles.push(handle));
+        const subscription = run(lambdaOf(sandbox)).subscribe((handle) => handles.push(handle));
         await new Promise((resolve) => setTimeout(resolve, 10));
 
         expect(handles).toHaveLength(1);
@@ -540,7 +742,7 @@ describe('sandbox', () => {
       it('replays frames to a late subscriber', async () => {
         const { sandbox } = await start(payload(execFrame(EXEC_STREAM.STDOUT, Buffer.from('out'))), exited);
 
-        const exec = await lastValueFrom(run(sandbox['lambda']));
+        const exec = await lastValueFrom(run(lambdaOf(sandbox)));
         const frames = await lastValueFrom(exec.frames.pipe(toArray()));
 
         expect(frames.map(({ stream }) => stream)).toEqual([EXEC_STREAM.STDOUT, EXEC_STREAM.EXIT]);
@@ -558,7 +760,7 @@ describe('sandbox', () => {
         );
         const handles: Exec[] = [];
 
-        const subscription = run(sandbox['lambda']).subscribe((handle) => handles.push(handle));
+        const subscription = run(lambdaOf(sandbox)).subscribe((handle) => handles.push(handle));
         await new Promise((resolve) => setTimeout(resolve, 10));
         const waiting = handles[0]!.wait();
         subscription.unsubscribe();
@@ -660,6 +862,19 @@ describe('sandbox', () => {
 
     beforeEach(() => {
       withArn = jest.spyOn(LambdaFunction.prototype, 'withArn').mockImplementation(hydrate({ ROWDY_SANDBOX: 'true' }));
+    });
+
+    it('connects to a microvm by its image arn', async () => {
+      const arn = 'arn:aws:lambda:us-east-1:123456789012:microvm-image:sandbox-box';
+      const attach = jest.spyOn(MicrovmCompute.prototype, 'attach').mockImplementation(function (this: MicrovmCompute) {
+        return of(this);
+      });
+
+      const sandbox = (await Sandbox.get({ sandboxId: arn })) as SandboxImpl;
+
+      expect(sandbox['compute']).toBeInstanceOf(MicrovmCompute);
+      expect(attach).toHaveBeenCalledWith(arn);
+      expect(withArn).not.toHaveBeenCalled();
     });
 
     it('connects to the sandbox without deploying', async () => {

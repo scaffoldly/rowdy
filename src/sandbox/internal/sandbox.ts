@@ -2,12 +2,12 @@ import type { CommandFinished, RunCommandOptions, RunCommandParams, Sandbox, San
 import { isAxiosError } from 'axios';
 import {
   catchError,
+  concatWith,
   defer,
   from,
   fromEvent,
   ignoreElements,
   iif,
-  last,
   lastValueFrom,
   map,
   merge,
@@ -15,14 +15,15 @@ import {
   of,
   race,
   switchMap,
+  take,
   tap,
   throwError,
 } from 'rxjs';
 import { Environment, Logger, maskUrl } from '../..';
-import { deploySources } from '../../api/internal/layers';
-import { LambdaImageService } from '../../aws/lambda/image';
-import { LambdaFunction } from '../../aws/lambda/index';
+import { LambdaCompute } from '../../aws/lambda/compute';
+import { MicrovmCompute } from '../../aws/microvm/compute';
 import { EXEC_STREAM } from '../../proxy/shell';
+import { SandboxCompute, SandboxComputeClass } from './compute';
 
 // Kubernetes' alphabet for generated names: no vowels, so a name spells no words.
 const ALPHANUMS = 'bcdfghjklmnpqrstvwxz2456789';
@@ -33,11 +34,16 @@ export const computeHash = (template: string): string => {
   return [...String(hash)].map((digit) => ALPHANUMS[digit.charCodeAt(0) % ALPHANUMS.length]).join('');
 };
 
+const COMPUTES: Record<NonNullable<SandboxOptions['compute']>, SandboxComputeClass> = {
+  lambda: LambdaCompute,
+  microvm: MicrovmCompute,
+};
+
 export class SandboxImpl implements Sandbox {
   private environment: Environment;
-  private lambda: LambdaFunction;
+  private compute: SandboxCompute;
 
-  private constructor({ logLevel, signal }: Pick<SandboxOptions, 'logLevel' | 'signal'>) {
+  private constructor({ compute, logLevel, signal }: Pick<SandboxOptions, 'compute' | 'logLevel' | 'signal'>) {
     // A host's terminal stays quiet unless logLevel, ROWDY_LOG_LEVEL, ROWDY_DEBUG or ROWDY_TRACE says otherwise.
     const log = new Logger('sandbox');
     if (logLevel) {
@@ -47,52 +53,28 @@ export class SandboxImpl implements Sandbox {
     }
     this.environment = new Environment(log, { signal });
 
-    this.lambda = new LambdaFunction(
-      'Sandbox',
-      new LambdaImageService(this.environment).withLayersFrom(deploySources(undefined))
-    );
+    this.compute = new COMPUTES[compute ?? 'lambda'](this.environment);
   }
 
   static async create(options?: SandboxOptions): Promise<SandboxImpl> {
+    const compute = options?.compute ?? 'lambda';
+    const image = options?.image ?? 'scaffoldly/sandbox';
     const timeout = options?.timeout ?? 15 * 60 * 1000;
     const memory = options?.memory ?? 512;
+    const env = { ...COMPUTES[compute].env, ...options?.env };
 
-    // Lambda takes Timeout in whole seconds, 1 to 900, and MemorySize in whole MB, 128 to 10240.
-    if (!Number.isInteger(timeout / 1000) || timeout < 1000 || timeout > 900_000) {
-      throw new RangeError(`timeout must be whole seconds from 1000 to 900000 ms, got ${timeout}`);
-    }
-    if (!Number.isInteger(memory) || memory < 128 || memory > 10240) {
-      throw new RangeError(`memory must be whole MB from 128 to 10240, got ${memory}`);
-    }
-
-    const image = options?.image ?? 'scaffoldly/sandbox';
-
-    // Only /tmp is writable on Lambda. The XDG directories are the spec's defaults under that HOME.
-    const env = {
-      HOME: '/tmp',
-      XDG_CACHE_HOME: '/tmp/.cache',
-      XDG_CONFIG_HOME: '/tmp/.config',
-      XDG_DATA_HOME: '/tmp/.local/share',
-      XDG_STATE_HOME: '/tmp/.local/state',
-      ...options?.env,
-    };
+    COMPUTES[compute].assert({ timeout, memory, env });
 
     // The same options reuse a function, and different ones share no env or config.
-    const suffix = computeHash(JSON.stringify({ image, timeout, memory, env: Object.entries(env).sort() }));
+    const suffix = computeHash(JSON.stringify({ compute, image, timeout, memory, env: Object.entries(env).sort() }));
 
     // TODO: a generated suffix, once a sandbox can be deleted: a new name is a new function and role on every create.
     // Kubernetes' generateName suffix: 5 random characters.
     // const suffix = Array.from({ length: 5 }, () => ALPHANUMS[randomInt(ALPHANUMS.length)]).join('');
 
-    const sandbox = new SandboxImpl({ logLevel: options?.logLevel, signal: options?.signal });
-    sandbox.lambda
-      .withImage(image)
-      .withCommand([])
-      .withTimeout(timeout / 1000)
-      .withMemory(memory)
-      // The suffix keeps a sandbox off a function deployed any other way, whose exec must stay off.
-      .withName(`${options?.name || 'sandbox'}-${suffix}`);
-    Object.entries(env).forEach(([key, value]) => sandbox.lambda.withEnvironment(key, value));
+    const name = `${options?.name || 'sandbox'}-${suffix}`;
+
+    const sandbox = new SandboxImpl({ compute, logLevel: options?.logLevel, signal: options?.signal });
 
     const { signal } = sandbox.environment;
 
@@ -101,10 +83,7 @@ export class SandboxImpl implements Sandbox {
         iif(() => signal.aborted, of(signal), fromEvent(signal, 'abort')).pipe(
           switchMap(() => throwError(() => signal.reason))
         ),
-        defer(() => sandbox.lambda.observe()).pipe(
-          last(),
-          map(() => sandbox)
-        )
+        defer(() => sandbox.compute.create({ image, name, timeout, memory, env })).pipe(map(() => sandbox))
       ).pipe(
         // An AxiosError carries its request headers and sockets into a caller's logs.
         catchError((error) =>
@@ -123,7 +102,8 @@ export class SandboxImpl implements Sandbox {
   }
 
   static async get({ sandboxId, signal: abort }: SandboxLookup): Promise<SandboxImpl> {
-    const sandbox = new SandboxImpl({ signal: abort });
+    const compute = sandboxId.includes(':microvm-image:') ? 'microvm' : 'lambda';
+    const sandbox = new SandboxImpl({ compute, signal: abort });
     const { signal } = sandbox.environment;
 
     return lastValueFrom(
@@ -131,25 +111,13 @@ export class SandboxImpl implements Sandbox {
         iif(() => signal.aborted, of(signal), fromEvent(signal, 'abort')).pipe(
           switchMap(() => throwError(() => signal.reason))
         ),
-        defer(() => sandbox.lambda.withArn(sandboxId)).pipe(
-          map((lambda) => {
-            // Exec is refused on any other function, so a handle to one could never run a command.
-            if (lambda.Status.Configuration?.Environment?.Variables?.ROWDY_SANDBOX !== 'true') {
-              throw new Error(`Not a sandbox: ${sandboxId}`);
-            }
-            return sandbox;
-          })
-        )
+        defer(() => sandbox.compute.attach(sandboxId)).pipe(map(() => sandbox))
       )
     );
   }
 
   get sandboxId(): string {
-    const { FunctionArn } = this.lambda.State;
-    if (!FunctionArn) {
-      throw new Error('Sandbox has no function');
-    }
-    return FunctionArn;
+    return this.compute.sandboxId;
   }
 
   runCommand(cmd: string, args?: string[], options?: RunCommandOptions): Promise<CommandFinished>;
@@ -172,7 +140,18 @@ export class SandboxImpl implements Sandbox {
               switchMap(() => throwError(() => signal.reason))
             )
           : NEVER,
-        this.lambda
+        // Only while a command runs, and only where it can stop: a listener cancels Node's default exit. It's gone
+        // after the first, so a second Ctrl+C force-quits.
+        this.compute.stoppable
+          ? fromEvent(process, 'SIGINT').pipe(
+              take(1),
+              tap(() => this.interrupted()),
+              ignoreElements(),
+              // Completing would end the race: the command's own rejection is what the caller gets.
+              concatWith(NEVER)
+            )
+          : NEVER,
+        this.compute
           .exec({
             apiVersion: 'rowdy.run/v1alpha1',
             kind: 'Exec',
@@ -212,8 +191,19 @@ export class SandboxImpl implements Sandbox {
   //   throw new Error('not implemented');
   // }
 
-  // TODO: stop
-  // async stop(): Promise<void> {
-  //   throw new Error('not implemented');
-  // }
+  async stop(): Promise<void> {
+    await lastValueFrom(this.compute.stop());
+  }
+
+  // Ctrl+C would otherwise end this process and leave the VM running, and billing, until its timeout.
+  private interrupted(): void {
+    this.stop()
+      .catch((error) => this.environment.log.warn('Sandbox Stop Failed', { error }))
+      .finally(() => {
+        // A host with its own handler decides how it exits.
+        if (!process.listenerCount('SIGINT')) {
+          process.kill(process.pid, 'SIGINT');
+        }
+      });
+  }
 }
