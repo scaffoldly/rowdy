@@ -27,6 +27,8 @@ export class LambdaCompute implements SandboxCompute {
     }
   }
 
+  readonly stoppable = false;
+
   private lambda: LambdaFunction;
 
   constructor(environment: Environment) {

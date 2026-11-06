@@ -100,7 +100,10 @@ export interface Sandbox {
   // TODO: detached
   // /** Resolves once the command has started. */
   // runCommand(params: DetachedRunCommandParams): Promise<Command>;
-  /** Resolves when the command exits, whatever its exit code; rejects only if it could not run. */
+  /**
+   * Resolves when the command exits, whatever its exit code; rejects only if it could not run. On a sandbox that can
+   * `stop`, Ctrl+C during a command stops it, then exits as usual, so nothing is left running. A second Ctrl+C quits.
+   */
   runCommand(params: RunCommandParams): Promise<CommandFinished>;
   // TODO: writeFiles
   // writeFiles(files: WriteFile[]): Promise<void>;

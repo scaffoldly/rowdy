@@ -97,6 +97,8 @@ export class MicrovmCompute extends AwsClientLogger implements SandboxCompute {
     }
   }
 
+  readonly stoppable = true;
+
   private iam = new IAMClient({ logger: this });
   private microvms = new LambdaMicrovmsClient({ logger: this });
   private s3 = new S3Client({ logger: this });
