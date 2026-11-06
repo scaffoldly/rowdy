@@ -259,6 +259,9 @@ const RECENT_LINES = 50;
 // started) still holds its stdout or stderr open.
 const DRAIN_MS = 1000;
 
+/** How long a killed command gets to exit on SIGTERM before SIGKILL, in milliseconds. */
+export const KILL_GRACE = { ms: 2000 };
+
 export class ShellResponse extends Subject<ShellExit> implements ILoggable {
   // The command's output, a line at a time, in the same shape as rowdy's own lines. Which stream
   // a line came from is the component; severity is not inferred from it.
@@ -289,6 +292,7 @@ export class ShellResponse extends Subject<ShellExit> implements ILoggable {
   public readonly startedAt = performance.now();
   private _bytes: number = 0;
   private _code?: number;
+  private _pid?: number;
   private _recent: string[] = [];
   private _sample?: ProcessSample;
 
@@ -350,8 +354,26 @@ export class ShellResponse extends Subject<ShellExit> implements ILoggable {
       });
   }
 
+  /** Ends a background command and everything it started: it leads its own process group. */
+  kill(): void {
+    const { _pid: pid } = this;
+    if (!pid) {
+      return;
+    }
+    const signal = (name: NodeJS.Signals): void => {
+      try {
+        process.kill(-pid, name);
+      } catch {
+        // Already gone.
+      }
+    };
+    signal('SIGTERM');
+    setTimeout(() => signal('SIGKILL'), KILL_GRACE.ms).unref();
+  }
+
   /** Read the command's /proc status until it exits; the last reading survives it. */
   watch(pid: number): void {
+    this._pid = pid;
     interval(SAMPLE_MS)
       .pipe(
         startWith(0),
