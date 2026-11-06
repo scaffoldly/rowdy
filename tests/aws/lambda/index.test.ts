@@ -1093,6 +1093,50 @@ describe('aws lambda update conflict', () => {
   });
 });
 
+describe('aws lambda change logs', () => {
+  const fn = new LambdaFunction('Sandbox', new LambdaImageService(new Environment(new Logger())));
+
+  afterEach(() => jest.restoreAllMocks());
+
+  it.each([
+    ['CreateFunctionCommand', { FunctionName: 'acme' }, 'CreateFunction: acme'],
+    ['UpdateFunctionCodeCommand', { FunctionName: 'acme' }, 'UpdateFunctionCode: acme'],
+    ['DeleteRoleCommand', { RoleName: 'role' }, 'DeleteRole: role'],
+    ['PutRolePolicyCommand', { RoleName: 'role' }, 'PutRolePolicy: role'],
+    ['PublishVersionCommand', { FunctionName: 'acme' }, 'PublishVersion: acme'],
+    ['CreateScheduleGroupCommand', { Name: 'group' }, 'CreateScheduleGroup: group'],
+    ['PutObjectCommand', { Bucket: 'bucket', Key: 'key' }, 'PutObject: key'],
+    ['CreateBucketCommand', { Bucket: 'bucket' }, 'CreateBucket: bucket'],
+  ])('logs %s at info', (commandName, input, message) => {
+    const info = jest.spyOn(fn['log'], 'info');
+
+    fn.info({ clientName: 'LambdaClient', commandName, input });
+
+    expect(info).toHaveBeenCalledTimes(1);
+    expect(info).toHaveBeenCalledWith(message);
+  });
+
+  it.each(['GetFunctionCommand', 'ListAliasesCommand', 'TagResourceCommand'])(
+    'leaves %s out of info',
+    (commandName) => {
+      const info = jest.spyOn(fn['log'], 'info');
+
+      fn.info({ clientName: 'LambdaClient', commandName, input: { FunctionName: 'acme' } });
+
+      expect(info).not.toHaveBeenCalled();
+    }
+  );
+
+  it('never logs the input', () => {
+    const info = jest.spyOn(fn['log'], 'info');
+    const Environment = { Variables: { SECRET: 'hunter2' } };
+
+    fn.info({ commandName: 'UpdateFunctionConfigurationCommand', input: { FunctionName: 'acme', Environment } });
+
+    expect(info.mock.calls.flat()).toEqual(['UpdateFunctionConfiguration: acme']);
+  });
+});
+
 describe('aws lambda function url', () => {
   const FUNCTION_ARN = 'arn:aws:lambda:us-east-1:123456789012:function:acme_app';
 
