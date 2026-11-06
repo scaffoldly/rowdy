@@ -8,6 +8,8 @@ import { ComputeSpec } from '../../../src/sandbox/internal/compute';
 
 const IMAGE_URI = '123456789012.dkr.ecr.us-east-1.amazonaws.com/scaffoldly/sandbox@sha256:abc';
 const IMAGE_ARN = 'arn:aws:lambda:us-east-1:123456789012:microvm-image:sandbox-box';
+const BASE_ARN = 'arn:aws:lambda:us-east-1:aws:microvm-image:al2023-1';
+const AVAILABLE = { status: 'AVAILABLE', supportedCpuConfigurations: [{ architecture: 'X86_64' }] };
 const ROLE_ARN = 'arn:aws:iam::123456789012:role/box';
 const SPEC: ComputeSpec = {
   image: 'scaffoldly/sandbox',
@@ -35,6 +37,8 @@ describe('aws microvm compute', () => {
     const compute = new MicrovmCompute(new Environment(new Logger(), {}));
     const sent: Sent[] = [];
     const defaults: Record<string, Handler> = {
+      ListManagedMicrovmImagesCommand: () => ({ items: [{ imageArn: BASE_ARN, createdAt: new Date(1) }] }),
+      ListManagedMicrovmImageVersionsCommand: () => ({ items: [AVAILABLE] }),
       ListBucketsCommand: () => ({ Buckets: [] }),
       CreateBucketCommand: () => ({}),
       HeadObjectCommand: () => Promise.reject(missing('NotFound')),
@@ -276,6 +280,46 @@ describe('aws microvm compute', () => {
         Action: ['ecr:BatchCheckLayerAvailability', 'ecr:GetDownloadUrlForLayer', 'ecr:BatchGetImage'],
         Resource: 'arn:aws:ecr:us-east-1:123456789012:repository/scaffoldly/sandbox',
       });
+    });
+  });
+
+  describe('base image', () => {
+    const NEWER = 'arn:aws:lambda:us-east-1:aws:microvm-image:al2023-2';
+    const images = (): { items: unknown[] } => ({
+      items: [
+        { imageArn: BASE_ARN, createdAt: new Date(1) },
+        { imageArn: NEWER, createdAt: new Date(2) },
+      ],
+    });
+
+    it("uses AWS's newest", async () => {
+      const { compute, sent } = setup({ ListManagedMicrovmImagesCommand: images });
+
+      await create(compute);
+
+      expect(input(sent, 'CreateMicrovmImageCommand')).toMatchObject({ baseImageArn: NEWER });
+    });
+
+    it.each([
+      ['only ARM', { status: 'AVAILABLE', supportedCpuConfigurations: [{ architecture: 'ARM_64' }] }],
+      ['expired', { ...AVAILABLE, status: 'EXPIRED' }],
+    ])('skips one that is %s', async (_, version) => {
+      const { compute, sent } = setup({
+        ListManagedMicrovmImagesCommand: images,
+        ListManagedMicrovmImageVersionsCommand: ({ imageIdentifier }) => ({
+          items: [imageIdentifier === NEWER ? version : AVAILABLE],
+        }),
+      });
+
+      await create(compute);
+
+      expect(input(sent, 'CreateMicrovmImageCommand')).toMatchObject({ baseImageArn: BASE_ARN });
+    });
+
+    it('rejects when none will do', async () => {
+      const { compute } = setup({ ListManagedMicrovmImageVersionsCommand: () => ({ items: [] }) });
+
+      await expect(create(compute)).rejects.toThrow('AWS has no base image for X86_64');
     });
   });
 

@@ -13,6 +13,8 @@ import {
   GetMicrovmImageCommandOutput,
   GetMicrovmImageVersionCommand,
   LambdaMicrovmsClient,
+  ListManagedMicrovmImagesCommand,
+  ListManagedMicrovmImageVersionsCommand,
   ListTagsCommand,
   UpdateMicrovmImageCommand,
 } from '@aws-sdk/client-lambda-microvms';
@@ -20,7 +22,23 @@ import { GetCallerIdentityCommand, STSClient } from '@aws-sdk/client-sts';
 import { createHash } from 'crypto';
 import { zipSync } from 'fflate';
 import promiseRetry from 'promise-retry';
-import { catchError, defer, first, forkJoin, from, map, Observable, of, repeat, switchMap, throwError } from 'rxjs';
+import {
+  catchError,
+  concatMap,
+  defer,
+  filter,
+  first,
+  forkJoin,
+  from,
+  map,
+  Observable,
+  of,
+  repeat,
+  switchMap,
+  take,
+  throwError,
+  throwIfEmpty,
+} from 'rxjs';
 import { deploySources } from '../../api/internal/layers';
 import { Transfer } from '../../api/internal/transfer';
 import { Exec } from '../../api/types';
@@ -45,6 +63,7 @@ import { ownedBucket } from '../s3';
 const BUCKET_PREFIX = 'rowdy-sandboxes-';
 const BUCKET_OWNER = { Key: 'rowdy:owner', Value: 'rowdy-sandboxes' };
 const COMPUTE_TAG = 'run.rowdy.aws';
+const ARCHITECTURE = 'X86_64';
 
 /** How often a build is polled, in milliseconds. */
 export const POLL = { delay: 5000 };
@@ -92,10 +111,11 @@ export class MicrovmCompute extends AwsClientLogger implements SandboxCompute {
     return forkJoin({
       ImageUri: this.pull(image),
       Bucket: ownedBucket(this.s3, this.log, BUCKET_PREFIX, BUCKET_OWNER),
+      baseImageArn: this.baseImage(),
       Region: from(this.s3.config.region()),
       Identity: from(this.sts.send(new GetCallerIdentityCommand({}))),
     }).pipe(
-      switchMap(({ ImageUri, Bucket, Region, Identity }) => {
+      switchMap(({ ImageUri, Bucket, baseImageArn, Region, Identity }) => {
         const RoleName = LambdaFunction.roleName(Transfer.normalizeImage(image), name);
         const imageIdentifier = `arn:aws:lambda:${Region}:${Identity.Account}:microvm-image:${name}`;
         const Key = `${name}/code.zip`;
@@ -104,9 +124,9 @@ export class MicrovmCompute extends AwsClientLogger implements SandboxCompute {
           switchMap((buildRoleArn) =>
             this.build(imageIdentifier, Bucket, Key, ImageUri, {
               name,
-              baseImageArn: `arn:aws:lambda:${Region}:aws:microvm-image:al2023-1`,
+              baseImageArn,
               buildRoleArn,
-              cpuConfigurations: [{ architecture: 'X86_64' }],
+              cpuConfigurations: [{ architecture: ARCHITECTURE }],
               additionalOsCapabilities: ['ALL'],
               resources: [{ minimumMemoryInMiB: memory }],
               environmentVariables: env,
@@ -166,6 +186,28 @@ export class MicrovmCompute extends AwsClientLogger implements SandboxCompute {
         },
       })
     ).pipe(map(({ imageRef }) => imageRef));
+  }
+
+  /** AWS's newest base image with a version available for this architecture. */
+  private baseImage(): Observable<string> {
+    return defer(() => this.microvms.send(new ListManagedMicrovmImagesCommand({}))).pipe(
+      switchMap(({ items = [] }) =>
+        from([...items].sort((a, b) => (b.createdAt?.getTime() ?? 0) - (a.createdAt?.getTime() ?? 0)))
+      ),
+      concatMap(({ imageArn }) =>
+        from(this.microvms.send(new ListManagedMicrovmImageVersionsCommand({ imageIdentifier: imageArn }))).pipe(
+          filter(({ items = [] }) =>
+            items.some(
+              ({ status, supportedCpuConfigurations = [] }) =>
+                status === 'AVAILABLE' && supportedCpuConfigurations.some((cpu) => cpu.architecture === ARCHITECTURE)
+            )
+          ),
+          map(() => imageArn!)
+        )
+      ),
+      take(1),
+      throwIfEmpty(() => new Error(`AWS has no base image for ${ARCHITECTURE} in this region`))
+    );
   }
 
   /** Builds and runs the sandbox, so code in it has this role too: it reads its one zip and pulls its one repository. */
