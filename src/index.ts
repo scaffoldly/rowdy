@@ -8,3 +8,5 @@ const id = (): string => {
 
 export { VERSION, NAME, id };
 export { CloudResource, NotFoundException, FatalException, SkipAction } from './cdk';
+export { Logger, Trace, isLevel, log, mask, maskEnv, maskHeaders, maskJson, maskQuery, maskUrl } from './log';
+export type { Format, ILoggable, Level, Loggable } from './log';
