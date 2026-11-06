@@ -7,6 +7,7 @@ import { PassThrough } from 'stream';
 import { ROWDY_LAYERS } from '../src/api/internal/layers';
 import { LambdaCompute } from '../src/aws/lambda/compute';
 import { LambdaFunction } from '../src/aws/lambda/index';
+import { MicrovmCompute } from '../src/aws/microvm/compute';
 import { Exec } from '../src/api/types';
 import { EXEC_STREAM, execFrame } from '../src/proxy/shell';
 import { computeHash, SandboxImpl } from '../src/sandbox/internal/sandbox';
@@ -90,9 +91,41 @@ describe('sandbox', () => {
       expect(image).toHaveBeenCalledWith('scaffoldly/sandbox');
     });
 
-    it('refuses a microvm until it can build one', async () => {
-      await expect(SandboxImpl.create({ compute: 'microvm' })).rejects.toThrow('compute microvm is not implemented');
+    it('runs a microvm on its own compute', async () => {
+      const create = jest.spyOn(MicrovmCompute.prototype, 'create').mockImplementation(function (this: MicrovmCompute) {
+        return of(this);
+      });
+
+      const sandbox = await SandboxImpl.create({ compute: 'microvm' });
+
+      expect(sandbox['compute']).toBeInstanceOf(MicrovmCompute);
+      expect(create).toHaveBeenCalledWith(
+        expect.objectContaining({ image: 'scaffoldly/sandbox', memory: 512, env: {} })
+      );
       expect(observe).not.toHaveBeenCalled();
+    });
+
+    it('holds a microvm to its own limits, before anything reaches AWS', async () => {
+      const create = jest.spyOn(MicrovmCompute.prototype, 'create');
+
+      await expect(SandboxImpl.create({ compute: 'microvm', memory: 600 as never })).rejects.toThrow(
+        'memory must be one of'
+      );
+      expect(create).not.toHaveBeenCalled();
+    });
+
+    it('gives the same options a different name on each compute', async () => {
+      const name = jest.fn();
+      jest.spyOn(MicrovmCompute.prototype, 'create').mockImplementation(function (this: MicrovmCompute, spec) {
+        name(spec.name);
+        return of(this);
+      });
+      const lambda = jest.spyOn(LambdaFunction.prototype, 'withName');
+
+      await SandboxImpl.create();
+      await SandboxImpl.create({ compute: 'microvm' });
+
+      expect(name.mock.calls[0]?.[0]).not.toEqual(lambda.mock.calls[0]?.[0]);
     });
 
     it('hashes the compute', async () => {
@@ -690,6 +723,19 @@ describe('sandbox', () => {
 
     beforeEach(() => {
       withArn = jest.spyOn(LambdaFunction.prototype, 'withArn').mockImplementation(hydrate({ ROWDY_SANDBOX: 'true' }));
+    });
+
+    it('connects to a microvm by its image arn', async () => {
+      const arn = 'arn:aws:lambda:us-east-1:123456789012:microvm-image:sandbox-box';
+      const attach = jest.spyOn(MicrovmCompute.prototype, 'attach').mockImplementation(function (this: MicrovmCompute) {
+        return of(this);
+      });
+
+      const sandbox = (await Sandbox.get({ sandboxId: arn })) as SandboxImpl;
+
+      expect(sandbox['compute']).toBeInstanceOf(MicrovmCompute);
+      expect(attach).toHaveBeenCalledWith(arn);
+      expect(withArn).not.toHaveBeenCalled();
     });
 
     it('connects to the sandbox without deploying', async () => {

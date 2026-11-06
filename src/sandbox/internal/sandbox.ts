@@ -19,8 +19,9 @@ import {
 } from 'rxjs';
 import { Environment, Logger, maskUrl } from '../..';
 import { LambdaCompute } from '../../aws/lambda/compute';
+import { MicrovmCompute } from '../../aws/microvm/compute';
 import { EXEC_STREAM } from '../../proxy/shell';
-import { SandboxCompute } from './compute';
+import { SandboxCompute, SandboxComputeClass } from './compute';
 
 // Kubernetes' alphabet for generated names: no vowels, so a name spells no words.
 const ALPHANUMS = 'bcdfghjklmnpqrstvwxz2456789';
@@ -31,11 +32,16 @@ export const computeHash = (template: string): string => {
   return [...String(hash)].map((digit) => ALPHANUMS[digit.charCodeAt(0) % ALPHANUMS.length]).join('');
 };
 
+const COMPUTES: Record<NonNullable<SandboxOptions['compute']>, SandboxComputeClass> = {
+  lambda: LambdaCompute,
+  microvm: MicrovmCompute,
+};
+
 export class SandboxImpl implements Sandbox {
   private environment: Environment;
   private compute: SandboxCompute;
 
-  private constructor({ logLevel, signal }: Pick<SandboxOptions, 'logLevel' | 'signal'>) {
+  private constructor({ compute, logLevel, signal }: Pick<SandboxOptions, 'compute' | 'logLevel' | 'signal'>) {
     // A host's terminal stays quiet unless logLevel, ROWDY_LOG_LEVEL, ROWDY_DEBUG or ROWDY_TRACE says otherwise.
     const log = new Logger('sandbox');
     if (logLevel) {
@@ -45,21 +51,17 @@ export class SandboxImpl implements Sandbox {
     }
     this.environment = new Environment(log, { signal });
 
-    this.compute = new LambdaCompute(this.environment);
+    this.compute = new COMPUTES[compute ?? 'lambda'](this.environment);
   }
 
   static async create(options?: SandboxOptions): Promise<SandboxImpl> {
     const compute = options?.compute ?? 'lambda';
-    if (compute === 'microvm') {
-      throw new Error('compute microvm is not implemented');
-    }
-
     const image = options?.image ?? 'scaffoldly/sandbox';
     const timeout = options?.timeout ?? 15 * 60 * 1000;
     const memory = options?.memory ?? 512;
-    const env = { ...LambdaCompute.env, ...options?.env };
+    const env = { ...COMPUTES[compute].env, ...options?.env };
 
-    LambdaCompute.assert({ timeout, memory });
+    COMPUTES[compute].assert({ timeout, memory, env });
 
     // The same options reuse a function, and different ones share no env or config.
     const suffix = computeHash(JSON.stringify({ compute, image, timeout, memory, env: Object.entries(env).sort() }));
@@ -70,7 +72,7 @@ export class SandboxImpl implements Sandbox {
 
     const name = `${options?.name || 'sandbox'}-${suffix}`;
 
-    const sandbox = new SandboxImpl({ logLevel: options?.logLevel, signal: options?.signal });
+    const sandbox = new SandboxImpl({ compute, logLevel: options?.logLevel, signal: options?.signal });
 
     const { signal } = sandbox.environment;
 
@@ -98,7 +100,8 @@ export class SandboxImpl implements Sandbox {
   }
 
   static async get({ sandboxId, signal: abort }: SandboxLookup): Promise<SandboxImpl> {
-    const sandbox = new SandboxImpl({ signal: abort });
+    const compute = sandboxId.includes(':microvm-image:') ? 'microvm' : 'lambda';
+    const sandbox = new SandboxImpl({ compute, signal: abort });
     const { signal } = sandbox.environment;
 
     return lastValueFrom(

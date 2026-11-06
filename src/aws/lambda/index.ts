@@ -1,4 +1,4 @@
-import { MetadataBearer, Logger } from '@smithy/types';
+import { MetadataBearer } from '@smithy/types';
 import {
   CreateRoleCommand,
   GetRoleCommand,
@@ -52,9 +52,11 @@ import {
   FlexibleTimeWindowMode,
   ScheduleState,
 } from '@aws-sdk/client-scheduler';
-import { BucketLocationConstraint, CreateBucketCommand, HeadBucketCommand, S3Client } from '@aws-sdk/client-s3';
+import { S3Client } from '@aws-sdk/client-s3';
 import { PolicyDocument, Statement } from 'aws-lambda';
 import { createHash, randomUUID } from 'crypto';
+import { AwsClientLogger } from '../logger';
+import { ensureBucket } from '../s3';
 import { LambdaImageService } from './image';
 import { Image, Transfer } from '../../api/internal/transfer';
 import {
@@ -90,12 +92,11 @@ import {
   lastValueFrom,
 } from 'rxjs';
 import promiseRetry from 'promise-retry';
-import { inspect } from 'util';
 import { Environment, Routes } from '../..';
 import { Crontab, ExecSchema, Volume } from '../../routes';
 import { EXEC_STREAM, ShellExit } from '../../proxy/shell';
 import { Exec, ExecFinished, ExecFrame } from '../../api/types';
-import { mask, maskJson } from '../../log';
+import { Logger, mask } from '../../log';
 import { CdnStore, cdnStore } from '../../cdn';
 import { TPulledImage } from '../../api/types';
 import { parseSecrets } from '../../secrets';
@@ -138,9 +139,6 @@ type AwsError = { name?: string; message?: string; $fault?: string; $retryable?:
 export const isNotFound = (error: unknown): boolean =>
   ['ResourceNotFoundException', 'NoSuchEntityException'].includes(`${(error as AwsError)?.name}`);
 
-const isLocationConstraint = (region: string): region is BucketLocationConstraint =>
-  Object.values<string>(BucketLocationConstraint).includes(region);
-
 export const isTransient = (error: unknown): boolean => {
   const { name, $fault, $retryable } = (error as AwsError) ?? {};
   return !!$retryable || $fault === 'server' || ['ThrottlingException', 'TooManyRequestsException'].includes(`${name}`);
@@ -182,7 +180,11 @@ const isEqual = <T extends number | string | string[]>(a?: T, b?: T): boolean =>
 
 // DEVNOTE: A missing resource is created, a propagating error re-reads after a backoff, and anything
 // else (ValidationError, or a propagating error past PROPAGATION.retries) fails the deploy.
-const _create = <T>(read: () => Promise<T>, write: () => Promise<unknown>, cb?: (res: T) => void): Observable<T> => {
+export const _create = <T>(
+  read: () => Promise<T>,
+  write: () => Promise<unknown>,
+  cb?: (res: T) => void
+): Observable<T> => {
   let attempt = 0;
   return defer(() => read())
     .pipe(
@@ -238,7 +240,7 @@ const pullImage = (
     );
 };
 
-export class LambdaFunction implements Logger {
+export class LambdaFunction extends AwsClientLogger {
   static functionName(roleId: string, name?: string): string {
     return fit((name || roleId).replace(/[^a-zA-Z0-9_-]/g, '_'));
   }
@@ -315,6 +317,7 @@ export class LambdaFunction implements Logger {
     _type: LambdaFunction['type'],
     public readonly imageService: LambdaImageService
   ) {
+    super();
     this.type = _type;
     if (this.isSandbox()) {
       this.withEnvironment('ROWDY_SANDBOX', 'true');
@@ -365,7 +368,7 @@ export class LambdaFunction implements Logger {
     return this.imageService.userAgent;
   }
 
-  get log(): Logger {
+  override get log(): Logger {
     return this.imageService.log.child('deploy');
   }
 
@@ -717,36 +720,6 @@ export class LambdaFunction implements Logger {
         }
       }),
       map(() => ({ $metadata: {} }))
-    );
-  }
-
-  // DEVNOTE: Created when missing, never deleted or reconfigured: S3's defaults (Block Public
-  // Access, SSE-S3, bucket-owner-enforced ownership) apply.
-  private ensureBucket(Bucket: string): Observable<MetadataBearer> {
-    return defer(() => this.s3.send(new HeadBucketCommand({ Bucket }))).pipe(
-      tap(() => this.log.debug('Bucket Exists', { bucket: Bucket })),
-      catchError((error: unknown) => {
-        if ((error as AwsError)?.name !== 'NotFound') {
-          throw error;
-        }
-        return from(this.s3.config.region()).pipe(
-          switchMap((region) => {
-            this.log.info('Bucket Creating', { bucket: Bucket, region });
-            return this.s3.send(
-              new CreateBucketCommand({
-                Bucket,
-                ...(region !== 'us-east-1' && isLocationConstraint(region)
-                  ? { CreateBucketConfiguration: { LocationConstraint: region } }
-                  : {}),
-              })
-            );
-          }),
-          catchError((created: unknown) => {
-            if ((created as AwsError)?.name === 'BucketAlreadyOwnedByYou') return of({ $metadata: {} });
-            throw created;
-          })
-        );
-      })
     );
   }
 
@@ -1310,7 +1283,7 @@ export class LambdaFunction implements Logger {
             this.RoleId.pipe(take(1)).pipe(
               map((RoleId) => LambdaFunction.bucketName(RoleId!)),
               switchMap((Bucket) =>
-                this.ensureBucket(Bucket).pipe(
+                ensureBucket(this.s3, this.log, Bucket).pipe(
                   tap(() => {
                     this.State.Bucket = Bucket;
                     this.withEnvironment('ROWDY_BUCKET', Bucket);
@@ -1603,46 +1576,6 @@ export class LambdaFunction implements Logger {
       map(() => ({ $metadata: {} }))
     );
   }
-
-  debug = (..._content: unknown[]): void => {};
-  info = (...content: unknown[]): void => {
-    const obj = Array.isArray(content) && content.length === 1 ? content[0] : content;
-    if (typeof obj === 'object') {
-      const { clientName, commandName, input, output } = obj as {
-        clientName?: string;
-        commandName?: string;
-        input?: unknown;
-        output?: unknown;
-      };
-      this.log.debug(`[${clientName ?? 'UnknownClient'}] [${commandName ?? 'UnknownCommand'}]`, {
-        input: maskJson(input),
-        output: maskJson(output),
-      });
-      if (/^(Create|Update|Delete|Put|Publish|Add|Remove)/.test(`${commandName}`)) {
-        // Names only: an input can carry the function's environment.
-        const { FunctionName, RoleName, Name, Key, Bucket } = (input ?? {}) as Record<string, unknown>;
-        const name = FunctionName ?? RoleName ?? Name ?? Key ?? Bucket;
-        this.log.info(`${commandName?.replace(/Command$/, '')}${name ? `: ${name}` : ''}`);
-      }
-    }
-  };
-  warn = (..._content: unknown[]): void => {};
-  error = (..._content: unknown[]): void => {
-    const obj = Array.isArray(_content) && _content.length === 1 ? _content[0] : _content;
-    if (typeof obj === 'object') {
-      const { clientName, commandName, input, error } = obj as {
-        clientName?: string;
-        commandName?: string;
-        input?: unknown;
-        error?: unknown;
-      };
-      this.log.debug(`[${clientName ?? 'UnknownClient'}] [${commandName ?? 'UnknownCommand'}]`, {
-        input: maskJson(input),
-        error: inspect(error),
-      });
-      return;
-    }
-  };
 
   private get AssumeRolePolicyDocument(): PolicyDocument {
     const document: PolicyDocument = {
