@@ -11,7 +11,7 @@ interface BaseSandboxOptions {
   name?: string;
   /** Applies to the whole process. Defaults to ROWDY_LOG_LEVEL, ROWDY_DEBUG or ROWDY_TRACE, then `warn`. */
   logLevel?: Level;
-  /** Aborts the sandbox's work in progress, including its creation. */
+  /** Aborts the sandbox's work in progress, including its creation, and stops it if it can `stop`. */
   signal?: AbortSignal;
 }
 
@@ -44,6 +44,7 @@ export type SandboxOptions = LambdaSandboxOptions | MicrovmSandboxOptions;
 
 export interface SandboxLookup {
   sandboxId: string;
+  /** Aborts the sandbox's work in progress, and stops it if it can `stop`. */
   signal?: AbortSignal;
 }
 
@@ -60,7 +61,7 @@ export interface RunCommandParams {
   // TODO: detached
   // /** Resolves once the command has started instead of when it exits. */
   // detached?: boolean;
-  /** Stops waiting for the command. It runs on in the sandbox until it exits or times out. */
+  /** Kills the command and rejects. On `compute: 'lambda'` only the waiting stops: it runs on until it exits or times out. */
   signal?: AbortSignal;
 }
 
@@ -70,7 +71,7 @@ export interface RunCommandParams {
 // }
 
 export interface RunCommandOptions {
-  /** Stops waiting for the command. It runs on in the sandbox until it exits or times out. */
+  /** Kills the command and rejects. On `compute: 'lambda'` only the waiting stops: it runs on until it exits or times out. */
   signal?: AbortSignal;
 }
 
