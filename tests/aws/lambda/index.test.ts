@@ -6,6 +6,7 @@ import {
   isPropagating,
   isTransient,
   LambdaFunction,
+  CONFLICT,
   PROPAGATION,
   ROWDY_BIN,
   waitForSuccess,
@@ -1028,6 +1029,67 @@ describe('aws lambda timeout', () => {
     const input = await updated(new LambdaFunction('Container', imageService).withTimeout(300));
 
     expect(input.Timeout).toBe(300);
+  });
+});
+
+describe('aws lambda update conflict', () => {
+  const imageService = new LambdaImageService(new Environment(new Logger()));
+  const IMAGE_URI = '123456789012.dkr.ecr.us-east-1.amazonaws.com/acme/app@sha256:abc';
+
+  const timing = { ...CONFLICT };
+  beforeAll(() => Object.assign(CONFLICT, { minTimeout: 1, maxTimeout: 1 }));
+  afterAll(() => Object.assign(CONFLICT, timing));
+
+  type Send = (command: { constructor: { name: string } }) => Promise<unknown>;
+
+  const conflict = (): Error => Object.assign(new Error('Pending'), { name: 'ResourceConflictException' });
+
+  const deploy = async (failing: string, failures: number, error: Error = conflict()): Promise<string[]> => {
+    const fn = new LambdaFunction('Sandbox', imageService);
+    fn['FunctionArn'].next('arn:aws:lambda:us-east-1:123456789012:function:acme_app');
+    fn['Qualifier'].next('sha256-abc');
+    fn['ImageUri'].next(IMAGE_URI);
+    fn['Command'].next([]);
+    fn['WorkingDirectory'].next(undefined);
+
+    const configuration = { FunctionName: 'acme_app', State: 'Active', LastUpdateStatus: 'Successful' };
+    const sent: string[] = [];
+    const send: Send = (command) => {
+      const { name } = command.constructor;
+      sent.push(name);
+      if (name === 'GetFunctionCommand') {
+        return Promise.resolve({
+          Code: { ImageUri: `${IMAGE_URI}-previous` },
+          Configuration: { ...configuration, Version: '$LATEST' },
+        });
+      }
+      return name === failing && sent.filter((s) => s === name).length <= failures
+        ? Promise.reject(error)
+        : Promise.resolve({ ...configuration, Version: '$LATEST' });
+    };
+    (fn['lambda'] as unknown as { send: Send }).send = send;
+
+    await lastValueFrom(fn['prepare']().updates[1]!);
+    return sent;
+  };
+
+  it.each(['UpdateFunctionConfigurationCommand', 'UpdateFunctionCodeCommand'])(
+    'retries %s while the function is busy',
+    async (name) => {
+      const sent = await deploy(name, 2);
+
+      expect(sent.filter((s) => s === name)).toHaveLength(3);
+    }
+  );
+
+  it('gives up on a function that stays busy', async () => {
+    await expect(deploy('UpdateFunctionConfigurationCommand', Infinity)).rejects.toThrow('Pending');
+  });
+
+  it('does not retry any other error', async () => {
+    const error = Object.assign(new Error('nope'), { name: 'InvalidParameterValueException' });
+
+    await expect(deploy('UpdateFunctionCodeCommand', 1, error)).rejects.toThrow('nope');
   });
 });
 
