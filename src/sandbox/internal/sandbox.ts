@@ -83,7 +83,9 @@ export class SandboxImpl implements Sandbox {
         iif(() => signal.aborted, of(signal), fromEvent(signal, 'abort')).pipe(
           switchMap(() => throwError(() => signal.reason))
         ),
-        defer(() => sandbox.compute.create({ image, name, timeout, memory, env })).pipe(map(() => sandbox))
+        defer(() => sandbox.compute.create({ image, name, timeout, memory, env })).pipe(
+          map(() => sandbox.stoppingOnAbort())
+        )
       ).pipe(
         // An AxiosError carries its request headers and sockets into a caller's logs.
         catchError((error) =>
@@ -111,7 +113,7 @@ export class SandboxImpl implements Sandbox {
         iif(() => signal.aborted, of(signal), fromEvent(signal, 'abort')).pipe(
           switchMap(() => throwError(() => signal.reason))
         ),
-        defer(() => sandbox.compute.attach(sandboxId)).pipe(map(() => sandbox))
+        defer(() => sandbox.compute.attach(sandboxId)).pipe(map(() => sandbox.stoppingOnAbort()))
       )
     );
   }
@@ -192,6 +194,18 @@ export class SandboxImpl implements Sandbox {
 
   async stop(): Promise<void> {
     await lastValueFrom(this.compute.stop());
+  }
+
+  // Only once there's a sandbox: an abort before that has nothing to stop.
+  private stoppingOnAbort(): this {
+    if (this.compute.stoppable) {
+      this.environment.signal.addEventListener(
+        'abort',
+        () => void this.stop().catch((error) => this.environment.log.warn('Sandbox Stop Failed', { error })),
+        { once: true }
+      );
+    }
+    return this;
   }
 
   // Ctrl+C would otherwise end this process and leave the VM running, and billing, until its timeout.

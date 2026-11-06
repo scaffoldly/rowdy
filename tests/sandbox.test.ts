@@ -487,6 +487,94 @@ describe('sandbox', () => {
       await expect(sandbox.runCommand('sleep', ['60'])).rejects.toBe('bye');
     });
 
+    describe('stopping', () => {
+      let stop: jest.SpyInstance;
+
+      beforeEach(() => {
+        stop = jest.spyOn(MicrovmCompute.prototype, 'stop').mockImplementation(function (this: MicrovmCompute) {
+          return of(this);
+        });
+      });
+
+      it('stops a microvm sandbox', async () => {
+        const controller = new AbortController();
+        await microvm(controller.signal);
+
+        controller.abort('bye');
+
+        expect(stop).toHaveBeenCalledTimes(1);
+      });
+
+      it('stops one reached by get', async () => {
+        jest.spyOn(MicrovmCompute.prototype, 'attach').mockImplementation(function (this: MicrovmCompute) {
+          return of(this);
+        });
+        const controller = new AbortController();
+        await Sandbox.get({
+          sandboxId: 'arn:aws:lambda:us-east-1:123456789012:microvm-image:sandbox-box',
+          signal: controller.signal,
+        });
+
+        controller.abort('bye');
+
+        expect(stop).toHaveBeenCalledTimes(1);
+      });
+
+      it('stops once, with one signal on the sandbox and its command', async () => {
+        const controller = new AbortController();
+        const sandbox = await microvm(controller.signal);
+        const command = sandbox.runCommand({ cmd: 'sleep', signal: controller.signal });
+
+        controller.abort('bye');
+
+        await expect(command).rejects.toBe('bye');
+        expect(stop).toHaveBeenCalledTimes(1);
+      });
+
+      it("doesn't stop for a command's own signal", async () => {
+        const controller = new AbortController();
+        const sandbox = await microvm(new AbortController().signal);
+        const command = sandbox.runCommand({ cmd: 'sleep', signal: controller.signal });
+
+        controller.abort('bye');
+
+        await expect(command).rejects.toBe('bye');
+        expect(stop).not.toHaveBeenCalled();
+      });
+
+      it('has nothing to stop when aborted during create', async () => {
+        const deploy = new Subject<never>();
+        jest.spyOn(MicrovmCompute.prototype, 'create').mockReturnValue(deploy);
+        const controller = new AbortController();
+        const created = Sandbox.create({ compute: 'microvm', signal: controller.signal });
+        await Promise.resolve();
+
+        controller.abort('bye');
+
+        await expect(created).rejects.toBe('bye');
+        expect(stop).not.toHaveBeenCalled();
+      });
+
+      it('survives a stop that fails', async () => {
+        stop.mockReturnValue(throwError(() => new Error('nope')));
+        const controller = new AbortController();
+        await microvm(controller.signal);
+
+        controller.abort('bye');
+        await new Promise((resolve) => setTimeout(resolve, 10));
+
+        expect(stop).toHaveBeenCalledTimes(1);
+      });
+
+      it("leaves lambda, which can't stop", async () => {
+        const controller = new AbortController();
+        await Sandbox.create({ signal: controller.signal });
+
+        expect(() => controller.abort('bye')).not.toThrow();
+        expect(stop).not.toHaveBeenCalled();
+      });
+    });
+
     it('aborts a command on lambda', async () => {
       jest.spyOn(LambdaFunction.prototype, 'exec').mockReturnValue(NEVER);
       const controller = new AbortController();
