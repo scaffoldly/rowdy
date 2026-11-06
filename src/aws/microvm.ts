@@ -169,6 +169,15 @@ export class MicrovmShellProxy extends ShellProxy<MicrovmPipeline> {
           .withHeader('content-type', EXEC_CONTENT_TYPE)
           .withHeader(EXEC_ID_HEADER, randomUUID());
         this.multiplex(shell, response);
+
+        // A caller that hangs up is the only one who could read the command's output, and how a signal reaches it.
+        const { res } = this.hook;
+        const hungUp = (): void => {
+          if (!res.writableFinished) shell.kill();
+        };
+        if (res.destroyed) hungUp();
+        else res.once('close', hungUp);
+
         return response;
       })
     );
@@ -205,7 +214,7 @@ export class MicrovmResponse extends Response<MicrovmPipeline> {
       const { status, headers } = this;
       const { res } = this.hook;
 
-      // A caller that hangs up leaves the command running, with nowhere for its frames to go.
+      // Frames still in flight when a caller hangs up have nowhere to go.
       res.on('error', () => {});
       res.writeHead(status, headers);
       res.flushHeaders();

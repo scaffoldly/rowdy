@@ -5,7 +5,7 @@ import { AddressInfo } from 'net';
 import { mergeMap, Observable, Subscription } from 'rxjs';
 import { Environment, Logger } from '../../src';
 import { EXEC_ID_HEADER, EXEC_PATH, HOOKS_PORT, MicrovmPipeline, MicrovmRequest } from '../../src/aws/microvm';
-import { EXEC_CONTENT_TYPE, EXEC_STREAM } from '../../src/proxy/shell';
+import { EXEC_CONTENT_TYPE, EXEC_STREAM, KILL_GRACE } from '../../src/proxy/shell';
 import { Pipeline, Result } from '../../src/pipeline';
 
 // execa is ESM-only, so stand in a spawn that settles the way execa does: it resolves on exit code 0
@@ -315,6 +315,73 @@ describe('aws microvm pipeline', () => {
       const mine = await frames(await exec(url, 'sh', ['-c', 'pwd; echo $WHO'], { cwd: '/', env: { WHO: 'me' } }));
 
       expect(text(mine, EXEC_STREAM.STDOUT)).toBe('/\nme\n');
+    });
+
+    describe('a caller hanging up', () => {
+      const alive = (pid: number): boolean => {
+        try {
+          process.kill(pid, 0);
+          return true;
+        } catch {
+          return false;
+        }
+      };
+
+      const gone = async (pid: number): Promise<boolean> => {
+        for (let attempt = 0; attempt < 200 && alive(pid); attempt++) {
+          await new Promise((resolve) => setTimeout(resolve, 10));
+        }
+        return !alive(pid);
+      };
+
+      // Runs a script that prints a pid, reads it, then hangs up.
+      const hangUp = async (url: string, script: string): Promise<number> => {
+        const controller = new AbortController();
+        const response = await fetch(`${url}${EXEC_PATH}`, {
+          method: 'POST',
+          signal: controller.signal,
+          body: JSON.stringify({
+            apiVersion: 'rowdy.run/v1alpha1',
+            kind: 'Exec',
+            spec: { cmd: 'sh', args: ['-c', script] },
+          }),
+        });
+        const { value } = await response.body!.getReader().read();
+        const pid = Number(Buffer.from(value!).subarray(8).toString().trim());
+        controller.abort();
+        return pid;
+      };
+
+      it('kills the command', async () => {
+        const url = await serve();
+
+        await expect(gone(await hangUp(url, 'echo $$; exec sleep 30'))).resolves.toBe(true);
+      });
+
+      it('kills what the command started', async () => {
+        const url = await serve();
+
+        await expect(gone(await hangUp(url, 'sleep 30 & echo $!; wait'))).resolves.toBe(true);
+      });
+
+      it('kills a command that ignores SIGTERM', async () => {
+        const timing = { ...KILL_GRACE };
+        Object.assign(KILL_GRACE, { ms: 50 });
+        const url = await serve();
+
+        await expect(gone(await hangUp(url, "trap '' TERM; echo $$; while :; do sleep 1; done"))).resolves.toBe(true);
+        Object.assign(KILL_GRACE, timing);
+      });
+
+      it('leaves a finished command alone', async () => {
+        const kill = jest.spyOn(process, 'kill');
+        const url = await serve();
+
+        await frames(await exec(url, 'sh', ['-c', 'echo done']));
+        await new Promise((resolve) => setTimeout(resolve, 50));
+
+        expect(kill.mock.calls.filter(([pid]) => pid < 0)).toEqual([]);
+      });
     });
 
     it('gives a command no input', async () => {
