@@ -1,14 +1,11 @@
 import promiseRetry from 'promise-retry';
 import { getDifferences } from './internal/diff';
-import { log as consoleLog } from 'console';
+import { log as root } from './log';
 import packageJson from '../package.json';
 const VERSION = packageJson.version;
 const NAME = packageJson.name;
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-const log = (message?: any, ...optionalParams: any[]): void => {
-  consoleLog('[cdk] ' + message, ...optionalParams);
-};
+const log = root.child('cdk');
 
 type CallbackAction =
   | 'Created'
@@ -454,7 +451,7 @@ export class CloudResource<Resource, ReadCommandOutput> implements PromiseLike<P
       case 'Failed to Update':
       case 'Failed to Tag':
       case 'Failed to Delete':
-        log(messageOutput);
+        log.info(messageOutput);
         this.options.callback?.(
           verb,
           resource instanceof Error ? 'error' : 'notice',
@@ -463,7 +460,7 @@ export class CloudResource<Resource, ReadCommandOutput> implements PromiseLike<P
         );
         break;
       default:
-        log(messageOutput);
+        log.debug(messageOutput);
         break;
     }
 
