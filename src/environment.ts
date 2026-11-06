@@ -29,6 +29,7 @@ import { ExitContext, ShellExit, ShellProxy, ShellRequest } from './proxy/shell'
 import { ShellPipeline } from './shell/pipeline';
 import { Pipeline, Result } from './pipeline';
 import { LambdaPipeline } from './aws/lambda';
+import { MicrovmPipeline } from './aws/microvm';
 import packageJson from '../package.json';
 import { ABORT, Rowdy } from '.';
 import { isatty } from 'tty';
@@ -191,7 +192,7 @@ export class Environment implements ILoggable {
   public readonly signal: AbortSignal;
   public readonly bin = Object.keys(packageJson.bin)[0];
 
-  private _pipelines: Pipeline[] = [new LambdaPipeline(this)];
+  private _pipelines: Pipeline[] = [new LambdaPipeline(this), new MicrovmPipeline(this)];
   private _subscriptions: Subscription[] = [];
   private _routes: Routes;
   private _command?: string[] | undefined;
