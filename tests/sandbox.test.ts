@@ -2,13 +2,13 @@ import { Logger } from '@scaffoldly/rowdy';
 import { CommandFinished, Sandbox, SandboxOptions } from '@scaffoldly/rowdy/sandbox';
 import { AxiosError, AxiosHeaders, InternalAxiosRequestConfig } from 'axios';
 import { InvokeWithResponseStreamResponseEvent, LambdaClient } from '@aws-sdk/client-lambda';
-import { lastValueFrom, NEVER, Observable, of, Subject, throwError, toArray } from 'rxjs';
+import { EMPTY, lastValueFrom, NEVER, Observable, of, Subject, throwError, toArray } from 'rxjs';
 import { PassThrough } from 'stream';
 import { ROWDY_LAYERS } from '../src/api/internal/layers';
 import { LambdaCompute } from '../src/aws/lambda/compute';
 import { LambdaFunction } from '../src/aws/lambda/index';
 import { MicrovmCompute } from '../src/aws/microvm/compute';
-import { Exec } from '../src/api/types';
+import { Exec, ExecFinished } from '../src/api/types';
 import { EXEC_STREAM, execFrame } from '../src/proxy/shell';
 import { computeHash, SandboxImpl } from '../src/sandbox/internal/sandbox';
 
@@ -437,6 +437,145 @@ describe('sandbox', () => {
     });
 
     expect(finished.exitCode).toBe(0);
+  });
+
+  describe('ctrl+c during a command', () => {
+    const listeners = process.listeners('SIGINT');
+    let kill: jest.SpyInstance;
+    let stop: jest.SpyInstance;
+
+    const microvm = async (): Promise<Sandbox> => {
+      jest.spyOn(MicrovmCompute.prototype, 'create').mockImplementation(function (this: MicrovmCompute) {
+        return of(this);
+      });
+      jest.spyOn(MicrovmCompute.prototype, 'exec').mockReturnValue(NEVER);
+      return Sandbox.create({ compute: 'microvm' });
+    };
+
+    const settled = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 10));
+
+    beforeEach(() => {
+      process.removeAllListeners('SIGINT');
+      kill = jest.spyOn(process, 'kill').mockReturnValue(true);
+      stop = jest.spyOn(MicrovmCompute.prototype, 'stop').mockImplementation(function (this: MicrovmCompute) {
+        return of(this);
+      });
+    });
+
+    afterEach(() => {
+      process.removeAllListeners('SIGINT');
+      listeners.forEach((listener) => process.on('SIGINT', listener));
+    });
+
+    it('stops the sandbox, then exits as usual', async () => {
+      const sandbox = await microvm();
+      void sandbox.runCommand('sleep', ['60']);
+      await settled();
+
+      process.emit('SIGINT');
+      await settled();
+
+      expect(stop).toHaveBeenCalledTimes(1);
+      expect(kill).toHaveBeenCalledWith(process.pid, 'SIGINT');
+    });
+
+    it('still exits when stop fails', async () => {
+      stop.mockReturnValue(throwError(() => new Error('nope')));
+      const sandbox = await microvm();
+      void sandbox.runCommand('sleep', ['60']);
+      await settled();
+
+      process.emit('SIGINT');
+      await settled();
+
+      expect(kill).toHaveBeenCalledWith(process.pid, 'SIGINT');
+    });
+
+    it("rejects with the command's own failure", async () => {
+      const failed = new Subject<never>();
+      jest.spyOn(MicrovmCompute.prototype, 'create').mockImplementation(function (this: MicrovmCompute) {
+        return of(this);
+      });
+      jest.spyOn(MicrovmCompute.prototype, 'exec').mockReturnValue(failed);
+      const sandbox = await Sandbox.create({ compute: 'microvm' });
+      const command = sandbox.runCommand('sleep', ['60']);
+      await settled();
+
+      process.emit('SIGINT');
+      failed.error(new Error('Sandbox stopped'));
+
+      await expect(command).rejects.toThrow('Sandbox stopped');
+    });
+
+    it("leaves the exit to a host's own handler", async () => {
+      const host = jest.fn();
+      const sandbox = await microvm();
+      void sandbox.runCommand('sleep', ['60']);
+      await settled();
+      process.on('SIGINT', host);
+
+      process.emit('SIGINT');
+      await settled();
+
+      expect(stop).toHaveBeenCalledTimes(1);
+      expect(host).toHaveBeenCalledTimes(1);
+      expect(kill).not.toHaveBeenCalled();
+    });
+
+    it('lets go after the first, so a second quits', async () => {
+      const sandbox = await microvm();
+      void sandbox.runCommand('sleep', ['60']);
+      await settled();
+
+      process.emit('SIGINT');
+
+      expect(process.listenerCount('SIGINT')).toBe(0);
+    });
+
+    it('listens only while a command runs', async () => {
+      jest.spyOn(MicrovmCompute.prototype, 'create').mockImplementation(function (this: MicrovmCompute) {
+        return of(this);
+      });
+      const exec = { cmdId: 'c', exitCode: 0, frames: EMPTY, wait: async () => exec } as unknown as ExecFinished;
+      jest.spyOn(MicrovmCompute.prototype, 'exec').mockReturnValue(of(exec));
+      const sandbox = await Sandbox.create({ compute: 'microvm' });
+
+      expect(process.listenerCount('SIGINT')).toBe(0);
+      await sandbox.runCommand('echo', ['hi']);
+
+      expect(process.listenerCount('SIGINT')).toBe(0);
+    });
+
+    it("leaves Ctrl+C alone where a sandbox can't stop", async () => {
+      jest.spyOn(LambdaFunction.prototype, 'exec').mockReturnValue(NEVER);
+      const sandbox = await Sandbox.create();
+      void sandbox.runCommand('sleep', ['60']);
+      await settled();
+
+      expect(process.listenerCount('SIGINT')).toBe(0);
+    });
+  });
+
+  describe('stop', () => {
+    it('stops its compute', async () => {
+      const stop = jest.spyOn(MicrovmCompute.prototype, 'stop').mockImplementation(function (this: MicrovmCompute) {
+        return of(this);
+      });
+      jest.spyOn(MicrovmCompute.prototype, 'create').mockImplementation(function (this: MicrovmCompute) {
+        return of(this);
+      });
+      const sandbox = await Sandbox.create({ compute: 'microvm' });
+
+      await expect(sandbox.stop()).resolves.toBeUndefined();
+
+      expect(stop).toHaveBeenCalledTimes(1);
+    });
+
+    it('rejects on lambda for now', async () => {
+      const sandbox = await Sandbox.create();
+
+      await expect(sandbox.stop()).rejects.toThrow('stop is not implemented on compute lambda');
+    });
   });
 
   describe('sandboxId', () => {

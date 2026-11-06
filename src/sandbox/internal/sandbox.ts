@@ -2,6 +2,7 @@ import type { CommandFinished, RunCommandOptions, RunCommandParams, Sandbox, San
 import { isAxiosError } from 'axios';
 import {
   catchError,
+  concatWith,
   defer,
   from,
   fromEvent,
@@ -14,6 +15,7 @@ import {
   of,
   race,
   switchMap,
+  take,
   tap,
   throwError,
 } from 'rxjs';
@@ -138,6 +140,17 @@ export class SandboxImpl implements Sandbox {
               switchMap(() => throwError(() => signal.reason))
             )
           : NEVER,
+        // Only while a command runs, and only where it can stop: a listener cancels Node's default exit. It's gone
+        // after the first, so a second Ctrl+C force-quits.
+        this.compute.stoppable
+          ? fromEvent(process, 'SIGINT').pipe(
+              take(1),
+              tap(() => this.interrupted()),
+              ignoreElements(),
+              // Completing would end the race: the command's own rejection is what the caller gets.
+              concatWith(NEVER)
+            )
+          : NEVER,
         this.compute
           .exec({
             apiVersion: 'rowdy.run/v1alpha1',
@@ -178,8 +191,19 @@ export class SandboxImpl implements Sandbox {
   //   throw new Error('not implemented');
   // }
 
-  // TODO: stop
-  // async stop(): Promise<void> {
-  //   throw new Error('not implemented');
-  // }
+  async stop(): Promise<void> {
+    await lastValueFrom(this.compute.stop());
+  }
+
+  // Ctrl+C would otherwise end this process and leave the VM running, and billing, until its timeout.
+  private interrupted(): void {
+    this.stop()
+      .catch((error) => this.environment.log.warn('Sandbox Stop Failed', { error }))
+      .finally(() => {
+        // A host with its own handler decides how it exits.
+        if (!process.listenerCount('SIGINT')) {
+          process.kill(process.pid, 'SIGINT');
+        }
+      });
+  }
 }

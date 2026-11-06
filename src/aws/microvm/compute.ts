@@ -20,6 +20,7 @@ import {
   ListMicrovmsCommand,
   ListTagsCommand,
   RunMicrovmCommand,
+  TerminateMicrovmCommand,
   UpdateMicrovmImageCommand,
 } from '@aws-sdk/client-lambda-microvms';
 import { GetCallerIdentityCommand, STSClient } from '@aws-sdk/client-sts';
@@ -76,6 +77,9 @@ const DEAD: ReadonlyArray<string> = ['TERMINATING', 'TERMINATED'];
 /** How often a build is polled, in milliseconds. */
 export const POLL = { delay: 5000 };
 
+/** How often a terminating VM is polled, in milliseconds. */
+export const TERMINATE_POLL = { delay: 250 };
+
 type Vm = { microvmId: string; endpoint: string };
 
 export class MicrovmCompute extends AwsClientLogger implements SandboxCompute {
@@ -93,6 +97,8 @@ export class MicrovmCompute extends AwsClientLogger implements SandboxCompute {
     }
   }
 
+  readonly stoppable = true;
+
   private iam = new IAMClient({ logger: this });
   private microvms = new LambdaMicrovmsClient({ logger: this });
   private s3 = new S3Client({ logger: this });
@@ -100,6 +106,7 @@ export class MicrovmCompute extends AwsClientLogger implements SandboxCompute {
 
   private images: LambdaImageService;
   private imageArn?: string;
+  private commands = new Set<AbortController>();
 
   constructor(private environment: Environment) {
     super();
@@ -182,13 +189,53 @@ export class MicrovmCompute extends AwsClientLogger implements SandboxCompute {
 
   exec(event: ExecSchema): Observable<Exec> {
     const controller = new AbortController();
+    this.commands.add(controller);
 
     return defer(() => this.vm()).pipe(
       switchMap(({ microvmId, endpoint }) => this.post(microvmId, endpoint, event, controller.signal)),
       switchMap((response) =>
         execOf(response.headers.get(EXEC_ID_HEADER) ?? '', from(response.body!).pipe(framesOf()))
       ),
-      finalize(() => controller.abort())
+      finalize(() => {
+        this.commands.delete(controller);
+        controller.abort();
+      })
+    );
+  }
+
+  stop(): Observable<this> {
+    return defer(() => this.microvms.send(new ListMicrovmsCommand({ imageIdentifier: this.sandboxId }))).pipe(
+      switchMap(({ items = [] }) => {
+        const live = items.flatMap(({ microvmId, state }) =>
+          microvmId && state && !DEAD.includes(state) ? microvmId : []
+        );
+        // A VM's end doesn't reach an open response until the connection times out, a minute later.
+        this.commands.forEach((controller) => controller.abort(new Error('Sandbox stopped')));
+        return live.length ? forkJoin(live.map((microvmIdentifier) => this.terminate(microvmIdentifier))) : of([]);
+      }),
+      map(() => this)
+    );
+  }
+
+  /** Completes once the VM is gone, so a next command can't land on one that's ending. */
+  private terminate(microvmIdentifier: string): Observable<string | undefined> {
+    return from(this.microvms.send(new TerminateMicrovmCommand({ microvmIdentifier }))).pipe(
+      catchError((error) => {
+        // One that ended since the listing is what stop wanted.
+        if (isNotFound(error) || error?.name === 'ConflictException') return of(undefined);
+        throw error;
+      }),
+      switchMap(() =>
+        defer(() => this.microvms.send(new GetMicrovmCommand({ microvmIdentifier }))).pipe(
+          map(({ state }) => state),
+          catchError((error) => {
+            if (isNotFound(error)) return of(undefined);
+            throw error;
+          }),
+          repeat({ delay: TERMINATE_POLL.delay }),
+          first((state) => state === undefined || DEAD.includes(state))
+        )
+      )
     );
   }
 

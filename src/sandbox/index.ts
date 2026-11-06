@@ -100,7 +100,10 @@ export interface Sandbox {
   // TODO: detached
   // /** Resolves once the command has started. */
   // runCommand(params: DetachedRunCommandParams): Promise<Command>;
-  /** Resolves when the command exits, whatever its exit code; rejects only if it could not run. */
+  /**
+   * Resolves when the command exits, whatever its exit code; rejects only if it could not run. On a sandbox that can
+   * `stop`, Ctrl+C during a command stops it, then exits as usual, so nothing is left running. A second Ctrl+C quits.
+   */
   runCommand(params: RunCommandParams): Promise<CommandFinished>;
   // TODO: writeFiles
   // writeFiles(files: WriteFile[]): Promise<void>;
@@ -109,9 +112,11 @@ export interface Sandbox {
   // readFileToBuffer(file: ReadFile): Promise<Buffer | null>;
   // TODO: mkDir
   // mkDir(path: string): Promise<void>;
-  // TODO: stop
-  // /** Safe to call more than once. */
-  // stop(): Promise<void>;
+  /**
+   * Ends everything running in this sandbox, including a command in progress, and everything a `Sandbox.get` of it
+   * started. Safe to call more than once. The next command starts it again. `compute: 'lambda'` rejects for now.
+   */
+  stop(): Promise<void>;
 }
 
 export interface SandboxFactory {

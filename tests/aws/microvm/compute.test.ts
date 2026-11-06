@@ -3,7 +3,7 @@ import { strFromU8, unzipSync } from 'fflate';
 import { lastValueFrom } from 'rxjs';
 import { Environment, Logger } from '../../../src';
 import { ExecFinished } from '../../../src/api/types';
-import { MicrovmCompute, POLL } from '../../../src/aws/microvm/compute';
+import { MicrovmCompute, POLL, TERMINATE_POLL } from '../../../src/aws/microvm/compute';
 import { EXEC_STREAM, execFrame } from '../../../src/proxy/shell';
 import { EXEC_ID_HEADER, EXEC_PATH, HOOKS_PORT } from '../../../src/aws/microvm';
 import { ComputeSpec } from '../../../src/sandbox/internal/compute';
@@ -32,6 +32,7 @@ const missing = (name: string): Error => Object.assign(new Error('missing'), { n
 describe('aws microvm compute', () => {
   const timing = { ...POLL };
   beforeAll(() => Object.assign(POLL, { delay: 1 }));
+  beforeAll(() => Object.assign(TERMINATE_POLL, { delay: 1 }));
   afterAll(() => Object.assign(POLL, timing));
   afterEach(() => jest.restoreAllMocks());
 
@@ -571,6 +572,97 @@ describe('aws microvm compute', () => {
 
     it('needs a sandbox', async () => {
       await expect(lastValueFrom(setup().compute.exec(EVENT))).rejects.toThrow('Sandbox has no image');
+    });
+
+    describe('stop', () => {
+      const stop = (compute: MicrovmCompute): Promise<MicrovmCompute> => lastValueFrom(compute.stop());
+      const stopped = (sent: Sent[]): unknown[] =>
+        sent.filter(({ name }) => name === 'TerminateMicrovmCommand').map(({ input }) => input.microvmIdentifier);
+
+      it('terminates what is live, and nothing else', async () => {
+        const { compute, sent } = running({
+          GetMicrovmCommand: () => ({ state: 'TERMINATED' }),
+          ListMicrovmsCommand: () => ({
+            items: [
+              { microvmId: 'a', state: 'RUNNING' },
+              { microvmId: 'b', state: 'SUSPENDED' },
+              { microvmId: 'c', state: 'TERMINATED' },
+              { microvmId: 'd', state: 'TERMINATING' },
+            ],
+          }),
+          TerminateMicrovmCommand: () => ({}),
+        });
+
+        await stop(compute);
+
+        expect(stopped(sent)).toEqual(['a', 'b']);
+        expect(input(sent, 'ListMicrovmsCommand')).toEqual({ imageIdentifier: IMAGE_ARN });
+      });
+
+      it('does nothing with nothing running', async () => {
+        const { compute, sent } = running();
+
+        await expect(stop(compute)).resolves.toBe(compute);
+        expect(stopped(sent)).toEqual([]);
+      });
+
+      it.each(['ResourceNotFoundException', 'ConflictException'])('is fine with a VM that ended: %s', async (name) => {
+        const { compute } = running({
+          GetMicrovmCommand: () => Promise.reject(missing('ResourceNotFoundException')),
+          ListMicrovmsCommand: () => ({ items: [{ microvmId: 'a', state: 'RUNNING' }] }),
+          TerminateMicrovmCommand: () => Promise.reject(missing(name)),
+        });
+
+        await expect(stop(compute)).resolves.toBe(compute);
+      });
+
+      it('rejects on any other failure', async () => {
+        const { compute } = running({
+          ListMicrovmsCommand: () => ({ items: [{ microvmId: 'a', state: 'RUNNING' }] }),
+          TerminateMicrovmCommand: () => Promise.reject(missing('AccessDeniedException')),
+        });
+
+        await expect(stop(compute)).rejects.toThrow('missing');
+      });
+
+      it('waits for the VM to be gone', async () => {
+        const states = ['RUNNING', 'TERMINATING'];
+        const { compute, sent } = running({
+          GetMicrovmCommand: () => ({ state: states.shift() }),
+          ListMicrovmsCommand: () => ({ items: [{ microvmId: 'a', state: 'RUNNING' }] }),
+          TerminateMicrovmCommand: () => ({}),
+        });
+
+        await stop(compute);
+
+        expect(names(sent).filter((name) => name === 'GetMicrovmCommand')).toHaveLength(2);
+      });
+
+      it('fails a command in progress at once', async () => {
+        const { compute, fetch } = running({ ListMicrovmsCommand: () => ({ items: [] }) });
+        fetch.mockImplementation(
+          async (_, init) =>
+            new Response(
+              new ReadableStream({
+                start: (controller) =>
+                  (init as RequestInit).signal?.addEventListener('abort', () =>
+                    controller.error((init as RequestInit).signal?.reason)
+                  ),
+              }),
+              { status: 200 }
+            )
+        );
+
+        const command = run(compute);
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        await stop(compute);
+
+        await expect(command).rejects.toThrow('Sandbox stopped');
+      });
+
+      it('needs a sandbox', async () => {
+        await expect(stop(setup().compute)).rejects.toThrow('Sandbox has no image');
+      });
     });
 
     it('records the timeout on the image', async () => {
