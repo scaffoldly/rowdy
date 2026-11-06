@@ -16,7 +16,7 @@ import {
   takeUntil,
   timer,
 } from 'rxjs';
-import { FileDescriptors, Pipeline, Proxy, Request, Response } from '../pipeline';
+import { Chunk, FileDescriptors, Pipeline, Proxy, Request, Response } from '../pipeline';
 import { PassThrough } from 'stream';
 import { ILoggable, log as root, Logger, Trace } from '../log';
 import { execa } from 'execa';
@@ -147,6 +147,20 @@ export class ShellProxy<P extends Pipeline> extends Proxy<P, ShellResponse> {
 
   override into(): Observable<Response<P>> {
     throw new Error('Method not implemented.');
+  }
+
+  /** Sends a running command to `response` as exec frames. `settle` runs each way the command can end. */
+  protected multiplex(shell: ShellResponse, response: Response<P>, settle = (end: () => void): void => end()): void {
+    const send = (stream: number, payload: Buffer): void =>
+      response.next(new Chunk(execFrame(stream, payload), payload.length));
+
+    shell.fds.stdout.on('data', (chunk: Buffer) => send(EXEC_STREAM.STDOUT, chunk));
+    shell.fds.stderr.on('data', (chunk: Buffer) => send(EXEC_STREAM.STDERR, chunk));
+    shell.subscribe({
+      next: (exit) => send(EXEC_STREAM.EXIT, Buffer.from(JSON.stringify(exit))),
+      error: (error: Error) => settle(() => response.error(error)),
+      complete: () => settle(() => response.complete()),
+    });
   }
 
   override repr(): string {
@@ -327,7 +341,8 @@ export class ShellResponse extends Subject<ShellExit> implements ILoggable {
    * have passed through to this response, which are the lines just before the exit.
    */
   settle(exit: ShellExit): void {
-    race(fromEvent(this.output, 'end').pipe(take(1)), timer(DRAIN_MS))
+    // Already ended is the usual case: `end` fired before execa settled and won't fire again.
+    (this.output.readableEnded ? of(0) : race(fromEvent(this.output, 'end').pipe(take(1)), timer(DRAIN_MS)))
       .pipe(take(1))
       .subscribe(() => {
         this.next(exit);
