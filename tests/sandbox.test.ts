@@ -439,6 +439,66 @@ describe('sandbox', () => {
     expect(finished.exitCode).toBe(0);
   });
 
+  describe("the sandbox's signal", () => {
+    const microvm = (signal: AbortSignal): Promise<Sandbox> => {
+      jest.spyOn(MicrovmCompute.prototype, 'create').mockImplementation(function (this: MicrovmCompute) {
+        return of(this);
+      });
+      jest.spyOn(MicrovmCompute.prototype, 'exec').mockReturnValue(NEVER);
+      return Sandbox.create({ compute: 'microvm', signal });
+    };
+
+    it('aborts a command on a microvm', async () => {
+      const controller = new AbortController();
+      const sandbox = await microvm(controller.signal);
+      const command = sandbox.runCommand('sleep', ['60']);
+
+      controller.abort('bye');
+
+      await expect(command).rejects.toBe('bye');
+    });
+
+    it('aborts a command with its own signal as well', async () => {
+      const controller = new AbortController();
+      const sandbox = await microvm(controller.signal);
+      const command = sandbox.runCommand({ cmd: 'sleep', signal: new AbortController().signal });
+
+      controller.abort('bye');
+
+      await expect(command).rejects.toBe('bye');
+    });
+
+    it("leaves the sandbox alone when only a command's signal aborts", async () => {
+      const controller = new AbortController();
+      const sandbox = (await microvm(new AbortController().signal)) as SandboxImpl;
+      const command = sandbox.runCommand({ cmd: 'sleep', signal: controller.signal });
+
+      controller.abort('bye');
+
+      await expect(command).rejects.toBe('bye');
+      expect(sandbox['environment'].signal.aborted).toBe(false);
+    });
+
+    it('rejects a command on a sandbox already aborted', async () => {
+      const controller = new AbortController();
+      const sandbox = await microvm(controller.signal);
+      controller.abort('bye');
+
+      await expect(sandbox.runCommand('sleep', ['60'])).rejects.toBe('bye');
+    });
+
+    it('aborts a command on lambda', async () => {
+      jest.spyOn(LambdaFunction.prototype, 'exec').mockReturnValue(NEVER);
+      const controller = new AbortController();
+      const sandbox = await Sandbox.create({ signal: controller.signal });
+      const command = sandbox.runCommand('sleep', ['60']);
+
+      controller.abort('bye');
+
+      await expect(command).rejects.toBe('bye');
+    });
+  });
+
   describe('ctrl+c during a command', () => {
     const listeners = process.listeners('SIGINT');
     let kill: jest.SpyInstance;

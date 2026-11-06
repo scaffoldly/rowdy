@@ -131,15 +131,14 @@ export class SandboxImpl implements Sandbox {
   ): Promise<CommandFinished> {
     const params: RunCommandParams =
       typeof command === 'string' ? { cmd: command, args, signal: options?.signal } : command;
-    const { signal } = params;
+    // The sandbox's signal covers its commands too.
+    const signal = params.signal ? AbortSignal.any([params.signal, this.environment.signal]) : this.environment.signal;
 
     return lastValueFrom(
       race(
-        signal
-          ? iif(() => signal.aborted, of(signal), fromEvent(signal, 'abort')).pipe(
-              switchMap(() => throwError(() => signal.reason))
-            )
-          : NEVER,
+        iif(() => signal.aborted, of(signal), fromEvent(signal, 'abort')).pipe(
+          switchMap(() => throwError(() => signal.reason))
+        ),
         // Only while a command runs, and only where it can stop: a listener cancels Node's default exit. It's gone
         // after the first, so a second Ctrl+C force-quits.
         this.compute.stoppable
