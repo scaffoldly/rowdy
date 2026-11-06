@@ -85,17 +85,13 @@ import {
   tap,
   timer,
   toArray,
-  concatMap,
   finalize,
-  endWith,
-  ignoreElements,
-  lastValueFrom,
 } from 'rxjs';
 import promiseRetry from 'promise-retry';
 import { Environment, Routes } from '../..';
 import { Crontab, ExecSchema, Volume } from '../../routes';
-import { EXEC_STREAM, ShellExit } from '../../proxy/shell';
-import { Exec, ExecFinished, ExecFrame } from '../../api/types';
+import { Exec } from '../../api/types';
+import { execOf, framesOf } from '../exec';
 import { Logger, mask } from '../../log';
 import { CdnStore, cdnStore } from '../../cdn';
 import { TPulledImage } from '../../api/types';
@@ -956,82 +952,21 @@ export class LambdaFunction extends AwsClientLogger {
           { abortSignal: AbortSignal.any([this.signal, controller.signal]) }
         )
       ).pipe(
-        switchMap(
-          ({ EventStream, $metadata }) =>
-            new Observable<Exec>((subscriber) => {
-              const frames = new ReplaySubject<ExecFrame>();
-              const stdout: Buffer[] = [];
-              const stderr: Buffer[] = [];
-              let exit: ShellExit | undefined;
-              let buffer = Buffer.alloc(0);
-
-              const exec: Exec = {
-                cmdId: $metadata.requestId ?? '',
-                get exitCode() {
-                  return exit?.code;
-                },
-                frames: frames.asObservable(),
-                stdout: async () => Buffer.concat(stdout).toString(),
-                stderr: async () => Buffer.concat(stderr).toString(),
-                wait: () =>
-                  lastValueFrom(
-                    frames.pipe(
-                      ignoreElements(),
-                      endWith(undefined),
-                      map(() => {
-                        if (!exit) {
-                          throw new Error('Command ended without an exit');
-                        }
-                        const finished: ExecFinished = { ...exec, exitCode: exit.code, wait: async () => finished };
-                        return finished;
-                      })
-                    )
-                  ),
-              };
-
-              subscriber.next(exec);
-
-              const subscription = from(EventStream ?? [])
-                .pipe(
-                  concatMap(({ PayloadChunk, InvokeComplete }) => {
-                    if (InvokeComplete?.ErrorCode) {
-                      const { ErrorCode, ErrorDetails, LogResult = '' } = InvokeComplete;
-                      const tail = Buffer.from(LogResult, 'base64').toString();
-                      throw new Error([ErrorCode, ErrorDetails, tail].filter(Boolean).join(': '));
-                    }
-                    // A frame can span PayloadChunks, and a PayloadChunk can hold several frames.
-                    buffer = Buffer.concat([buffer, PayloadChunk?.Payload ?? Buffer.alloc(0)]);
-                    const decoded: ExecFrame[] = [];
-                    while (buffer.length >= 8 && buffer.length >= 8 + buffer.readUInt32BE(4)) {
-                      const size = buffer.readUInt32BE(4);
-                      decoded.push({ stream: buffer.readUInt8(0), payload: Buffer.from(buffer.subarray(8, 8 + size)) });
-                      buffer = buffer.subarray(8 + size);
-                    }
-                    return decoded;
-                  }),
-                  tap(({ stream, payload }) => {
-                    if (stream === EXEC_STREAM.STDOUT) stdout.push(payload);
-                    if (stream === EXEC_STREAM.STDERR) stderr.push(payload);
-                    if (stream === EXEC_STREAM.EXIT) exit = JSON.parse(payload.toString());
-                  })
-                )
-                .subscribe({
-                  next: (frame) => frames.next(frame),
-                  error: (error) => {
-                    frames.error(error);
-                    subscriber.error(error);
-                  },
-                  complete: () => {
-                    frames.complete();
-                    subscriber.complete();
-                  },
-                });
-
-              return () => {
-                subscription.unsubscribe();
-                frames.error(new Error('Exec abandoned'));
-              };
-            })
+        switchMap(({ EventStream, $metadata }) =>
+          execOf(
+            $metadata.requestId ?? '',
+            from(EventStream ?? []).pipe(
+              map(({ PayloadChunk, InvokeComplete }) => {
+                if (InvokeComplete?.ErrorCode) {
+                  const { ErrorCode, ErrorDetails, LogResult = '' } = InvokeComplete;
+                  const tail = Buffer.from(LogResult, 'base64').toString();
+                  throw new Error([ErrorCode, ErrorDetails, tail].filter(Boolean).join(': '));
+                }
+                return PayloadChunk?.Payload ?? Buffer.alloc(0);
+              }),
+              framesOf()
+            )
+          )
         ),
         finalize(() => controller.abort())
       );

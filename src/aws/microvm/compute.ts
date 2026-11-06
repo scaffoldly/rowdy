@@ -7,15 +7,19 @@ import {
   UpdateAssumeRolePolicyCommand,
 } from '@aws-sdk/client-iam';
 import {
+  CreateMicrovmAuthTokenCommand,
   CreateMicrovmImageCommand,
   CreateMicrovmImageCommandInput,
+  GetMicrovmCommand,
   GetMicrovmImageCommand,
   GetMicrovmImageCommandOutput,
   GetMicrovmImageVersionCommand,
   LambdaMicrovmsClient,
   ListManagedMicrovmImagesCommand,
   ListManagedMicrovmImageVersionsCommand,
+  ListMicrovmsCommand,
   ListTagsCommand,
+  RunMicrovmCommand,
   UpdateMicrovmImageCommand,
 } from '@aws-sdk/client-lambda-microvms';
 import { GetCallerIdentityCommand, STSClient } from '@aws-sdk/client-sts';
@@ -31,12 +35,12 @@ import {
   forkJoin,
   from,
   map,
+  finalize,
   Observable,
   of,
   repeat,
   switchMap,
   take,
-  throwError,
   throwIfEmpty,
 } from 'rxjs';
 import { deploySources } from '../../api/internal/layers';
@@ -57,7 +61,8 @@ import {
   ROWDY_BIN,
 } from '../lambda/index';
 import { AwsClientLogger } from '../logger';
-import { HOOKS_PORT } from '../microvm';
+import { execOf, framesOf } from '../exec';
+import { EXEC_ID_HEADER, EXEC_PATH, HOOKS_PORT } from '../microvm';
 import { ownedBucket } from '../s3';
 
 const BUCKET_PREFIX = 'rowdy-sandboxes-';
@@ -65,8 +70,13 @@ const BUCKET_OWNER = { Key: 'rowdy:owner', Value: 'rowdy-sandboxes' };
 const COMPUTE_TAG = 'run.rowdy.aws';
 const ARCHITECTURE = 'X86_64';
 
+const TIMEOUT_TAG = 'run.rowdy.timeout';
+const DEAD: ReadonlyArray<string> = ['TERMINATING', 'TERMINATED'];
+
 /** How often a build is polled, in milliseconds. */
 export const POLL = { delay: 5000 };
+
+type Vm = { microvmId: string; endpoint: string };
 
 export class MicrovmCompute extends AwsClientLogger implements SandboxCompute {
   static readonly env = {};
@@ -107,7 +117,7 @@ export class MicrovmCompute extends AwsClientLogger implements SandboxCompute {
     return this.imageArn;
   }
 
-  create({ image, name, memory, env }: ComputeSpec): Observable<this> {
+  create({ image, name, timeout, memory, env }: ComputeSpec): Observable<this> {
     return forkJoin({
       ImageUri: this.pull(image),
       Bucket: ownedBucket(this.s3, this.log, BUCKET_PREFIX, BUCKET_OWNER),
@@ -144,6 +154,7 @@ export class MicrovmCompute extends AwsClientLogger implements SandboxCompute {
               tags: {
                 'run.rowdy': 'aws',
                 [COMPUTE_TAG]: 'microvm',
+                [TIMEOUT_TAG]: `${timeout / 1000}`,
                 'run.rowdy.user.agent': this.images.userAgent,
               },
             })
@@ -169,8 +180,103 @@ export class MicrovmCompute extends AwsClientLogger implements SandboxCompute {
     );
   }
 
-  exec(_event: ExecSchema): Observable<Exec> {
-    return throwError(() => new Error('runCommand is not implemented on compute microvm'));
+  exec(event: ExecSchema): Observable<Exec> {
+    const controller = new AbortController();
+
+    return defer(() => this.vm()).pipe(
+      switchMap(({ microvmId, endpoint }) => this.post(microvmId, endpoint, event, controller.signal)),
+      switchMap((response) =>
+        execOf(response.headers.get(EXEC_ID_HEADER) ?? '', from(response.body!).pipe(framesOf()))
+      ),
+      finalize(() => controller.abort())
+    );
+  }
+
+  /** This image's VM, started if it has none, and where its command output lands. */
+  private vm(): Observable<Vm> {
+    const imageIdentifier = this.sandboxId;
+    const region = imageIdentifier.split(':')[3];
+
+    return defer(() => this.microvms.send(new GetMicrovmImageCommand({ imageIdentifier }))).pipe(
+      switchMap(({ latestActiveImageVersion: imageVersion, tags }) =>
+        from(this.microvms.send(new ListMicrovmsCommand({ imageIdentifier }))).pipe(
+          switchMap(({ items = [] }) => {
+            const live = items.find(({ state }) => state && !DEAD.includes(state));
+            if (live?.microvmId) return of(live.microvmId);
+
+            return from(this.microvms.send(new GetMicrovmImageVersionCommand({ imageIdentifier, imageVersion }))).pipe(
+              switchMap(({ buildRoleArn: executionRoleArn }) => {
+                const seconds = Number(tags?.[TIMEOUT_TAG]) || 900;
+                const connector = (id: string): string =>
+                  `arn:aws:lambda:${region}:aws:network-connector:aws-network-connector:${id}`;
+                return this.microvms.send(
+                  new RunMicrovmCommand({
+                    imageIdentifier,
+                    imageVersion,
+                    executionRoleArn,
+                    ingressNetworkConnectors: [connector('HTTP_INGRESS')],
+                    egressNetworkConnectors: [connector('INTERNET_EGRESS')],
+                    maximumDurationInSeconds: seconds,
+                    // Output doesn't count as traffic, so a quiet command must not look idle.
+                    idlePolicy: {
+                      maxIdleDurationSeconds: Math.min(seconds, 28_800),
+                      suspendedDurationSeconds: 60,
+                      autoResumeEnabled: true,
+                    },
+                  })
+                );
+              }),
+              map(({ microvmId }) => microvmId!)
+            );
+          })
+        )
+      ),
+      switchMap((microvmIdentifier) =>
+        defer(() => this.microvms.send(new GetMicrovmCommand({ microvmIdentifier }))).pipe(
+          repeat({ delay: POLL.delay }),
+          first(({ state }) => state !== 'PENDING')
+        )
+      ),
+      map(({ microvmId, state, stateReason, endpoint }) => {
+        if (state === undefined || DEAD.includes(state)) {
+          throw new Error(`Sandbox ${imageIdentifier} stopped: ${stateReason ?? state}`);
+        }
+        return { microvmId: microvmId!, endpoint: endpoint! };
+      })
+    );
+  }
+
+  /** Hands the command to rowdy in the VM, whose response carries its frames as they happen. */
+  private post(
+    microvmIdentifier: string,
+    endpoint: string,
+    event: ExecSchema,
+    signal: AbortSignal
+  ): Observable<globalThis.Response> {
+    return defer(() =>
+      this.microvms.send(
+        new CreateMicrovmAuthTokenCommand({
+          microvmIdentifier,
+          expirationInMinutes: 5,
+          allowedPorts: [{ port: HOOKS_PORT }],
+        })
+      )
+    ).pipe(
+      switchMap(({ authToken }) =>
+        fetch(`https://${endpoint}${EXEC_PATH}`, {
+          method: 'POST',
+          headers: { ...authToken, 'X-aws-proxy-port': `${HOOKS_PORT}` },
+          body: JSON.stringify(event),
+          signal,
+        })
+      ),
+      map((response) => {
+        if (!response.ok || !response.body) {
+          throw new Error(`Command refused: ${response.status}`);
+        }
+        return response;
+      })
+    );
   }
 
   private pull(image: string): Observable<string> {

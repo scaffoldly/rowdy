@@ -2,8 +2,10 @@ import { createHash } from 'crypto';
 import { strFromU8, unzipSync } from 'fflate';
 import { lastValueFrom } from 'rxjs';
 import { Environment, Logger } from '../../../src';
+import { ExecFinished } from '../../../src/api/types';
 import { MicrovmCompute, POLL } from '../../../src/aws/microvm/compute';
-import { HOOKS_PORT } from '../../../src/aws/microvm';
+import { EXEC_STREAM, execFrame } from '../../../src/proxy/shell';
+import { EXEC_ID_HEADER, EXEC_PATH, HOOKS_PORT } from '../../../src/aws/microvm';
 import { ComputeSpec } from '../../../src/sandbox/internal/compute';
 
 const IMAGE_URI = '123456789012.dkr.ecr.us-east-1.amazonaws.com/scaffoldly/sandbox@sha256:abc';
@@ -400,9 +402,183 @@ describe('aws microvm compute', () => {
     expect(() => setup().compute.sandboxId).toThrow('Sandbox has no image');
   });
 
-  it('cannot run a command yet', async () => {
-    await expect(lastValueFrom(setup().compute.exec({} as never))).rejects.toThrow(
-      'runCommand is not implemented on compute microvm'
-    );
+  describe('exec', () => {
+    const STARTED = new Date('2026-11-06T12:00:00Z');
+    const EVENT = { apiVersion: 'rowdy.run/v1alpha1', kind: 'Exec', spec: { cmd: 'echo', args: ['hi'] } } as never;
+    const CMD = 'cmd-1';
+
+    const frame = (stream: number, payload: string): Buffer => execFrame(stream, Buffer.from(payload));
+    const exit = (code = 0): Buffer => frame(EXEC_STREAM.EXIT, JSON.stringify({ code }));
+
+    const body = (chunks: Uint8Array[]): Response =>
+      new Response(
+        new ReadableStream({
+          start: (controller) => {
+            chunks.forEach((chunk) => controller.enqueue(chunk));
+            controller.close();
+          },
+        }),
+        { status: 200, headers: { [EXEC_ID_HEADER]: CMD } }
+      );
+
+    const running = (
+      handlers: Record<string, Handler> = {},
+      chunks: Uint8Array[] = [exit()]
+    ): ReturnType<typeof setup> & { fetch: jest.SpyInstance } => {
+      const fetch = jest.spyOn(global, 'fetch').mockImplementation(async () => body(chunks));
+      const built = setup({
+        GetMicrovmImageCommand: () => ({ latestActiveImageVersion: '1.0', tags: { 'run.rowdy.timeout': '600' } }),
+        ListMicrovmsCommand: () => ({ items: [] }),
+        GetMicrovmImageVersionCommand: () => ({ buildRoleArn: ROLE_ARN }),
+        RunMicrovmCommand: () => ({ microvmId: 'mvm-1' }),
+        GetMicrovmCommand: () => ({
+          microvmId: 'mvm-1',
+          state: 'RUNNING',
+          endpoint: 'vm.example',
+          imageVersion: '1.0',
+          startedAt: STARTED,
+        }),
+        CreateMicrovmAuthTokenCommand: () => ({ authToken: { 'X-aws-proxy-auth': 'token' } }),
+        ...handlers,
+      });
+      built.compute['imageArn'] = IMAGE_ARN;
+      return { ...built, fetch };
+    };
+
+    const run = async (compute: MicrovmCompute): Promise<ExecFinished> =>
+      new Promise((resolve, reject) => {
+        const subscription = compute.exec(EVENT).subscribe({
+          next: (exec) =>
+            exec
+              .wait()
+              .then(resolve, reject)
+              .finally(() => subscription.unsubscribe()),
+          error: reject,
+        });
+      });
+
+    it('brings back stdout, stderr and the exit code', async () => {
+      const { compute } = running({}, [
+        frame(EXEC_STREAM.STDOUT, 'hello world\n'),
+        frame(EXEC_STREAM.STDERR, 'oops\n'),
+        exit(3),
+      ]);
+
+      const done = await run(compute);
+
+      expect(done.exitCode).toBe(3);
+      expect(done.cmdId).toBe(CMD);
+      await expect(done.stdout()).resolves.toBe('hello world\n');
+      await expect(done.stderr()).resolves.toBe('oops\n');
+    });
+
+    it('reassembles a frame split across chunks', async () => {
+      const whole = Buffer.concat([frame(EXEC_STREAM.STDOUT, 'hello'), exit()]);
+      const { compute } = running({}, [whole.subarray(0, 3), whole.subarray(3, 10), whole.subarray(10)]);
+
+      await expect((await run(compute)).stdout()).resolves.toBe('hello');
+    });
+
+    it('rejects when the connection drops before the exit', async () => {
+      const { compute } = running({}, [frame(EXEC_STREAM.STDOUT, 'partial')]);
+
+      await expect(run(compute)).rejects.toThrow('Command ended without an exit');
+    });
+
+    it('starts a VM from the image, for its timeout', async () => {
+      const { compute, sent } = running();
+
+      await run(compute);
+
+      expect(input(sent, 'RunMicrovmCommand')).toMatchObject({
+        imageIdentifier: IMAGE_ARN,
+        imageVersion: '1.0',
+        executionRoleArn: ROLE_ARN,
+        maximumDurationInSeconds: 600,
+        idlePolicy: { maxIdleDurationSeconds: 600 },
+        ingressNetworkConnectors: [expect.stringContaining('HTTP_INGRESS')],
+        egressNetworkConnectors: [expect.stringContaining('INTERNET_EGRESS')],
+      });
+    });
+
+    it('uses a live VM rather than starting another', async () => {
+      const { compute, sent } = running({
+        ListMicrovmsCommand: () => ({ items: [{ microvmId: 'mvm-1', state: 'RUNNING' }] }),
+      });
+
+      await run(compute);
+
+      expect(names(sent)).not.toContain('RunMicrovmCommand');
+    });
+
+    it('starts a VM when the only one is ending', async () => {
+      const { compute, sent } = running({
+        ListMicrovmsCommand: () => ({ items: [{ microvmId: 'old', state: 'TERMINATED' }] }),
+      });
+
+      await run(compute);
+
+      expect(names(sent)).toContain('RunMicrovmCommand');
+    });
+
+    it('waits for a new VM to run', async () => {
+      const states = ['PENDING', 'RUNNING'];
+      const { compute, sent } = running({
+        GetMicrovmCommand: () => ({ microvmId: 'mvm-1', state: states.shift(), endpoint: 'vm.example' }),
+      });
+
+      await run(compute);
+
+      expect(names(sent).filter((name) => name === 'GetMicrovmCommand')).toHaveLength(2);
+    });
+
+    it('rejects when the VM never runs', async () => {
+      const { compute } = running({
+        GetMicrovmCommand: () => ({ state: 'TERMINATED', stateReason: 'capacity' }),
+      });
+
+      await expect(run(compute)).rejects.toThrow('stopped: capacity');
+    });
+
+    it('posts the event to rowdy, with a token for its port only', async () => {
+      const { compute, sent, fetch } = running();
+
+      await run(compute);
+
+      expect(input(sent, 'CreateMicrovmAuthTokenCommand')).toMatchObject({ allowedPorts: [{ port: HOOKS_PORT }] });
+      expect(fetch).toHaveBeenCalledWith(`https://vm.example${EXEC_PATH}`, {
+        method: 'POST',
+        headers: { 'X-aws-proxy-auth': 'token', 'X-aws-proxy-port': `${HOOKS_PORT}` },
+        body: JSON.stringify(EVENT),
+        signal: expect.any(AbortSignal),
+      });
+    });
+
+    it('rejects when rowdy refuses the command', async () => {
+      const { compute, fetch } = running();
+      fetch.mockResolvedValue(new Response('', { status: 400 }));
+
+      await expect(run(compute)).rejects.toThrow('Command refused: 400');
+    });
+
+    it('hangs up when unsubscribed, leaving the command running', async () => {
+      const { compute, fetch } = running({}, [frame(EXEC_STREAM.STDOUT, 'a'), exit()]);
+
+      await run(compute);
+
+      expect((fetch.mock.calls[0]?.[1] as RequestInit).signal?.aborted).toBe(true);
+    });
+
+    it('needs a sandbox', async () => {
+      await expect(lastValueFrom(setup().compute.exec(EVENT))).rejects.toThrow('Sandbox has no image');
+    });
+
+    it('records the timeout on the image', async () => {
+      const { compute, sent } = setup();
+
+      await create(compute);
+
+      expect(input(sent, 'CreateMicrovmImageCommand').tags).toMatchObject({ 'run.rowdy.timeout': '60' });
+    });
   });
 });
