@@ -1,4 +1,4 @@
-import { defer, last, map, Observable } from 'rxjs';
+import { defer, last, map, Observable, throwError } from 'rxjs';
 import { deploySources } from '../../api/internal/layers';
 import { Exec } from '../../api/types';
 import { Environment } from '../../environment';
@@ -74,5 +74,9 @@ export class LambdaCompute implements SandboxCompute {
 
   exec(event: ExecSchema): Observable<Exec> {
     return this.lambda.exec(event);
+  }
+
+  stop(): Observable<this> {
+    return throwError(() => new Error('stop is not implemented on compute lambda'));
   }
 }

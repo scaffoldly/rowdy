@@ -178,8 +178,7 @@ export class SandboxImpl implements Sandbox {
   //   throw new Error('not implemented');
   // }
 
-  // TODO: stop
-  // async stop(): Promise<void> {
-  //   throw new Error('not implemented');
-  // }
+  async stop(): Promise<void> {
+    await lastValueFrom(this.compute.stop());
+  }
 }

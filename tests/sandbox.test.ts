@@ -439,6 +439,28 @@ describe('sandbox', () => {
     expect(finished.exitCode).toBe(0);
   });
 
+  describe('stop', () => {
+    it('stops its compute', async () => {
+      const stop = jest.spyOn(MicrovmCompute.prototype, 'stop').mockImplementation(function (this: MicrovmCompute) {
+        return of(this);
+      });
+      jest.spyOn(MicrovmCompute.prototype, 'create').mockImplementation(function (this: MicrovmCompute) {
+        return of(this);
+      });
+      const sandbox = await Sandbox.create({ compute: 'microvm' });
+
+      await expect(sandbox.stop()).resolves.toBeUndefined();
+
+      expect(stop).toHaveBeenCalledTimes(1);
+    });
+
+    it('rejects on lambda for now', async () => {
+      const sandbox = await Sandbox.create();
+
+      await expect(sandbox.stop()).rejects.toThrow('stop is not implemented on compute lambda');
+    });
+  });
+
   describe('sandboxId', () => {
     it('is the function arn', async () => {
       const sandbox = await SandboxImpl.create();

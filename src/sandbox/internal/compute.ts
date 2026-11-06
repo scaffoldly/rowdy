@@ -25,6 +25,8 @@ export interface SandboxCompute {
   attach(sandboxId: string): Observable<this>;
   /** Emits the command's handle once, and completes with the command. */
   exec(event: ExecSchema): Observable<Exec>;
+  /** Emits once, when nothing is left running. Safe to call more than once. */
+  stop(): Observable<this>;
 }
 
 export interface SandboxComputeClass {

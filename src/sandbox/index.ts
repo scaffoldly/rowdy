@@ -109,9 +109,11 @@ export interface Sandbox {
   // readFileToBuffer(file: ReadFile): Promise<Buffer | null>;
   // TODO: mkDir
   // mkDir(path: string): Promise<void>;
-  // TODO: stop
-  // /** Safe to call more than once. */
-  // stop(): Promise<void>;
+  /**
+   * Ends everything running in this sandbox, including a command in progress, and everything a `Sandbox.get` of it
+   * started. Safe to call more than once. The next command starts it again. `compute: 'lambda'` rejects for now.
+   */
+  stop(): Promise<void>;
 }
 
 export interface SandboxFactory {
