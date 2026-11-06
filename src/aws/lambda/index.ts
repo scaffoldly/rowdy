@@ -1618,6 +1618,12 @@ export class LambdaFunction implements Logger {
         input: maskJson(input),
         output: maskJson(output),
       });
+      if (/^(Create|Update|Delete|Put|Publish|Add|Remove)/.test(`${commandName}`)) {
+        // Names only: an input can carry the function's environment.
+        const { FunctionName, RoleName, Name, Key, Bucket } = (input ?? {}) as Record<string, unknown>;
+        const name = FunctionName ?? RoleName ?? Name ?? Key ?? Bucket;
+        this.log.info(`${commandName?.replace(/Command$/, '')}${name ? `: ${name}` : ''}`);
+      }
     }
   };
   warn = (..._content: unknown[]): void => {};
