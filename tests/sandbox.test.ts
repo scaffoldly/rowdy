@@ -5,12 +5,15 @@ import { InvokeWithResponseStreamResponseEvent, LambdaClient } from '@aws-sdk/cl
 import { lastValueFrom, NEVER, Observable, of, Subject, throwError, toArray } from 'rxjs';
 import { PassThrough } from 'stream';
 import { ROWDY_LAYERS } from '../src/api/internal/layers';
+import { LambdaCompute } from '../src/aws/lambda/compute';
 import { LambdaFunction } from '../src/aws/lambda/index';
 import { Exec } from '../src/api/types';
 import { EXEC_STREAM, execFrame } from '../src/proxy/shell';
 import { computeHash, SandboxImpl } from '../src/sandbox/internal/sandbox';
 
 const FUNCTION_ARN = 'arn:aws:lambda:us-east-1:123456789012:function:sandbox-box';
+
+const lambdaOf = (sandbox: SandboxImpl): LambdaFunction => (sandbox['compute'] as LambdaCompute)['lambda'];
 
 type Event = InvokeWithResponseStreamResponseEvent;
 
@@ -26,6 +29,18 @@ const _shapes = async (sandbox: Sandbox): Promise<void> => {
   const _exitCode: number = finished.exitCode;
   const _output: string = await finished.stdout();
 };
+
+const _options: SandboxOptions[] = [
+  { memory: 600 },
+  { compute: 'lambda', memory: 600 },
+  { compute: 'microvm', memory: 1024 },
+  // @ts-expect-error A microVM's memory is one of AWS's sizes.
+  { compute: 'microvm', memory: 600 },
+];
+
+// The default options as they were hashed before compute joined them.
+const UNHASHED =
+  '{"image":"scaffoldly/sandbox","timeout":900000,"memory":512,"env":[["HOME","/tmp"],["XDG_CACHE_HOME","/tmp/.cache"],["XDG_CONFIG_HOME","/tmp/.config"],["XDG_DATA_HOME","/tmp/.local/share"],["XDG_STATE_HOME","/tmp/.local/state"]]}';
 
 describe('sandbox', () => {
   const deployed = (): Observable<LambdaFunction> => of(LambdaFunction.prototype);
@@ -61,7 +76,7 @@ describe('sandbox', () => {
     it("adds rowdy's layer", async () => {
       const sandbox = await SandboxImpl.create();
 
-      expect(sandbox['lambda'].imageService['_layersFrom']).toEqual([ROWDY_LAYERS]);
+      expect(lambdaOf(sandbox).imageService['_layersFrom']).toEqual([ROWDY_LAYERS]);
     });
 
     it.each([
@@ -75,17 +90,32 @@ describe('sandbox', () => {
       expect(image).toHaveBeenCalledWith('scaffoldly/sandbox');
     });
 
+    it('refuses a microvm until it can build one', async () => {
+      await expect(SandboxImpl.create({ compute: 'microvm' })).rejects.toThrow('compute microvm is not implemented');
+      expect(observe).not.toHaveBeenCalled();
+    });
+
+    it('hashes the compute', async () => {
+      const name = jest.spyOn(LambdaFunction.prototype, 'withName');
+
+      await SandboxImpl.create();
+      await SandboxImpl.create({ compute: 'lambda' });
+
+      expect(name.mock.calls[0]).toEqual(name.mock.calls[1]);
+      expect(name.mock.calls[0]).not.toEqual([`sandbox-${computeHash(UNHASHED)}`]);
+    });
+
     it('deploys a sandbox, marked so it may exec', async () => {
       const sandbox = await SandboxImpl.create();
 
-      expect(sandbox['lambda'].isSandbox()).toBe(true);
-      expect(sandbox['lambda']['Environment'].value.ROWDY_SANDBOX).toBe('true');
+      expect(lambdaOf(sandbox).isSandbox()).toBe(true);
+      expect(lambdaOf(sandbox)['Environment'].value.ROWDY_SANDBOX).toBe('true');
     });
 
     it("drops the image's command", async () => {
       const sandbox = await SandboxImpl.create();
 
-      expect(sandbox['lambda']['Command'].value).toEqual([]);
+      expect(lambdaOf(sandbox)['Command'].value).toEqual([]);
     });
 
     it('applies its timeout in seconds', async () => {
@@ -136,7 +166,7 @@ describe('sandbox', () => {
       };
 
       it('hashes the resolved config as its pod template', async () => {
-        expect(await named()).toBe('sandbox-87bc69597');
+        expect(await named()).toBe('sandbox-559ddc7c4c');
       });
 
       it('is the same for the same options', async () => {
@@ -177,9 +207,9 @@ describe('sandbox', () => {
 
     it('keeps a sandbox off the function of an unnamed deploy', async () => {
       const sandbox = await SandboxImpl.create();
-      const { value } = sandbox['lambda']['Image'];
+      const { value } = lambdaOf(sandbox)['Image'];
 
-      expect(LambdaFunction.roleName(value.normalized, sandbox['lambda']['Name'].value)).not.toBe(
+      expect(LambdaFunction.roleName(value.normalized, lambdaOf(sandbox)['Name'].value)).not.toBe(
         LambdaFunction.roleName(value.normalized)
       );
     });
@@ -228,7 +258,7 @@ describe('sandbox', () => {
     it('keeps HOME and the XDG directories under /tmp, apart', async () => {
       const sandbox = await SandboxImpl.create();
 
-      expect(sandbox['lambda']['Environment'].value).toMatchObject({
+      expect(lambdaOf(sandbox)['Environment'].value).toMatchObject({
         HOME: '/tmp',
         XDG_CACHE_HOME: '/tmp/.cache',
         XDG_CONFIG_HOME: '/tmp/.config',
@@ -240,7 +270,7 @@ describe('sandbox', () => {
     it('lets env override the defaults', async () => {
       const sandbox = await SandboxImpl.create({ env: { HOME: '/mnt', FOO: 'bar' } });
 
-      expect(sandbox['lambda']['Environment'].value).toMatchObject({
+      expect(lambdaOf(sandbox)['Environment'].value).toMatchObject({
         HOME: '/mnt',
         FOO: 'bar',
         XDG_DATA_HOME: '/tmp/.local/share',
@@ -379,7 +409,7 @@ describe('sandbox', () => {
   describe('sandboxId', () => {
     it('is the function arn', async () => {
       const sandbox = await SandboxImpl.create();
-      sandbox['lambda'].State.FunctionArn = FUNCTION_ARN;
+      lambdaOf(sandbox).State.FunctionArn = FUNCTION_ARN;
 
       expect(sandbox.sandboxId).toBe(FUNCTION_ARN);
     });
@@ -398,7 +428,7 @@ describe('sandbox', () => {
         Promise.resolve({ $metadata: { requestId: 'req' }, EventStream: stream(...events) })
       );
       const sandbox = await SandboxImpl.create();
-      sandbox['lambda'].State.FunctionArn = FUNCTION_ARN;
+      lambdaOf(sandbox).State.FunctionArn = FUNCTION_ARN;
       return { sandbox, send };
     };
 
@@ -433,7 +463,7 @@ describe('sandbox', () => {
     it('does not retry a command', async () => {
       const sandbox = await SandboxImpl.create();
 
-      await expect(sandbox['lambda']['invoker'].config.maxAttempts()).resolves.toBe(1);
+      await expect(lambdaOf(sandbox)['invoker'].config.maxAttempts()).resolves.toBe(1);
     });
 
     it('collects stdout, stderr and the exit code', async () => {
@@ -521,7 +551,7 @@ describe('sandbox', () => {
         );
 
         const handles: Exec[] = [];
-        const subscription = run(sandbox['lambda']).subscribe((handle) => handles.push(handle));
+        const subscription = run(lambdaOf(sandbox)).subscribe((handle) => handles.push(handle));
         await new Promise((resolve) => setTimeout(resolve, 10));
 
         expect(handles).toHaveLength(1);
@@ -540,7 +570,7 @@ describe('sandbox', () => {
       it('replays frames to a late subscriber', async () => {
         const { sandbox } = await start(payload(execFrame(EXEC_STREAM.STDOUT, Buffer.from('out'))), exited);
 
-        const exec = await lastValueFrom(run(sandbox['lambda']));
+        const exec = await lastValueFrom(run(lambdaOf(sandbox)));
         const frames = await lastValueFrom(exec.frames.pipe(toArray()));
 
         expect(frames.map(({ stream }) => stream)).toEqual([EXEC_STREAM.STDOUT, EXEC_STREAM.EXIT]);
@@ -558,7 +588,7 @@ describe('sandbox', () => {
         );
         const handles: Exec[] = [];
 
-        const subscription = run(sandbox['lambda']).subscribe((handle) => handles.push(handle));
+        const subscription = run(lambdaOf(sandbox)).subscribe((handle) => handles.push(handle));
         await new Promise((resolve) => setTimeout(resolve, 10));
         const waiting = handles[0]!.wait();
         subscription.unsubscribe();

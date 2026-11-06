@@ -1,13 +1,23 @@
 import type { Writable } from 'stream';
 import type { Exec, ExecFinished } from '../api/types';
 import type { Level } from '../log';
+import type { MICROVM_MEMORY } from './internal/compute';
 import { SandboxImpl } from './internal/sandbox';
 
-export interface SandboxOptions {
+interface BaseSandboxOptions {
   /** The container image to run. Defaults to `scaffoldly/sandbox`. */
   image?: string;
   /** The prefix of a generated name, `{name}-{suffix}`. Defaults to `sandbox`. */
   name?: string;
+  /** Applies to the whole process. Defaults to ROWDY_LOG_LEVEL, ROWDY_DEBUG or ROWDY_TRACE, then `warn`. */
+  logLevel?: Level;
+  /** Aborts the sandbox's work in progress, including its creation. */
+  signal?: AbortSignal;
+}
+
+export interface LambdaSandboxOptions extends BaseSandboxOptions {
+  /** Where the sandbox runs. Defaults to `lambda`. */
+  compute?: 'lambda';
   /** Milliseconds until the sandbox stops: whole seconds, 1000 to 900000. */
   timeout?: number;
   /** Memory in megabytes: a whole number, 128 to 10240. */
@@ -17,11 +27,20 @@ export interface SandboxOptions {
    * only writable path, and the `XDG_*` base directories to their usual places under it.
    */
   env?: Record<string, string>;
-  /** Applies to the whole process. Defaults to ROWDY_LOG_LEVEL, ROWDY_DEBUG or ROWDY_TRACE, then `warn`. */
-  logLevel?: Level;
-  /** Aborts the sandbox's work in progress, including its creation. */
-  signal?: AbortSignal;
 }
+
+export interface MicrovmSandboxOptions extends BaseSandboxOptions {
+  /** Where the sandbox runs. */
+  compute: 'microvm';
+  /** Milliseconds until the sandbox stops: whole seconds, 1000 to 28800000. */
+  timeout?: number;
+  /** Baseline memory in megabytes. */
+  memory?: (typeof MICROVM_MEMORY)[number];
+  /** Environment variables for every command, at most 50; a command's own `env` overrides them. */
+  env?: Record<string, string>;
+}
+
+export type SandboxOptions = LambdaSandboxOptions | MicrovmSandboxOptions;
 
 export interface SandboxLookup {
   sandboxId: string;
