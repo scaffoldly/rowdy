@@ -159,6 +159,9 @@ export const isPropagating = (error: unknown): boolean => {
 // DEVNOTE: Bounds retries of propagating errors: about a minute, then the error fails the deploy.
 export const PROPAGATION = { retries: 8, minTimeout: 1_000, maxTimeout: 10_000 };
 
+// DEVNOTE: Bounds retries of a function busy with another change. A new image stays Pending for minutes.
+export const CONFLICT = { ...PROPAGATION, retries: 30 };
+
 const backoff = (attempt: number): number =>
   Math.min(PROPAGATION.minTimeout * 2 ** (attempt - 1), PROPAGATION.maxTimeout);
 
@@ -794,6 +797,20 @@ export class LambdaFunction implements Logger {
     );
   }
 
+  // Lambda refuses a change while the function is Pending or another change is in progress.
+  private update(
+    command: UpdateFunctionConfigurationCommand | UpdateFunctionCodeCommand
+  ): Promise<FunctionConfiguration & MetadataBearer> {
+    return promiseRetry(
+      (retry) =>
+        this.lambda.send(command).catch((error) => {
+          if (error?.name === 'ResourceConflictException') return retry(error);
+          throw error;
+        }),
+      CONFLICT
+    );
+  }
+
   private withRoleStatement(statement: Statement): this {
     const statements = this.RoleStatements.getValue();
     statements.push(statement);
@@ -1402,27 +1419,25 @@ export class LambdaFunction implements Logger {
             };
 
             deploy = deploy.then(() =>
-              this.lambda
-                .send(
-                  new UpdateFunctionConfigurationCommand({
-                    ...Configuration,
-                    FunctionName,
-                    ImageConfig: {
-                      EntryPoint,
-                      Command,
-                      WorkingDirectory,
-                    },
-                    Layers: [],
-                  })
-                )
-                .then(waitForSuccess(this.lambda))
+              this.update(
+                new UpdateFunctionConfigurationCommand({
+                  ...Configuration,
+                  FunctionName,
+                  ImageConfig: {
+                    EntryPoint,
+                    Command,
+                    WorkingDirectory,
+                  },
+                  Layers: [],
+                })
+              ).then(waitForSuccess(this.lambda))
             );
           }
 
           if (update.code) {
             deploy = deploy
               .then(() =>
-                this.lambda.send(
+                this.update(
                   new UpdateFunctionCodeCommand({
                     FunctionName,
                     ImageUri,
