@@ -6,7 +6,7 @@ import { CRI } from '@scaffoldly/rowdy-grpc';
 import { Environment } from '../environment';
 import { log as root, Trace } from '../log';
 import { Pipeline, Proxy, Request, Response, Result } from '../pipeline';
-import { EXEC_STREAM, execFrame, ShellProxy, ShellRequest, ShellResponse } from '../proxy/shell';
+import { EXEC_CONTENT_TYPE, EXEC_STREAM, execFrame, ShellProxy, ShellRequest, ShellResponse } from '../proxy/shell';
 import { isExecEvent } from './lambda';
 
 const log = root.child('microvm');
@@ -20,11 +20,8 @@ const HOOKS: ReadonlySet<string> = new Set(['ready', 'validate', 'run']);
 /** Takes an Exec event. Apart from the hooks, which a holder of a VM's auth token can also reach. */
 export const EXEC_PATH = '/rowdy/exec';
 
-/** Starts a line of command output, which a reader of the VM's log stream tells from rowdy's own lines by this. */
-export const EXEC_MARKER = 'rowdy:exec';
-
-// The bytes of output per line, well under what a log pipeline will carry without splitting it.
-const EXEC_FRAME_BYTES = 8192;
+/** Carries a command's id on the response whose body is its frames. */
+export const EXEC_ID_HEADER = 'x-rowdy-cmd-id';
 
 export class MicrovmPipeline extends Pipeline {
   public readonly imageArn: string | undefined = process.env.AWS_LAMBDA_MICROVM_IMAGE_ARN;
@@ -141,7 +138,13 @@ export class MicrovmHookProxy extends Proxy<MicrovmPipeline, number> {
 
   @Trace(log)
   override into(): Observable<Response<MicrovmPipeline>> {
-    return this.invoke().pipe(map((status) => new MicrovmResponse(this.pipeline, this.hook).withStatus(status)));
+    return this.invoke().pipe(
+      map((status) => {
+        const response = new MicrovmResponse(this.pipeline, this.hook).withStatus(status);
+        response.complete();
+        return response;
+      })
+    );
   }
 
   override repr(): string {
@@ -150,9 +153,6 @@ export class MicrovmHookProxy extends Proxy<MicrovmPipeline, number> {
 }
 
 export class MicrovmShellProxy extends ShellProxy<MicrovmPipeline> {
-  private readonly cmdId = randomUUID();
-  private seq = 0;
-
   constructor(
     pipeline: MicrovmPipeline,
     request: ShellRequest<MicrovmPipeline>,
@@ -161,28 +161,15 @@ export class MicrovmShellProxy extends ShellProxy<MicrovmPipeline> {
     super(pipeline, request);
   }
 
-  // Not through the logger: its level must not drop a command's output.
-  private write(stream: number, payload: Buffer): void {
-    for (let at = 0; at === 0 || at < payload.length; at += EXEC_FRAME_BYTES) {
-      const frame = execFrame(stream, payload.subarray(at, at + EXEC_FRAME_BYTES)).toString('base64');
-      process.stdout.write(`${EXEC_MARKER} ${this.cmdId} ${this.seq++} ${frame}\n`);
-    }
-  }
-
   @Trace(log)
   override into(): Observable<Response<MicrovmPipeline>> {
     return this.invoke().pipe(
       map((shell) => {
-        shell.fds.stdout.on('data', (chunk: Buffer) => this.write(EXEC_STREAM.STDOUT, chunk));
-        shell.fds.stderr.on('data', (chunk: Buffer) => this.write(EXEC_STREAM.STDERR, chunk));
-        shell.subscribe({
-          next: (exit) => this.write(EXEC_STREAM.EXIT, Buffer.from(JSON.stringify(exit))),
-          error: (error: Error) =>
-            this.write(EXEC_STREAM.EXIT, Buffer.from(JSON.stringify({ code: 1, message: error.message }))),
-        });
-        return new MicrovmResponse(this.pipeline, this.hook)
-          .withStatus(202)
-          .withBody(JSON.stringify({ cmdId: this.cmdId }));
+        const response = new MicrovmResponse(this.pipeline, this.hook)
+          .withHeader('content-type', EXEC_CONTENT_TYPE)
+          .withHeader(EXEC_ID_HEADER, randomUUID());
+        this.multiplex(shell, response);
+        return response;
       })
     );
   }
@@ -190,7 +177,7 @@ export class MicrovmShellProxy extends ShellProxy<MicrovmPipeline> {
 
 export class MicrovmResponse extends Response<MicrovmPipeline> {
   private status = 200;
-  private body = '';
+  private headers: Record<string, string> = {};
 
   constructor(
     pipeline: MicrovmPipeline,
@@ -204,18 +191,35 @@ export class MicrovmResponse extends Response<MicrovmPipeline> {
     return this;
   }
 
-  withBody(body: string): this {
-    this.body = body;
+  withHeader(name: string, value: string): this {
+    this.headers[name] = value;
     return this;
   }
 
-  // A hook must answer at once: AWS ends the build if its timeout passes during an open request.
+  // Emits before the body is done: a pipeline stage held for a command's whole run would queue every other request
+  // behind it on a one-CPU VM. A hook must also answer at once: AWS ends the build if its timeout passes during an
+  // open request.
   @Trace(log)
   override into(): Observable<Result<MicrovmPipeline>> {
     return defer(() => {
-      const { status, body } = this;
-      this.hook.res.writeHead(status).end(body);
-      return of(new Result(this.pipeline, this.request, status < 400, body.length, status));
+      const { status, headers } = this;
+      const { res } = this.hook;
+
+      // A caller that hangs up leaves the command running, with nowhere for its frames to go.
+      res.on('error', () => {});
+      res.writeHead(status, headers);
+      res.flushHeaders();
+
+      this.subscribe({
+        next: ({ data }) => res.write(data),
+        error: (error: Error) => {
+          res.write(execFrame(EXEC_STREAM.EXIT, Buffer.from(JSON.stringify({ code: 1, message: error.message }))));
+          res.end();
+        },
+        complete: () => res.end(),
+      });
+
+      return of(new Result(this.pipeline, this.request, status < 400, 0, status));
     });
   }
 

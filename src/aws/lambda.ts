@@ -5,7 +5,7 @@ import axios from 'axios';
 import { log as root, Logger, maskHeaders, maskQuery, maskUrl, Trace } from '../log';
 import { APIGatewayProxyEventV2 } from 'aws-lambda';
 import { HttpProxy, HttpHeaders, HttpResponse, Source } from '../proxy/http';
-import { EXEC_CONTENT_TYPE, EXEC_STREAM, execFrame, ShellProxy, ShellRequest, ShellResponse } from '../proxy/shell';
+import { EXEC_CONTENT_TYPE, ShellProxy, ShellRequest, ShellResponse } from '../proxy/shell';
 import { Crontab, CronSchema, ExecSchema, URI } from '../routes';
 import { defaultPort, forwardedHeaders, reachedBy } from '../cdn';
 import { CRI, GrpcRouter, RuntimeService } from '@scaffoldly/rowdy-grpc';
@@ -487,20 +487,12 @@ export class LambdaShellProxy extends ShellProxy<LambdaPipeline> {
     return this.invoke().pipe(
       map((shell) => {
         const response = new LambdaResponse(this.pipeline, this.request).withContentType(EXEC_CONTENT_TYPE);
-        const send = (stream: number, payload: Buffer): void =>
-          response.next(new Chunk(execFrame(stream, payload), payload.length));
         const { cancel: cancelDeadline } = this.request.onDeadline(() => {
           log.warn('Request Deadline Reached');
           response.error(new Error('Request deadline reached'));
         });
 
-        shell.fds.stdout.on('data', (chunk: Buffer) => send(EXEC_STREAM.STDOUT, chunk));
-        shell.fds.stderr.on('data', (chunk: Buffer) => send(EXEC_STREAM.STDERR, chunk));
-        shell.subscribe({
-          next: (exit) => send(EXEC_STREAM.EXIT, Buffer.from(JSON.stringify(exit))),
-          error: (error: Error) => cancelDeadline(() => response.error(error)),
-          complete: () => cancelDeadline(() => response.complete()),
-        });
+        this.multiplex(shell, response, cancelDeadline);
 
         return response;
       })

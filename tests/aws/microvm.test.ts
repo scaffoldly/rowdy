@@ -4,8 +4,8 @@ import { createServer } from 'http';
 import { AddressInfo } from 'net';
 import { mergeMap, Observable, Subscription } from 'rxjs';
 import { Environment, Logger } from '../../src';
-import { EXEC_MARKER, EXEC_PATH, HOOKS_PORT, MicrovmPipeline, MicrovmRequest } from '../../src/aws/microvm';
-import { EXEC_STREAM } from '../../src/proxy/shell';
+import { EXEC_ID_HEADER, EXEC_PATH, HOOKS_PORT, MicrovmPipeline, MicrovmRequest } from '../../src/aws/microvm';
+import { EXEC_CONTENT_TYPE, EXEC_STREAM } from '../../src/proxy/shell';
 import { Pipeline, Result } from '../../src/pipeline';
 
 // execa is ESM-only, so stand in a spawn that settles the way execa does: it resolves on exit code 0
@@ -173,34 +173,9 @@ describe('aws microvm pipeline', () => {
   });
 
   describe('exec', () => {
-    type Line = { cmdId: string; seq: number; stream: number; payload: Buffer };
+    type Frame = { stream: number; payload: Buffer };
 
-    let written: string[];
-
-    beforeEach(() => {
-      environment['_envVars'].complete();
-      written = [];
-      const write = process.stdout.write.bind(process.stdout);
-      jest.spyOn(process.stdout, 'write').mockImplementation(((chunk: string, ...rest: never[]) => {
-        if (`${chunk}`.startsWith(EXEC_MARKER)) {
-          written.push(`${chunk}`);
-          return true;
-        }
-        return write(chunk, ...rest);
-      }) as never);
-    });
-
-    afterEach(() => jest.restoreAllMocks());
-
-    const lines = (): Line[] =>
-      written.map((line) => {
-        const [marker, cmdId = '', seq = '', frame = ''] = line.trimEnd().split(' ');
-        expect(marker).toBe(EXEC_MARKER);
-        const bytes = Buffer.from(frame, 'base64');
-        const payload = bytes.subarray(8);
-        expect(bytes.readUInt32BE(4)).toBe(payload.length);
-        return { cmdId, seq: Number(seq), stream: bytes.readUInt8(0), payload };
-      });
+    beforeEach(() => environment['_envVars'].complete());
 
     const exec = (url: string, cmd: string, args: string[], spec = {}): Promise<Response> =>
       fetch(`${url}${EXEC_PATH}`, {
@@ -208,100 +183,146 @@ describe('aws microvm pipeline', () => {
         body: JSON.stringify({ apiVersion: 'rowdy.run/v1alpha1', kind: 'Exec', spec: { cmd, args, ...spec } }),
       });
 
-    const exited = async (cmdId?: string): Promise<Line[]> => {
-      for (let attempt = 0; attempt < 500; attempt++) {
-        const mine = lines().filter((line) => !cmdId || line.cmdId === cmdId);
-        if (mine.some(({ stream }) => stream === EXEC_STREAM.EXIT)) return mine;
-        await new Promise((resolve) => setTimeout(resolve, 10));
+    const frames = async (response: Response): Promise<Frame[]> => {
+      let buffer = Buffer.from(await response.arrayBuffer());
+      const decoded: Frame[] = [];
+      while (buffer.length) {
+        const size = buffer.readUInt32BE(4);
+        decoded.push({ stream: buffer.readUInt8(0), payload: buffer.subarray(8, 8 + size) });
+        buffer = buffer.subarray(8 + size);
       }
-      throw new Error('command never exited');
+      return decoded;
     };
 
-    const text = (mine: Line[], stream: number): string =>
-      Buffer.concat(mine.filter((line) => line.stream === stream).map(({ payload }) => payload)).toString();
+    const text = (mine: Frame[], stream: number): string =>
+      Buffer.concat(mine.filter((frame) => frame.stream === stream).map(({ payload }) => payload)).toString();
 
-    it('answers at once with an id, and frames the output', async () => {
+    it('streams the frames of a command', async () => {
       const url = await serve();
 
       const response = await exec(url, 'sh', ['-c', 'echo out; echo err >&2']);
-      const { cmdId } = (await response.json()) as { cmdId: string };
 
-      expect(response.status).toBe(202);
-      const mine = await exited(cmdId);
+      expect(response.status).toBe(200);
+      expect(response.headers.get('content-type')).toBe(EXEC_CONTENT_TYPE);
+      expect(response.headers.get(EXEC_ID_HEADER)).toMatch(/^[0-9a-f-]{36}$/);
+      const mine = await frames(response);
       expect(text(mine, EXEC_STREAM.STDOUT)).toBe('out\n');
       expect(text(mine, EXEC_STREAM.STDERR)).toBe('err\n');
       expect(JSON.parse(text(mine, EXEC_STREAM.EXIT))).toMatchObject({ code: 0 });
     });
 
-    it('numbers every line of a command in order, across its streams', async () => {
+    it('sends output as it happens', async () => {
       const url = await serve();
 
-      await exec(url, 'sh', ['-c', 'echo a; echo b >&2; echo c']);
+      const response = await exec(url, 'sh', ['-c', 'echo one; sleep 1; echo two']);
+      const reader = response.body!.getReader();
+      const started = Date.now();
+      const { value } = await reader.read();
 
-      const mine = await exited();
-      expect(mine.map(({ seq }) => seq)).toEqual(mine.map((_, i) => i));
+      expect(Buffer.from(value!).toString()).toContain('one');
+      expect(Date.now() - started).toBeLessThan(800);
+      await reader.cancel();
+    });
+
+    it('answers before a slow command prints anything', async () => {
+      const url = await serve();
+      const started = Date.now();
+
+      const response = await exec(url, 'sh', ['-c', 'sleep 1']);
+
+      expect(Date.now() - started).toBeLessThan(800);
+      await response.arrayBuffer();
+    });
+
+    it('finishes as soon as the command does', async () => {
+      const url = await serve();
+      const started = Date.now();
+
+      await (await exec(url, 'sh', ['-c', 'echo hi'])).arrayBuffer();
+
+      expect(Date.now() - started).toBeLessThan(800);
+    });
+
+    it('ends with the exit', async () => {
+      const url = await serve();
+
+      const mine = await frames(await exec(url, 'sh', ['-c', 'echo a; echo b >&2; echo c']));
+
       expect(mine[mine.length - 1]?.stream).toBe(EXEC_STREAM.EXIT);
     });
 
     it('reports a failing command', async () => {
       const url = await serve();
 
-      await exec(url, 'sh', ['-c', 'exit 3']);
+      const mine = await frames(await exec(url, 'sh', ['-c', 'exit 3']));
 
-      expect(JSON.parse(text(await exited(), EXEC_STREAM.EXIT))).toMatchObject({ code: 3 });
+      expect(JSON.parse(text(mine, EXEC_STREAM.EXIT))).toMatchObject({ code: 3 });
     });
 
     it('reports a command that cannot start', async () => {
       const url = await serve();
 
-      await exec(url, '/no/such/binary', []);
+      const mine = await frames(await exec(url, '/no/such/binary', []));
 
-      expect(JSON.parse(text(await exited(), EXEC_STREAM.EXIT)).code).toBe(127);
+      expect(JSON.parse(text(mine, EXEC_STREAM.EXIT)).code).toBe(127);
     });
 
     it('keeps binary output exact', async () => {
       const url = await serve();
 
-      await exec(url, 'sh', ['-c', "printf '\\000\\377\\n\\001'"]);
+      const mine = await frames(await exec(url, 'sh', ['-c', "printf '\\000\\377\\n\\001'"]));
 
-      const out = (await exited()).filter(({ stream }) => stream === EXEC_STREAM.STDOUT);
+      const out = mine.filter(({ stream }) => stream === EXEC_STREAM.STDOUT);
       expect(Buffer.concat(out.map(({ payload }) => payload))).toEqual(Buffer.from([0, 255, 10, 1]));
     });
 
-    it('splits large output across lines', async () => {
+    it('carries large output', async () => {
       const url = await serve();
 
-      await exec(url, 'sh', ['-c', 'head -c 100000 /dev/zero']);
+      const mine = await frames(await exec(url, 'sh', ['-c', 'head -c 1000000 /dev/zero']));
 
-      const out = (await exited()).filter(({ stream }) => stream === EXEC_STREAM.STDOUT);
-      expect(Buffer.concat(out.map(({ payload }) => payload))).toHaveLength(100000);
-      expect(Math.max(...out.map(({ payload }) => payload.length))).toBeLessThanOrEqual(8192);
+      const out = mine.filter(({ stream }) => stream === EXEC_STREAM.STDOUT);
+      expect(Buffer.concat(out.map(({ payload }) => payload))).toHaveLength(1000000);
     });
 
-    it('keeps two commands apart', async () => {
+    it('runs two commands at once', async () => {
       const url = await serve();
+      const started = Date.now();
 
-      const [a, b] = await Promise.all([exec(url, 'sh', ['-c', 'echo a']), exec(url, 'sh', ['-c', 'echo b'])]);
-      const [first, second] = (await Promise.all([a.json(), b.json()])) as { cmdId: string }[];
+      const [a, b] = await Promise.all([
+        exec(url, 'sh', ['-c', 'sleep 1; echo a']).then(frames),
+        exec(url, 'sh', ['-c', 'sleep 1; echo b']).then(frames),
+      ]);
 
-      expect(text(await exited(first?.cmdId), EXEC_STREAM.STDOUT)).toBe('a\n');
-      expect(text(await exited(second?.cmdId), EXEC_STREAM.STDOUT)).toBe('b\n');
+      expect(text(a, EXEC_STREAM.STDOUT)).toBe('a\n');
+      expect(text(b, EXEC_STREAM.STDOUT)).toBe('b\n');
+      expect(Date.now() - started).toBeLessThan(1800);
+    });
+
+    it('still answers hooks during a command', async () => {
+      const url = await serve();
+      const running = exec(url, 'sh', ['-c', 'sleep 1']);
+
+      const hook = await fetch(`${url}${HOOKS}/ready`, { method: 'POST' });
+
+      expect(hook.status).toBe(200);
+      await (await running).arrayBuffer();
     });
 
     it('passes cwd and env', async () => {
       const url = await serve();
 
-      await exec(url, 'sh', ['-c', 'pwd; echo $WHO'], { cwd: '/', env: { WHO: 'me' } });
+      const mine = await frames(await exec(url, 'sh', ['-c', 'pwd; echo $WHO'], { cwd: '/', env: { WHO: 'me' } }));
 
-      expect(text(await exited(), EXEC_STREAM.STDOUT)).toBe('/\nme\n');
+      expect(text(mine, EXEC_STREAM.STDOUT)).toBe('/\nme\n');
     });
 
     it('gives a command no input', async () => {
       const url = await serve();
 
-      await exec(url, 'cat', []);
+      const mine = await frames(await exec(url, 'cat', []));
 
-      expect(JSON.parse(text(await exited(), EXEC_STREAM.EXIT))).toMatchObject({ code: 0 });
+      expect(JSON.parse(text(mine, EXEC_STREAM.EXIT))).toMatchObject({ code: 0 });
     });
 
     it.each([
@@ -313,7 +334,6 @@ describe('aws microvm pipeline', () => {
       const response = await fetch(`${url}${EXEC_PATH}`, { method: 'POST', body });
 
       expect(response.status).toBe(400);
-      expect(written).toEqual([]);
     });
 
     it('never logs a command or its arguments', async () => {
