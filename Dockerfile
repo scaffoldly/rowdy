@@ -16,8 +16,13 @@ WORKDIR /work
 COPY . .
 COPY --from=install /work/node_modules /work/node_modules
 RUN --mount=type=cache,id=pkg,target=/usr/local/share/.cache/pkg \
-    yarn build:exe --debug && \
-    /work/bin/rowdy --version
+    yarn build:exe --debug
+
+# DEVNOTE: A rowdy that never reached main() still exits 0, so these check what it printed. The second
+# proves a chunk loads from inside the binary, which --version doesn't touch.
+RUN test -n "$(/work/bin/rowdy --version)" && \
+    echo '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"smoke","version":"0"}}}' | \
+      /work/bin/rowdy mcp | grep -q serverInfo
 
 # DEVNOTE: The final stage is scratch because its layers are appended to every deployed image. The
 # binary must therefore be static: an interpreter would have to come from the user's image.
