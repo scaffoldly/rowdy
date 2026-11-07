@@ -2,6 +2,7 @@ import type { Observable } from 'rxjs';
 import type { Exec, ExecOutput, ExecOutputOptions } from '../../api/types';
 import type { Environment } from '../../environment';
 import type { Event } from '../../events';
+import type { SandboxSummary } from '..';
 import type { ExecSchema } from '../../routes';
 
 /** A sandbox can't do this, and trying again won't change that. */
@@ -48,4 +49,6 @@ export interface SandboxComputeClass {
   readonly env: Record<string, string>;
   /** Throws for a spec this compute can't run, before anything reaches AWS. */
   assert(spec: Pick<ComputeSpec, 'timeout' | 'memory' | 'env'>): void;
+  /** Each sandbox on this compute, once. */
+  list(): Observable<SandboxSummary>;
 }

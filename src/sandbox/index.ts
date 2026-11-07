@@ -70,6 +70,27 @@ export interface SandboxToolsOptions extends Pick<SandboxOptions, 'logLevel' | '
 
 export type { Tool };
 
+/** A sandbox as `Sandbox.list` finds it. */
+export interface SandboxSummary {
+  sandboxId: string;
+  name: string;
+  runtime: NonNullable<SandboxOptions['runtime']>;
+  /** Whether a microVM is up, and billed. Undefined on `aws.lambda`, which is billed only while a command runs. */
+  running?: boolean;
+  /** When the running microVM started. */
+  startedAt?: Date;
+  /** When the running microVM's `timeout` ends it. */
+  stopsAt?: Date;
+}
+
+export interface SandboxListOptions {
+  /** Only sandboxes on this runtime. Defaults to every runtime. */
+  runtime?: NonNullable<SandboxOptions['runtime']>;
+  /** Only sandboxes whose name starts with `{name}-`. */
+  name?: string;
+  signal?: AbortSignal;
+}
+
 export interface SandboxLookup {
   sandboxId: string;
   /** Aborts the sandbox's work in progress, and stops it if it can `stop`. */
@@ -171,6 +192,8 @@ export interface SandboxFactory {
   create(options?: SandboxOptions): SandboxPromise;
   /** Connects to a sandbox that is already running. */
   get(lookup: SandboxLookup): SandboxPromise;
+  /** The sandboxes in this account and region. */
+  list(options?: SandboxListOptions): Promise<SandboxSummary[]>;
   /** The MCP tools for sandboxes, for a host to add to its own server. */
   tools(options?: SandboxToolsOptions): Tool[];
 }
@@ -178,5 +201,6 @@ export interface SandboxFactory {
 export const Sandbox: SandboxFactory = {
   create: (options) => SandboxImpl.create(options),
   get: (lookup) => SandboxImpl.get(lookup),
+  list: (options) => SandboxImpl.list(options),
   tools: (options) => SandboxImpl.tools(options),
 };

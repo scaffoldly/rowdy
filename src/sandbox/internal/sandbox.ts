@@ -7,8 +7,10 @@ import type {
   RunCommandOptions,
   RunCommandParams,
   Sandbox,
+  SandboxListOptions,
   SandboxLookup,
   SandboxOptions,
+  SandboxSummary,
   SandboxToolsOptions,
   Tool,
   Event,
@@ -20,6 +22,7 @@ import {
   concatWith,
   connectable,
   EMPTY,
+  filter,
   finalize,
   defer,
   firstValueFrom,
@@ -42,6 +45,7 @@ import {
   takeUntil,
   tap,
   throwError,
+  toArray,
 } from 'rxjs';
 import type { Exec, ExecFrame } from '../../api/types';
 import { Environment } from '../../environment';
@@ -53,6 +57,7 @@ import { safeTool } from '../../mcp/tool';
 import { EXEC_STREAM } from '../../proxy/shell';
 import { createSandbox } from '../mcp/create-sandbox';
 import { runCommand } from '../mcp/run-command';
+import { listSandboxes } from '../mcp/list-sandboxes';
 import { readOutput } from '../mcp/read-output';
 import { stopSandbox } from '../mcp/stop-sandbox';
 import { DEFAULTS, SandboxCompute, SandboxComputeClass } from './compute';
@@ -182,6 +187,26 @@ export class SandboxImpl implements Sandbox {
     return new SandboxPromiseImpl(attached, sandbox);
   }
 
+  static list({ runtime, name, signal }: SandboxListOptions = {}): Promise<SandboxSummary[]> {
+    // A host's stdout is its own.
+    new Logger('sandbox').withSink('stderr');
+    const runtimes = runtime ? [runtime] : (Object.keys(RUNTIMES) as (keyof typeof RUNTIMES)[]);
+
+    return lastValueFrom(
+      race(
+        signal
+          ? iif(() => signal.aborted, of(signal), fromEvent(signal, 'abort')).pipe(
+              switchMap(() => throwError(() => signal.reason))
+            )
+          : NEVER,
+        merge(...runtimes.map((each) => RUNTIMES[each].list())).pipe(
+          filter((found) => !name || found.name.startsWith(`${name}-`)),
+          toArray()
+        )
+      )
+    );
+  }
+
   static tools(options?: SandboxToolsOptions): Tool[] {
     // A host's stdout is its own, even for a tool that fails before it reaches a sandbox.
     new Logger('sandbox').withSink('stderr');
@@ -189,6 +214,7 @@ export class SandboxImpl implements Sandbox {
       createSandbox(SandboxImpl, options),
       runCommand(SandboxImpl, options),
       readOutput(SandboxImpl, options),
+      listSandboxes(SandboxImpl, options),
       stopSandbox(SandboxImpl, options),
     ];
     return tools.map((tool) => safeTool(tool, describeError));
