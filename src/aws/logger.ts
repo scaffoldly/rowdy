@@ -2,6 +2,11 @@ import { Logger as ClientLogger } from '@smithy/types';
 import { inspect } from 'util';
 import { Logger, maskJson } from '../log';
 
+const CHANGES = /^(Create|Update|Delete|Put|Publish|Add|Remove|Run|Terminate)/;
+
+// The fields that name what a command changes, most specific first, in lower case: AWS's APIs differ in theirs.
+const NAMES = ['functionname', 'rolename', 'name', 'microvmidentifier', 'imageidentifier', 'key', 'bucket'];
+
 /** Logs what an AWS SDK client does: a change at info, by name only, and everything at debug. */
 export abstract class AwsClientLogger implements ClientLogger {
   abstract get log(): Logger;
@@ -20,10 +25,10 @@ export abstract class AwsClientLogger implements ClientLogger {
         input: maskJson(input),
         output: maskJson(output),
       });
-      if (/^(Create|Update|Delete|Put|Publish|Add|Remove)/.test(`${commandName}`)) {
+      if (CHANGES.test(`${commandName}`) && !`${commandName}`.includes('AuthToken')) {
         // Names only: an input can carry the function's environment.
-        const { FunctionName, RoleName, Name, Key, Bucket } = (input ?? {}) as Record<string, unknown>;
-        const name = FunctionName ?? RoleName ?? Name ?? Key ?? Bucket;
+        const fields = new Map(Object.entries(input ?? {}).map(([field, value]) => [field.toLowerCase(), value]));
+        const name = NAMES.map((field) => fields.get(field)).find(Boolean);
         this.log.info(`${commandName?.replace(/Command$/, '')}${name ? `: ${name}` : ''}`);
       }
     }
