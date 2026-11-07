@@ -193,8 +193,9 @@ export class ShellProxy<P extends Pipeline> extends Proxy<P, ShellResponse> {
 }
 
 // Docker's exec multiplexing: an 8-byte header of stream type, 3 zero bytes and big-endian payload size. Docker
-// reports an exit out of band, so EXIT is rowdy's own type, past Docker's stdin 0, stdout 1, stderr 2, systemerr 3.
-export const EXEC_STREAM = { STDOUT: 1, STDERR: 2, EXIT: 4 } as const;
+// reports an exit out of band, so EXIT is rowdy's own type, past Docker's stdin 0, stdout 1, stderr 2, systemerr 3, and
+// so is LOG, where the command's lines land, for a host that can't work that out.
+export const EXEC_STREAM = { STDOUT: 1, STDERR: 2, EXIT: 4, LOG: 5 } as const;
 export const EXEC_CONTENT_TYPE = 'application/vnd.rowdy.multiplexed-stream';
 
 /**
