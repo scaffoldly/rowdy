@@ -51,7 +51,7 @@ import {
 import type { Exec, ExecFrame } from '../../api/types';
 import { Environment } from '../../environment';
 import { Logger, maskUrl } from '../../log';
-import { describeError, forPeople } from '../../aws/errors';
+import { describeError, humanize } from '../../aws/errors';
 import { LambdaCompute } from '../../aws/lambda/compute';
 import { MicrovmCompute } from '../../aws/microvm/compute';
 import { safeTool } from '../../mcp/tool';
@@ -168,7 +168,7 @@ export class SandboxImpl implements Sandbox {
     // What a person reads says what to do next. Tools tell a model their own way.
     return new SandboxPromiseImpl(
       created.catch((error) => {
-        throw forPeople(error);
+        throw humanize(error);
       }),
       sandbox
     );
@@ -193,7 +193,7 @@ export class SandboxImpl implements Sandbox {
 
     return new SandboxPromiseImpl(
       attached.catch((error) => {
-        throw forPeople(error);
+        throw humanize(error);
       }),
       sandbox
     );
@@ -217,7 +217,7 @@ export class SandboxImpl implements Sandbox {
         )
       )
     ).catch((error) => {
-      throw forPeople(error);
+      throw humanize(error);
     });
   }
 
@@ -368,7 +368,7 @@ export class SandboxImpl implements Sandbox {
       );
       following$.connect();
       return firstValueFrom(race(aborted$, following$)).catch((error) => {
-        throw forPeople(error);
+        throw humanize(error);
       });
     }
 
@@ -389,7 +389,7 @@ export class SandboxImpl implements Sandbox {
         exec$.pipe(switchMap((exec) => merge(exec.frames.pipe(written, ignoreElements()), from(exec.wait()))))
       ).pipe(finalize(() => subscription?.unsubscribe()))
     ).catch((error) => {
-      throw forPeople(error);
+      throw humanize(error);
     });
   }
 
@@ -413,13 +413,13 @@ export class SandboxImpl implements Sandbox {
       ? AbortSignal.any([options.signal, this.environment.signal])
       : this.environment.signal;
     return lastValueFrom(this.compute.output(cmdId, { ...options, signal })).catch((error) => {
-      throw forPeople(error);
+      throw humanize(error);
     });
   }
 
   async stop(): Promise<void> {
     await lastValueFrom(this.compute.stop()).catch((error) => {
-      throw forPeople(error);
+      throw humanize(error);
     });
   }
 

@@ -3,7 +3,7 @@
 import { firstValueFrom, fromEvent, merge, take, takeUntil, tap } from 'rxjs';
 import { Environment } from './environment';
 import { log } from './log';
-import { forPeople } from './aws/errors';
+import { humanize } from './aws/errors';
 import { ABORT } from './abort';
 
 export { ABORT };
@@ -29,7 +29,7 @@ async function main(): Promise<void> {
 }
 
 const error = (error: Error): void => {
-  log.error('Fatal Error', { error: forPeople(error).message, stack: error.stack ?? '' });
+  log.error('Fatal Error', { error: humanize(error).message, stack: error.stack ?? '' });
   process.exit(1);
 };
 

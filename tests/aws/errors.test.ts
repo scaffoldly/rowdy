@@ -7,7 +7,7 @@ import {
 } from '@aws-sdk/client-lambda-microvms';
 import { describe, expect, it } from '@jest/globals';
 import { Readable } from 'stream';
-import { describeError, forPeople } from '../../src/aws/errors';
+import { describeError, humanize } from '../../src/aws/errors';
 import { SandboxError } from '../../src/sandbox/internal/compute';
 
 /** The error a real client throws for a response, through its own deserializer. */
@@ -94,41 +94,41 @@ describe('describeError', () => {
   });
 });
 
-describe('forPeople', () => {
+describe('humanize', () => {
   it('says a throttled call may work again', async () => {
-    const error = forPeople((await responding(429, 'ThrottlingException', 'Rate exceeded')) as Error);
+    const error = humanize((await responding(429, 'ThrottlingException', 'Rate exceeded')) as Error);
 
     expect(error.message).toBe('Rate exceeded Retrying may help.');
     expect(error).toBeInstanceOf(ThrottlingException);
   });
 
   it('points at credentials for a denial', async () => {
-    const error = forPeople((await responding(403, 'AccessDeniedException', 'User is not authorized')) as Error);
+    const error = humanize((await responding(403, 'AccessDeniedException', 'User is not authorized')) as Error);
 
     expect(error.message).toBe('User is not authorized Check the AWS credentials and permissions this runs with.');
   });
 
   it("leaves a message alone when there's nothing to do", () => {
-    const error = forPeople(new RangeError('memory must be whole MB'));
+    const error = humanize(new RangeError('memory must be whole MB'));
 
     expect(error).toBeInstanceOf(RangeError);
     expect(error.message).toBe('memory must be whole MB');
-    expect(forPeople(new SandboxError('Not a sandbox: x')).message).toBe('Not a sandbox: x');
+    expect(humanize(new SandboxError('Not a sandbox: x')).message).toBe('Not a sandbox: x');
   });
 
   it('says it once, however often it passes through', async () => {
     const error = (await responding(429, 'ThrottlingException', 'Rate exceeded')) as Error;
 
-    expect(forPeople(forPeople(error)).message).toBe('Rate exceeded Retrying may help.');
+    expect(humanize(humanize(error)).message).toBe('Rate exceeded Retrying may help.');
   });
 
   it("keeps what a person was told out of a model's message", async () => {
-    const error = forPeople((await responding(429, 'ThrottlingException', 'Rate exceeded')) as Error);
+    const error = humanize((await responding(429, 'ThrottlingException', 'Rate exceeded')) as Error);
 
     expect(describeError(error)).toEqual({ message: 'Rate exceeded', remedy: 'retry' });
   });
 
   it('passes on something that is not an Error', () => {
-    expect(forPeople('stop')).toBe('stop');
+    expect(humanize('stop')).toBe('stop');
   });
 });

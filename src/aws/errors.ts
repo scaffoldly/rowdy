@@ -40,7 +40,7 @@ export const describeError = (error: unknown): ToolFailure => {
 };
 
 /** The same error, its message saying what a person can do next, if anything. Its class and cause are kept. */
-export const forPeople = <Failure>(error: Failure): Failure => {
+export const humanize = <Failure>(error: Failure): Failure => {
   const { remedy } = describeError(error);
   const next = remedy === 'retry' || remedy === 'ask' ? NEXT[remedy] : undefined;
   if (next && error instanceof Error && !error.message.endsWith(next)) {
