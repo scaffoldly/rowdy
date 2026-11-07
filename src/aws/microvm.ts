@@ -105,11 +105,11 @@ export class MicrovmRequest extends Request<MicrovmPipeline> {
           return new MicrovmHookProxy(this.pipeline, this, 400);
         }
 
-        const { cmd, args = [], cwd, env } = event.spec!;
+        const { cmd, args = [], cwd, env, detached } = event.spec!;
         const request = new ShellRequest(this.pipeline, [cmd, ...args], { cwd, env });
         // A command gets no input: a read would otherwise wait on stdin forever.
         request.fds.stdin.end();
-        return new MicrovmShellProxy(this.pipeline, request, this).background();
+        return new MicrovmShellProxy(this.pipeline, request, this, detached).background();
       })
     );
   }
@@ -156,7 +156,8 @@ export class MicrovmShellProxy extends ShellProxy<MicrovmPipeline> {
   constructor(
     pipeline: MicrovmPipeline,
     request: ShellRequest<MicrovmPipeline>,
-    private readonly hook: MicrovmRequest
+    private readonly hook: MicrovmRequest,
+    private readonly detached = false
   ) {
     super(pipeline, request);
   }
@@ -171,10 +172,13 @@ export class MicrovmShellProxy extends ShellProxy<MicrovmPipeline> {
           .withHeader(EXEC_ID_HEADER, cmdId);
         this.multiplex(cmdId, shell, response);
 
-        // A caller that hangs up is the only one who could read the command's output, and how a signal reaches it.
+        // A hang-up is how a signal reaches a command. A detached one runs on with its log, and stops buffering frames
+        // nobody will read.
         const { res } = this.hook;
         const hungUp = (): void => {
-          if (!res.writableFinished) shell.kill();
+          if (res.writableFinished) return;
+          if (this.detached) response.complete();
+          else shell.kill();
         };
         if (res.destroyed) hungUp();
         else res.once('close', hungUp);

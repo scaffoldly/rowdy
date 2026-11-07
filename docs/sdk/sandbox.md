@@ -127,6 +127,23 @@ if (finished.exitCode !== 0) {
 
 To keep all of a long output, pass `stdout` and `stderr` streams, which get everything.
 
+## Detached commands
+
+On `aws.microvm`, `detached: true` resolves once the command has started, and the command outlives this process.
+
+```ts
+const command = await sandbox.runCommand({
+  cmd: 'npm',
+  args: ['run', 'build'],
+  detached: true,
+  stdout: process.stdout,
+});
+
+const { exitCode } = await command.wait();
+```
+
+Output keeps reaching `stdout` and `stderr` until the command exits. Its `signal` stops following the command, without killing it: only `stop()` or the sandbox's `timeout` ends it. [`output`](#output) reads what it printed from anywhere. On `aws.lambda`, `detached` rejects.
+
 ## `output`
 
 Reads part of a command's output back from CloudWatch Logs by its `cmdId`, any time after it started. Use it for what `stdout()` cut, or from a different process with `Sandbox.get`.
@@ -305,7 +322,6 @@ The credentials you run with need to be able to create all of these. Nothing del
 ## Not there yet
 
 - `writeFiles`, `readFileToBuffer` and `mkDir`.
-- `detached` commands.
 - `stop()` on `aws.lambda`.
 - Starting two commands at once on an `aws.microvm` sandbox with no VM yet may start two VMs. Run the first
   command on its own.

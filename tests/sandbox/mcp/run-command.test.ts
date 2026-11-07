@@ -1,27 +1,46 @@
 import type { ServerContext } from '@modelcontextprotocol/server';
-import { describe, expect, it, jest } from '@jest/globals';
+import { afterEach, describe, expect, it, jest } from '@jest/globals';
 import type { RunCommandParams, Sandbox, SandboxFactory, SandboxToolsOptions } from '../../../src/sandbox';
-import { OUTPUT, runCommand } from '../../../src/sandbox/mcp/run-command';
+import { SandboxError } from '../../../src/sandbox/internal/compute';
+import { PROGRESS } from '../../../src/sandbox/mcp/create-sandbox';
+import { OUTPUT, runCommand, WAIT } from '../../../src/sandbox/mcp/run-command';
 
 const sandboxId = 'arn:aws:lambda:us-east-1:123456789012:microvm-image:tenant-builds-bcdf245678';
+const lambdaId = 'arn:aws:lambda:us-east-1:123456789012:function:tenant-bcdf245678';
 
 const setup = (
   options: SandboxToolsOptions = {},
-  output: { exitCode?: number; writes?: [stream: 'stdout' | 'stderr', text: string][] } = {}
+  output: { exitCode?: number; writes?: [stream: 'stdout' | 'stderr', text: string][]; running?: boolean } = {}
 ) => {
   const command = jest.fn(async (params: RunCommandParams) => {
     output.writes?.forEach(([stream, text]) => params[stream]?.write(Buffer.from(text)));
-    return { cmdId: 'cmd', exitCode: output.exitCode ?? 0 };
+    const exitCode = output.exitCode ?? 0;
+    return {
+      cmdId: 'cmd',
+      exitCode,
+      // As the SDK's: a handle no longer followed can't be waited on.
+      wait: () =>
+        output.running
+          ? new Promise((_, reject) =>
+              params.signal?.addEventListener('abort', () => reject(new Error('Exec abandoned')))
+            )
+          : Promise.resolve({ exitCode }),
+    };
   });
   const get = jest.fn(async (_lookup: unknown) => ({ runCommand: command }) as unknown as Sandbox);
   const tool = runCommand({ get: get as unknown as SandboxFactory['get'] }, options);
-  const { signal } = new AbortController();
-  const run = (input: Record<string, unknown> = {}) =>
+  const client = new AbortController();
+  const { signal } = client;
+  const notify = jest.fn(async (_notification: unknown) => {});
+  const run = (input: Record<string, unknown> = {}, progressToken?: string) =>
     tool.run(tool.inputSchema.parse({ sandbox_id: sandboxId, cmd: 'ls', ...input }), {
-      mcpReq: { signal },
+      mcpReq: { signal, notify, _meta: progressToken ? { progressToken } : undefined },
     } as unknown as ServerContext);
-  return { tool, run, get, command, signal };
+  return { tool, run, get, command, signal, client, notify };
 };
+
+const passed = (command: ReturnType<typeof setup>['command']) =>
+  command.mock.calls[0]![0] as RunCommandParams & { detached?: boolean };
 
 describe('run_command', () => {
   it('passes the command on', async () => {
@@ -35,7 +54,14 @@ describe('run_command', () => {
   it('answers with exit code and output, as text and structured content', async () => {
     const { run } = setup({}, { writes: [['stdout', 'out']] });
 
-    const structuredContent = { cmd_id: 'cmd', exit_code: 0, text: 'out', truncated: false, total_bytes: 3 };
+    const structuredContent = {
+      cmd_id: 'cmd',
+      exit_code: 0,
+      timed_out: false,
+      text: 'out',
+      truncated: false,
+      total_bytes: 3,
+    };
     expect(await run()).toEqual({
       content: [{ type: 'text', text: JSON.stringify(structuredContent) }],
       structuredContent,
@@ -94,10 +120,92 @@ describe('run_command', () => {
     const host = new AbortController();
     const { run, get, command, signal } = setup({ signal: host.signal });
 
-    await run();
+    await run({ sandbox_id: lambdaId });
 
-    expect(get).toHaveBeenCalledWith({ sandboxId, signal: host.signal });
-    expect(command.mock.calls[0]?.[0].signal).toBe(signal);
+    expect(get).toHaveBeenCalledWith({ sandboxId: lambdaId, signal: host.signal });
+    expect(passed(command).signal).toBe(signal);
+    expect(passed(command).detached).toBeUndefined();
+  });
+
+  describe('returning early', () => {
+    const { timeout } = WAIT;
+    const { delay } = PROGRESS;
+    afterEach(() => {
+      WAIT.timeout = timeout;
+      PROGRESS.delay = delay;
+    });
+
+    it('runs detached on a microVM, so letting go does not kill it', async () => {
+      const { run, command } = setup();
+
+      await run();
+
+      expect(passed(command).detached).toBe(true);
+    });
+
+    it('answers with the command still running after timeout_ms, and says how to follow it', async () => {
+      const { run } = setup({}, { running: true, writes: [['stdout', 'so far']] });
+
+      const { structuredContent, content } = await run({ timeout_ms: 20 });
+
+      expect(structuredContent).toMatchObject({ cmd_id: 'cmd', exit_code: null, timed_out: true, text: 'so far' });
+      expect(content[1]).toMatchObject({ type: 'text', text: expect.stringContaining('read_output') });
+    });
+
+    it('waits 30 seconds by default', async () => {
+      expect(WAIT.timeout).toBe(30_000);
+      WAIT.timeout = 20;
+      const { run } = setup({}, { running: true });
+
+      await expect(run()).resolves.toMatchObject({ structuredContent: { timed_out: true } });
+    });
+
+    it('stops following once it has answered', async () => {
+      const { run, command } = setup({}, { running: true });
+
+      await run({ timeout_ms: 20 });
+
+      expect(passed(command).signal?.aborted).toBe(true);
+    });
+
+    it("stops following on a client's cancel", async () => {
+      const { run, command, client } = setup({}, { running: true });
+
+      const ran = run({ timeout_ms: 5000 });
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      client.abort();
+
+      expect(passed(command).signal?.aborted).toBe(true);
+      await expect(ran).rejects.toThrow('Exec abandoned');
+    });
+
+    it('refuses timeout_ms on Lambda, before running anything', async () => {
+      const { run, command } = setup();
+
+      await expect(run({ sandbox_id: lambdaId, timeout_ms: 1000 })).rejects.toBeInstanceOf(SandboxError);
+      expect(command).not.toHaveBeenCalled();
+    });
+
+    it('sends progress while it waits', async () => {
+      PROGRESS.delay = 5;
+      const { run, notify } = setup({}, { running: true });
+
+      await run({ timeout_ms: 40 }, 'token');
+
+      expect(notify).toHaveBeenCalledWith({
+        method: 'notifications/progress',
+        params: { progressToken: 'token', progress: 1, message: 'Running the command' },
+      });
+    });
+
+    it('sends no progress to a client that did not ask', async () => {
+      PROGRESS.delay = 5;
+      const { run, notify } = setup({}, { running: true });
+
+      await run({ timeout_ms: 40 });
+
+      expect(notify).not.toHaveBeenCalled();
+    });
   });
 
   describe('output limit', () => {
@@ -187,7 +295,7 @@ describe('run_command', () => {
     it('allows a Lambda sandbox in the scope', async () => {
       const { run, get } = setup({ name: 'tenant' });
 
-      await run({ sandbox_id: 'arn:aws:lambda:us-east-1:123456789012:function:tenant-bcdf245678' });
+      await run({ sandbox_id: lambdaId });
 
       expect(get).toHaveBeenCalled();
     });
