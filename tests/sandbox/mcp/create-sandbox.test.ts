@@ -40,8 +40,8 @@ describe('create_sandbox', () => {
     const { run } = setup();
 
     expect(await run()).toEqual({
-      content: [{ type: 'text', text: JSON.stringify({ sandboxId }) }],
-      structuredContent: { sandboxId },
+      content: [{ type: 'text', text: JSON.stringify({ sandbox_id: sandboxId }) }],
+      structuredContent: { sandbox_id: sandboxId },
     });
   });
 
@@ -280,7 +280,7 @@ describe('create_sandbox', () => {
       const { run, notify } = setup({}, slow);
       notify.mockRejectedValue(new Error('closed'));
 
-      expect(await run({}, { progressToken: 'token' })).toMatchObject({ structuredContent: { sandboxId } });
+      expect(await run({}, { progressToken: 'token' })).toMatchObject({ structuredContent: { sandbox_id: sandboxId } });
     });
   });
 });

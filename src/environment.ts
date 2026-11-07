@@ -5,6 +5,7 @@ import {
   catchError,
   defer,
   EMPTY,
+  from,
   fromEvent,
   map,
   merge,
@@ -33,7 +34,8 @@ import { Pipeline, Result } from './pipeline';
 import { LambdaPipeline } from './aws/lambda';
 import { MicrovmPipeline } from './aws/microvm';
 import packageJson from '../package.json';
-import { ABORT, Rowdy } from '.';
+import { ABORT } from './abort';
+import { Rowdy } from './api';
 import { isatty } from 'tty';
 import { LambdaFunction } from './aws/lambda/index';
 import {
@@ -290,6 +292,25 @@ export class Environment implements ILoggable {
               .usage('$0 serve [options] -- <command> [args...]')
           ),
         handler: (argv: Partial<Args>) => this.setup(argv),
+      })
+      .command({
+        command: 'mcp',
+        describe: 'Start a stdio MCP server',
+        handler: () => {
+          // Stdout is the protocol.
+          this.log.withSink('stderr');
+          this._subscriptions.push(
+            from(import('./mcp/server'))
+              .pipe(switchMap(({ serve }) => serve(this)))
+              .subscribe({
+                error: (error: Error) => {
+                  this.log.error('MCP Server Failed', { error: error.message });
+                  process.exitCode = 1;
+                  this.abort.abort('MCP server failed');
+                },
+              })
+          );
+        },
       })
       // TODO: Re-add 'install' command
       .command({

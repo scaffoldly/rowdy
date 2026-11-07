@@ -29,7 +29,7 @@ const inputSchema = z.object({
 });
 
 const outputSchema = z.object({
-  sandboxId: z.string().describe('What run_command and stop_sandbox take.'),
+  sandbox_id: z.string().describe('What run_command and stop_sandbox take.'),
 });
 
 export const createSandbox = (
@@ -39,7 +39,7 @@ export const createSandbox = (
   name: 'create_sandbox',
   title: 'Create sandbox',
   description:
-    'Starts a sandbox and answers with its sandboxId. Use when you need somewhere to run commands. The same options ' +
+    'Starts a sandbox and answers with its sandbox_id. Use when you need somewhere to run commands. The same options ' +
     'answer with the same sandbox, so use a different name for one of your own. The first use of an image can take ' +
     'about two minutes. On aws.lambda, timeout is 1000 to 900000 and memory is 128 to 10240. On aws.microvm, timeout ' +
     'is 1000 to 28800000, memory is 512, 1024, 2048, 4096 or 8192, and env has at most 50 variables.',
@@ -78,8 +78,8 @@ export const createSandbox = (
       merge(
         from(created).pipe(
           map(({ sandboxId }) => ({
-            content: [{ type: 'text' as const, text: JSON.stringify({ sandboxId }) }],
-            structuredContent: { sandboxId },
+            content: [{ type: 'text' as const, text: JSON.stringify({ sandbox_id: sandboxId }) }],
+            structuredContent: { sandbox_id: sandboxId },
           }))
         ),
         iif(

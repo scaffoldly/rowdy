@@ -88,7 +88,8 @@ import {
   finalize,
 } from 'rxjs';
 import promiseRetry from 'promise-retry';
-import { Environment, Routes } from '../..';
+import { Environment } from '../../environment';
+import { Routes } from '../../routes';
 import { Crontab, ExecSchema, Volume } from '../../routes';
 import { Exec } from '../../api/types';
 import { execOf, framesOf } from '../exec';

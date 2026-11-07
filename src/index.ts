@@ -32,6 +32,7 @@ const error = (error: Error): void => {
   process.exit(1);
 };
 
+// Nothing in src may import this file: in a shared chunk this is never true, and rowdy silently does nothing.
 if (require.main === module) {
   main().catch(error);
 }

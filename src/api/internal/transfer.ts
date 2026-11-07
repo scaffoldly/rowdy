@@ -28,7 +28,7 @@ import { Readable } from 'stream';
 import promiseRetry from 'promise-retry';
 import { readFileSync } from 'fs';
 import { join } from 'path';
-import { Environment } from '../..';
+import { Environment } from '../../environment';
 
 export type External = {
   Ref: Partial<{

@@ -35,11 +35,13 @@ import {
   tap,
   throwError,
 } from 'rxjs';
-import { Environment, Logger, maskUrl } from '../..';
+import { Environment } from '../../environment';
+import { Logger, maskUrl } from '../../log';
 import { LambdaCompute } from '../../aws/lambda/compute';
 import { MicrovmCompute } from '../../aws/microvm/compute';
 import { EXEC_STREAM } from '../../proxy/shell';
 import { createSandbox } from '../mcp/create-sandbox';
+import { runCommand } from '../mcp/run-command';
 import { DEFAULTS, SandboxCompute, SandboxComputeClass } from './compute';
 import { SandboxPromiseImpl } from './create';
 
@@ -168,7 +170,7 @@ export class SandboxImpl implements Sandbox {
   }
 
   static tools(options?: SandboxToolsOptions): Tool[] {
-    return [createSandbox(SandboxImpl, options)];
+    return [createSandbox(SandboxImpl, options), runCommand(SandboxImpl, options)];
   }
 
   get sandboxId(): string {
