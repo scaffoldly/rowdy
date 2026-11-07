@@ -335,7 +335,7 @@ describe('aws microvm pipeline', () => {
       };
 
       // Runs a script that prints a pid, reads it, then hangs up.
-      const hangUp = async (url: string, script: string): Promise<number> => {
+      const hangUp = async (url: string, script: string, detached?: boolean): Promise<number> => {
         const controller = new AbortController();
         const response = await fetch(`${url}${EXEC_PATH}`, {
           method: 'POST',
@@ -343,7 +343,7 @@ describe('aws microvm pipeline', () => {
           body: JSON.stringify({
             apiVersion: 'rowdy.run/v1alpha1',
             kind: 'Exec',
-            spec: { cmd: 'sh', args: ['-c', script] },
+            spec: { cmd: 'sh', args: ['-c', script], detached },
           }),
         });
         const { value } = await response.body!.getReader().read();
@@ -356,6 +356,16 @@ describe('aws microvm pipeline', () => {
         const url = await serve();
 
         await expect(gone(await hangUp(url, 'echo $$; exec sleep 30'))).resolves.toBe(true);
+      });
+
+      it('leaves a detached command running', async () => {
+        const url = await serve();
+
+        const pid = await hangUp(url, 'echo $$; exec sleep 30', true);
+        await new Promise((resolve) => setTimeout(resolve, 200));
+
+        expect(alive(pid)).toBe(true);
+        process.kill(pid, 'SIGKILL');
       });
 
       it('kills what the command started', async () => {
