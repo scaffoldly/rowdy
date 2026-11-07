@@ -7,6 +7,7 @@ import {
 import {
   concatMap,
   defer,
+  delay,
   EMPTY,
   endWith,
   filter,
@@ -29,7 +30,6 @@ import {
   takeUntil,
   takeWhile,
   tap,
-  timer,
 } from 'rxjs';
 import { Exec, ExecFinished, ExecFrame, ExecOutput, ExecOutputOptions } from '../api/types';
 import { EXEC_LOG, EXEC_STREAM, ShellExit } from '../proxy/shell';
@@ -153,12 +153,12 @@ export const execOutput = (
     }
     const [identifier, ...others] = Array.isArray(locator?.logGroupIdentifiers) ? locator.logGroupIdentifiers : [];
     if (identifier !== logGroup || others.length) {
-      throw new SandboxError(`Not a command in this sandbox: ${cmdId}`);
+      throw new SandboxError('Not a command in this sandbox.');
     }
 
     const [startTime = 0, start = 0] = cursor?.split('.').map(Number) ?? [];
     if (!Number.isSafeInteger(startTime) || !Number.isSafeInteger(start)) {
-      throw new SandboxError(`Not a cursor: ${cursor}`);
+      throw new SandboxError('Not a cursor from this command.');
     }
 
     const [logStreamNamePrefix] = locator?.logStreamNamePrefixes ?? [];
@@ -188,18 +188,21 @@ export const execOutput = (
       share()
     );
 
+    // Tail first: a frame landing between the two would otherwise be missed by both.
+    const tailed$ = session$.pipe(
+      filter(({ sessionStart }) => !!sessionStart),
+      take(1),
+      switchMap(() => history$),
+      share()
+    );
+
     const events$ =
       timeout === undefined
         ? history$
-        : merge(
-            session$.pipe(concatMap(({ sessionUpdate }) => sessionUpdate?.sessionResults ?? [])),
-            // Tail first: a frame landing between the two would otherwise be missed by both.
-            session$.pipe(
-              filter(({ sessionStart }) => !!sessionStart),
-              take(1),
-              switchMap(() => history$)
-            )
-          ).pipe(takeUntil(timer(timeout)));
+        : merge(tailed$, session$.pipe(concatMap(({ sessionUpdate }) => sessionUpdate?.sessionResults ?? []))).pipe(
+            // The wait is for what's still to come, so it starts once history is read.
+            takeUntil(tailed$.pipe(ignoreElements(), endWith(undefined), delay(timeout)))
+          );
 
     let bytes = 0;
 

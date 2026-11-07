@@ -197,7 +197,7 @@ describe('execOutput', () => {
     ])('refuses %s, before reaching AWS', async (_name, id) => {
       const send = history([]);
 
-      await expect(read({}, id)).rejects.toBeInstanceOf(SandboxError);
+      await expect(read({}, id)).rejects.toThrow(new SandboxError('Not a command in this sandbox.'));
       expect(send).not.toHaveBeenCalled();
     });
   });
@@ -241,6 +241,16 @@ describe('execOutput', () => {
       tailing([stdout(0, 'one')]);
 
       await expect(read({ timeout: 20 })).resolves.toMatchObject({ text: 'one', exitCode: undefined });
+    });
+
+    it('waits only once history is read, however long that takes', async () => {
+      mock(async (command) => {
+        if (command instanceof StartLiveTailCommand) return { responseStream: session() };
+        await new Promise((resolve) => setTimeout(resolve, 60));
+        return { events: [stdout(0, 'one')] };
+      });
+
+      await expect(read({ timeout: 10 })).resolves.toMatchObject({ text: 'one' });
     });
 
     it('cancels the tail when it ends', async () => {
