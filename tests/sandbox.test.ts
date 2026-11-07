@@ -33,10 +33,10 @@ const _shapes = async (sandbox: Sandbox): Promise<void> => {
 
 const _options: SandboxOptions[] = [
   { memory: 600 },
-  { compute: 'lambda', memory: 600 },
-  { compute: 'microvm', memory: 1024 },
+  { runtime: 'aws.lambda', memory: 600 },
+  { runtime: 'aws.microvm', memory: 1024 },
   // @ts-expect-error A microVM's memory is one of AWS's sizes.
-  { compute: 'microvm', memory: 600 },
+  { runtime: 'aws.microvm', memory: 600 },
 ];
 
 // The default options as they were hashed before compute joined them.
@@ -96,7 +96,7 @@ describe('sandbox', () => {
         return of(this);
       });
 
-      const sandbox = await SandboxImpl.create({ compute: 'microvm' });
+      const sandbox = await SandboxImpl.create({ runtime: 'aws.microvm' });
 
       expect(sandbox['compute']).toBeInstanceOf(MicrovmCompute);
       expect(create).toHaveBeenCalledWith(
@@ -108,7 +108,7 @@ describe('sandbox', () => {
     it('holds a microvm to its own limits, before anything reaches AWS', async () => {
       const create = jest.spyOn(MicrovmCompute.prototype, 'create');
 
-      await expect(SandboxImpl.create({ compute: 'microvm', memory: 600 as never })).rejects.toThrow(
+      await expect(SandboxImpl.create({ runtime: 'aws.microvm', memory: 600 as never })).rejects.toThrow(
         'memory must be one of'
       );
       expect(create).not.toHaveBeenCalled();
@@ -123,7 +123,7 @@ describe('sandbox', () => {
       const lambda = jest.spyOn(LambdaFunction.prototype, 'withName');
 
       await SandboxImpl.create();
-      await SandboxImpl.create({ compute: 'microvm' });
+      await SandboxImpl.create({ runtime: 'aws.microvm' });
 
       expect(name.mock.calls[0]?.[0]).not.toEqual(lambda.mock.calls[0]?.[0]);
     });
@@ -132,7 +132,7 @@ describe('sandbox', () => {
       const name = jest.spyOn(LambdaFunction.prototype, 'withName');
 
       await SandboxImpl.create();
-      await SandboxImpl.create({ compute: 'lambda' });
+      await SandboxImpl.create({ runtime: 'aws.lambda' });
 
       expect(name.mock.calls[0]).toEqual(name.mock.calls[1]);
       expect(name.mock.calls[0]).not.toEqual([`sandbox-${computeHash(UNHASHED)}`]);
@@ -199,7 +199,7 @@ describe('sandbox', () => {
       };
 
       it('hashes the resolved config as its pod template', async () => {
-        expect(await named()).toBe('sandbox-559ddc7c4c');
+        expect(await named()).toBe('sandbox-bc889d8b9');
       });
 
       it('is the same for the same options', async () => {
@@ -382,6 +382,18 @@ describe('sandbox', () => {
 
         expect(new Logger().level).toBe('debug');
       });
+
+      it('leaves stdout to the host: every level goes to stderr', async () => {
+        const info = jest.spyOn(console, 'info').mockImplementation(() => {});
+        const error = jest.spyOn(console, 'error').mockImplementation(() => {});
+
+        await SandboxImpl.create({ logLevel: 'info' });
+        new Logger().info('hello');
+        new Logger().withSink(undefined);
+
+        expect(info).not.toHaveBeenCalled();
+        expect(error).toHaveBeenCalledTimes(1);
+      });
     });
 
     it('rejects when the deploy fails', async () => {
@@ -445,7 +457,7 @@ describe('sandbox', () => {
         return of(this);
       });
       jest.spyOn(MicrovmCompute.prototype, 'exec').mockReturnValue(NEVER);
-      return Sandbox.create({ compute: 'microvm', signal });
+      return Sandbox.create({ runtime: 'aws.microvm', signal });
     };
 
     it('aborts a command on a microvm', async () => {
@@ -546,7 +558,7 @@ describe('sandbox', () => {
         const deploy = new Subject<never>();
         jest.spyOn(MicrovmCompute.prototype, 'create').mockReturnValue(deploy);
         const controller = new AbortController();
-        const created = Sandbox.create({ compute: 'microvm', signal: controller.signal });
+        const created = Sandbox.create({ runtime: 'aws.microvm', signal: controller.signal });
         await Promise.resolve();
 
         controller.abort('bye');
@@ -597,7 +609,7 @@ describe('sandbox', () => {
         return of(this);
       });
       jest.spyOn(MicrovmCompute.prototype, 'exec').mockReturnValue(NEVER);
-      return Sandbox.create({ compute: 'microvm' });
+      return Sandbox.create({ runtime: 'aws.microvm' });
     };
 
     const settled = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 10));
@@ -645,7 +657,7 @@ describe('sandbox', () => {
         return of(this);
       });
       jest.spyOn(MicrovmCompute.prototype, 'exec').mockReturnValue(failed);
-      const sandbox = await Sandbox.create({ compute: 'microvm' });
+      const sandbox = await Sandbox.create({ runtime: 'aws.microvm' });
       const command = sandbox.runCommand('sleep', ['60']);
       await settled();
 
@@ -686,7 +698,7 @@ describe('sandbox', () => {
       });
       const exec = { cmdId: 'c', exitCode: 0, frames: EMPTY, wait: async () => exec } as unknown as ExecFinished;
       jest.spyOn(MicrovmCompute.prototype, 'exec').mockReturnValue(of(exec));
-      const sandbox = await Sandbox.create({ compute: 'microvm' });
+      const sandbox = await Sandbox.create({ runtime: 'aws.microvm' });
 
       expect(process.listenerCount('SIGINT')).toBe(0);
       await sandbox.runCommand('echo', ['hi']);
@@ -712,7 +724,7 @@ describe('sandbox', () => {
       jest.spyOn(MicrovmCompute.prototype, 'create').mockImplementation(function (this: MicrovmCompute) {
         return of(this);
       });
-      const sandbox = await Sandbox.create({ compute: 'microvm' });
+      const sandbox = await Sandbox.create({ runtime: 'aws.microvm' });
 
       await expect(sandbox.stop()).resolves.toBeUndefined();
 
@@ -722,7 +734,7 @@ describe('sandbox', () => {
     it('rejects on lambda for now', async () => {
       const sandbox = await Sandbox.create();
 
-      await expect(sandbox.stop()).rejects.toThrow('stop is not implemented on compute lambda');
+      await expect(sandbox.stop()).rejects.toThrow('stop is not implemented on runtime aws.lambda');
     });
   });
 

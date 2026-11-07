@@ -79,6 +79,6 @@ export class LambdaCompute implements SandboxCompute {
   }
 
   stop(): Observable<this> {
-    return throwError(() => new Error('stop is not implemented on compute lambda'));
+    return throwError(() => new Error('stop is not implemented on runtime aws.lambda'));
   }
 }

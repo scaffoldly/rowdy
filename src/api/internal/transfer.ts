@@ -373,7 +373,7 @@ export class Transfer implements ILoggable {
               from(index.manifests || [])
                 .pipe(
                   tap((manifest) =>
-                    log.info(`${image.registry}/${image.slug}@${manifest.digest}: Pulling from ${image.slug}`)
+                    log.debug(`${image.registry}/${image.slug}@${manifest.digest}: Pulling from ${image.slug}`)
                   ),
                   map((manifest) => ({
                     manifest,
@@ -461,7 +461,7 @@ export class Transfer implements ILoggable {
                             if (rtCfg.history?.length) {
                               appCfg.history = [...(appCfg.history || []), ...rtCfg.history];
                             }
-                            log.info('Layers Injected', { from: source.from, platform });
+                            log.debug('Layers Injected', { from: source.from, platform });
                           }
 
                           const config = Buffer.from(JSON.stringify(appCfg));
@@ -483,7 +483,7 @@ export class Transfer implements ILoggable {
                 )
                 .pipe(map((images) => ({ digest, index, images })))
             ),
-            tap(({ digest }) => log.info(`Digest: ${digest}`)),
+            tap(({ digest }) => log.debug(`Digest: ${digest}`)),
             map(({ digest, index, images }) => {
               // Make sure data types line up
               const result: ImageManifest = {
@@ -614,7 +614,7 @@ export class Transfer implements ILoggable {
 
         let latest: Transfer | undefined = undefined;
         const proc = setInterval(() => {
-          if (latest) log.info(`Upload progress: ${summary(latest)}`);
+          if (latest) log.debug(`Upload progress: ${summary(latest)}`);
         }, 1000);
 
         const subscription = source
@@ -888,7 +888,7 @@ export class Upload implements ILoggable {
           )
         ) {
           if (this.type === 'blob') {
-            this.log.info(`${this.digest}: Layer exists, skipping upload`);
+            this.log.debug(`${this.digest}: Layer exists, skipping upload`);
             this._complete = true;
             this.bytes.sent = this.bytes.total;
             return status;

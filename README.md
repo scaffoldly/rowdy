@@ -196,6 +196,11 @@ with a warning.
 The layer, the function's image configuration, the command's lifecycle and the variables:
 [docs/runtime.md](docs/runtime.md).
 
+## SDK
+
+`@scaffoldly/rowdy/sandbox` runs commands in a container on AWS, from your own code:
+[docs/sdk.md](docs/sdk.md), [docs/sdk/sandbox.md](docs/sdk/sandbox.md).
+
 ## Logging
 
 Rowdy's lines follow the Lambda platform's own (`START RequestId: … Version: 47`), so they read as

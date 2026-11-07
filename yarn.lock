@@ -1533,10 +1533,10 @@
   resolved "https://registry.yarnpkg.com/@rollup/rollup-win32-x64-msvc/-/rollup-win32-x64-msvc-4.52.4.tgz#5b2dd648a960b8fa00d76f2cc4eea2f03daa80f4"
   integrity sha512-bf9PtUa0u8IXDVxzRToFQKsNCRz9qLYfR/MpECxl4mRoWYjAeFjgxj1XdZr2M/GNVpT05p+LgQOHopYDlUu6/w==
 
-"@scaffoldly/rowdy-cdk@0.1.0-beta.20261106171856.8306d84":
-  version "0.1.0-beta.20261106171856.8306d84"
-  resolved "https://registry.yarnpkg.com/@scaffoldly/rowdy-cdk/-/rowdy-cdk-0.1.0-beta.20261106171856.8306d84.tgz#d701326bbc7464e1df8afb42cd038363d6fdeb6c"
-  integrity sha512-8xz6dC0YvhSHitR6Ld7wKz0ui+Wen+SvRUQCYf75pRsf29yIsG3ORBDXWLnvlcIYKq5Zvjr95RwR0EsL3L3dQg==
+"@scaffoldly/rowdy-cdk@0.1.0-beta.20261107003438.8b4bb83":
+  version "0.1.0-beta.20261107003438.8b4bb83"
+  resolved "https://registry.yarnpkg.com/@scaffoldly/rowdy-cdk/-/rowdy-cdk-0.1.0-beta.20261107003438.8b4bb83.tgz#d33bc10e51709b8ec1c9306a6f2ddea47d8f6f83"
+  integrity sha512-OoIu11bB66tKYyiIBxxnEyngaq7CU9BQx+/oVXazg5n8DHB3EHOSssi1VtPkF1CjKuA8VBkhwDjChR2Ag1m/8g==
   dependencies:
     rxjs "^7.8.2"
 

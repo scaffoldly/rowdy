@@ -123,7 +123,7 @@ describe('aws microvm compute', () => {
 
       await create(compute);
 
-      expect(input(sent, 'PutObjectCommand')).toMatchObject({ Key: 'sandbox-box/code.zip' });
+      expect(input(sent, 'PutObjectCommand')).toMatchObject({ Key: `sandbox-box/${IMAGE_URI}.zip` });
     });
 
     it('configures the image', async () => {
@@ -140,7 +140,7 @@ describe('aws microvm compute', () => {
         resources: [{ minimumMemoryInMiB: 1024 }],
         environmentVariables: { A: 'b' },
         hooks: { port: HOOKS_PORT },
-        codeArtifact: { uri: `s3://${Bucket}/sandbox-box/code.zip` },
+        codeArtifact: { uri: `s3://${Bucket}/sandbox-box/${IMAGE_URI}.zip` },
       });
     });
 
@@ -278,7 +278,7 @@ describe('aws microvm compute', () => {
       });
       const { Bucket } = input(sent, 'PutObjectCommand');
       const { Statement } = JSON.parse(`${input(sent, 'PutRolePolicyCommand').PolicyDocument}`);
-      expect(Statement[0]).toMatchObject({ Resource: `arn:aws:s3:::${Bucket}/sandbox-box/code.zip` });
+      expect(Statement[0]).toMatchObject({ Resource: `arn:aws:s3:::${Bucket}/sandbox-box/${IMAGE_URI}.zip` });
       expect(Statement[3]).toMatchObject({
         Action: ['ecr:BatchCheckLayerAvailability', 'ecr:GetDownloadUrlForLayer', 'ecr:BatchGetImage'],
         Resource: 'arn:aws:ecr:us-east-1:123456789012:repository/scaffoldly/sandbox',
