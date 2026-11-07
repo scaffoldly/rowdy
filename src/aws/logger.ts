@@ -4,8 +4,8 @@ import { Logger, maskJson } from '../log';
 
 const CHANGES = /^(Create|Update|Delete|Put|Publish|Add|Remove|Run|Terminate)/;
 
-// The fields that name what a command changes, most specific first.
-const NAMES = ['FunctionName', 'RoleName', 'Name', 'name', 'microvmIdentifier', 'imageIdentifier', 'Key', 'Bucket'];
+// The fields that name what a command changes, most specific first, in lower case: AWS's APIs differ in theirs.
+const NAMES = ['functionname', 'rolename', 'name', 'microvmidentifier', 'imageidentifier', 'key', 'bucket'];
 
 /** Logs what an AWS SDK client does: a change at info, by name only, and everything at debug. */
 export abstract class AwsClientLogger implements ClientLogger {
@@ -27,8 +27,8 @@ export abstract class AwsClientLogger implements ClientLogger {
       });
       if (CHANGES.test(`${commandName}`) && !`${commandName}`.includes('AuthToken')) {
         // Names only: an input can carry the function's environment.
-        const fields = (input ?? {}) as Record<string, unknown>;
-        const name = NAMES.map((field) => fields[field]).find(Boolean);
+        const fields = new Map(Object.entries(input ?? {}).map(([field, value]) => [field.toLowerCase(), value]));
+        const name = NAMES.map((field) => fields.get(field)).find(Boolean);
         this.log.info(`${commandName?.replace(/Command$/, '')}${name ? `: ${name}` : ''}`);
       }
     }
