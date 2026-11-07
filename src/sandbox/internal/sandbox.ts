@@ -15,6 +15,7 @@ import type {
   Tool,
   Event,
 } from '..';
+import type { RegisteredTool } from '@modelcontextprotocol/server';
 import { isAxiosError } from 'axios';
 import {
   catchError,
@@ -50,7 +51,7 @@ import {
 import type { Exec, ExecFrame } from '../../api/types';
 import { Environment } from '../../environment';
 import { Logger, maskUrl } from '../../log';
-import { describeError } from '../../aws/errors';
+import { describeError, forPeople } from '../../aws/errors';
 import { LambdaCompute } from '../../aws/lambda/compute';
 import { MicrovmCompute } from '../../aws/microvm/compute';
 import { safeTool } from '../../mcp/tool';
@@ -164,12 +165,18 @@ export class SandboxImpl implements Sandbox {
       )
     );
 
-    return new SandboxPromiseImpl(created, sandbox);
+    // What a person reads says what to do next. Tools tell a model their own way.
+    return new SandboxPromiseImpl(
+      created.catch((error) => {
+        throw forPeople(error);
+      }),
+      sandbox
+    );
   }
 
-  static get({ sandboxId, signal: abort }: SandboxLookup): SandboxPromiseImpl {
+  static get({ sandboxId, logLevel, signal: abort }: SandboxLookup): SandboxPromiseImpl {
     const runtime = sandboxId.includes(':microvm-image:') ? 'aws.microvm' : 'aws.lambda';
-    const sandbox = new SandboxImpl({ runtime, signal: abort });
+    const sandbox = new SandboxImpl({ runtime, logLevel, signal: abort });
     const { signal } = sandbox.environment;
 
     const attached = lastValueFrom(
@@ -184,7 +191,12 @@ export class SandboxImpl implements Sandbox {
       )
     );
 
-    return new SandboxPromiseImpl(attached, sandbox);
+    return new SandboxPromiseImpl(
+      attached.catch((error) => {
+        throw forPeople(error);
+      }),
+      sandbox
+    );
   }
 
   static list({ runtime, name, signal }: SandboxListOptions = {}): Promise<SandboxSummary[]> {
@@ -204,24 +216,102 @@ export class SandboxImpl implements Sandbox {
           toArray()
         )
       )
-    );
+    ).catch((error) => {
+      throw forPeople(error);
+    });
   }
 
   static tools(options?: SandboxToolsOptions): Tool[] {
     // A host's stdout is its own, even for a tool that fails before it reaches a sandbox.
     new Logger('sandbox').withSink('stderr');
+    const { server, logLevel, signal } = options ?? {};
+
+    // Each sandbox's own tools while they're on the server, so a repeated create doesn't register them twice.
+    const registered = new Map<string, RegisteredTool[]>();
+    signal?.addEventListener(
+      'abort',
+      () => {
+        registered.forEach((tools) => tools.forEach((tool) => tool.remove()));
+        registered.clear();
+      },
+      { once: true }
+    );
+
+    const create = createSandbox(SandboxImpl, options);
+    const stop = stopSandbox(SandboxImpl, options);
+    const registering: typeof create = {
+      ...create,
+      run: async (input, ctx) => {
+        const result = await create.run(input, ctx);
+        const { sandbox_id: sandboxId } = result.structuredContent;
+        if (server && !registered.has(sandboxId)) {
+          // Named with the sandbox's suffix, so two sandboxes' tools don't clash.
+          const suffix = sandboxId.split('-').pop();
+          registered.set(
+            sandboxId,
+            SandboxImpl.get({ sandboxId, logLevel, signal })
+              .tools()
+              .map(({ name, run, ...config }) =>
+                server.registerTool(
+                  `${name}_${suffix}`,
+                  config,
+                  name === 'stop_sandbox'
+                    ? async (args, extra) => {
+                        const stopped = await run(args, extra);
+                        registered.get(sandboxId)?.forEach((tool) => tool.remove());
+                        registered.delete(sandboxId);
+                        return stopped;
+                      }
+                    : run
+                )
+              )
+          );
+        }
+        return result;
+      },
+    };
+    const unregistering: typeof stop = {
+      ...stop,
+      run: async (input, ctx) => {
+        const result = await stop.run(input, ctx);
+        registered.get(input.sandbox_id)?.forEach((tool) => tool.remove());
+        registered.delete(input.sandbox_id);
+        return result;
+      },
+    };
+
     const tools: Tool[] = [
-      createSandbox(SandboxImpl, options),
+      registering,
       runCommand(SandboxImpl, options),
       readOutput(SandboxImpl, options),
       listSandboxes(SandboxImpl, options),
-      stopSandbox(SandboxImpl, options),
+      unregistering,
     ];
     return tools.map((tool) => safeTool(tool, describeError));
   }
 
   get sandboxId(): string {
     return this.compute.sandboxId;
+  }
+
+  tools(found: SandboxPromiseImpl = new SandboxPromiseImpl(Promise.resolve(this), this)): Tool[] {
+    const sandbox = { get: () => found };
+    const tools: Tool[] = [
+      runCommand(sandbox),
+      readOutput(sandbox),
+      ...(this.compute.stoppable ? [stopSandbox(sandbox)] : []),
+    ];
+    // The sandbox_id is this sandbox's, so a model can't name another.
+    return tools.map((tool) =>
+      safeTool(
+        {
+          ...tool,
+          inputSchema: tool.inputSchema.omit({ sandbox_id: true }),
+          run: async (input, ctx) => tool.run({ ...input, sandbox_id: (await found).sandboxId }, ctx),
+        },
+        describeError
+      )
+    );
   }
 
   runCommand(cmd: string, args?: string[], options?: RunCommandOptions): Promise<CommandFinished>;
@@ -277,7 +367,9 @@ export class SandboxImpl implements Sandbox {
         { connector: () => new ReplaySubject<Exec>(1), resetOnDisconnect: false }
       );
       following$.connect();
-      return firstValueFrom(race(aborted$, following$));
+      return firstValueFrom(race(aborted$, following$)).catch((error) => {
+        throw forPeople(error);
+      });
     }
 
     return lastValueFrom(
@@ -296,7 +388,9 @@ export class SandboxImpl implements Sandbox {
           : NEVER,
         exec$.pipe(switchMap((exec) => merge(exec.frames.pipe(written, ignoreElements()), from(exec.wait()))))
       ).pipe(finalize(() => subscription?.unsubscribe()))
-    );
+    ).catch((error) => {
+      throw forPeople(error);
+    });
   }
 
   // TODO: writeFiles
@@ -318,11 +412,15 @@ export class SandboxImpl implements Sandbox {
     const signal = options?.signal
       ? AbortSignal.any([options.signal, this.environment.signal])
       : this.environment.signal;
-    return lastValueFrom(this.compute.output(cmdId, { ...options, signal }));
+    return lastValueFrom(this.compute.output(cmdId, { ...options, signal })).catch((error) => {
+      throw forPeople(error);
+    });
   }
 
   async stop(): Promise<void> {
-    await lastValueFrom(this.compute.stop());
+    await lastValueFrom(this.compute.stop()).catch((error) => {
+      throw forPeople(error);
+    });
   }
 
   events(): Observable<Event> {

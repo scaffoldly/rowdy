@@ -44,6 +44,7 @@ import {
   Observable,
   of,
   repeat,
+  shareReplay,
   switchMap,
   take,
   throwIfEmpty,
@@ -88,6 +89,9 @@ export const POLL = { delay: 5000 };
 export const TERMINATE_POLL = { delay: 250 };
 
 type Vm = { microvmId: string; endpoint: string; imageVersion: string; startedAt: Date };
+
+/** Each image's VM while it's being found or started, shared by every handle in the process. */
+const STARTING = new Map<string, Observable<Vm>>();
 
 export class MicrovmCompute extends AwsClientLogger implements SandboxCompute {
   static readonly env = {};
@@ -326,7 +330,7 @@ export class MicrovmCompute extends AwsClientLogger implements SandboxCompute {
     const imageIdentifier = this.sandboxId;
     const region = imageIdentifier.split(':')[3];
 
-    return defer(() => this.microvms.send(new GetMicrovmImageCommand({ imageIdentifier }))).pipe(
+    const start$ = defer(() => this.microvms.send(new GetMicrovmImageCommand({ imageIdentifier }))).pipe(
       switchMap(({ latestActiveImageVersion: imageVersion, tags }) =>
         from(this.microvms.send(new ListMicrovmsCommand({ imageIdentifier }))).pipe(
           switchMap(({ items = [] }) => {
@@ -371,8 +375,17 @@ export class MicrovmCompute extends AwsClientLogger implements SandboxCompute {
           throw new Error(`Sandbox ${imageIdentifier} stopped: ${stateReason ?? state}`);
         }
         return { microvmId: microvmId!, endpoint: endpoint!, imageVersion: imageVersion!, startedAt: startedAt! };
-      })
+      }),
+      finalize(() => STARTING.delete(imageIdentifier)),
+      shareReplay({ bufferSize: 1, refCount: false })
     );
+
+    // Two first commands at once would each start a VM, so a second waits on the first's, whichever handle it's on.
+    return defer(() => {
+      const started$ = STARTING.get(imageIdentifier) ?? start$;
+      STARTING.set(imageIdentifier, started$);
+      return started$;
+    });
   }
 
   /** Hands the command to rowdy in the VM, whose response carries its frames as they happen. */

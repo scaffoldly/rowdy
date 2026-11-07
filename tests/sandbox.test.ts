@@ -2,7 +2,8 @@ import { Logger } from '@scaffoldly/rowdy';
 import { CommandFinished, Sandbox, SandboxOptions } from '@scaffoldly/rowdy/sandbox';
 import { AxiosError, AxiosHeaders, InternalAxiosRequestConfig } from 'axios';
 import { InvokeWithResponseStreamResponseEvent, LambdaClient } from '@aws-sdk/client-lambda';
-import { EMPTY, lastValueFrom, NEVER, Observable, of, Subject, throwError, toArray } from 'rxjs';
+import { EMPTY, from, lastValueFrom, NEVER, Observable, of, Subject, switchMap, throwError, toArray } from 'rxjs';
+import type { ServerContext } from '@modelcontextprotocol/server';
 import { PassThrough } from 'stream';
 import { ROWDY_LAYERS } from '../src/api/internal/layers';
 import { CreateRepositoryCommand } from '@aws-sdk/client-ecr';
@@ -377,6 +378,16 @@ describe('sandbox', () => {
         await SandboxImpl.create({ runtime: 'aws.lambda' });
 
         expect(new Logger().level).toBe('warn');
+      });
+
+      it('takes logLevel on get too, for a process that never creates', async () => {
+        jest.spyOn(LambdaCompute.prototype, 'attach').mockImplementation(function (this: LambdaCompute) {
+          return of(this);
+        });
+
+        await SandboxImpl.get({ sandboxId: FUNCTION_ARN, logLevel: 'error' });
+
+        expect(new Logger().level).toBe('error');
       });
 
       it('takes logLevel over ROWDY_LOG_LEVEL', async () => {
@@ -857,6 +868,31 @@ describe('sandbox', () => {
     });
   });
 
+  describe('errors', () => {
+    const throttled = (): Error =>
+      Object.assign(new Error('Rate exceeded'), { name: 'ThrottlingException', $metadata: { httpStatusCode: 429 } });
+
+    it('say what a person can do next', async () => {
+      jest.spyOn(MicrovmCompute.prototype, 'create').mockReturnValue(throwError(throttled));
+
+      await expect(Sandbox.create()).rejects.toThrow('Rate exceeded Retrying may help.');
+    });
+
+    it('keep their class', async () => {
+      await expect(Sandbox.create({ runtime: 'aws.lambda', memory: 1 })).rejects.toBeInstanceOf(RangeError);
+    });
+
+    it('say it on a command too', async () => {
+      jest.spyOn(MicrovmCompute.prototype, 'create').mockImplementation(function (this: MicrovmCompute) {
+        return of(this);
+      });
+      jest.spyOn(MicrovmCompute.prototype, 'exec').mockReturnValue(throwError(throttled));
+      const sandbox = await Sandbox.create();
+
+      await expect(sandbox.runCommand('true')).rejects.toThrow('Rate exceeded Retrying may help.');
+    });
+  });
+
   describe('a detached command', () => {
     const running = (): { frames: Subject<ExecFrame>; exec: jest.SpyInstance } => {
       jest.spyOn(MicrovmCompute.prototype, 'create').mockImplementation(function (this: MicrovmCompute) {
@@ -1141,6 +1177,161 @@ describe('sandbox', () => {
   });
 
   describe('tools', () => {
+    const IMAGE = 'arn:aws:lambda:us-east-1:123456789012:microvm-image:box-bcdf2';
+    const exited = { stream: EXEC_STREAM.EXIT, payload: Buffer.from('{"code":0}') };
+    const ctx = (): ServerContext =>
+      ({ mcpReq: { signal: new AbortController().signal, notify: async () => {} } }) as unknown as ServerContext;
+
+    // A microVM sandbox whose commands exit at once, and whose `create` waits for `ready` when given.
+    const microvm = (ready?: Promise<void>, failure?: Error) => {
+      const imageArn = function (this: MicrovmCompute): Observable<MicrovmCompute> {
+        this['imageArn'] = IMAGE;
+        return of(this);
+      };
+      jest.spyOn(MicrovmCompute.prototype, 'create').mockImplementation(function (this: MicrovmCompute) {
+        if (failure) return throwError(() => failure);
+        return ready
+          ? from(ready.then(() => imageArn.call(this))).pipe(switchMap((made) => made))
+          : imageArn.call(this);
+      });
+      jest.spyOn(MicrovmCompute.prototype, 'attach').mockImplementation(imageArn);
+      const stop = jest.spyOn(MicrovmCompute.prototype, 'stop').mockImplementation(function (this: MicrovmCompute) {
+        return of(this);
+      });
+      const exec = jest
+        .spyOn(MicrovmCompute.prototype, 'exec')
+        .mockImplementation(() => execOf(() => 'c', from([exited])));
+      return { exec, stop };
+    };
+
+    describe("a sandbox's own", () => {
+      it('runs on it, with no sandbox_id to give', async () => {
+        const { exec } = microvm();
+        const sandbox = await Sandbox.create();
+
+        const tools = sandbox.tools();
+        const run = tools.find(({ name }) => name === 'run_command')!;
+        const result = await run.run(run.inputSchema.parse({ cmd: 'true' }), ctx());
+
+        expect(tools.map(({ name }) => name)).toEqual(['run_command', 'read_output', 'stop_sandbox']);
+        tools.forEach(({ inputSchema }) => expect(Object.keys(inputSchema.shape)).not.toContain('sandbox_id'));
+        expect(result.structuredContent).toMatchObject({ exit_code: 0, timed_out: false });
+        expect(exec).toHaveBeenCalledTimes(1);
+      });
+
+      it("leaves out stop_sandbox where the sandbox can't stop", async () => {
+        const sandbox = await Sandbox.create({ runtime: 'aws.lambda' });
+
+        expect(sandbox.tools().map(({ name }) => name)).toEqual(['run_command', 'read_output']);
+      });
+
+      it('are there before the sandbox is, and a call waits for it', async () => {
+        let built!: () => void;
+        const { exec } = microvm(new Promise((resolve) => (built = resolve)));
+        const creating = Sandbox.create();
+
+        const run = creating.tools().find(({ name }) => name === 'run_command')!;
+        const ran = run.run(run.inputSchema.parse({ cmd: 'true' }), ctx());
+        await new Promise((resolve) => setTimeout(resolve, 10));
+        expect(exec).not.toHaveBeenCalled();
+        built();
+
+        await expect(ran).resolves.toMatchObject({ structuredContent: { exit_code: 0 } });
+      });
+
+      it("make a failed build each call's error, not an unhandled rejection", async () => {
+        microvm(undefined, new SandboxError('build failed'));
+        const unhandled = jest.fn();
+        process.on('unhandledRejection', unhandled);
+        try {
+          const run = Sandbox.create()
+            .tools()
+            .find(({ name }) => name === 'run_command')!;
+          await new Promise((resolve) => setTimeout(resolve, 10));
+
+          await expect(run.run(run.inputSchema.parse({ cmd: 'true' }), ctx())).rejects.toThrow('build failed');
+          expect(unhandled).not.toHaveBeenCalled();
+        } finally {
+          process.off('unhandledRejection', unhandled);
+        }
+      });
+    });
+
+    describe('registered on a server as they arrive', () => {
+      const setup = () => {
+        const { stop } = microvm();
+        const removed: string[] = [];
+        const registerTool = jest.fn((name: string, _config: unknown, _run: unknown) => ({
+          remove: () => void removed.push(name),
+        }));
+        const host = new AbortController();
+        const tools = Sandbox.tools({ server: { registerTool } as never, signal: host.signal });
+        const call = (name: string, input: Record<string, unknown> = {}) => {
+          const tool = tools.find((each) => each.name === name)!;
+          return tool.run(tool.inputSchema.parse(input), ctx());
+        };
+        const registered = () => registerTool.mock.calls.map(([name]) => name);
+        return { call, registerTool, registered, removed, host, stop };
+      };
+
+      it("adds a new sandbox's own tools, named with its suffix", async () => {
+        const { call, registered } = setup();
+
+        await call('create_sandbox');
+
+        expect(registered()).toEqual(['run_command_bcdf2', 'read_output_bcdf2', 'stop_sandbox_bcdf2']);
+      });
+
+      it('adds them once for the same sandbox', async () => {
+        const { call, registered } = setup();
+
+        await call('create_sandbox');
+        await call('create_sandbox');
+
+        expect(registered()).toHaveLength(3);
+      });
+
+      it('takes them off when stop_sandbox stops it, and adds them again after', async () => {
+        const { call, registered, removed } = setup();
+
+        await call('create_sandbox');
+        await call('stop_sandbox', { sandbox_id: IMAGE });
+        await call('create_sandbox');
+
+        expect(removed).toEqual(['run_command_bcdf2', 'read_output_bcdf2', 'stop_sandbox_bcdf2']);
+        expect(registered()).toHaveLength(6);
+      });
+
+      it("takes them off when the sandbox's own stop_sandbox stops it", async () => {
+        const { call, registerTool, removed, stop } = setup();
+
+        await call('create_sandbox');
+        const [, , own] = registerTool.mock.calls.find(([name]) => name === 'stop_sandbox_bcdf2')!;
+        await (own as (args: unknown, extra: unknown) => Promise<unknown>)({}, ctx());
+
+        expect(stop).toHaveBeenCalled();
+        expect(removed).toHaveLength(3);
+      });
+
+      it("takes them all off when the host's signal aborts", async () => {
+        const { call, removed, host } = setup();
+
+        await call('create_sandbox');
+        host.abort();
+
+        expect(removed).toHaveLength(3);
+      });
+
+      it('registers nothing without a server', async () => {
+        microvm();
+        const create = Sandbox.tools().find(({ name }) => name === 'create_sandbox')!;
+
+        await expect(create.run(create.inputSchema.parse({}), ctx())).resolves.toMatchObject({
+          structuredContent: { sandbox_id: IMAGE },
+        });
+      });
+    });
+
     it('lists them by name', () => {
       expect(Sandbox.tools().map(({ name }) => name)).toEqual([
         'create_sandbox',

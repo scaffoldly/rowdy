@@ -198,7 +198,7 @@ arn:aws:lambda:us-east-1:123456789012:function:sandbox-bcdf245678
 arn:aws:lambda:us-east-1:123456789012:microvm-image:sandbox-bcdf245678
 ```
 
-`get` rejects with `Not a sandbox` for anything `create` didn't make. It takes a `signal`, and logs at
+`get` rejects with `Not a sandbox` for anything `create` didn't make. It takes a `signal` and a `logLevel`, and logs at
 the level described in [Logging](../sdk.md#logging).
 
 ## `Sandbox.list`
@@ -335,9 +335,42 @@ found again by its `rowdy:owner` tag.
 The credentials you run with need to be able to create all of these. Nothing deletes them yet, since
 `stop()` only ends what's running.
 
+## Errors
+
+A rejection keeps its class, so `instanceof RangeError` still works, and its message says what to do next when
+there's something to do: `Retrying may help.` for throttling or a fault on AWS's side, or
+`Check the AWS credentials and permissions this runs with.` for a denial or an expired token.
+
+## MCP tools
+
+`Sandbox.tools()` is for a model that manages its own sandboxes: `create_sandbox`, `run_command`,
+`read_output`, `list_sandboxes` and `stop_sandbox`. A host adds them to its own server.
+
+```ts
+for (const { name, run, ...config } of Sandbox.tools({ name: tenant, limits: { runtimes: ['aws.microvm'] } })) {
+  server.registerTool(name, config, run);
+}
+```
+
+Pass the `server` too, and each sandbox `create_sandbox` makes gets tools of its own on it, named with its
+suffix, like `run_command_bcdf245678`, with no `sandbox_id` to give. They come off when it's stopped, or the
+`signal` aborts. The server has to last the session, so this doesn't suit one built per request.
+
+A host that owns one sandbox gives a model only that one, with `tools()` on it, or on `Sandbox.create`'s
+result before it's ready:
+
+```ts
+const creating = Sandbox.create();
+
+for (const { name, run, ...config } of creating.tools()) {
+  server.registerTool(name, config, run);
+}
+```
+
+These are `run_command`, `read_output`, and `stop_sandbox` where the sandbox can stop, with no `sandbox_id`.
+A call waits for the sandbox, and a failed build is each call's error.
+
 ## Not there yet
 
 - `writeFiles`, `readFileToBuffer` and `mkDir`.
 - `stop()` on `aws.lambda`.
-- Starting two commands at once on an `aws.microvm` sandbox with no VM yet may start two VMs. Run the first
-  command on its own.

@@ -1,5 +1,5 @@
 import type { Observable } from 'rxjs';
-import type { Event, SandboxPromise } from '..';
+import type { Event, SandboxPromise, Tool } from '..';
 import type { SandboxImpl } from './sandbox';
 
 export class SandboxPromiseImpl implements SandboxPromise, Promise<SandboxImpl> {
@@ -12,6 +12,12 @@ export class SandboxPromiseImpl implements SandboxPromise, Promise<SandboxImpl> 
 
   events(): Observable<Event> {
     return this.sandbox.events();
+  }
+
+  tools(): Tool[] {
+    // A host may register these and never await, so a failed build is each call's error, not an unhandled rejection.
+    this.created.catch(() => {});
+    return this.sandbox.tools(this);
   }
 
   then<Fulfilled = SandboxImpl, Rejected = never>(

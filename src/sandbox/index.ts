@@ -64,7 +64,10 @@ export interface SandboxToolsOptions extends Pick<SandboxOptions, 'logLevel' | '
   name?: string;
   /** What a model can ask for. */
   limits?: SandboxToolsLimits;
-  /** Where tools are registered at runtime, as they become available. */
+  /**
+   * Where each sandbox's own tools are registered once `create_sandbox` makes it, named with its suffix, like
+   * `run_command_bcdf245678`. They come off when it's stopped, or the signal aborts.
+   */
   server?: Pick<McpServer, 'registerTool'>;
 }
 
@@ -91,7 +94,7 @@ export interface SandboxListOptions {
   signal?: AbortSignal;
 }
 
-export interface SandboxLookup {
+export interface SandboxLookup extends Pick<SandboxOptions, 'logLevel'> {
   sandboxId: string;
   /** Aborts the sandbox's work in progress, and stops it if it can `stop`. */
   signal?: AbortSignal;
@@ -182,10 +185,18 @@ export interface Sandbox {
   stop(): Promise<void>;
   /** Each event from now on. */
   events(): Observable<Event>;
+  /**
+   * The MCP tools for this sandbox alone, with no `sandbox_id` input: `run_command`, `read_output`, and `stop_sandbox`
+   * where it can stop.
+   */
+  tools(): Tool[];
 }
 
-/** A sandbox on its way. Await it for the sandbox, and call `events` before that to see what it takes. */
-export interface SandboxPromise extends Promise<Sandbox>, Pick<Sandbox, 'events'> {}
+/**
+ * A sandbox on its way. Await it for the sandbox, and call `events` before that to see what it takes. Its `tools` are
+ * ready at once, and a call waits for the sandbox.
+ */
+export interface SandboxPromise extends Promise<Sandbox>, Pick<Sandbox, 'events' | 'tools'> {}
 
 export interface SandboxFactory {
   /** Starts a new sandbox. */

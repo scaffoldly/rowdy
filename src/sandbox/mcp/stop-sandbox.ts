@@ -13,7 +13,7 @@ const outputSchema = z.object({
 
 export const stopSandbox = (
   sandbox: Pick<SandboxFactory, 'get'>,
-  { signal, name: scope }: SandboxToolsOptions = {}
+  { logLevel, signal, name: scope }: SandboxToolsOptions = {}
 ): Tool<typeof inputSchema, typeof outputSchema> => ({
   name: 'stop_sandbox',
   title: 'Stop sandbox',
@@ -30,7 +30,7 @@ export const stopSandbox = (
       throw new SandboxError(`Not a sandbox: ${sandboxId}`);
     }
 
-    const found = await sandbox.get({ sandboxId, signal });
+    const found = await sandbox.get({ sandboxId, logLevel, signal });
     await found.stop().catch((error) => {
       // A failed stop can leave a VM running. It's billed until someone notices.
       if (error instanceof Error && !(error instanceof SandboxError)) {
