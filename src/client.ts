@@ -1,20 +1,24 @@
-import { inspect } from 'util';
+import type { Client, Logger as SmithyLogger } from '@smithy/types';
 import { Observable, Subject } from 'rxjs';
+import { inspect } from 'util';
+import { CdkEvent, CdkEventType, LIFECYCLES } from './event';
 import { Logger, maskJson } from './log';
 
-/** A change an AWS SDK client made. It has no `type`, so `{ type: 'cdk', ...event }` can add one. */
-export type CdkEvent = {
-  /** Like `IAMClient`. */
-  client: string;
-  /** The command without its `Command` suffix, like `CreateRole`. */
-  action: string;
-  /** What changed. Nothing else from the input: it can carry secrets. */
-  name?: string;
-};
+const TYPES: [RegExp, CdkEventType][] = [
+  [/^Describe/, 'describe'],
+  [/^(Get|List|Head)/, 'read'],
+  [/^(Create|Run|Publish|Add)/, 'create'],
+  [/^(Update|Put)/, 'update'],
+  [/^(Delete|Terminate)/, 'dispose'],
+  [/^Tag/, 'tag'],
+];
 
-/** Logs what an AWS SDK client does: a change at info, by name only, and everything at debug. Emits each change. */
-export abstract class ClientLogger {
-  private changed = new Subject<CdkEvent>();
+/**
+ * Logs what an AWS SDK client does: a change at info, by name only, and everything at debug. Pass it as a client's
+ * `logger`, and `track` the client for its events.
+ */
+export abstract class ClientLogger implements SmithyLogger {
+  private emitted = new Subject<CdkEvent>();
 
   /**
    * @param changes Matches the name of a command that changes something.
@@ -28,9 +32,49 @@ export abstract class ClientLogger {
 
   abstract get log(): Logger;
 
-  /** Each change this client makes from now on. */
+  /** Each step of every tracked client's commands from now on. A retried command emits once. */
   events(): Observable<CdkEvent> {
-    return this.changed.asObservable();
+    return this.emitted.asObservable();
+  }
+
+  /** Emits events for a client's commands. A command that fits no type of event emits nothing. */
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  track<T extends Client<any, any, any>>(client: T): T {
+    client.middlewareStack.add(
+      (next, { clientName, commandName }) =>
+        async (args) => {
+          const type = TYPES.find(([pattern]) => pattern.test(`${commandName}`))?.[1];
+          if (!type) {
+            return next(args);
+          }
+          const [before, after] = LIFECYCLES[type];
+          const name = this.nameOf(args.input);
+          const event = {
+            type,
+            client: clientName ?? 'UnknownClient',
+            action: `${commandName}`.replace(/Command$/, ''),
+            ...(name ? { name: `${name}` } : {}),
+          };
+
+          this.emitted.next({ ...event, lifecycle: before } as CdkEvent);
+          try {
+            const output = await next(args);
+            this.emitted.next({ ...event, lifecycle: after } as CdkEvent);
+            return output;
+          } catch (error) {
+            this.emitted.next({ ...event, lifecycle: 'failed' });
+            throw error;
+          }
+        },
+      { step: 'initialize', name: 'clientLogger', override: true }
+    );
+    return client;
+  }
+
+  // Names only: an input can carry the function's environment.
+  private nameOf(input: unknown): unknown {
+    const fields = new Map(Object.entries(input ?? {}).map(([field, value]) => [field.toLowerCase(), value]));
+    return this.names.map((field) => fields.get(field)).find(Boolean);
   }
 
   debug = (..._content: unknown[]): void => {};
@@ -48,16 +92,8 @@ export abstract class ClientLogger {
         output: maskJson(output),
       });
       if (this.changes.test(`${commandName}`)) {
-        // Names only: an input can carry the function's environment.
-        const fields = new Map(Object.entries(input ?? {}).map(([field, value]) => [field.toLowerCase(), value]));
-        const name = this.names.map((field) => fields.get(field)).find(Boolean);
-        const action = `${commandName?.replace(/Command$/, '')}`;
-        this.log.info(`${action}${name ? `: ${name}` : ''}`);
-        this.changed.next({
-          client: clientName ?? 'UnknownClient',
-          action,
-          ...(name ? { name: `${name}` } : {}),
-        });
+        const name = this.nameOf(input);
+        this.log.info(`${commandName?.replace(/Command$/, '')}${name ? `: ${name}` : ''}`);
       }
     }
   };

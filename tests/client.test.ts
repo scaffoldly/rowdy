@@ -1,3 +1,4 @@
+import { GetCallerIdentityCommand, STSClient } from '@aws-sdk/client-sts';
 import { CdkEvent, ClientLogger, Logger } from '../src';
 
 class TestLogger extends ClientLogger {
@@ -7,6 +8,18 @@ class TestLogger extends ClientLogger {
     super(/^(?!.*AuthToken)(Create|Run)/, ['rolename', 'name']);
   }
 }
+
+type Handler = (args: { input: unknown }) => Promise<unknown>;
+type Middleware = (next: Handler, context: { clientName?: string; commandName?: string }) => Handler;
+
+/** Tracks a stand-in client and hands back its middleware, to run as a command would. */
+const tracked = (logger: ClientLogger): ((command: string, input?: unknown, next?: Handler) => Promise<unknown>) => {
+  let middleware: Middleware | undefined;
+  const client = { middlewareStack: { add: (added: Middleware) => (middleware = added) } };
+  logger.track(client as never);
+  return (commandName, input = {}, next = async () => ({})) =>
+    middleware!(next, { clientName: 'IAMClient', commandName })({ input });
+};
 
 describe('ClientLogger', () => {
   let client: TestLogger;
@@ -28,87 +41,157 @@ describe('ClientLogger', () => {
     new Logger().withLevel(undefined);
   });
 
-  const change = (input: unknown = { RoleName: 'role' }, commandName = 'CreateRoleCommand'): void =>
-    client.info({ clientName: 'IAMClient', commandName, input, output: {} });
+  describe('logging', () => {
+    const logged = (commandName: string, input: unknown = { RoleName: 'role' }): void =>
+      client.info({ clientName: 'IAMClient', commandName, input, output: {} });
 
-  it('emits a change', () => {
-    change();
+    it('logs a change at info, by name', () => {
+      logged('CreateRoleCommand');
 
-    expect(events).toEqual([{ client: 'IAMClient', action: 'CreateRole', name: 'role' }]);
+      expect(info).toHaveBeenCalledTimes(1);
+      expect(info.mock.calls[0]?.[0]).toContain('CreateRole: role');
+    });
+
+    it('takes the first of its names, whatever the case of the field', () => {
+      logged('CreateRoleCommand', { Name: 'second', ROLENAME: 'first' });
+
+      expect(info.mock.calls[0]?.[0]).toContain('CreateRole: first');
+    });
+
+    it('follows the pattern it was given', () => {
+      logged('GetRoleCommand');
+      logged('CreateMicrovmAuthTokenCommand');
+
+      expect(info).not.toHaveBeenCalled();
+    });
+
+    it('logs every command at debug', () => {
+      new Logger().withLevel('debug');
+
+      logged('GetRoleCommand');
+
+      expect(debug).toHaveBeenCalledTimes(1);
+    });
+
+    it('emits nothing itself', () => {
+      logged('CreateRoleCommand');
+
+      expect(events).toEqual([]);
+    });
   });
 
-  it('logs a change at info', () => {
-    change();
+  describe('track', () => {
+    it('returns the client it was given', () => {
+      const sts = new STSClient({ region: 'us-east-1' });
 
-    expect(info).toHaveBeenCalledTimes(1);
-    expect(info.mock.calls[0]?.[0]).toContain('CreateRole: role');
-  });
+      expect(client.track(sts)).toBe(sts);
+    });
 
-  it('leaves out a name it can not find', () => {
-    change({});
+    it('emits before and after a command', async () => {
+      await tracked(client)('CreateRoleCommand', { RoleName: 'role' });
 
-    expect(events).toEqual([{ client: 'IAMClient', action: 'CreateRole' }]);
-  });
+      const event = { type: 'create', client: 'IAMClient', action: 'CreateRole', name: 'role' };
+      expect(events).toEqual([
+        { ...event, lifecycle: 'creating' },
+        { ...event, lifecycle: 'created' },
+      ]);
+    });
 
-  it('takes the first of its names, whatever the case of the field', () => {
-    change({ Name: 'second', ROLENAME: 'first' });
+    it('emits before the command runs', async () => {
+      let seen = 0;
 
-    expect(events[0]?.name).toBe('first');
-  });
+      await tracked(client)('CreateRoleCommand', {}, async () => (seen = events.length));
 
-  it('emits nothing from an input but the name', () => {
-    change({ RoleName: 'role', Environment: { TOKEN: 'secret' } });
+      expect(seen).toBe(1);
+    });
 
-    expect(JSON.stringify(events)).not.toContain('secret');
-  });
+    it.each([
+      ['DescribeRepositoriesCommand', 'describe', 'describing', 'described'],
+      ['GetRoleCommand', 'read', 'reading', 'read'],
+      ['ListMicrovmsCommand', 'read', 'reading', 'read'],
+      ['HeadObjectCommand', 'read', 'reading', 'read'],
+      ['CreateRoleCommand', 'create', 'creating', 'created'],
+      ['RunMicrovmCommand', 'create', 'creating', 'created'],
+      ['PublishVersionCommand', 'create', 'creating', 'created'],
+      ['AddPermissionCommand', 'create', 'creating', 'created'],
+      ['UpdateMicrovmImageCommand', 'update', 'updating', 'updated'],
+      ['PutObjectCommand', 'update', 'updating', 'updated'],
+      ['DeleteRoleCommand', 'dispose', 'disposing', 'disposed'],
+      ['TerminateMicrovmCommand', 'dispose', 'disposing', 'disposed'],
+      ['TagResourceCommand', 'tag', 'tagging', 'tagged'],
+    ])('types %s', async (command, type, before, after) => {
+      await tracked(client)(command);
 
-  it('has no type, so one can be added', () => {
-    change();
+      expect(events.map((event) => [event.type, event.lifecycle])).toEqual([
+        [type, before],
+        [type, after],
+      ]);
+    });
 
-    expect(events[0]).not.toHaveProperty('type');
-  });
+    it('emits nothing for a command that fits no type', async () => {
+      await tracked(client)('InvokeWithResponseStreamCommand');
 
-  it('ignores a command that changes nothing', () => {
-    change({ RoleName: 'role' }, 'GetRoleCommand');
+      expect(events).toEqual([]);
+    });
 
-    expect(events).toEqual([]);
-    expect(info).not.toHaveBeenCalled();
-  });
+    it('emits failed and rethrows when a command fails', async () => {
+      const denied = new Error('denied');
 
-  it('follows the pattern it was given', () => {
-    change({ name: 'vm' }, 'CreateMicrovmAuthTokenCommand');
+      await expect(
+        tracked(client)('CreateRoleCommand', {}, async () => {
+          throw denied;
+        })
+      ).rejects.toBe(denied);
 
-    expect(events).toEqual([]);
-  });
+      expect(events.map(({ lifecycle }) => lifecycle)).toEqual(['creating', 'failed']);
+    });
 
-  it('logs every command at debug', () => {
-    new Logger().withLevel('debug');
+    it('leaves out a name it can not find', async () => {
+      await tracked(client)('CreateRoleCommand');
 
-    change({ RoleName: 'role' }, 'GetRoleCommand');
+      expect(events[0]).not.toHaveProperty('name');
+    });
 
-    expect(debug).toHaveBeenCalledTimes(1);
-  });
+    it('emits nothing from an input but the name', async () => {
+      await tracked(client)('CreateRoleCommand', { RoleName: 'role', Environment: { TOKEN: 'secret' } });
 
-  it('keeps each client to its own events', () => {
-    const other = new TestLogger();
-    const others: CdkEvent[] = [];
-    other.events().subscribe((event) => others.push(event));
+      expect(JSON.stringify(events)).not.toContain('secret');
+    });
 
-    change();
+    it('keeps each logger to its own events', async () => {
+      const other = new TestLogger();
+      const others: CdkEvent[] = [];
+      other.events().subscribe((event) => others.push(event));
 
-    expect(events).toHaveLength(1);
-    expect(others).toEqual([]);
-  });
+      await tracked(client)('CreateRoleCommand');
 
-  it('emits nothing for a failure', () => {
-    client.error({ clientName: 'IAMClient', commandName: 'CreateRoleCommand', input: {}, error: new Error('denied') });
+      expect(others).toEqual([]);
+    });
 
-    expect(events).toEqual([]);
-  });
+    it('works on a real client, once per command across retries', async () => {
+      let attempts = 0;
+      const sts = client.track(
+        new STSClient({
+          region: 'us-east-1',
+          credentials: { accessKeyId: 'AKIAEXAMPLE', secretAccessKey: 'example' },
+          maxAttempts: 2,
+          retryStrategy: undefined,
+          requestHandler: {
+            handle: async () => {
+              attempts += 1;
+              throw Object.assign(new Error('throttled'), { name: 'ThrottlingException', $retryable: {} });
+            },
+          },
+        })
+      );
 
-  it('ignores content that is not an object', () => {
-    client.info('hello');
+      await expect(sts.send(new GetCallerIdentityCommand({}))).rejects.toThrow('throttled');
 
-    expect(events).toEqual([]);
+      expect(attempts).toBe(2);
+      expect(events).toEqual([
+        { type: 'read', lifecycle: 'reading', client: 'STSClient', action: 'GetCallerIdentity' },
+        { type: 'read', lifecycle: 'failed', client: 'STSClient', action: 'GetCallerIdentity' },
+      ]);
+    });
   });
 });

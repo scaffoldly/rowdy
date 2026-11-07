@@ -1,4 +1,6 @@
 import promiseRetry from 'promise-retry';
+import { Observable, Subject } from 'rxjs';
+import { CdkEvent, CdkEventType, LIFECYCLES } from './event';
 import { getDifferences } from './internal/diff';
 import { log as root } from './log';
 import packageJson from '../package.json';
@@ -6,6 +8,31 @@ const VERSION = packageJson.version;
 const NAME = packageJson.name;
 
 const log = root.child('cdk');
+
+type LogAction =
+  | 'Reading'
+  | 'Read'
+  | 'Creating'
+  | 'Created'
+  | 'Updating'
+  | 'Updated'
+  | 'Tagging'
+  | 'Tagged'
+  | 'Deleting'
+  | 'Deleted';
+
+const EVENTS: Record<LogAction, [CdkEventType, 0 | 1]> = {
+  Reading: ['read', 0],
+  Read: ['read', 1],
+  Creating: ['create', 0],
+  Created: ['create', 1],
+  Updating: ['update', 0],
+  Updated: ['update', 1],
+  Tagging: ['tag', 0],
+  Tagged: ['tag', 1],
+  Deleting: ['dispose', 0],
+  Deleted: ['dispose', 1],
+};
 
 type CallbackAction =
   | 'Created'
@@ -64,6 +91,7 @@ export class CloudResource<Resource, ReadCommandOutput> implements PromiseLike<P
   private _tags: Record<string, string> = {};
   private _output?: Partial<ReadCommandOutput>;
   private _resource?: Partial<Resource>;
+  private emitted = new Subject<CdkEvent>();
 
   constructor(
     public readonly requests: {
@@ -78,6 +106,11 @@ export class CloudResource<Resource, ReadCommandOutput> implements PromiseLike<P
     tags: Record<string, string> = {}
   ) {
     this._tags = tags;
+  }
+
+  /** Each step of managing this resource from now on. */
+  events(): Observable<CdkEvent> {
+    return this.emitted.asObservable();
   }
 
   get Output(): PromiseLike<Partial<ReadCommandOutput>> {
@@ -170,6 +203,7 @@ export class CloudResource<Resource, ReadCommandOutput> implements PromiseLike<P
   }
 
   private async _read(desired?: Partial<ReadCommandOutput>): Promise<Partial<Resource> | undefined> {
+    this._log('Reading', {});
     const response = await promiseRetry(
       async (retry) => {
         try {
@@ -221,8 +255,14 @@ export class CloudResource<Resource, ReadCommandOutput> implements PromiseLike<P
         retries: this.options.retries !== Infinity ? this.options.retries || 0 : 0,
         forever: this.options.retries === Infinity,
       }
-    );
+    ).catch((e) => {
+      const { type, label } = this._describe({});
+      this.emitted.next({ type: 'read', lifecycle: 'failed', resource: type, ...(label ? { name: label } : {}) });
+      // A caller tells these apart by class, so it can't go through _log.
+      throw e;
+    });
 
+    this._log('Read', response ?? {});
     return response;
   }
 
@@ -378,23 +418,21 @@ export class CloudResource<Resource, ReadCommandOutput> implements PromiseLike<P
     return resource;
   }
 
-  private _log(
-    action: 'Creating' | 'Created' | 'Updating' | 'Updated' | 'Tagging' | 'Tagged' | 'Deleting' | 'Deleted',
-    resource: Partial<Resource | undefined> | Error
-  ): void {
-    let verb:
-      | 'Creating'
-      | 'Created'
-      | 'Updating'
-      | 'Updated'
-      | 'Tagging'
-      | 'Tagged'
-      | 'Deleting'
-      | 'Deleted'
-      | 'Failed to Create'
-      | 'Failed to Update'
-      | 'Failed to Tag'
-      | 'Failed to Delete' = action;
+  private _describe(resource: Partial<Resource>): { type: string; label?: string } {
+    const [before, after] = LIFECYCLES.describe;
+    this.emitted.next({ type: 'describe', lifecycle: before });
+    const description = this.requests.describe(resource);
+    this.emitted.next({
+      type: 'describe',
+      lifecycle: after,
+      resource: description.type,
+      ...(description.label ? { name: description.label } : {}),
+    });
+    return description;
+  }
+
+  private _log(action: LogAction, resource: Partial<Resource | undefined> | Error): void {
+    let verb: LogAction | 'Failed to Create' | 'Failed to Update' | 'Failed to Tag' | 'Failed to Delete' = action;
     let type = 'Resource';
     let label: string;
 
@@ -413,11 +451,11 @@ export class CloudResource<Resource, ReadCommandOutput> implements PromiseLike<P
           verb = 'Failed to Delete';
           break;
       }
-      const description = this.requests.describe({});
+      const description = this._describe({});
       type = description.type;
       label = description.label || '[computed]';
     } else {
-      const description = this.requests.describe(resource || {});
+      const description = this._describe(resource || {});
       type = description.type;
       label = description.label || '[computed]';
     }
@@ -441,6 +479,14 @@ export class CloudResource<Resource, ReadCommandOutput> implements PromiseLike<P
     if (resource instanceof SkipAction) {
       return;
     }
+
+    const [eventType, step] = EVENTS[action];
+    this.emitted.next({
+      type: eventType,
+      lifecycle: resource instanceof Error ? 'failed' : LIFECYCLES[eventType][step],
+      resource: type,
+      ...(label === '[computed]' ? {} : { name: label }),
+    } as CdkEvent);
 
     switch (verb) {
       case 'Created':
