@@ -57,6 +57,23 @@ describe('run_command', () => {
     expect((await run()).structuredContent).toMatchObject({ text: 'one two three' });
   });
 
+  it.each([
+    ['stdout', 'out'],
+    ['stderr', 'err'],
+  ])('keeps only %s when asked', async (stream, text) => {
+    const { run } = setup(
+      {},
+      {
+        writes: [
+          ['stdout', 'out'],
+          ['stderr', 'err'],
+        ],
+      }
+    );
+
+    expect((await run({ stream })).structuredContent).toMatchObject({ text });
+  });
+
   it('answers normally for a command that fails', async () => {
     const { run } = setup({}, { exitCode: 2, writes: [['stderr', 'no such file']] });
 

@@ -12,11 +12,12 @@ const inputSchema = z.object({
   args: z.array(z.string()).optional().describe('Its arguments.'),
   cwd: z.string().optional().describe('The working directory.'),
   env: z.record(z.string(), z.string()).optional().describe("Environment variables, over the sandbox's own."),
+  stream: z.enum(['stdout', 'stderr']).optional().describe('Keep only this in text. Defaults to both, merged.'),
 });
 
 const outputSchema = z.object({
   exit_code: z.number().describe('Whatever the command exited with. Not zero is still an answer.'),
-  text: z.string().describe('Its stdout and stderr together, in the order they were written.'),
+  text: z.string().describe('Its output, in the order it was written.'),
   truncated: z
     .boolean()
     .describe('Whether text was cut to its last 64 KiB. Narrow the command, or write to a file and read parts.'),
@@ -30,11 +31,11 @@ export const runCommand = (
   title: 'Run command',
   description:
     'Runs a command in a sandbox and answers with its exit code and output. Use when you need to run something in a ' +
-    'sandbox from create_sandbox. Stderr is mixed in with stdout: redirect it to keep it apart.',
+    'sandbox from create_sandbox. Stderr is mixed in with stdout unless stream picks one.',
   inputSchema,
   outputSchema,
   annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
-  async run({ sandbox_id: sandboxId, cmd, args, cwd, env }, ctx) {
+  async run({ sandbox_id: sandboxId, cmd, args, cwd, env, stream }, ctx) {
     if (scope && !sandboxId.split(':').pop()?.startsWith(`${scope}-`)) {
       throw new Error(`Not a sandbox: ${sandboxId}`);
     }
@@ -54,8 +55,8 @@ export const runCommand = (
       args,
       cwd,
       env,
-      stdout: output,
-      stderr: output,
+      stdout: stream === 'stderr' ? undefined : output,
+      stderr: stream === 'stdout' ? undefined : output,
       signal: ctx.mcpReq.signal,
     });
 
