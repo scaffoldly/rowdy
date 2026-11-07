@@ -165,10 +165,11 @@ export class MicrovmShellProxy extends ShellProxy<MicrovmPipeline> {
   override into(): Observable<Response<MicrovmPipeline>> {
     return this.invoke().pipe(
       map((shell) => {
+        const cmdId = randomUUID();
         const response = new MicrovmResponse(this.pipeline, this.hook)
           .withHeader('content-type', EXEC_CONTENT_TYPE)
-          .withHeader(EXEC_ID_HEADER, randomUUID());
-        this.multiplex(shell, response);
+          .withHeader(EXEC_ID_HEADER, cmdId);
+        this.multiplex(cmdId, shell, response);
 
         // A caller that hangs up is the only one who could read the command's output, and how a signal reaches it.
         const { res } = this.hook;

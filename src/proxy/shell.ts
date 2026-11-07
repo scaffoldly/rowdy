@@ -149,10 +149,34 @@ export class ShellProxy<P extends Pipeline> extends Proxy<P, ShellResponse> {
     throw new Error('Method not implemented.');
   }
 
-  /** Sends a running command to `response` as exec frames. `settle` runs each way the command can end. */
-  protected multiplex(shell: ShellResponse, response: Response<P>, settle = (end: () => void): void => end()): void {
-    const send = (stream: number, payload: Buffer): void =>
+  /**
+   * Sends a running command to `response` as exec frames, and to the log, under `cmdId`, for whoever reads it later.
+   * `settle` runs each way the command can end.
+   */
+  protected multiplex(
+    cmdId: string,
+    shell: ShellResponse,
+    response: Response<P>,
+    settle = (end: () => void): void => end()
+  ): void {
+    let seq = 0;
+    let logged = 0;
+    const line = (stream: number, data: Buffer, dropped?: boolean): void => {
+      process.stdout.write(
+        `${JSON.stringify({ [EXEC_LOG.key]: { cmd: cmdId, seq: seq++, stream, data: data.toString('base64'), dropped } })}\n`
+      );
+    };
+
+    const send = (stream: number, payload: Buffer): void => {
       response.next(new Chunk(execFrame(stream, payload), payload.length));
+
+      if (stream !== EXEC_STREAM.EXIT && logged >= EXEC_LOG.limit) return;
+      logged += payload.length;
+      for (let start = 0; start < payload.length; start += EXEC_LOG.chunk) {
+        line(stream, payload.subarray(start, start + EXEC_LOG.chunk));
+      }
+      if (stream !== EXEC_STREAM.EXIT && logged >= EXEC_LOG.limit) line(stream, Buffer.alloc(0), true);
+    };
 
     shell.fds.stdout.on('data', (chunk: Buffer) => send(EXEC_STREAM.STDOUT, chunk));
     shell.fds.stderr.on('data', (chunk: Buffer) => send(EXEC_STREAM.STDERR, chunk));
@@ -172,6 +196,12 @@ export class ShellProxy<P extends Pipeline> extends Proxy<P, ShellResponse> {
 // reports an exit out of band, so EXIT is rowdy's own type, past Docker's stdin 0, stdout 1, stderr 2, systemerr 3.
 export const EXEC_STREAM = { STDOUT: 1, STDERR: 2, EXIT: 4 } as const;
 export const EXEC_CONTENT_TYPE = 'application/vnd.rowdy.multiplexed-stream';
+
+/**
+ * A command's output in rowdy's own log, one JSON line per chunk, for a reader that wasn't attached. `chunk` keeps a
+ * line under CloudWatch's size for an event once in base64. `limit` is per command, because the log is billed by the GB.
+ */
+export const EXEC_LOG = { key: 'rowdy.exec', chunk: 48 * 1024, limit: 16 * 1024 * 1024 };
 
 export const execFrame = (stream: number, payload: Buffer): Buffer => {
   const header = Buffer.alloc(8);
