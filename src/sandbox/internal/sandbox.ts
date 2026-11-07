@@ -80,11 +80,11 @@ export class SandboxImpl implements Sandbox {
     }
     this.environment = new Environment(log, { signal });
 
-    this.compute = new RUNTIMES[runtime ?? 'aws.lambda'](this.environment);
+    this.compute = new RUNTIMES[runtime ?? 'aws.microvm'](this.environment);
   }
 
   static create(options?: SandboxOptions): SandboxPromiseImpl {
-    const runtime = options?.runtime ?? 'aws.lambda';
+    const runtime = options?.runtime ?? 'aws.microvm';
     const sandbox = new SandboxImpl({ runtime, logLevel: options?.logLevel, signal: options?.signal });
     const { signal } = sandbox.environment;
 

@@ -20,7 +20,10 @@ import { toolResult, type Tool } from '../../mcp/tool';
 export const PROGRESS = { delay: 15000 };
 
 const inputSchema = z.object({
-  runtime: z.enum(['aws.lambda', 'aws.microvm']).optional().describe('Where the sandbox runs.'),
+  runtime: z
+    .enum(['aws.microvm', 'aws.lambda'])
+    .optional()
+    .describe('Where the sandbox runs. Defaults to aws.microvm.'),
   image: z.string().optional().describe('The container image to run. Defaults to scaffoldly/sandbox.'),
   name: z.string().optional().describe('The prefix of a generated name. Defaults to sandbox.'),
   timeout: z.number().optional().describe('Milliseconds until the sandbox stops, in whole seconds.'),

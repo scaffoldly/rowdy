@@ -8,7 +8,7 @@ role and what it runs on, and carries each command's output back as it is writte
 ```ts
 import { Sandbox } from '@scaffoldly/rowdy/sandbox';
 
-const sandbox = await Sandbox.create({ runtime: 'aws.microvm' });
+const sandbox = await Sandbox.create();
 
 try {
   const result = await sandbox.runCommand('echo', ['hello world']);
@@ -28,7 +28,7 @@ Installing the package and AWS credentials are covered in [the SDK docs](../sdk.
 checks them against that choice, and `Sandbox.create` throws a `RangeError` for a value out of range
 before anything reaches AWS.
 
-|                         | `aws.lambda` (default)             | `aws.microvm`                        |
+|                         | `aws.lambda`                       | `aws.microvm` (default)              |
 | ----------------------- | ---------------------------------- | ------------------------------------ |
 | Runs on                 | A Lambda function                  | A Lambda MicroVM                     |
 | `timeout`, in ms        | 1000 to 900000, whole seconds      | 1000 to 28800000, whole seconds      |
@@ -60,7 +60,7 @@ const sandbox = await Sandbox.create({
 
 | Option     | Default              |                                                                            |
 | ---------- | -------------------- | -------------------------------------------------------------------------- |
-| `runtime`  | `aws.lambda`         | See [Runtime](#runtime).                                                   |
+| `runtime`  | `aws.microvm`        | See [Runtime](#runtime).                                                   |
 | `image`    | `scaffoldly/sandbox` | The container image. An image with no registry comes from `mirror.gcr.io`. |
 | `name`     | `sandbox`            | The prefix of the generated name, `{name}-{suffix}`.                       |
 | `timeout`  | 15 minutes           | See [Runtime](#runtime).                                                   |

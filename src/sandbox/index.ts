@@ -22,8 +22,8 @@ interface BaseSandboxOptions {
 }
 
 export interface LambdaSandboxOptions extends BaseSandboxOptions {
-  /** Where the sandbox runs. Defaults to `aws.lambda`. */
-  runtime?: 'aws.lambda';
+  /** Where the sandbox runs. */
+  runtime: 'aws.lambda';
   /** Milliseconds until the sandbox stops: whole seconds, 1000 to 900000. */
   timeout?: number;
   /** Memory in megabytes: a whole number, 128 to 10240. */
@@ -36,8 +36,8 @@ export interface LambdaSandboxOptions extends BaseSandboxOptions {
 }
 
 export interface MicrovmSandboxOptions extends BaseSandboxOptions {
-  /** Where the sandbox runs. */
-  runtime: 'aws.microvm';
+  /** Where the sandbox runs. Defaults to `aws.microvm`. */
+  runtime?: 'aws.microvm';
   /** Milliseconds until the sandbox stops: whole seconds, 1000 to 28800000. */
   timeout?: number;
   /** Baseline memory in megabytes. */
