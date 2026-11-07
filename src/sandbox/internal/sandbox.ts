@@ -1,4 +1,13 @@
-import type { CommandFinished, RunCommandOptions, RunCommandParams, Sandbox, SandboxLookup, SandboxOptions } from '..';
+import type {
+  CommandFinished,
+  RunCommandOptions,
+  RunCommandParams,
+  Sandbox,
+  SandboxLookup,
+  SandboxOptions,
+  SandboxToolsOptions,
+  Tool,
+} from '..';
 import { isAxiosError } from 'axios';
 import {
   catchError,
@@ -117,6 +126,10 @@ export class SandboxImpl implements Sandbox {
         defer(() => sandbox.compute.attach(sandboxId)).pipe(map(() => sandbox.stoppingOnAbort()))
       )
     );
+  }
+
+  static tools(_options?: SandboxToolsOptions): Tool[] {
+    return [];
   }
 
   get sandboxId(): string {

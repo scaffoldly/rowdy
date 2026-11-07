@@ -114,6 +114,7 @@
     "@bufbuild/protobuf": "^2.10.0",
     "@connectrpc/connect": "^2.1.0",
     "@eslint/js": "^9.28.0",
+    "@modelcontextprotocol/server": "^2.4.0",
     "@scaffoldly/rowdy-cdk": "0.1.0-beta.20261107003438.8b4bb83",
     "@scaffoldly/rowdy-grpc": "^0.1.0-beta.20261015173030.c8f7cb7",
     "@scaffoldly/rowdy-vfs": "^0.1.0-beta.20261025040757.7c82f24",
@@ -149,7 +150,8 @@
     "typescript": "^5.0.0",
     "whatwg-encoding": "^3.1.1",
     "yaml": "^2.8.1",
-    "yargs": "17"
+    "yargs": "17",
+    "zod": "^4.6.7"
   },
   "pkg": {
     "bin": "dist/index.js",

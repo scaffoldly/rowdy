@@ -738,6 +738,12 @@ describe('sandbox', () => {
     });
   });
 
+  describe('tools', () => {
+    it('has none yet', () => {
+      expect(Sandbox.tools()).toEqual([]);
+    });
+  });
+
   describe('sandboxId', () => {
     it('is the function arn', async () => {
       const sandbox = await SandboxImpl.create();
@@ -998,8 +1004,8 @@ describe('sandbox', () => {
     });
   });
 
-  it('exposes only create and get', () => {
-    expect(Object.keys(Sandbox).sort()).toEqual(['create', 'get']);
+  it('exposes only create, get and tools', () => {
+    expect(Object.keys(Sandbox).sort()).toEqual(['create', 'get', 'tools']);
   });
 
   it('feeds its signal to its environment', async () => {

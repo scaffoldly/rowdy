@@ -1,6 +1,7 @@
 import type { Writable } from 'stream';
 import type { Exec, ExecFinished } from '../api/types';
 import type { Level } from '../log';
+import type { Tool } from '../mcp/tool';
 import type { MICROVM_MEMORY } from './internal/compute';
 import { SandboxImpl } from './internal/sandbox';
 
@@ -41,6 +42,10 @@ export interface MicrovmSandboxOptions extends BaseSandboxOptions {
 }
 
 export type SandboxOptions = LambdaSandboxOptions | MicrovmSandboxOptions;
+
+export type SandboxToolsOptions = Pick<SandboxOptions, 'logLevel' | 'signal'>;
+
+export type { Tool };
 
 export interface SandboxLookup {
   sandboxId: string;
@@ -125,9 +130,12 @@ export interface SandboxFactory {
   create(options?: SandboxOptions): Promise<Sandbox>;
   /** Connects to a sandbox that is already running. */
   get(lookup: SandboxLookup): Promise<Sandbox>;
+  /** The MCP tools for sandboxes, for a host to add to its own server. */
+  tools(options?: SandboxToolsOptions): Tool[];
 }
 
 export const Sandbox: SandboxFactory = {
   create: (options) => SandboxImpl.create(options),
   get: (lookup) => SandboxImpl.get(lookup),
+  tools: (options) => SandboxImpl.tools(options),
 };
