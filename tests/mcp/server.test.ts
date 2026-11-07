@@ -1,7 +1,8 @@
 import { McpServer } from '@modelcontextprotocol/server';
 import { afterEach, describe, expect, it, jest } from '@jest/globals';
 import type { Environment } from '../../src/environment';
-import { serve } from '../../src/mcp/server';
+import { INSTRUCTIONS, serve } from '../../src/mcp/server';
+import { Sandbox } from '../../src/sandbox';
 
 const environment = (): Environment =>
   ({
@@ -24,6 +25,18 @@ describe('serve', () => {
 
     expect(register.mock.calls.map(([name]) => name)).toEqual(['create_sandbox', 'run_command', 'stop_sandbox']);
     expect(connect).toHaveBeenCalledTimes(1);
+  });
+
+  it('tells a client what it is', async () => {
+    const connect = jest.spyOn(McpServer.prototype, 'connect').mockResolvedValue();
+
+    await serve(environment());
+
+    expect((connect.mock.contexts[0] as McpServer).server['_instructions']).toBe(INSTRUCTIONS);
+  });
+
+  it('names no tool, so tools can change without it', () => {
+    Sandbox.tools().forEach(({ name }) => expect(INSTRUCTIONS).not.toContain(name));
   });
 
   it('aborts when the client hangs up', async () => {
