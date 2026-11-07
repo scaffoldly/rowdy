@@ -9,16 +9,24 @@ describe('exec log', () => {
   const { chunk, limit } = EXEC_LOG;
   let lines: Line[];
   let write: jest.SpiedFunction<typeof process.stdout.write>;
+  let flush: () => void;
 
-  const start = (): { stdout: PassThrough; stderr: PassThrough; exit: Subject<ShellExit>; chunks: unknown[] } => {
+  const start = (): {
+    stdout: PassThrough;
+    stderr: PassThrough;
+    exit: Subject<ShellExit>;
+    chunks: unknown[];
+    ended: jest.Mock;
+  } => {
     const stdout = new PassThrough();
     const stderr = new PassThrough();
     const exit = new Subject<ShellExit>();
     const shell = Object.assign(exit, { fds: { stdout, stderr } }) as unknown as ShellResponse;
     const chunks: unknown[] = [];
-    const response = { next: (chunk: unknown) => chunks.push(chunk), complete: () => {}, error: () => {} };
+    const ended = jest.fn();
+    const response = { next: (chunk: unknown) => chunks.push(chunk), complete: ended, error: () => {} };
     ShellProxy.prototype['multiplex'].call({}, 'cmd-1', shell, response as never);
-    return { stdout, stderr, exit, chunks };
+    return { stdout, stderr, exit, chunks, ended };
   };
 
   const decoded = (stream: number): string =>
@@ -29,10 +37,12 @@ describe('exec log', () => {
 
   beforeEach(() => {
     lines = [];
-    write = jest.spyOn(process.stdout, 'write').mockImplementation((text) => {
-      lines.push(JSON.parse(`${text}`)[EXEC_LOG.key]);
+    flush = () => {};
+    write = jest.spyOn(process.stdout, 'write').mockImplementation(((text: string, done?: () => void) => {
+      if (text) lines.push(JSON.parse(text)[EXEC_LOG.key]);
+      flush = done ?? flush;
       return true;
-    });
+    }) as never);
   });
 
   afterEach(() => {
@@ -54,6 +64,17 @@ describe('exec log', () => {
     ]);
     expect(decoded(EXEC_STREAM.STDOUT)).toBe('out');
     expect(JSON.parse(decoded(EXEC_STREAM.EXIT))).toEqual({ code: 3 });
+  });
+
+  it('ends the response only once stdout has drained', () => {
+    const { exit, ended } = start();
+
+    exit.next({ code: 0 });
+    exit.complete();
+    expect(ended).toHaveBeenCalledTimes(0);
+
+    flush();
+    expect(ended).toHaveBeenCalledTimes(1);
   });
 
   it('still sends every frame to the response', () => {

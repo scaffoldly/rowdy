@@ -276,6 +276,21 @@ describe('shell', () => {
       }
     });
 
+    it('leaves its output to the frames, not to lines in the log', async () => {
+      const info = jest.spyOn(console, 'info').mockImplementation(() => {});
+      const error = jest.spyOn(console, 'error').mockImplementation(() => {});
+      try {
+        const script = 'console.log("out-line"); console.error("err-line")';
+        const sent = await collect(exec({ cmd: process.execPath, args: ['-e', script] }));
+
+        expect(sent).toContainEqual({ stream: EXEC_STREAM.STDOUT, payload: 'out-line\n' });
+        expect(JSON.stringify([info.mock.calls, error.mock.calls])).not.toMatch(/out-line|err-line/);
+      } finally {
+        info.mockRestore();
+        error.mockRestore();
+      }
+    });
+
     it('applies the event cwd and env', async () => {
       const script = 'process.stdout.write(process.env.FOO)';
       const sent = await collect(

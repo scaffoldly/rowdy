@@ -159,6 +159,9 @@ export class ShellProxy<P extends Pipeline> extends Proxy<P, ShellResponse> {
     response: Response<P>,
     settle = (end: () => void): void => end()
   ): void {
+    // The frames below carry the output into the log.
+    shell.relaying = false;
+
     let seq = 0;
     let logged = 0;
     const line = (stream: number, data: Buffer, dropped?: boolean): void => {
@@ -182,8 +185,9 @@ export class ShellProxy<P extends Pipeline> extends Proxy<P, ShellResponse> {
     shell.fds.stderr.on('data', (chunk: Buffer) => send(EXEC_STREAM.STDERR, chunk));
     shell.subscribe({
       next: (exit) => send(EXEC_STREAM.EXIT, Buffer.from(JSON.stringify(exit))),
-      error: (error: Error) => settle(() => response.error(error)),
-      complete: () => settle(() => response.complete()),
+      // Lambda freezes a function when its response ends, so what stdout still holds has to reach the log first.
+      error: (error: Error) => process.stdout.write('', () => settle(() => response.error(error))),
+      complete: () => process.stdout.write('', () => settle(() => response.complete())),
     });
   }
 
@@ -302,7 +306,7 @@ export class ShellResponse extends Subject<ShellExit> implements ILoggable {
     let partial = '';
     return (chunk?: Buffer): void => {
       if (!chunk) {
-        out.relay(sink, partial); // stream ended: flush an unterminated last line
+        if (response.relaying) out.relay(sink, partial); // stream ended: flush an unterminated last line
         if (partial) {
           response.keep(stream, partial);
         }
@@ -313,7 +317,7 @@ export class ShellResponse extends Subject<ShellExit> implements ILoggable {
       const lines = (partial + chunk.toString()).split(/\r?\n/);
       partial = lines.pop() ?? '';
       for (const line of lines) {
-        out.relay(sink, line);
+        if (response.relaying) out.relay(sink, line);
         response.keep(stream, line);
       }
     };
@@ -321,6 +325,8 @@ export class ShellResponse extends Subject<ShellExit> implements ILoggable {
 
   public readonly output = new PassThrough();
   public readonly startedAt = performance.now();
+  /** Whether output goes to the log a line at a time. */
+  public relaying = true;
   private _bytes: number = 0;
   private _code?: number;
   private _pid?: number;
