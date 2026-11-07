@@ -34,18 +34,19 @@ export const computeHash = (template: string): string => {
   return [...String(hash)].map((digit) => ALPHANUMS[digit.charCodeAt(0) % ALPHANUMS.length]).join('');
 };
 
-const COMPUTES: Record<NonNullable<SandboxOptions['compute']>, SandboxComputeClass> = {
-  lambda: LambdaCompute,
-  microvm: MicrovmCompute,
+const RUNTIMES: Record<NonNullable<SandboxOptions['runtime']>, SandboxComputeClass> = {
+  'aws.lambda': LambdaCompute,
+  'aws.microvm': MicrovmCompute,
 };
 
 export class SandboxImpl implements Sandbox {
   private environment: Environment;
   private compute: SandboxCompute;
 
-  private constructor({ compute, logLevel, signal }: Pick<SandboxOptions, 'compute' | 'logLevel' | 'signal'>) {
-    // A host's terminal stays quiet unless logLevel, ROWDY_LOG_LEVEL, ROWDY_DEBUG or ROWDY_TRACE says otherwise.
-    const log = new Logger('sandbox');
+  private constructor({ runtime, logLevel, signal }: Pick<SandboxOptions, 'runtime' | 'logLevel' | 'signal'>) {
+    // A host's stdout is its own. Its terminal stays quiet unless logLevel, ROWDY_LOG_LEVEL, ROWDY_DEBUG or ROWDY_TRACE
+    // says otherwise.
+    const log = new Logger('sandbox').withSink('stderr');
     if (logLevel) {
       log.withLevel(logLevel);
     } else if (!process.env.ROWDY_LOG_LEVEL && log.level === 'info') {
@@ -53,20 +54,20 @@ export class SandboxImpl implements Sandbox {
     }
     this.environment = new Environment(log, { signal });
 
-    this.compute = new COMPUTES[compute ?? 'lambda'](this.environment);
+    this.compute = new RUNTIMES[runtime ?? 'aws.lambda'](this.environment);
   }
 
   static async create(options?: SandboxOptions): Promise<SandboxImpl> {
-    const compute = options?.compute ?? 'lambda';
+    const runtime = options?.runtime ?? 'aws.lambda';
     const image = options?.image ?? 'scaffoldly/sandbox';
     const timeout = options?.timeout ?? 15 * 60 * 1000;
     const memory = options?.memory ?? 512;
-    const env = { ...COMPUTES[compute].env, ...options?.env };
+    const env = { ...RUNTIMES[runtime].env, ...options?.env };
 
-    COMPUTES[compute].assert({ timeout, memory, env });
+    RUNTIMES[runtime].assert({ timeout, memory, env });
 
     // The same options reuse a function, and different ones share no env or config.
-    const suffix = computeHash(JSON.stringify({ compute, image, timeout, memory, env: Object.entries(env).sort() }));
+    const suffix = computeHash(JSON.stringify({ runtime, image, timeout, memory, env: Object.entries(env).sort() }));
 
     // TODO: a generated suffix, once a sandbox can be deleted: a new name is a new function and role on every create.
     // Kubernetes' generateName suffix: 5 random characters.
@@ -74,7 +75,7 @@ export class SandboxImpl implements Sandbox {
 
     const name = `${options?.name || 'sandbox'}-${suffix}`;
 
-    const sandbox = new SandboxImpl({ compute, logLevel: options?.logLevel, signal: options?.signal });
+    const sandbox = new SandboxImpl({ runtime, logLevel: options?.logLevel, signal: options?.signal });
 
     const { signal } = sandbox.environment;
 
@@ -104,8 +105,8 @@ export class SandboxImpl implements Sandbox {
   }
 
   static async get({ sandboxId, signal: abort }: SandboxLookup): Promise<SandboxImpl> {
-    const compute = sandboxId.includes(':microvm-image:') ? 'microvm' : 'lambda';
-    const sandbox = new SandboxImpl({ compute, signal: abort });
+    const runtime = sandboxId.includes(':microvm-image:') ? 'aws.microvm' : 'aws.lambda';
+    const sandbox = new SandboxImpl({ runtime, signal: abort });
     const { signal } = sandbox.environment;
 
     return lastValueFrom(

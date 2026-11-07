@@ -16,8 +16,8 @@ interface BaseSandboxOptions {
 }
 
 export interface LambdaSandboxOptions extends BaseSandboxOptions {
-  /** Where the sandbox runs. Defaults to `lambda`. */
-  compute?: 'lambda';
+  /** Where the sandbox runs. Defaults to `aws.lambda`. */
+  runtime?: 'aws.lambda';
   /** Milliseconds until the sandbox stops: whole seconds, 1000 to 900000. */
   timeout?: number;
   /** Memory in megabytes: a whole number, 128 to 10240. */
@@ -31,7 +31,7 @@ export interface LambdaSandboxOptions extends BaseSandboxOptions {
 
 export interface MicrovmSandboxOptions extends BaseSandboxOptions {
   /** Where the sandbox runs. */
-  compute: 'microvm';
+  runtime: 'aws.microvm';
   /** Milliseconds until the sandbox stops: whole seconds, 1000 to 28800000. */
   timeout?: number;
   /** Baseline memory in megabytes. */
@@ -61,7 +61,7 @@ export interface RunCommandParams {
   // TODO: detached
   // /** Resolves once the command has started instead of when it exits. */
   // detached?: boolean;
-  /** Kills the command and rejects. On `compute: 'lambda'` only the waiting stops: it runs on until it exits or times out. */
+  /** Kills the command and rejects. On `runtime: 'aws.lambda'` only the waiting stops: it runs on until it exits or times out. */
   signal?: AbortSignal;
 }
 
@@ -71,7 +71,7 @@ export interface RunCommandParams {
 // }
 
 export interface RunCommandOptions {
-  /** Kills the command and rejects. On `compute: 'lambda'` only the waiting stops: it runs on until it exits or times out. */
+  /** Kills the command and rejects. On `runtime: 'aws.lambda'` only the waiting stops: it runs on until it exits or times out. */
   signal?: AbortSignal;
 }
 
@@ -115,7 +115,7 @@ export interface Sandbox {
   // mkDir(path: string): Promise<void>;
   /**
    * Ends everything running in this sandbox, including a command in progress, and everything a `Sandbox.get` of it
-   * started. Safe to call more than once. The next command starts it again. `compute: 'lambda'` rejects for now.
+   * started. Safe to call more than once. The next command starts it again. `runtime: 'aws.lambda'` rejects for now.
    */
   stop(): Promise<void>;
 }
