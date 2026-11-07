@@ -8,6 +8,7 @@ const id = (): string => {
 
 export { VERSION, NAME, id };
 export { ClientLogger } from './client';
+export { SmithyClientLogger } from './smithy';
 export type { ClientLoggerOptions } from './client';
 export { LIFECYCLES } from './event';
 export type { CdkEvent, CdkEventType } from './event';
