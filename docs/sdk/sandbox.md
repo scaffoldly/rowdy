@@ -187,7 +187,9 @@ running until `timeout`, unless the program stops it.
 
 ## Events
 
-Rowdy reports each step it takes on AWS. A step has a `type`, which narrows its `lifecycle`:
+Rowdy reports what it does. Every event has a readable `message`. Check `source` before anything else, since the rest
+depends on it. A step on AWS has `source: 'cdk'` and a
+`type`, which narrows its `lifecycle`:
 
 | `type`     | `lifecycle`               |
 | ---------- | ------------------------- |
@@ -201,8 +203,29 @@ Rowdy reports each step it takes on AWS. A step has a `type`, which narrows its 
 `failed` can follow any of them.
 
 ```ts
-{ source: 'cdk', type: 'create', lifecycle: 'creating', client: 'IAMClient', action: 'CreateRole', name: 'sandbox-abc' }
+{
+  source: 'cdk',
+  message: 'CreateRole: creating',
+  type: 'create',
+  lifecycle: 'creating',
+  client: 'IAMClient',
+  action: 'CreateRole',
+  name: 'sandbox-abc',
+}
 ```
+
+Copying an image into ECR reports its progress with `source: 'transfer'`, whenever that changes:
+
+```ts
+{
+  source: 'transfer',
+  message: 'Copying the image: 4/9 transfers: 40% complete',
+  lifecycle: 'copying',
+  summary: '4/9 transfers: 40% complete',
+}
+```
+
+`lifecycle` is `copying`, `copied` or `failed`.
 
 Pass `onEvent` to `Sandbox.create` or `runCommand`. It can be a callback or a promise of one. Callbacks run one at a
 time, in order, and an error from one is logged and doesn't affect the sandbox.
@@ -210,9 +233,9 @@ time, in order, and an error from one is logged and doesn't affect the sandbox.
 ```ts
 const sandbox = await Sandbox.create({
   runtime: 'aws.microvm',
-  onEvent: ({ type, lifecycle, action }) => {
-    if (type === 'create' && lifecycle === 'created') {
-      console.error(action);
+  onEvent: (event) => {
+    if (event.source === 'cdk' && event.type === 'create' && event.lifecycle === 'created') {
+      console.error(event.action);
     }
   },
 });
@@ -232,8 +255,7 @@ creating.events().subscribe(console.error);
 const sandbox = await creating;
 ```
 
-ECR's repository and credential steps report events, but copying the image's layers doesn't, and neither does a command's
-own output.
+A command's own output isn't an event.
 
 ## What rowdy creates
 

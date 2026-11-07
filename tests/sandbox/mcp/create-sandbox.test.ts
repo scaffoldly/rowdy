@@ -1,5 +1,7 @@
 import type { ServerContext } from '@modelcontextprotocol/server';
 import { afterEach, beforeEach, describe, expect, it, jest } from '@jest/globals';
+import { Subject } from 'rxjs';
+import type { Event } from '../../../src/events';
 import type { Sandbox, SandboxFactory, SandboxOptions, SandboxToolsOptions } from '../../../src/sandbox';
 import { PROGRESS, createSandbox } from '../../../src/sandbox/mcp/create-sandbox';
 
@@ -7,10 +9,12 @@ const sandboxId = 'arn:aws:lambda:us-east-1:123456789012:microvm-image:sandbox-b
 
 const setup = (
   options: SandboxToolsOptions = {},
-  create: () => Promise<Sandbox> = async () => ({ sandboxId }) as Sandbox
+  create: (event$: Subject<Event>) => Promise<Sandbox> = async () => ({ sandboxId }) as Sandbox
 ) => {
-  const spy = jest.fn(create as SandboxFactory['create']);
-  const notify = jest.fn(async () => {});
+  const event$ = new Subject<Event>();
+  const spy = jest.fn((() =>
+    Object.assign(create(event$), { events: () => event$ })) as unknown as SandboxFactory['create']);
+  const notify = jest.fn(async (_notification: { params: { message: string; progress: number } }) => {});
   const tool = createSandbox({ create: spy }, options);
   const run = (input: Record<string, unknown> = {}, _meta?: { progressToken: string }) =>
     tool.run(tool.inputSchema.parse(input), { mcpReq: { _meta, notify } } as unknown as ServerContext);
@@ -190,9 +194,68 @@ describe('create_sandbox', () => {
       expect(notify.mock.calls[0]).toEqual([
         {
           method: 'notifications/progress',
-          params: { progressToken: 'token', progress: 1, message: 'Building the sandbox' },
+          params: { progressToken: 'token', progress: 1, message: 'Creating the sandbox' },
         },
       ]);
+    });
+
+    const step: Event = {
+      source: 'cdk',
+      message: 'CreateRole: creating',
+      type: 'create',
+      lifecycle: 'creating',
+      client: 'IAMClient',
+      action: 'CreateRole',
+    };
+
+    const stepping = async (event$: Subject<Event>): Promise<Sandbox> => {
+      await Promise.resolve();
+      event$.next({ ...step, type: 'read', lifecycle: 'reading', message: 'GetRole: reading' });
+      event$.next(step);
+      event$.next({ ...step, lifecycle: 'failed', message: 'CreateFunction: failed' });
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      return { sandboxId } as Sandbox;
+    };
+
+    it('reports every step', async () => {
+      PROGRESS.delay = 60000;
+      const { run, notify } = setup({}, stepping);
+
+      await run({}, { progressToken: 'token' });
+
+      expect(notify.mock.calls.map(([{ params }]) => params.message)).toEqual([
+        'GetRole: reading',
+        'CreateRole: creating',
+        'CreateFunction: failed',
+      ]);
+    });
+
+    it('reports a transfer', async () => {
+      PROGRESS.delay = 60000;
+      const { run, notify } = setup({}, async (event$) => {
+        await Promise.resolve();
+        event$.next({
+          source: 'transfer',
+          message: 'Copying the image: 40%',
+          lifecycle: 'copying',
+          summary: '40%',
+        });
+        await new Promise((resolve) => setTimeout(resolve, 5));
+        return { sandboxId } as Sandbox;
+      });
+
+      await run({}, { progressToken: 'token' });
+
+      expect(notify.mock.calls.map(([{ params }]) => params.message)).toEqual(['Copying the image: 40%']);
+    });
+
+    it('only ever counts up, across steps and the steady notification', async () => {
+      const { run, notify } = setup({}, stepping);
+
+      await run({}, { progressToken: 'token' });
+
+      const progress = notify.mock.calls.map(([{ params }]) => params.progress);
+      expect(progress).toEqual(progress.map((_, index) => index + 1));
     });
 
     it('stops when the build is done', async () => {

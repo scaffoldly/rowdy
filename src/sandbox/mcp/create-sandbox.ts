@@ -1,13 +1,14 @@
 import {
   EMPTY,
   catchError,
+  concatMap,
   from,
   ignoreElements,
+  iif,
   interval,
   lastValueFrom,
   map,
   merge,
-  switchMap,
   takeUntil,
 } from 'rxjs';
 import { z } from 'zod';
@@ -15,7 +16,7 @@ import type { SandboxFactory, SandboxOptions, SandboxToolsOptions } from '..';
 import { DEFAULTS } from '../internal/compute';
 import type { Tool } from '../../mcp/tool';
 
-/** How often a client hears that a build is still going, in milliseconds. */
+/** How often a client hears that a build is still going, with or without events, in milliseconds. */
 export const PROGRESS = { delay: 15000 };
 
 const inputSchema = z.object({
@@ -81,12 +82,20 @@ export const createSandbox = (
             structuredContent: { sandboxId },
           }))
         ),
-        (progressToken === undefined ? EMPTY : interval(PROGRESS.delay)).pipe(
+        iif(
+          () => progressToken === undefined,
+          EMPTY,
+          merge(
+            created.events().pipe(map(({ message }) => message)),
+            // A build can go a while without a change, and a client may time out without progress.
+            interval(PROGRESS.delay).pipe(map(() => 'Creating the sandbox'))
+          )
+        ).pipe(
           takeUntil(from(created)),
-          switchMap((tick) =>
+          concatMap((message, index) =>
             ctx.mcpReq.notify({
               method: 'notifications/progress',
-              params: { progressToken, progress: tick + 1, message: 'Building the sandbox' },
+              params: { progressToken, progress: index + 1, message },
             })
           ),
           // A client that can't hear progress still gets the result.

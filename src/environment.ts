@@ -192,7 +192,7 @@ export class Environment implements ILoggable {
 
   public abort: AbortController;
   public readonly signal: AbortSignal;
-  /** Events from clients that aren't a compute's own, for its stream to include. */
+  /** Events from what isn't a compute's own, such as copying an image. */
   public readonly event$ = new Subject<Event>();
   public readonly bin = Object.keys(packageJson.bin)[0];
 

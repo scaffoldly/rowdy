@@ -1,4 +1,4 @@
-import { defer, last, map, merge, Observable, throwError } from 'rxjs';
+import { defer, last, map, Observable, throwError } from 'rxjs';
 import { deploySources } from '../../api/internal/layers';
 import { Exec } from '../../api/types';
 import type { Event } from '../../events';
@@ -32,7 +32,7 @@ export class LambdaCompute implements SandboxCompute {
 
   private lambda: LambdaFunction;
 
-  constructor(private environment: Environment) {
+  constructor(environment: Environment) {
     this.lambda = new LambdaFunction(
       'Sandbox',
       new LambdaImageService(environment).withLayersFrom(deploySources(undefined))
@@ -79,8 +79,8 @@ export class LambdaCompute implements SandboxCompute {
     return this.lambda.exec(event);
   }
 
-  events(): Observable<Event> {
-    return merge(this.lambda.events(), this.environment.event$);
+  events(): Observable<Extract<Event, { source: 'cdk' }>> {
+    return this.lambda.events();
   }
 
   stop(): Observable<this> {

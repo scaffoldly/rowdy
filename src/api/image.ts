@@ -28,7 +28,14 @@ export class ImageApi implements IImageApi {
           Transfer.normalize(opts?.authorization, opts?.registry),
           Transfer.collect(this.log, this.http, opts?.layersFrom),
           Transfer.prepare(this.log, this.http, this.registry),
-          Transfer.upload(this.log, this.http),
+          Transfer.upload(this.log, this.http, {
+            next: (event) =>
+              this.api.environment?.event$.next({
+                source: 'transfer',
+                message: `Copying the image: ${event.summary}`,
+                ...event,
+              }),
+          }),
           Transfer.denormalize(opts?.platform)
         )
         .pipe(

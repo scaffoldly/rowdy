@@ -82,7 +82,7 @@ export class SandboxImpl implements Sandbox {
 
     if (options?.onEvent) {
       const onEvent = Promise.resolve(options.onEvent);
-      sandbox.compute
+      sandbox
         .events()
         .pipe(
           // One at a time, so a slow callback still sees them in order.
@@ -190,8 +190,7 @@ export class SandboxImpl implements Sandbox {
     const onEvent = params.onEvent && Promise.resolve(params.onEvent);
     const subscription =
       onEvent &&
-      this.compute
-        .events()
+      this.events()
         .pipe(
           // One at a time, so a slow callback still sees them in order.
           concatMap((event) =>
@@ -266,7 +265,7 @@ export class SandboxImpl implements Sandbox {
   }
 
   events(): Observable<Event> {
-    return this.compute.events();
+    return merge(this.compute.events(), this.environment.event$);
   }
 
   // Only once there's a sandbox: an abort before that has nothing to stop.
