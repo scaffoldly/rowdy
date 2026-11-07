@@ -135,7 +135,7 @@ export class MicrovmCompute extends AwsClientLogger implements SandboxCompute {
       switchMap(({ ImageUri, Bucket, baseImageArn, Region, Identity }) => {
         const RoleName = LambdaFunction.roleName(Transfer.normalizeImage(image), name);
         const imageIdentifier = `arn:aws:lambda:${Region}:${Identity.Account}:microvm-image:${name}`;
-        const Key = `${name}/code.zip`;
+        const Key = `${name}/${ImageUri}.zip`;
 
         return this.role(RoleName, Bucket, Key, ImageUri).pipe(
           switchMap((buildRoleArn) =>
