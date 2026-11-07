@@ -492,7 +492,7 @@ export class LambdaShellProxy extends ShellProxy<LambdaPipeline> {
           response.error(new Error('Request deadline reached'));
         });
 
-        this.multiplex(shell, response, cancelDeadline);
+        this.multiplex(this.pipeline.requestId, shell, response, cancelDeadline);
 
         return response;
       })

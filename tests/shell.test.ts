@@ -218,7 +218,7 @@ describe('shell', () => {
     const lambda = (): LambdaPipeline => {
       const environment = new Environment(new Logger());
       Object.defineProperty(environment, 'Env', { get: () => of({ ...process.env }) });
-      return new LambdaPipeline(environment);
+      return Object.assign(new LambdaPipeline(environment), { _requestId: 'request-1' });
     };
 
     const exec = (spec: Record<string, unknown>): string =>
