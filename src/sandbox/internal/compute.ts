@@ -1,6 +1,7 @@
 import type { Observable } from 'rxjs';
 import type { Exec } from '../../api/types';
 import type { Environment } from '../../environment';
+import type { Event } from '../../events';
 import type { ExecSchema } from '../../routes';
 
 /** What a sandbox has unless its options set it: `timeout` in milliseconds, `memory` in MB. */
@@ -32,6 +33,8 @@ export interface SandboxCompute {
   exec(event: ExecSchema): Observable<Exec>;
   /** Emits once, when nothing is left running. Safe to call more than once. */
   stop(): Observable<this>;
+  /** Each step of what this compute does on its provider, from now on. */
+  events(): Observable<Event>;
 }
 
 export interface SandboxComputeClass {

@@ -1,53 +1,26 @@
-import { Logger as ClientLogger } from '@smithy/types';
-import { inspect } from 'util';
-import { Logger, maskJson } from '../log';
+import { SmithyClientLogger } from '@scaffoldly/rowdy-cdk';
+import { map, Observable } from 'rxjs';
+import type { Event } from '../events';
 
-const CHANGES = /^(Create|Update|Delete|Put|Publish|Add|Remove|Run|Terminate)/;
+const COMMANDS = {
+  describe: /^Describe/,
+  read: /^(Get|List|Head)/,
+  create: /^(?!.*AuthToken)(Create|Run|Publish|Add)/,
+  update: /^(Update|Put)/,
+  dispose: /^(Delete|Remove|Terminate)/,
+  tag: /^Tag/,
+};
 
 // The fields that name what a command changes, most specific first, in lower case: AWS's APIs differ in theirs.
 const NAMES = ['functionname', 'rolename', 'name', 'microvmidentifier', 'imageidentifier', 'key', 'bucket'];
 
-/** Logs what an AWS SDK client does: a change at info, by name only, and everything at debug. */
-export abstract class AwsClientLogger implements ClientLogger {
-  abstract get log(): Logger;
+/** Logs what an AWS SDK client does, and emits each step of a client it tracks. */
+export abstract class AwsClientLogger extends SmithyClientLogger {
+  constructor() {
+    super({ commands: COMMANDS, names: NAMES });
+  }
 
-  debug = (..._content: unknown[]): void => {};
-  info = (...content: unknown[]): void => {
-    const obj = Array.isArray(content) && content.length === 1 ? content[0] : content;
-    if (typeof obj === 'object') {
-      const { clientName, commandName, input, output } = obj as {
-        clientName?: string;
-        commandName?: string;
-        input?: unknown;
-        output?: unknown;
-      };
-      this.log.debug(`[${clientName ?? 'UnknownClient'}] [${commandName ?? 'UnknownCommand'}]`, {
-        input: maskJson(input),
-        output: maskJson(output),
-      });
-      if (CHANGES.test(`${commandName}`) && !`${commandName}`.includes('AuthToken')) {
-        // Names only: an input can carry the function's environment.
-        const fields = new Map(Object.entries(input ?? {}).map(([field, value]) => [field.toLowerCase(), value]));
-        const name = NAMES.map((field) => fields.get(field)).find(Boolean);
-        this.log.info(`${commandName?.replace(/Command$/, '')}${name ? `: ${name}` : ''}`);
-      }
-    }
-  };
-  warn = (..._content: unknown[]): void => {};
-  error = (..._content: unknown[]): void => {
-    const obj = Array.isArray(_content) && _content.length === 1 ? _content[0] : _content;
-    if (typeof obj === 'object') {
-      const { clientName, commandName, input, error } = obj as {
-        clientName?: string;
-        commandName?: string;
-        input?: unknown;
-        error?: unknown;
-      };
-      this.log.debug(`[${clientName ?? 'UnknownClient'}] [${commandName ?? 'UnknownCommand'}]`, {
-        input: maskJson(input),
-        error: inspect(error),
-      });
-      return;
-    }
-  };
+  override events(): Observable<Event> {
+    return super.events().pipe(map((event) => ({ source: 'cdk', ...event })));
+  }
 }

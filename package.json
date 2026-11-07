@@ -115,7 +115,7 @@
     "@connectrpc/connect": "^2.1.0",
     "@eslint/js": "^9.28.0",
     "@modelcontextprotocol/server": "^2.4.0",
-    "@scaffoldly/rowdy-cdk": "0.1.0-beta.20261107003438.8b4bb83",
+    "@scaffoldly/rowdy-cdk": "0.1.0-beta.20261107173833.ed9b6bd",
     "@scaffoldly/rowdy-grpc": "^0.1.0-beta.20261015173030.c8f7cb7",
     "@scaffoldly/rowdy-vfs": "^0.1.0-beta.20261025040757.7c82f24",
     "@types/auth-header": "^1.0.6",
@@ -167,10 +167,14 @@
   "dependencies": {},
   "peerDependencies": {
     "@modelcontextprotocol/server": "^2.4.0",
+    "rxjs": "^7.8.2",
     "zod": "^4.2.0"
   },
   "peerDependenciesMeta": {
     "@modelcontextprotocol/server": {
+      "optional": true
+    },
+    "rxjs": {
       "optional": true
     },
     "zod": {

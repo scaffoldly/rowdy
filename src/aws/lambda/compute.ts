@@ -1,6 +1,7 @@
 import { defer, last, map, Observable, throwError } from 'rxjs';
 import { deploySources } from '../../api/internal/layers';
 import { Exec } from '../../api/types';
+import type { Event } from '../../events';
 import { Environment } from '../../environment';
 import { ExecSchema } from '../../routes';
 import { ComputeSpec, SandboxCompute } from '../../sandbox/internal/compute';
@@ -76,6 +77,10 @@ export class LambdaCompute implements SandboxCompute {
 
   exec(event: ExecSchema): Observable<Exec> {
     return this.lambda.exec(event);
+  }
+
+  events(): Observable<Event> {
+    return this.lambda.events();
   }
 
   stop(): Observable<this> {

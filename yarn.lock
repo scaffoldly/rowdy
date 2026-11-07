@@ -1548,11 +1548,12 @@
   resolved "https://registry.yarnpkg.com/@rollup/rollup-win32-x64-msvc/-/rollup-win32-x64-msvc-4.52.4.tgz#5b2dd648a960b8fa00d76f2cc4eea2f03daa80f4"
   integrity sha512-bf9PtUa0u8IXDVxzRToFQKsNCRz9qLYfR/MpECxl4mRoWYjAeFjgxj1XdZr2M/GNVpT05p+LgQOHopYDlUu6/w==
 
-"@scaffoldly/rowdy-cdk@0.1.0-beta.20261107003438.8b4bb83":
-  version "0.1.0-beta.20261107003438.8b4bb83"
-  resolved "https://registry.yarnpkg.com/@scaffoldly/rowdy-cdk/-/rowdy-cdk-0.1.0-beta.20261107003438.8b4bb83.tgz#d33bc10e51709b8ec1c9306a6f2ddea47d8f6f83"
-  integrity sha512-OoIu11bB66tKYyiIBxxnEyngaq7CU9BQx+/oVXazg5n8DHB3EHOSssi1VtPkF1CjKuA8VBkhwDjChR2Ag1m/8g==
+"@scaffoldly/rowdy-cdk@0.1.0-beta.20261107173833.ed9b6bd":
+  version "0.1.0-beta.20261107173833.ed9b6bd"
+  resolved "https://registry.yarnpkg.com/@scaffoldly/rowdy-cdk/-/rowdy-cdk-0.1.0-beta.20261107173833.ed9b6bd.tgz#a8e302c3dc196abfd8515a070554a51891097e0e"
+  integrity sha512-sVbEWYwO7ca8e0TOFhIK3Rxs+4iHW2SsJXHG+PNruRSyWueeMVxPStS8mFv/XEhEhN+LQjCwycjG4CRJUNdsAA==
   dependencies:
+    "@smithy/types" "^4.20.0"
     rxjs "^7.8.2"
 
 "@scaffoldly/rowdy-grpc@^0.1.0-beta.20261015173030.c8f7cb7":
@@ -1714,14 +1715,7 @@
   dependencies:
     tslib "^2.5.0"
 
-"@smithy/types@^4.17.2", "@smithy/types@^4.18.0", "@smithy/types@^4.19.0":
-  version "4.19.0"
-  resolved "https://registry.yarnpkg.com/@smithy/types/-/types-4.19.0.tgz#a0dd9c9d7b2a070fc7c3d69efedea8404b3646be"
-  integrity sha512-r7jh49VJxGerfAcTQA6gXcKc+98zOp/tqRwzYjgOE+iSQsP6cEU1hq2QzbuipmP68QtYdY9wKEhiCQZIzHgZ4Q==
-  dependencies:
-    tslib "^2.6.2"
-
-"@smithy/types@^4.20.0":
+"@smithy/types@^4.17.2", "@smithy/types@^4.18.0", "@smithy/types@^4.19.0", "@smithy/types@^4.20.0":
   version "4.20.0"
   resolved "https://registry.yarnpkg.com/@smithy/types/-/types-4.20.0.tgz#20dee95d543f7c89682fbe73c765f5f0ef3a2c12"
   integrity sha512-lCA6QG22dPk9ecHbv91jDQZsmtPUjdS1aE2Il6NNPqe7DrYc0dZQi6DhcESk2KYXH2sp5xbAcGdYMZDFnuzA2A==

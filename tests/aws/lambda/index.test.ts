@@ -1111,6 +1111,7 @@ describe('aws lambda change logs', () => {
     ['UpdateMicrovmImageCommand', { imageIdentifier: 'arn' }, 'UpdateMicrovmImage: arn'],
     ['RunMicrovmCommand', { imageIdentifier: 'arn', runHookPayload: 'secret' }, 'RunMicrovm: arn'],
     ['TerminateMicrovmCommand', { microvmIdentifier: 'mvm-1' }, 'TerminateMicrovm: mvm-1'],
+    ['TagResourceCommand', { FunctionName: 'acme' }, 'TagResource: acme'],
   ])('logs %s at info', (commandName, input, message) => {
     const info = jest.spyOn(fn['log'], 'info');
 
@@ -1120,7 +1121,7 @@ describe('aws lambda change logs', () => {
     expect(info).toHaveBeenCalledWith(message);
   });
 
-  it.each(['GetFunctionCommand', 'ListAliasesCommand', 'TagResourceCommand', 'CreateMicrovmAuthTokenCommand'])(
+  it.each(['GetFunctionCommand', 'ListAliasesCommand', 'CreateMicrovmAuthTokenCommand'])(
     'leaves %s out of info',
     (commandName) => {
       const info = jest.spyOn(fn['log'], 'info');

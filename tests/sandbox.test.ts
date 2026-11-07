@@ -738,6 +738,190 @@ describe('sandbox', () => {
     });
   });
 
+  describe('events', () => {
+    const step = {
+      type: 'create',
+      lifecycle: 'creating',
+      client: 'IAMClient',
+      action: 'CreateRole',
+      name: 'role',
+    } as const;
+    const event = { source: 'cdk', ...step };
+
+    const emitting = (): void => {
+      observe.mockImplementation(function (this: LambdaFunction) {
+        this['emitted'].next(step);
+        return of(this);
+      });
+    };
+
+    it('shows the build to a caller who subscribes before awaiting', async () => {
+      emitting();
+      const seen: unknown[] = [];
+
+      const creating = Sandbox.create();
+      creating.events().subscribe((emitted) => seen.push(emitted));
+      await creating;
+
+      expect(seen).toEqual([event]);
+    });
+
+    it('still resolves to the sandbox', async () => {
+      const sandbox = await Sandbox.create();
+
+      expect(sandbox).toBeInstanceOf(SandboxImpl);
+    });
+
+    it('still rejects for options out of range', async () => {
+      await expect(Sandbox.create({ memory: 1 })).rejects.toThrow(RangeError);
+    });
+
+    it('shows a get to a caller who subscribes before awaiting', async () => {
+      jest.spyOn(LambdaCompute.prototype, 'attach').mockImplementation(function (this: LambdaCompute) {
+        this['lambda']['emitted'].next(step);
+        return of(this);
+      });
+      const seen: unknown[] = [];
+
+      const getting = Sandbox.get({ sandboxId: 'arn:aws:lambda:us-east-1:123456789012:function:sandbox-bcdf245678' });
+      getting.events().subscribe((emitted) => seen.push(emitted));
+      await getting;
+
+      expect(seen).toEqual([event]);
+    });
+
+    it('works as a promise', async () => {
+      const settled = jest.fn();
+
+      const reason = await Sandbox.create({ memory: 1 })
+        .catch((error) => error)
+        .finally(settled);
+
+      expect(reason).toBeInstanceOf(RangeError);
+      expect(settled).toHaveBeenCalledTimes(1);
+      await expect(Sandbox.create().then(({ constructor }) => constructor)).resolves.toBe(SandboxImpl);
+    });
+
+    it('starts from now on the sandbox', async () => {
+      emitting();
+      const sandbox = await Sandbox.create();
+      const seen: unknown[] = [];
+
+      sandbox.events().subscribe((emitted) => seen.push(emitted));
+      expect(seen).toEqual([]);
+
+      lambdaOf(sandbox as SandboxImpl)['emitted'].next(step);
+
+      expect(seen).toEqual([event]);
+    });
+
+    it('calls onEvent from the start of create', async () => {
+      emitting();
+      const onEvent = jest.fn();
+
+      await Sandbox.create({ onEvent });
+      await new Promise(setImmediate);
+
+      expect(onEvent).toHaveBeenCalledWith(event);
+    });
+
+    it('takes a promise of a callback', async () => {
+      emitting();
+      const onEvent = jest.fn();
+
+      await Sandbox.create({ onEvent: Promise.resolve(onEvent) });
+      await new Promise(setImmediate);
+
+      expect(onEvent).toHaveBeenCalledWith(event);
+    });
+
+    it('keeps order through a slow callback', async () => {
+      const seen: string[] = [];
+      const sandbox = await SandboxImpl.create({
+        onEvent: async ({ action }) => {
+          await new Promise(setImmediate);
+          seen.push(`${action}`);
+        },
+      });
+
+      lambdaOf(sandbox)['emitted'].next({ ...step, action: 'First' });
+      lambdaOf(sandbox)['emitted'].next({ ...step, action: 'Second' });
+      await new Promise((resolve) => setTimeout(resolve, 10));
+
+      expect(seen).toEqual(['First', 'Second']);
+    });
+
+    it('survives a callback that throws', async () => {
+      emitting();
+      const onEvent = jest.fn(() => {
+        throw new Error('oops');
+      });
+      const logged = jest.spyOn(console, 'error').mockImplementation(() => {});
+
+      const sandbox = await Sandbox.create({ onEvent });
+      await new Promise(setImmediate);
+
+      expect(sandbox).toBeInstanceOf(SandboxImpl);
+      expect(onEvent).toHaveBeenCalledTimes(1);
+      expect(logged).toHaveBeenCalled();
+    });
+
+    it('keeps onEvent out of the name', async () => {
+      const name = jest.spyOn(LambdaFunction.prototype, 'withName');
+
+      await Sandbox.create();
+      await Sandbox.create({ onEvent: () => {} });
+
+      expect(name.mock.calls[1]).toEqual(name.mock.calls[0]);
+    });
+
+    describe('runCommand', () => {
+      const running = async (sandbox: SandboxImpl): Promise<void> => {
+        const exec = { cmdId: 'c', exitCode: 0, frames: EMPTY, wait: async () => exec } as unknown as ExecFinished;
+        jest.spyOn(sandbox['compute'], 'exec').mockImplementation(() => {
+          lambdaOf(sandbox)['emitted'].next(step);
+          return of(exec);
+        });
+      };
+
+      it('calls onEvent with what happens during the command only', async () => {
+        const sandbox = await SandboxImpl.create();
+        lambdaOf(sandbox)['emitted'].next({ ...step, action: 'Before' });
+        await running(sandbox);
+        const onEvent = jest.fn();
+
+        await sandbox.runCommand({ cmd: 'ls', onEvent });
+        await new Promise(setImmediate);
+
+        expect(onEvent.mock.calls).toEqual([[event]]);
+      });
+
+      it('takes onEvent as an option too', async () => {
+        const sandbox = await SandboxImpl.create();
+        await running(sandbox);
+        const onEvent = jest.fn();
+
+        await sandbox.runCommand('ls', [], { onEvent });
+        await new Promise(setImmediate);
+
+        expect(onEvent).toHaveBeenCalledTimes(1);
+      });
+
+      it('stops calling after the command', async () => {
+        const sandbox = await SandboxImpl.create();
+        await running(sandbox);
+        const onEvent = jest.fn();
+
+        await sandbox.runCommand({ cmd: 'ls', onEvent });
+        await new Promise(setImmediate);
+        lambdaOf(sandbox)['emitted'].next(step);
+        await new Promise(setImmediate);
+
+        expect(onEvent).toHaveBeenCalledTimes(1);
+      });
+    });
+  });
+
   describe('tools', () => {
     it('lists them by name', () => {
       expect(Sandbox.tools().map(({ name }) => name)).toEqual(['create_sandbox']);

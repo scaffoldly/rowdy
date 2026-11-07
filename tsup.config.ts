@@ -9,5 +9,5 @@ export default defineConfig({
   cjsInterop: true,
   shims: true,
   // tsup leaves peers external by default. These are optional, so requiring one at load would crash without it.
-  noExternal: ['zod', '@modelcontextprotocol/server'],
+  noExternal: ['zod', '@modelcontextprotocol/server', 'rxjs'],
 });
