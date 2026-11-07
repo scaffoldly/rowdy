@@ -27,6 +27,7 @@ describe('serve', () => {
       'create_sandbox',
       'run_command',
       'read_output',
+      'list_sandboxes',
       'stop_sandbox',
     ]);
     expect(connect).toHaveBeenCalledTimes(1);

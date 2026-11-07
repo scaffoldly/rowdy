@@ -1,7 +1,9 @@
-import { defer, last, map, Observable, throwError } from 'rxjs';
+import { LambdaClient, paginateListFunctions } from '@aws-sdk/client-lambda';
+import { concatMap, defer, filter, finalize, from, last, map, Observable, throwError } from 'rxjs';
 import { deploySources } from '../../api/internal/layers';
 import { Exec, ExecOutput, ExecOutputOptions } from '../../api/types';
 import type { Event } from '../../events';
+import type { SandboxSummary } from '../../sandbox';
 import { Environment } from '../../environment';
 import { ExecSchema } from '../../routes';
 import { ComputeSpec, SandboxCompute, SandboxError } from '../../sandbox/internal/compute';
@@ -27,6 +29,23 @@ export class LambdaCompute implements SandboxCompute {
     if (!Number.isInteger(memory) || memory < 128 || memory > 10240) {
       throw new RangeError(`memory must be whole MB from 128 to 10240, got ${memory}`);
     }
+  }
+
+  static list(): Observable<SandboxSummary> {
+    const lambda = new LambdaClient({});
+    return from(paginateListFunctions({ client: lambda }, {})).pipe(
+      concatMap(({ Functions = [] }) => Functions),
+      // Only a function deployed as a sandbox runs commands.
+      filter(({ Environment: env }) => env?.Variables?.ROWDY_SANDBOX === 'true'),
+      map(
+        ({ FunctionArn, FunctionName }): SandboxSummary => ({
+          sandboxId: FunctionArn!,
+          name: FunctionName!,
+          runtime: 'aws.lambda',
+        })
+      ),
+      finalize(() => lambda.destroy())
+    );
   }
 
   readonly stoppable = false;

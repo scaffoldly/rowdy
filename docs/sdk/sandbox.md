@@ -201,6 +201,22 @@ arn:aws:lambda:us-east-1:123456789012:microvm-image:sandbox-bcdf245678
 `get` rejects with `Not a sandbox` for anything `create` didn't make. It takes a `signal`, and logs at
 the level described in [Logging](../sdk.md#logging).
 
+## `Sandbox.list`
+
+Lists the sandboxes in the account and region, on every runtime, to find a lost `sandboxId` or see what's billed.
+
+```ts
+const running = (await Sandbox.list({ runtime: 'aws.microvm' })).filter(({ running }) => running);
+```
+
+| Option    | What it does                                               |
+| --------- | ---------------------------------------------------------- |
+| `runtime` | Only sandboxes on this runtime. Defaults to every runtime. |
+| `name`    | Only sandboxes whose name starts with `{name}-`.           |
+| `signal`  | Rejects the listing.                                       |
+
+Each has its `sandboxId`, `name` and `runtime`. A microVM sandbox also says whether it's `running`, and if it is, `startedAt` and `stopsAt`, when its `timeout` ends it. A Lambda sandbox is billed only while a command runs, so it has neither.
+
 ## Aborting
 
 ```ts

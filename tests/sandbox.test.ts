@@ -11,6 +11,7 @@ import { AwsRegistry } from '../src/aws/registry';
 import type { Event as SandboxEvent } from '../src/events';
 import { LambdaFunction } from '../src/aws/lambda/index';
 import { MicrovmCompute } from '../src/aws/microvm/compute';
+import { LambdaMicrovmsClient } from '@aws-sdk/client-lambda-microvms';
 import { Exec, ExecFinished, ExecFrame } from '../src/api/types';
 import { execOf } from '../src/aws/exec';
 import { SandboxError } from '../src/sandbox/internal/compute';
@@ -737,6 +738,125 @@ describe('sandbox', () => {
     });
   });
 
+  describe('list', () => {
+    const IMAGE = 'arn:aws:lambda:us-east-1:123456789012:microvm-image:box-bcdf2';
+    const OTHER = 'arn:aws:lambda:us-east-1:123456789012:microvm-image:not-rowdy';
+    const STARTED = new Date('2026-11-07T21:00:00.000Z');
+
+    const functions = (): jest.SpyInstance =>
+      jest.spyOn(LambdaClient.prototype, 'send').mockImplementation(((command: { input: { Marker?: string } }) =>
+        Promise.resolve(
+          command.input.Marker
+            ? {
+                Functions: [
+                  {
+                    FunctionArn: 'arn:aws:lambda:us-east-1:123456789012:function:app',
+                    FunctionName: 'app',
+                    Environment: { Variables: {} },
+                  },
+                ],
+              }
+            : {
+                Functions: [
+                  {
+                    FunctionArn: 'arn:aws:lambda:us-east-1:123456789012:function:sandbox-ghjk4',
+                    FunctionName: 'sandbox-ghjk4',
+                    Environment: { Variables: { ROWDY_SANDBOX: 'true' } },
+                  },
+                ],
+                NextMarker: 'next',
+              }
+        )) as never);
+
+    const microvms = (): jest.SpyInstance =>
+      jest.spyOn(LambdaMicrovmsClient.prototype, 'send').mockImplementation(((command: {
+        constructor: { name: string };
+        input: { Resource?: string };
+      }) => {
+        switch (command.constructor.name) {
+          case 'ListMicrovmsCommand':
+            return Promise.resolve({
+              items: [
+                { microvmId: 'gone', imageArn: IMAGE, state: 'TERMINATED', startedAt: new Date(0) },
+                { microvmId: 'up', imageArn: IMAGE, state: 'RUNNING', startedAt: STARTED },
+              ],
+            });
+          case 'ListMicrovmImagesCommand':
+            return Promise.resolve({
+              items: [
+                { imageArn: IMAGE, name: 'box-bcdf2' },
+                { imageArn: OTHER, name: 'not-rowdy' },
+              ],
+            });
+          case 'ListTagsCommand':
+            return Promise.resolve({
+              Tags: command.input.Resource === IMAGE ? { 'run.rowdy.aws': 'microvm', 'run.rowdy.timeout': '600' } : {},
+            });
+          default:
+            return Promise.reject(new Error(`unexpected ${command.constructor.name}`));
+        }
+      }) as never);
+
+    it('finds sandboxes on every runtime, and only sandboxes', async () => {
+      functions();
+      microvms();
+
+      const found = await Sandbox.list();
+
+      expect(found).toHaveLength(2);
+      expect(found).toEqual(
+        expect.arrayContaining([
+          {
+            sandboxId: IMAGE,
+            name: 'box-bcdf2',
+            runtime: 'aws.microvm',
+            running: true,
+            startedAt: STARTED,
+            stopsAt: new Date(STARTED.getTime() + 600_000),
+          },
+          {
+            sandboxId: 'arn:aws:lambda:us-east-1:123456789012:function:sandbox-ghjk4',
+            name: 'sandbox-ghjk4',
+            runtime: 'aws.lambda',
+          },
+        ])
+      );
+    });
+
+    it('says a microVM with no VM up is not running', async () => {
+      microvms().mockImplementationOnce((() => Promise.resolve({ items: [] })) as never);
+
+      const [found] = await Sandbox.list({ runtime: 'aws.microvm' });
+
+      expect(found).toMatchObject({ running: false, startedAt: undefined, stopsAt: undefined });
+    });
+
+    it('asks only the runtime it was given', async () => {
+      const lambda = functions();
+      microvms();
+
+      await Sandbox.list({ runtime: 'aws.microvm' });
+
+      expect(lambda).not.toHaveBeenCalled();
+    });
+
+    it('keeps only names under a prefix', async () => {
+      functions();
+      microvms();
+
+      const found = await Sandbox.list({ name: 'box' });
+
+      expect(found.map(({ name }) => name)).toEqual(['box-bcdf2']);
+    });
+
+    it('rejects on abort', async () => {
+      functions();
+      microvms();
+
+      await expect(Sandbox.list({ signal: AbortSignal.abort('stop') })).rejects.toBe('stop');
+    });
+  });
+
   describe('a detached command', () => {
     const running = (): { frames: Subject<ExecFrame>; exec: jest.SpyInstance } => {
       jest.spyOn(MicrovmCompute.prototype, 'create').mockImplementation(function (this: MicrovmCompute) {
@@ -1026,6 +1146,7 @@ describe('sandbox', () => {
         'create_sandbox',
         'run_command',
         'read_output',
+        'list_sandboxes',
         'stop_sandbox',
       ]);
     });
@@ -1307,8 +1428,8 @@ describe('sandbox', () => {
     });
   });
 
-  it('exposes only create, get and tools', () => {
-    expect(Object.keys(Sandbox).sort()).toEqual(['create', 'get', 'tools']);
+  it('exposes only create, get, list and tools', () => {
+    expect(Object.keys(Sandbox).sort()).toEqual(['create', 'get', 'list', 'tools']);
   });
 
   it('feeds its signal to its environment', async () => {

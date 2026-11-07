@@ -20,6 +20,8 @@ import {
   ListManagedMicrovmImageVersionsCommand,
   ListMicrovmsCommand,
   ListTagsCommand,
+  paginateListMicrovmImages,
+  paginateListMicrovms,
   RunMicrovmCommand,
   TerminateMicrovmCommand,
   UpdateMicrovmImageCommand,
@@ -37,6 +39,7 @@ import {
   forkJoin,
   from,
   map,
+  mergeMap,
   finalize,
   Observable,
   of,
@@ -44,7 +47,9 @@ import {
   switchMap,
   take,
   throwIfEmpty,
+  toArray,
 } from 'rxjs';
+import type { SandboxSummary } from '../../sandbox';
 import { deploySources } from '../../api/internal/layers';
 import { Transfer } from '../../api/internal/transfer';
 import { Exec, ExecOutput, ExecOutputOptions } from '../../api/types';
@@ -86,6 +91,49 @@ type Vm = { microvmId: string; endpoint: string; imageVersion: string; startedAt
 
 export class MicrovmCompute extends AwsClientLogger implements SandboxCompute {
   static readonly env = {};
+
+  static list(): Observable<SandboxSummary> {
+    const microvms = new LambdaMicrovmsClient({});
+    return forkJoin([
+      from(paginateListMicrovms({ client: microvms }, {})).pipe(
+        concatMap(({ items = [] }) => items),
+        toArray()
+      ),
+      from(paginateListMicrovmImages({ client: microvms }, {})).pipe(
+        concatMap(({ items = [] }) => items),
+        toArray()
+      ),
+    ]).pipe(
+      switchMap(([vms, images]) =>
+        from(images).pipe(
+          mergeMap(
+            ({ imageArn, name }) =>
+              from(microvms.send(new ListTagsCommand({ Resource: imageArn }))).pipe(
+                // An image of the account's own, not a sandbox, has no compute tag.
+                filter(({ Tags }) => Tags?.[COMPUTE_TAG] === 'microvm'),
+                map(({ Tags }): SandboxSummary => {
+                  const [live] = vms.filter(
+                    ({ imageArn: arn, state }) => arn === imageArn && state && !DEAD.includes(state)
+                  );
+                  const seconds = Number(Tags?.[TIMEOUT_TAG]);
+                  return {
+                    sandboxId: imageArn!,
+                    name: name!,
+                    runtime: 'aws.microvm',
+                    running: !!live,
+                    startedAt: live?.startedAt,
+                    stopsAt:
+                      live?.startedAt && seconds ? new Date(live.startedAt.getTime() + seconds * 1000) : undefined,
+                  };
+                })
+              ),
+            Environment.CONCURRENCY
+          )
+        )
+      ),
+      finalize(() => microvms.destroy())
+    );
+  }
 
   static assert({ timeout, memory, env }: Pick<ComputeSpec, 'timeout' | 'memory' | 'env'>): void {
     if (!Number.isInteger(timeout / 1000) || timeout < 1000 || timeout > 28_800_000) {
