@@ -48,7 +48,7 @@ export interface MicrovmSandboxOptions extends BaseSandboxOptions {
 
 export type SandboxOptions = LambdaSandboxOptions | MicrovmSandboxOptions;
 
-export type { Event, EventCallback };
+export type { Event, EventCallback } from '../events';
 
 export interface SandboxToolsLimits {
   /** The most memory a sandbox can have, in megabytes. */

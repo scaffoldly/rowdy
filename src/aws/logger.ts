@@ -29,7 +29,9 @@ export abstract class AwsClientLogger extends SmithyClientLogger {
     super({ commands: COMMANDS, names: NAMES });
   }
 
-  override events(): Observable<Event> {
-    return super.events().pipe(map((event) => ({ source: 'cdk', ...event })));
+  override events(): Observable<Extract<Event, { source: 'cdk' }>> {
+    return super
+      .events()
+      .pipe(map((event) => ({ source: 'cdk', message: `${event.action}: ${event.lifecycle}`, ...event })));
   }
 }

@@ -36,7 +36,6 @@ import {
   forkJoin,
   from,
   map,
-  merge,
   finalize,
   Observable,
   of,
@@ -49,7 +48,6 @@ import { deploySources } from '../../api/internal/layers';
 import { Transfer } from '../../api/internal/transfer';
 import { Exec } from '../../api/types';
 import { Environment } from '../../environment';
-import type { Event } from '../../events';
 import { Logger } from '../../log';
 import { ExecSchema } from '../../routes';
 import { ComputeSpec, MICROVM_MEMORY, SandboxCompute } from '../../sandbox/internal/compute';
@@ -203,10 +201,6 @@ export class MicrovmCompute extends AwsClientLogger implements SandboxCompute {
         controller.abort();
       })
     );
-  }
-
-  override events(): Observable<Event> {
-    return merge(super.events(), this.environment.event$);
   }
 
   stop(): Observable<this> {

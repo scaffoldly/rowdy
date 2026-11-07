@@ -34,7 +34,7 @@ export interface SandboxCompute {
   /** Emits once, when nothing is left running. Safe to call more than once. */
   stop(): Observable<this>;
   /** Each step of what this compute does on its provider, from now on. */
-  events(): Observable<Event>;
+  events(): Observable<Extract<Event, { source: 'cdk' }>>;
 }
 
 export interface SandboxComputeClass {

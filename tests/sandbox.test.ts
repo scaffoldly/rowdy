@@ -749,7 +749,7 @@ describe('sandbox', () => {
       action: 'CreateRole',
       name: 'role',
     } as const;
-    const event = { source: 'cdk', ...step };
+    const event = { source: 'cdk', message: 'CreateRole: creating', ...step };
 
     const emitting = (): void => {
       observe.mockImplementation(function (this: LambdaFunction) {
@@ -805,6 +805,7 @@ describe('sandbox', () => {
 
       expect(seen[0]).toEqual({
         source: 'cdk',
+        message: 'CreateRepository: creating',
         type: 'create',
         lifecycle: 'creating',
         client: 'ECRClient',
@@ -861,9 +862,9 @@ describe('sandbox', () => {
     it('keeps order through a slow callback', async () => {
       const seen: string[] = [];
       const sandbox = await SandboxImpl.create({
-        onEvent: async ({ action }) => {
+        onEvent: async (emitted) => {
           await new Promise(setImmediate);
-          seen.push(`${action}`);
+          seen.push(emitted.source === 'cdk' ? `${emitted.action}` : '');
         },
       });
 

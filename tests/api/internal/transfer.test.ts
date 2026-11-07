@@ -1,7 +1,15 @@
-import { AxiosError, AxiosHeaders, InternalAxiosRequestConfig } from 'axios';
-import { lastValueFrom, of, toArray } from 'rxjs';
+import axios, { AxiosError, AxiosHeaders, InternalAxiosRequestConfig } from 'axios';
+import { lastValueFrom, of, Subject, toArray } from 'rxjs';
 import { Readable } from 'stream';
-import { RETRY, Transfer, External, ImageManifest, sourceHeaders, Upload } from '../../../src/api/internal/transfer';
+import {
+  RETRY,
+  Transfer,
+  TransferEvent,
+  External,
+  ImageManifest,
+  sourceHeaders,
+  Upload,
+} from '../../../src/api/internal/transfer';
 import { HttpHeaders } from '../../../src/proxy/http';
 import { ROWDY_LAYERS } from '../../../src/api/internal/layers';
 import { Logger, Rowdy } from '@scaffoldly/rowdy';
@@ -703,5 +711,61 @@ describe('transfers', () => {
         });
       });
     });
+  });
+});
+
+describe('Transfer.upload events', () => {
+  const transfer = new (Transfer as unknown as new (...args: unknown[]) => Transfer)();
+  const log = new Logger('test');
+
+  beforeEach(() => {
+    jest.useFakeTimers();
+  });
+
+  afterEach(() => jest.useRealTimers());
+
+  const uploading = (): { source: Subject<Transfer>; events: TransferEvent[] } => {
+    const source = new Subject<Transfer>();
+    const events: TransferEvent[] = [];
+    source.pipe(Transfer.upload(log, axios, { next: (event) => events.push(event) })).subscribe({ error: () => {} });
+    return { source, events };
+  };
+
+  const summary = '0/0 transfers: 100% complete';
+
+  it('reports progress when it changes, not every tick', () => {
+    const { source, events } = uploading();
+
+    source.next(transfer);
+    jest.advanceTimersByTime(3000);
+
+    expect(events).toEqual([{ lifecycle: 'copying', summary }]);
+  });
+
+  it('reports the end of a copy', () => {
+    const { source, events } = uploading();
+
+    source.next(transfer);
+    source.complete();
+
+    expect(events).toEqual([{ lifecycle: 'copied', summary }]);
+  });
+
+  it('reports a failed copy', () => {
+    const { source, events } = uploading();
+
+    source.next(transfer);
+    source.error(new Error('denied'));
+
+    expect(events).toEqual([{ lifecycle: 'failed', summary }]);
+  });
+
+  it('needs no stream to report to', () => {
+    const source = new Subject<Transfer>();
+
+    source.pipe(Transfer.upload(log, axios)).subscribe();
+    source.next(transfer);
+
+    expect(() => source.complete()).not.toThrow();
   });
 });
