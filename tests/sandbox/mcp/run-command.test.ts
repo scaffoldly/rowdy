@@ -35,7 +35,7 @@ describe('run_command', () => {
   it('answers with exit code and output, as text and structured content', async () => {
     const { run } = setup({}, { writes: [['stdout', 'out']] });
 
-    const structuredContent = { exit_code: 0, text: 'out', truncated: false };
+    const structuredContent = { exit_code: 0, text: 'out', truncated: false, total_bytes: 3 };
     expect(await run()).toEqual({
       content: [{ type: 'text', text: JSON.stringify(structuredContent) }],
       structuredContent,
@@ -106,7 +106,43 @@ describe('run_command', () => {
 
       const { structuredContent } = await run();
 
-      expect(structuredContent).toMatchObject({ text: 'x'.repeat(OUTPUT.limit), truncated: true });
+      expect(structuredContent).toMatchObject({
+        text: 'x'.repeat(OUTPUT.limit),
+        truncated: true,
+        total_bytes: OUTPUT.limit + 5,
+      });
+    });
+
+    it('holds no more than the limit while a command prints', async () => {
+      const { limit } = OUTPUT;
+      OUTPUT.limit = 8;
+      const { run } = setup(
+        {},
+        {
+          writes: [
+            ['stdout', 'aaaaaaaa'],
+            ['stdout', 'bbbb'],
+            ['stderr', 'cc'],
+          ],
+        }
+      );
+
+      expect((await run()).structuredContent).toMatchObject({ text: 'aabbbbcc', truncated: true, total_bytes: 14 });
+      OUTPUT.limit = limit;
+    });
+
+    it('counts only the stream it keeps', async () => {
+      const { run } = setup(
+        {},
+        {
+          writes: [
+            ['stdout', 'out'],
+            ['stderr', 'err!'],
+          ],
+        }
+      );
+
+      expect((await run({ stream: 'stdout' })).structuredContent).toMatchObject({ total_bytes: 3 });
     });
 
     it('counts both streams together', async () => {

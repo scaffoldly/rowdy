@@ -21,6 +21,7 @@ const outputSchema = z.object({
   truncated: z
     .boolean()
     .describe('Whether text was cut to its last 64 KiB. Narrow the command, or write to a file and read parts.'),
+  total_bytes: z.number().describe('How much output there was, before any cut.'),
 });
 
 export const runCommand = (
@@ -42,10 +43,13 @@ export const runCommand = (
 
     const found = await sandbox.get({ sandboxId, signal });
     // Only the command stops with a client's cancel: the sandbox stays for the next one.
-    const chunks: Buffer[] = [];
+    // Only the end is kept as it arrives: a command can print for as long as it runs.
+    let text = Buffer.alloc(0);
+    let totalBytes = 0;
     const output = new Writable({
-      write(chunk, _encoding, callback): void {
-        chunks.push(chunk);
+      write(chunk: Buffer, _encoding, callback): void {
+        totalBytes += chunk.length;
+        text = Buffer.concat([text, chunk]).subarray(-OUTPUT.limit);
         callback();
       },
     });
@@ -60,11 +64,11 @@ export const runCommand = (
       signal: ctx.mcpReq.signal,
     });
 
-    const text = Buffer.concat(chunks);
     const structuredContent = {
       exit_code: exitCode,
-      text: text.subarray(-OUTPUT.limit).toString(),
-      truncated: text.length > OUTPUT.limit,
+      text: text.toString(),
+      truncated: totalBytes > OUTPUT.limit,
+      total_bytes: totalBytes,
     };
 
     return { content: [{ type: 'text', text: JSON.stringify(structuredContent) }], structuredContent };
