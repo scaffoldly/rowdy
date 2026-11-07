@@ -529,6 +529,35 @@ describe('aws microvm compute', () => {
       expect(names(sent)).toContain('RunMicrovmCommand');
     });
 
+    it('starts one VM for two first commands at once, across handles', async () => {
+      const first = running();
+      const second = running();
+
+      await Promise.all([run(first.compute), run(second.compute)]);
+
+      const started = [...first.sent, ...second.sent].filter(({ name }) => name === 'RunMicrovmCommand');
+      expect(started).toHaveLength(1);
+    });
+
+    it('looks again for a VM once a start has settled', async () => {
+      const { compute, sent } = running();
+
+      await run(compute);
+      await run(compute);
+
+      expect(sent.filter(({ name }) => name === 'ListMicrovmsCommand')).toHaveLength(2);
+    });
+
+    it('lets a failed start be tried again', async () => {
+      const failing = running({ RunMicrovmCommand: () => Promise.reject(new Error('capacity')) });
+      await expect(run(failing.compute)).rejects.toThrow('capacity');
+
+      const { compute, sent } = running();
+      await run(compute);
+
+      expect(sent.filter(({ name }) => name === 'RunMicrovmCommand')).toHaveLength(1);
+    });
+
     it('waits for a new VM to run', async () => {
       const states = ['PENDING', 'RUNNING'];
       const { compute, sent } = running({

@@ -25,7 +25,7 @@ const outputSchema = z.object({
 
 export const readOutput = (
   sandbox: Pick<SandboxFactory, 'get'>,
-  { signal, name: scope }: SandboxToolsOptions = {}
+  { logLevel, signal, name: scope }: SandboxToolsOptions = {}
 ): Tool<typeof inputSchema, typeof outputSchema> => ({
   name: 'read_output',
   title: 'Read output',
@@ -42,7 +42,7 @@ export const readOutput = (
       throw new SandboxError(`Not a sandbox: ${sandboxId}`);
     }
 
-    const found = await sandbox.get({ sandboxId, signal });
+    const found = await sandbox.get({ sandboxId, logLevel, signal });
     const {
       text,
       cursor: next,

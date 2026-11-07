@@ -57,13 +57,13 @@ const outputSchema = z.object({
 
 export const runCommand = (
   sandbox: Pick<SandboxFactory, 'get'>,
-  { signal, name: scope }: SandboxToolsOptions = {}
+  { logLevel, signal, name: scope }: SandboxToolsOptions = {}
 ): Tool<typeof inputSchema, typeof outputSchema> => ({
   name: 'run_command',
   title: 'Run command',
   description:
     'Runs a command in a sandbox and answers with its exit code and output. Use when you need to run something in a ' +
-    'sandbox from create_sandbox. text is stdout and stderr merged in order, unless stream picks one. Long output ' +
+    'sandbox. text is stdout and stderr merged in order, unless stream picks one. Long output ' +
     'keeps its last 64 KiB: truncated and total_bytes say so, and read_output reads the rest. On aws.microvm, a ' +
     'command still running after timeout_ms keeps running: the answer says timed_out, and read_output follows it.',
   inputSchema,
@@ -79,7 +79,7 @@ export const runCommand = (
       throw new SandboxError('timeout_ms needs aws.microvm: on aws.lambda a command is answered when it ends.');
     }
 
-    const found = await sandbox.get({ sandboxId, signal });
+    const found = await sandbox.get({ sandboxId, logLevel, signal });
     // Only the command stops with a client's cancel: the sandbox stays for the next one.
     // Only the end is kept as it arrives: a command can print for as long as it runs.
     let text = Buffer.alloc(0);

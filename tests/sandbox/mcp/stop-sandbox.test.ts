@@ -35,6 +35,14 @@ describe('stop_sandbox', () => {
     expect(get).toHaveBeenCalledWith({ sandboxId, signal });
   });
 
+  it("passes the host's logLevel on", async () => {
+    const { run, get } = setup({ logLevel: 'error' });
+
+    await run();
+
+    expect(get).toHaveBeenCalledWith(expect.objectContaining({ logLevel: 'error' }));
+  });
+
   it('rejects when a sandbox can not stop', async () => {
     const { run, stop } = setup();
     stop.mockRejectedValue(new SandboxError('stop is not implemented on runtime aws.lambda'));
