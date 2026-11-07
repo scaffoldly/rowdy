@@ -17,11 +17,10 @@ const inputSchema = z.object({
 });
 
 const outputSchema = z.object({
+  cmd_id: z.string().describe('What read_output takes, to read this output again.'),
   exit_code: z.number().describe('Whatever the command exited with. Not zero is still an answer.'),
   text: z.string().describe('Its output, in the order it was written.'),
-  truncated: z
-    .boolean()
-    .describe('Whether text was cut to its last 64 KiB. Narrow the command, or write to a file and read parts.'),
+  truncated: z.boolean().describe('Whether text was cut to its last 64 KiB. read_output reads the rest.'),
   total_bytes: z.number().describe('How much output there was, before any cut.'),
 });
 
@@ -33,7 +32,8 @@ export const runCommand = (
   title: 'Run command',
   description:
     'Runs a command in a sandbox and answers with its exit code and output. Use when you need to run something in a ' +
-    'sandbox from create_sandbox. Stderr is mixed in with stdout unless stream picks one.',
+    'sandbox from create_sandbox. text is stdout and stderr merged in order, unless stream picks one. Long output ' +
+    'keeps its last 64 KiB: truncated and total_bytes say so, and read_output reads the rest.',
   inputSchema,
   outputSchema,
   annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
@@ -55,7 +55,7 @@ export const runCommand = (
       },
     });
 
-    const { exitCode } = await found.runCommand({
+    const { cmdId, exitCode } = await found.runCommand({
       cmd,
       args,
       cwd,
@@ -65,11 +65,22 @@ export const runCommand = (
       signal: ctx.mcpReq.signal,
     });
 
-    return toolResult(outputSchema, {
+    const result = toolResult(outputSchema, {
+      cmd_id: cmdId,
       exit_code: exitCode,
       text: text.toString(),
       truncated: totalBytes > OUTPUT.limit,
       total_bytes: totalBytes,
     });
+
+    if (result.structuredContent.truncated) {
+      const kept = `${OUTPUT.limit / 1024} KiB of ${totalBytes} bytes`;
+      result.content.push({
+        type: 'text',
+        text: `Output cut: showing the last ${kept}. Call read_output with this cmd_id to read from the start.`,
+      });
+    }
+
+    return result;
   },
 });

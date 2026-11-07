@@ -5,7 +5,7 @@ import axios from 'axios';
 import { log as root, Logger, maskHeaders, maskQuery, maskUrl, Trace } from '../log';
 import { APIGatewayProxyEventV2 } from 'aws-lambda';
 import { HttpProxy, HttpHeaders, HttpResponse, Source } from '../proxy/http';
-import { EXEC_CONTENT_TYPE, ShellProxy, ShellRequest, ShellResponse } from '../proxy/shell';
+import { EXEC_CONTENT_TYPE, EXEC_STREAM, execFrame, ShellProxy, ShellRequest, ShellResponse } from '../proxy/shell';
 import { Crontab, CronSchema, ExecSchema, URI } from '../routes';
 import { defaultPort, forwardedHeaders, reachedBy } from '../cdn';
 import { CRI, GrpcRouter, RuntimeService } from '@scaffoldly/rowdy-grpc';
@@ -492,7 +492,12 @@ export class LambdaShellProxy extends ShellProxy<LambdaPipeline> {
           response.error(new Error('Request deadline reached'));
         });
 
-        this.multiplex(shell, response, cancelDeadline);
+        // A log stream belongs to the execution environment, which only the function knows.
+        const { AWS_LAMBDA_LOG_GROUP_NAME: logGroupName, AWS_LAMBDA_LOG_STREAM_NAME: logStreamName } = process.env;
+        const location = Buffer.from(JSON.stringify({ logGroupName, logStreamName }));
+        response.next(new Chunk(execFrame(EXEC_STREAM.LOG, location), location.length));
+
+        this.multiplex(this.pipeline.requestId, shell, response, cancelDeadline);
 
         return response;
       })

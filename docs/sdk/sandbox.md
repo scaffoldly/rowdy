@@ -8,7 +8,7 @@ role and what it runs on, and carries each command's output back as it is writte
 ```ts
 import { Sandbox } from '@scaffoldly/rowdy/sandbox';
 
-const sandbox = await Sandbox.create({ runtime: 'aws.microvm' });
+const sandbox = await Sandbox.create();
 
 try {
   const result = await sandbox.runCommand('echo', ['hello world']);
@@ -28,7 +28,7 @@ Installing the package and AWS credentials are covered in [the SDK docs](../sdk.
 checks them against that choice, and `Sandbox.create` throws a `RangeError` for a value out of range
 before anything reaches AWS.
 
-|                         | `aws.lambda` (default)             | `aws.microvm`                        |
+|                         | `aws.lambda`                       | `aws.microvm` (default)              |
 | ----------------------- | ---------------------------------- | ------------------------------------ |
 | Runs on                 | A Lambda function                  | A Lambda MicroVM                     |
 | `timeout`, in ms        | 1000 to 900000, whole seconds      | 1000 to 28800000, whole seconds      |
@@ -60,7 +60,7 @@ const sandbox = await Sandbox.create({
 
 | Option     | Default              |                                                                            |
 | ---------- | -------------------- | -------------------------------------------------------------------------- |
-| `runtime`  | `aws.lambda`         | See [Runtime](#runtime).                                                   |
+| `runtime`  | `aws.microvm`        | See [Runtime](#runtime).                                                   |
 | `image`    | `scaffoldly/sandbox` | The container image. An image with no registry comes from `mirror.gcr.io`. |
 | `name`     | `sandbox`            | The prefix of the generated name, `{name}-{suffix}`.                       |
 | `timeout`  | 15 minutes           | See [Runtime](#runtime).                                                   |
@@ -117,12 +117,42 @@ if (finished.exitCode !== 0) {
 }
 ```
 
-| Result     |                                                     |
-| ---------- | --------------------------------------------------- |
-| `cmdId`    | The command's ID.                                   |
-| `exitCode` | The exit code.                                      |
-| `stdout()` | Resolves to everything the command wrote to stdout. |
-| `stderr()` | Resolves to everything the command wrote to stderr. |
+| Result      |                                                                     |
+| ----------- | ------------------------------------------------------------------- |
+| `cmdId`     | Where the command's output is logged. See [`output`](#output).      |
+| `exitCode`  | The exit code.                                                      |
+| `stdout()`  | Resolves to what the command wrote to stdout, up to the last 1 MiB. |
+| `stderr()`  | Resolves to what the command wrote to stderr, up to the last 1 MiB. |
+| `truncated` | Whether either lost its start to that limit.                        |
+
+To keep all of a long output, pass `stdout` and `stderr` streams, which get everything.
+
+## `output`
+
+Reads part of a command's output back from CloudWatch Logs by its `cmdId`, any time after it started. Use it for what `stdout()` cut, or from a different process with `Sandbox.get`.
+
+```ts
+const first = await sandbox.output(cmdId);
+const next = await sandbox.output(cmdId, { cursor: first.cursor });
+```
+
+| Option    | What it does                                                           |
+| --------- | ---------------------------------------------------------------------- |
+| `cursor`  | Where an earlier read stopped. Leave it out to start at the beginning. |
+| `stream`  | `stdout` or `stderr`. Defaults to both, merged.                        |
+| `timeout` | Milliseconds to wait for more once what's written has been read.       |
+| `signal`  | Stops the read.                                                        |
+
+Each read answers with at most 64 KiB:
+
+| Field      | What it is                                                                     |
+| ---------- | ------------------------------------------------------------------------------ |
+| `text`     | The output read, in the order it was written.                                  |
+| `cursor`   | Where this read stopped, for the next one.                                     |
+| `exitCode` | Undefined until the read reaches the command's exit.                           |
+| `dropped`  | Whether the command printed more than its log keeps: 16 MiB. The rest is gone. |
+
+A log is behind a running command, by about 10 seconds on `aws.microvm` and 30 on `aws.lambda`, so an undefined `exitCode` can mean only that the rest hasn't arrived. Reading needs `logs:FilterLogEvents`, and `logs:StartLiveTail` with `timeout`.
 
 ## `stop`
 

@@ -218,7 +218,7 @@ describe('shell', () => {
     const lambda = (): LambdaPipeline => {
       const environment = new Environment(new Logger());
       Object.defineProperty(environment, 'Env', { get: () => of({ ...process.env }) });
-      return new LambdaPipeline(environment);
+      return Object.assign(new LambdaPipeline(environment), { _requestId: 'request-1' });
     };
 
     const exec = (spec: Record<string, unknown>): string =>
@@ -259,6 +259,23 @@ describe('shell', () => {
       expect(JSON.parse(sent[sent.length - 1]!.payload).code).toBe(3);
     });
 
+    it('starts by saying where its log lines land', async () => {
+      process.env.AWS_LAMBDA_LOG_GROUP_NAME = '/aws/lambda/sandbox';
+      process.env.AWS_LAMBDA_LOG_STREAM_NAME = '2026/11/07/[$LATEST]abc';
+      try {
+        const [first] = await collect(exec({ cmd: process.execPath, args: ['-e', ''] }));
+
+        expect(first!.stream).toBe(EXEC_STREAM.LOG);
+        expect(JSON.parse(first!.payload)).toEqual({
+          logGroupName: '/aws/lambda/sandbox',
+          logStreamName: '2026/11/07/[$LATEST]abc',
+        });
+      } finally {
+        delete process.env.AWS_LAMBDA_LOG_GROUP_NAME;
+        delete process.env.AWS_LAMBDA_LOG_STREAM_NAME;
+      }
+    });
+
     it('applies the event cwd and env', async () => {
       const script = 'process.stdout.write(process.env.FOO)';
       const sent = await collect(
@@ -278,8 +295,8 @@ describe('shell', () => {
     it('reports a command that cannot start through its exit', async () => {
       const sent = await collect(exec({ cmd: '/nonexistent/rowdy-test-bin' }));
 
-      expect(sent).toHaveLength(1);
-      expect(JSON.parse(sent[0]!.payload).code).toBe(127);
+      expect(sent.map(({ stream }) => stream)).toEqual([EXEC_STREAM.LOG, EXEC_STREAM.EXIT]);
+      expect(JSON.parse(sent[1]!.payload).code).toBe(127);
     });
 
     it('carries binary output intact', async () => {
@@ -287,9 +304,9 @@ describe('shell', () => {
       const data = exec({ cmd: process.execPath, args: ['-e', script] });
       const response = await firstValueFrom((await proxy(data)).into());
       const chunks = await lastValueFrom(response.pipe(toArray(), timeout(5000)));
-      const first = Buffer.from(chunks[0]!.data);
+      const output = Buffer.from(chunks[1]!.data);
 
-      expect(first.subarray(8)).toEqual(Buffer.from([0, 255, 10]));
+      expect(output.subarray(8)).toEqual(Buffer.from([0, 255, 10]));
     });
 
     it('fails the response at the deadline', async () => {

@@ -35,9 +35,11 @@ const _shapes = async (sandbox: Sandbox): Promise<void> => {
 };
 
 const _options: SandboxOptions[] = [
-  { memory: 600 },
+  { memory: 1024 },
   { runtime: 'aws.lambda', memory: 600 },
   { runtime: 'aws.microvm', memory: 1024 },
+  // @ts-expect-error A microVM's memory is one of AWS's sizes, and it's the default.
+  { memory: 600 },
   // @ts-expect-error A microVM's memory is one of AWS's sizes.
   { runtime: 'aws.microvm', memory: 600 },
 ];
@@ -62,7 +64,7 @@ describe('sandbox', () => {
       observe.mockReturnValue(deploy);
       let resolved = false;
 
-      const created = SandboxImpl.create().then((sandbox) => {
+      const created = SandboxImpl.create({ runtime: 'aws.lambda' }).then((sandbox) => {
         resolved = true;
         return sandbox;
       });
@@ -78,7 +80,7 @@ describe('sandbox', () => {
     });
 
     it("adds rowdy's layer", async () => {
-      const sandbox = await SandboxImpl.create();
+      const sandbox = await SandboxImpl.create({ runtime: 'aws.lambda' });
 
       expect(lambdaOf(sandbox).imageService['_layersFrom']).toEqual([ROWDY_LAYERS]);
     });
@@ -89,7 +91,7 @@ describe('sandbox', () => {
     ])('defaults to the sandbox image with %s', async (_, options) => {
       const image = jest.spyOn(LambdaFunction.prototype, 'withImage');
 
-      await SandboxImpl.create(options);
+      await SandboxImpl.create({ runtime: 'aws.lambda', ...options } as SandboxOptions);
 
       expect(image).toHaveBeenCalledWith('scaffoldly/sandbox');
     });
@@ -99,7 +101,7 @@ describe('sandbox', () => {
         return of(this);
       });
 
-      const sandbox = await SandboxImpl.create({ runtime: 'aws.microvm' });
+      const sandbox = await SandboxImpl.create();
 
       expect(sandbox['compute']).toBeInstanceOf(MicrovmCompute);
       expect(create).toHaveBeenCalledWith(
@@ -125,7 +127,7 @@ describe('sandbox', () => {
       });
       const lambda = jest.spyOn(LambdaFunction.prototype, 'withName');
 
-      await SandboxImpl.create();
+      await SandboxImpl.create({ runtime: 'aws.lambda' });
       await SandboxImpl.create({ runtime: 'aws.microvm' });
 
       expect(name.mock.calls[0]?.[0]).not.toEqual(lambda.mock.calls[0]?.[0]);
@@ -134,7 +136,7 @@ describe('sandbox', () => {
     it('hashes the compute', async () => {
       const name = jest.spyOn(LambdaFunction.prototype, 'withName');
 
-      await SandboxImpl.create();
+      await SandboxImpl.create({ runtime: 'aws.lambda' });
       await SandboxImpl.create({ runtime: 'aws.lambda' });
 
       expect(name.mock.calls[0]).toEqual(name.mock.calls[1]);
@@ -142,14 +144,14 @@ describe('sandbox', () => {
     });
 
     it('deploys a sandbox, marked so it may exec', async () => {
-      const sandbox = await SandboxImpl.create();
+      const sandbox = await SandboxImpl.create({ runtime: 'aws.lambda' });
 
       expect(lambdaOf(sandbox).isSandbox()).toBe(true);
       expect(lambdaOf(sandbox)['Environment'].value.ROWDY_SANDBOX).toBe('true');
     });
 
     it("drops the image's command", async () => {
-      const sandbox = await SandboxImpl.create();
+      const sandbox = await SandboxImpl.create({ runtime: 'aws.lambda' });
 
       expect(lambdaOf(sandbox)['Command'].value).toEqual([]);
     });
@@ -157,7 +159,7 @@ describe('sandbox', () => {
     it('applies its timeout in seconds', async () => {
       const timeout = jest.spyOn(LambdaFunction.prototype, 'withTimeout');
 
-      await SandboxImpl.create({ timeout: 60_000 });
+      await SandboxImpl.create({ runtime: 'aws.lambda', timeout: 60_000 });
 
       expect(timeout).toHaveBeenCalledWith(60);
     });
@@ -165,7 +167,7 @@ describe('sandbox', () => {
     it('defaults to the 15 minute timeout', async () => {
       const timeout = jest.spyOn(LambdaFunction.prototype, 'withTimeout');
 
-      await SandboxImpl.create();
+      await SandboxImpl.create({ runtime: 'aws.lambda' });
 
       expect(timeout).toHaveBeenCalledWith(900);
     });
@@ -178,7 +180,7 @@ describe('sandbox', () => {
     ])('names %j %s', async (options, expected) => {
       const name = jest.spyOn(LambdaFunction.prototype, 'withName');
 
-      await SandboxImpl.create(options);
+      await SandboxImpl.create({ runtime: 'aws.lambda', ...options } as SandboxOptions);
 
       expect(name).toHaveBeenCalledWith(expect.stringMatching(expected));
     });
@@ -195,7 +197,7 @@ describe('sandbox', () => {
     describe('suffix', () => {
       const named = async (options?: SandboxOptions): Promise<string> => {
         const name = jest.spyOn(LambdaFunction.prototype, 'withName');
-        await SandboxImpl.create(options);
+        await SandboxImpl.create({ runtime: 'aws.lambda', ...options } as SandboxOptions);
         const generated = name.mock.calls[name.mock.calls.length - 1]![0];
         name.mockRestore();
         return generated;
@@ -242,7 +244,7 @@ describe('sandbox', () => {
     });
 
     it('keeps a sandbox off the function of an unnamed deploy', async () => {
-      const sandbox = await SandboxImpl.create();
+      const sandbox = await SandboxImpl.create({ runtime: 'aws.lambda' });
       const { value } = lambdaOf(sandbox)['Image'];
 
       expect(LambdaFunction.roleName(value.normalized, lambdaOf(sandbox)['Name'].value)).not.toBe(
@@ -251,7 +253,9 @@ describe('sandbox', () => {
     });
 
     it('rejects an invalid image before deploying', async () => {
-      await expect(SandboxImpl.create({ image: 'acme/' })).rejects.toThrow('Unable to normalize');
+      await expect(SandboxImpl.create({ runtime: 'aws.lambda', image: 'acme/' })).rejects.toThrow(
+        'Unable to normalize'
+      );
 
       expect(observe).not.toHaveBeenCalled();
     });
@@ -262,7 +266,13 @@ describe('sandbox', () => {
       const memory = jest.spyOn(LambdaFunction.prototype, 'withMemory');
       const env = jest.spyOn(LambdaFunction.prototype, 'withEnvironment');
 
-      await SandboxImpl.create({ image: 'busybox', name: 'box', memory: 512, env: { FOO: 'bar' } });
+      await SandboxImpl.create({
+        runtime: 'aws.lambda',
+        image: 'busybox',
+        name: 'box',
+        memory: 512,
+        env: { FOO: 'bar' },
+      });
 
       expect(image).toHaveBeenCalledWith('busybox');
       expect(name).toHaveBeenCalledWith(expect.stringMatching(/^box-/));
@@ -279,7 +289,9 @@ describe('sandbox', () => {
       ['memory over 10240 MB', { memory: 10241 }],
       ['memory of partial MB', { memory: 512.5 }],
     ])('rejects %s before deploying', async (_, options) => {
-      await expect(SandboxImpl.create(options)).rejects.toThrow(RangeError);
+      await expect(SandboxImpl.create({ runtime: 'aws.lambda', ...options } as SandboxOptions)).rejects.toThrow(
+        RangeError
+      );
 
       expect(observe).not.toHaveBeenCalled();
     });
@@ -287,12 +299,14 @@ describe('sandbox', () => {
     it.each([[{ timeout: 1000, memory: 128 }], [{ timeout: 900_000, memory: 10240 }]])(
       'accepts the limits %j',
       async (options) => {
-        await expect(SandboxImpl.create(options)).resolves.toBeInstanceOf(SandboxImpl);
+        await expect(
+          SandboxImpl.create({ runtime: 'aws.lambda', ...options } as SandboxOptions)
+        ).resolves.toBeInstanceOf(SandboxImpl);
       }
     );
 
     it('keeps HOME and the XDG directories under /tmp, apart', async () => {
-      const sandbox = await SandboxImpl.create();
+      const sandbox = await SandboxImpl.create({ runtime: 'aws.lambda' });
 
       expect(lambdaOf(sandbox)['Environment'].value).toMatchObject({
         HOME: '/tmp',
@@ -304,7 +318,7 @@ describe('sandbox', () => {
     });
 
     it('lets env override the defaults', async () => {
-      const sandbox = await SandboxImpl.create({ env: { HOME: '/mnt', FOO: 'bar' } });
+      const sandbox = await SandboxImpl.create({ runtime: 'aws.lambda', env: { HOME: '/mnt', FOO: 'bar' } });
 
       expect(lambdaOf(sandbox)['Environment'].value).toMatchObject({
         HOME: '/mnt',
@@ -322,7 +336,7 @@ describe('sandbox', () => {
       const response = { status: 404, statusText: '', data: '', headers: {}, config };
       observe.mockReturnValue(throwError(() => new AxiosError('failed', 'ERR_BAD_REQUEST', config, null, response)));
 
-      const error = await SandboxImpl.create().catch((e) => e);
+      const error = await SandboxImpl.create({ runtime: 'aws.lambda' }).catch((e) => e);
 
       expect(error).not.toBeInstanceOf(AxiosError);
       expect(error.message).toBe('GET https://mirror.gcr.io/v2/e2bdev/base/blobs/sha256:abc: 404');
@@ -333,7 +347,7 @@ describe('sandbox', () => {
       const abort = jest.spyOn(AbortController.prototype, 'abort');
       observe.mockReturnValue(throwError(() => error));
 
-      await expect(SandboxImpl.create()).rejects.toBe(error);
+      await expect(SandboxImpl.create({ runtime: 'aws.lambda' })).rejects.toBe(error);
 
       expect(abort).toHaveBeenCalledWith(error);
     });
@@ -357,7 +371,7 @@ describe('sandbox', () => {
       });
 
       it('is warn by default', async () => {
-        await SandboxImpl.create();
+        await SandboxImpl.create({ runtime: 'aws.lambda' });
 
         expect(new Logger().level).toBe('warn');
       });
@@ -365,7 +379,7 @@ describe('sandbox', () => {
       it('takes logLevel over ROWDY_LOG_LEVEL', async () => {
         process.env.ROWDY_LOG_LEVEL = 'trace';
 
-        await SandboxImpl.create({ logLevel: 'error' });
+        await SandboxImpl.create({ runtime: 'aws.lambda', logLevel: 'error' });
 
         expect(new Logger().level).toBe('error');
       });
@@ -373,7 +387,7 @@ describe('sandbox', () => {
       it('follows ROWDY_LOG_LEVEL', async () => {
         process.env.ROWDY_LOG_LEVEL = 'info';
 
-        await SandboxImpl.create();
+        await SandboxImpl.create({ runtime: 'aws.lambda' });
 
         expect(new Logger().level).toBe('info');
       });
@@ -381,7 +395,7 @@ describe('sandbox', () => {
       it('follows ROWDY_DEBUG', async () => {
         process.env.ROWDY_DEBUG = 'true';
 
-        await SandboxImpl.create();
+        await SandboxImpl.create({ runtime: 'aws.lambda' });
 
         expect(new Logger().level).toBe('debug');
       });
@@ -390,7 +404,7 @@ describe('sandbox', () => {
         const info = jest.spyOn(console, 'info').mockImplementation(() => {});
         const error = jest.spyOn(console, 'error').mockImplementation(() => {});
 
-        await SandboxImpl.create({ logLevel: 'info' });
+        await SandboxImpl.create({ runtime: 'aws.lambda', logLevel: 'info' });
         new Logger().info('hello');
         new Logger().withSink(undefined);
 
@@ -402,7 +416,7 @@ describe('sandbox', () => {
     it('rejects when the deploy fails', async () => {
       observe.mockReturnValue(throwError(() => new Error('AccessDenied')));
 
-      await expect(SandboxImpl.create()).rejects.toThrow('AccessDenied');
+      await expect(SandboxImpl.create({ runtime: 'aws.lambda' })).rejects.toThrow('AccessDenied');
     });
 
     it('rejects with the reason and stops the deploy when aborted', async () => {
@@ -414,7 +428,7 @@ describe('sandbox', () => {
       );
       const controller = new AbortController();
 
-      const created = SandboxImpl.create({ signal: controller.signal });
+      const created = SandboxImpl.create({ runtime: 'aws.lambda', signal: controller.signal });
       await Promise.resolve();
       controller.abort('stop');
 
@@ -425,7 +439,9 @@ describe('sandbox', () => {
     it('does not deploy when already aborted', async () => {
       observe.mockReturnValue(NEVER);
 
-      await expect(SandboxImpl.create({ signal: AbortSignal.abort('stop') })).rejects.toBe('stop');
+      await expect(SandboxImpl.create({ runtime: 'aws.lambda', signal: AbortSignal.abort('stop') })).rejects.toBe(
+        'stop'
+      );
       expect(observe).not.toHaveBeenCalled();
     });
   });
@@ -443,7 +459,7 @@ describe('sandbox', () => {
       return of(this);
     });
 
-    const sandbox = await Sandbox.create({ timeout: 15 * 60 * 1000 });
+    const sandbox = await Sandbox.create({ runtime: 'aws.lambda', timeout: 15 * 60 * 1000 });
     const finished = await sandbox.runCommand({
       cmd: 'echo',
       args: ['hello world'],
@@ -583,7 +599,7 @@ describe('sandbox', () => {
 
       it("leaves lambda, which can't stop", async () => {
         const controller = new AbortController();
-        await Sandbox.create({ signal: controller.signal });
+        await Sandbox.create({ runtime: 'aws.lambda', signal: controller.signal });
 
         expect(() => controller.abort('bye')).not.toThrow();
         expect(stop).not.toHaveBeenCalled();
@@ -593,7 +609,7 @@ describe('sandbox', () => {
     it('aborts a command on lambda', async () => {
       jest.spyOn(LambdaFunction.prototype, 'exec').mockReturnValue(NEVER);
       const controller = new AbortController();
-      const sandbox = await Sandbox.create({ signal: controller.signal });
+      const sandbox = await Sandbox.create({ runtime: 'aws.lambda', signal: controller.signal });
       const command = sandbox.runCommand('sleep', ['60']);
 
       controller.abort('bye');
@@ -711,7 +727,7 @@ describe('sandbox', () => {
 
     it("leaves Ctrl+C alone where a sandbox can't stop", async () => {
       jest.spyOn(LambdaFunction.prototype, 'exec').mockReturnValue(NEVER);
-      const sandbox = await Sandbox.create();
+      const sandbox = await Sandbox.create({ runtime: 'aws.lambda' });
       void sandbox.runCommand('sleep', ['60']);
       await settled();
 
@@ -735,7 +751,7 @@ describe('sandbox', () => {
     });
 
     it('rejects on lambda for now', async () => {
-      const sandbox = await Sandbox.create();
+      const sandbox = await Sandbox.create({ runtime: 'aws.lambda' });
 
       await expect(sandbox.stop()).rejects.toThrow('stop is not implemented on runtime aws.lambda');
     });
@@ -762,7 +778,7 @@ describe('sandbox', () => {
       emitting();
       const seen: unknown[] = [];
 
-      const creating = Sandbox.create();
+      const creating = Sandbox.create({ runtime: 'aws.lambda' });
       creating.events().subscribe((emitted) => seen.push(emitted));
       await creating;
 
@@ -770,13 +786,13 @@ describe('sandbox', () => {
     });
 
     it('still resolves to the sandbox', async () => {
-      const sandbox = await Sandbox.create();
+      const sandbox = await Sandbox.create({ runtime: 'aws.lambda' });
 
       expect(sandbox).toBeInstanceOf(SandboxImpl);
     });
 
     it('still rejects for options out of range', async () => {
-      await expect(Sandbox.create({ memory: 1 })).rejects.toThrow(RangeError);
+      await expect(Sandbox.create({ runtime: 'aws.lambda', memory: 1 })).rejects.toThrow(RangeError);
     });
 
     it('shows a get to a caller who subscribes before awaiting', async () => {
@@ -794,7 +810,7 @@ describe('sandbox', () => {
     });
 
     it('includes what the registry does', async () => {
-      const sandbox = await SandboxImpl.create();
+      const sandbox = await SandboxImpl.create({ runtime: 'aws.lambda' });
       const registry = new AwsRegistry(sandbox['environment']);
       const send = jest.fn(async () => ({}));
       registry['ecr'].config.requestHandler = { handle: send } as never;
@@ -817,18 +833,20 @@ describe('sandbox', () => {
     it('works as a promise', async () => {
       const settled = jest.fn();
 
-      const reason = await Sandbox.create({ memory: 1 })
+      const reason = await Sandbox.create({ runtime: 'aws.lambda', memory: 1 })
         .catch((error) => error)
         .finally(settled);
 
       expect(reason).toBeInstanceOf(RangeError);
       expect(settled).toHaveBeenCalledTimes(1);
-      await expect(Sandbox.create().then(({ constructor }) => constructor)).resolves.toBe(SandboxImpl);
+      await expect(Sandbox.create({ runtime: 'aws.lambda' }).then(({ constructor }) => constructor)).resolves.toBe(
+        SandboxImpl
+      );
     });
 
     it('starts from now on the sandbox', async () => {
       emitting();
-      const sandbox = await Sandbox.create();
+      const sandbox = await Sandbox.create({ runtime: 'aws.lambda' });
       const seen: unknown[] = [];
 
       sandbox.events().subscribe((emitted) => seen.push(emitted));
@@ -843,7 +861,7 @@ describe('sandbox', () => {
       emitting();
       const onEvent = jest.fn();
 
-      await Sandbox.create({ onEvent });
+      await Sandbox.create({ runtime: 'aws.lambda', onEvent });
       await new Promise(setImmediate);
 
       expect(onEvent).toHaveBeenCalledWith(event);
@@ -853,7 +871,7 @@ describe('sandbox', () => {
       emitting();
       const onEvent = jest.fn();
 
-      await Sandbox.create({ onEvent: Promise.resolve(onEvent) });
+      await Sandbox.create({ runtime: 'aws.lambda', onEvent: Promise.resolve(onEvent) });
       await new Promise(setImmediate);
 
       expect(onEvent).toHaveBeenCalledWith(event);
@@ -862,6 +880,7 @@ describe('sandbox', () => {
     it('keeps order through a slow callback', async () => {
       const seen: string[] = [];
       const sandbox = await SandboxImpl.create({
+        runtime: 'aws.lambda',
         onEvent: async (emitted) => {
           await new Promise(setImmediate);
           seen.push(emitted.source === 'cdk' ? `${emitted.action}` : '');
@@ -882,7 +901,7 @@ describe('sandbox', () => {
       });
       const logged = jest.spyOn(console, 'error').mockImplementation(() => {});
 
-      const sandbox = await Sandbox.create({ onEvent });
+      const sandbox = await Sandbox.create({ runtime: 'aws.lambda', onEvent });
       await new Promise(setImmediate);
 
       expect(sandbox).toBeInstanceOf(SandboxImpl);
@@ -893,8 +912,8 @@ describe('sandbox', () => {
     it('keeps onEvent out of the name', async () => {
       const name = jest.spyOn(LambdaFunction.prototype, 'withName');
 
-      await Sandbox.create();
-      await Sandbox.create({ onEvent: () => {} });
+      await Sandbox.create({ runtime: 'aws.lambda' });
+      await Sandbox.create({ runtime: 'aws.lambda', onEvent: () => {} });
 
       expect(name.mock.calls[1]).toEqual(name.mock.calls[0]);
     });
@@ -909,7 +928,7 @@ describe('sandbox', () => {
       };
 
       it('calls onEvent with what happens during the command only', async () => {
-        const sandbox = await SandboxImpl.create();
+        const sandbox = await SandboxImpl.create({ runtime: 'aws.lambda' });
         lambdaOf(sandbox)['emitted'].next({ ...step, action: 'Before' });
         await running(sandbox);
         const onEvent = jest.fn();
@@ -921,7 +940,7 @@ describe('sandbox', () => {
       });
 
       it('takes onEvent as an option too', async () => {
-        const sandbox = await SandboxImpl.create();
+        const sandbox = await SandboxImpl.create({ runtime: 'aws.lambda' });
         await running(sandbox);
         const onEvent = jest.fn();
 
@@ -932,7 +951,7 @@ describe('sandbox', () => {
       });
 
       it('stops calling after the command', async () => {
-        const sandbox = await SandboxImpl.create();
+        const sandbox = await SandboxImpl.create({ runtime: 'aws.lambda' });
         await running(sandbox);
         const onEvent = jest.fn();
 
@@ -948,20 +967,25 @@ describe('sandbox', () => {
 
   describe('tools', () => {
     it('lists them by name', () => {
-      expect(Sandbox.tools().map(({ name }) => name)).toEqual(['create_sandbox', 'run_command', 'stop_sandbox']);
+      expect(Sandbox.tools().map(({ name }) => name)).toEqual([
+        'create_sandbox',
+        'run_command',
+        'read_output',
+        'stop_sandbox',
+      ]);
     });
   });
 
   describe('sandboxId', () => {
     it('is the function arn', async () => {
-      const sandbox = await SandboxImpl.create();
+      const sandbox = await SandboxImpl.create({ runtime: 'aws.lambda' });
       lambdaOf(sandbox).State.FunctionArn = FUNCTION_ARN;
 
       expect(sandbox.sandboxId).toBe(FUNCTION_ARN);
     });
 
     it('throws before a function exists', async () => {
-      const sandbox = await SandboxImpl.create();
+      const sandbox = await SandboxImpl.create({ runtime: 'aws.lambda' });
 
       expect(() => sandbox.sandboxId).toThrow('Sandbox has no function');
     });
@@ -973,7 +997,7 @@ describe('sandbox', () => {
       send.mockImplementation(() =>
         Promise.resolve({ $metadata: { requestId: 'req' }, EventStream: stream(...events) })
       );
-      const sandbox = await SandboxImpl.create();
+      const sandbox = await SandboxImpl.create({ runtime: 'aws.lambda' });
       lambdaOf(sandbox).State.FunctionArn = FUNCTION_ARN;
       return { sandbox, send };
     };
@@ -1007,9 +1031,25 @@ describe('sandbox', () => {
     });
 
     it('does not retry a command', async () => {
-      const sandbox = await SandboxImpl.create();
+      const sandbox = await SandboxImpl.create({ runtime: 'aws.lambda' });
 
       await expect(lambdaOf(sandbox)['invoker'].config.maxAttempts()).resolves.toBe(1);
+    });
+
+    it('takes its cmdId from where the function says it logs', async () => {
+      const location = { logGroupName: '/aws/lambda/sandbox', logStreamName: '2026/11/07/[$LATEST]abc' };
+      const { sandbox } = await start(
+        payload(execFrame(EXEC_STREAM.LOG, Buffer.from(JSON.stringify(location)))),
+        payload(execFrame(EXEC_STREAM.EXIT, Buffer.from('{"code":0}')))
+      );
+
+      const { cmdId } = await sandbox.runCommand('sh');
+
+      expect(JSON.parse(Buffer.from(cmdId, 'base64url').toString())).toEqual({
+        logGroupIdentifiers: [expect.stringMatching(/^arn:aws:logs:.+:log-group:\/aws\/lambda\/sandbox$/)],
+        logStreamNamePrefixes: ['2026/11/07/[$LATEST]abc'],
+        logEventFilterPattern: '"rowdy.exec" "req"',
+      });
     });
 
     it('collects stdout, stderr and the exit code', async () => {
@@ -1176,7 +1216,7 @@ describe('sandbox', () => {
     });
 
     it('rejects before a function exists', async () => {
-      const sandbox = await SandboxImpl.create();
+      const sandbox = await SandboxImpl.create({ runtime: 'aws.lambda' });
 
       await expect(sandbox.runCommand('sh')).rejects.toThrow('Exec needs a deployed sandbox');
     });
@@ -1218,7 +1258,7 @@ describe('sandbox', () => {
 
   it('feeds its signal to its environment', async () => {
     const controller = new AbortController();
-    const sandbox = await SandboxImpl.create({ signal: controller.signal });
+    const sandbox = await SandboxImpl.create({ runtime: 'aws.lambda', signal: controller.signal });
 
     controller.abort('stop');
 

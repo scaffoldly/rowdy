@@ -1,5 +1,7 @@
 import type {
   CommandFinished,
+  CommandOutput,
+  CommandOutputOptions,
   RunCommandOptions,
   RunCommandParams,
   Sandbox,
@@ -44,6 +46,7 @@ import { safeTool } from '../../mcp/tool';
 import { EXEC_STREAM } from '../../proxy/shell';
 import { createSandbox } from '../mcp/create-sandbox';
 import { runCommand } from '../mcp/run-command';
+import { readOutput } from '../mcp/read-output';
 import { stopSandbox } from '../mcp/stop-sandbox';
 import { DEFAULTS, SandboxCompute, SandboxComputeClass } from './compute';
 import { SandboxPromiseImpl } from './create';
@@ -77,11 +80,11 @@ export class SandboxImpl implements Sandbox {
     }
     this.environment = new Environment(log, { signal });
 
-    this.compute = new RUNTIMES[runtime ?? 'aws.lambda'](this.environment);
+    this.compute = new RUNTIMES[runtime ?? 'aws.microvm'](this.environment);
   }
 
   static create(options?: SandboxOptions): SandboxPromiseImpl {
-    const runtime = options?.runtime ?? 'aws.lambda';
+    const runtime = options?.runtime ?? 'aws.microvm';
     const sandbox = new SandboxImpl({ runtime, logLevel: options?.logLevel, signal: options?.signal });
     const { signal } = sandbox.environment;
 
@@ -178,6 +181,7 @@ export class SandboxImpl implements Sandbox {
     const tools: Tool[] = [
       createSandbox(SandboxImpl, options),
       runCommand(SandboxImpl, options),
+      readOutput(SandboxImpl, options),
       stopSandbox(SandboxImpl, options),
     ];
     return tools.map((tool) => safeTool(tool, describeError));
@@ -271,6 +275,13 @@ export class SandboxImpl implements Sandbox {
   // async mkDir(_path: string): Promise<void> {
   //   throw new Error('not implemented');
   // }
+
+  async output(cmdId: string, options?: CommandOutputOptions): Promise<CommandOutput> {
+    const signal = options?.signal
+      ? AbortSignal.any([options.signal, this.environment.signal])
+      : this.environment.signal;
+    return lastValueFrom(this.compute.output(cmdId, { ...options, signal }));
+  }
 
   async stop(): Promise<void> {
     await lastValueFrom(this.compute.stop());

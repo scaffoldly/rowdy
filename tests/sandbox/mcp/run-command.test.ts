@@ -11,7 +11,7 @@ const setup = (
 ) => {
   const command = jest.fn(async (params: RunCommandParams) => {
     output.writes?.forEach(([stream, text]) => params[stream]?.write(Buffer.from(text)));
-    return { exitCode: output.exitCode ?? 0 };
+    return { cmdId: 'cmd', exitCode: output.exitCode ?? 0 };
   });
   const get = jest.fn(async (_lookup: unknown) => ({ runCommand: command }) as unknown as Sandbox);
   const tool = runCommand({ get: get as unknown as SandboxFactory['get'] }, options);
@@ -35,7 +35,7 @@ describe('run_command', () => {
   it('answers with exit code and output, as text and structured content', async () => {
     const { run } = setup({}, { writes: [['stdout', 'out']] });
 
-    const structuredContent = { exit_code: 0, text: 'out', truncated: false, total_bytes: 3 };
+    const structuredContent = { cmd_id: 'cmd', exit_code: 0, text: 'out', truncated: false, total_bytes: 3 };
     expect(await run()).toEqual({
       content: [{ type: 'text', text: JSON.stringify(structuredContent) }],
       structuredContent,
@@ -111,6 +111,14 @@ describe('run_command', () => {
         truncated: true,
         total_bytes: OUTPUT.limit + 5,
       });
+    });
+
+    it('tells a model how to read what was cut', async () => {
+      const { run } = setup({}, { writes: [['stdout', 'x'.repeat(OUTPUT.limit + 1)]] });
+
+      const { content } = await run();
+
+      expect(content[1]).toMatchObject({ type: 'text', text: expect.stringContaining('Call read_output') });
     });
 
     it('holds no more than the limit while a command prints', async () => {
