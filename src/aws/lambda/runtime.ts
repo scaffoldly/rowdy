@@ -2,7 +2,7 @@ import { ServiceImpl } from '@connectrpc/connect';
 import { CRI } from '@scaffoldly/rowdy-grpc';
 import { Environment } from '../../environment';
 import { LambdaImageService } from './image';
-import { Logger } from '../..';
+import { Logger } from '../../log';
 import { LambdaFunction, tagify } from '.';
 import { catchError, from, lastValueFrom, map, mergeAll, Observable, throwError, toArray } from 'rxjs';
 import { Annotations } from './metadata';

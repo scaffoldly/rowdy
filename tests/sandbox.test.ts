@@ -948,7 +948,7 @@ describe('sandbox', () => {
 
   describe('tools', () => {
     it('lists them by name', () => {
-      expect(Sandbox.tools().map(({ name }) => name)).toEqual(['create_sandbox']);
+      expect(Sandbox.tools().map(({ name }) => name)).toEqual(['create_sandbox', 'run_command']);
     });
   });
 
