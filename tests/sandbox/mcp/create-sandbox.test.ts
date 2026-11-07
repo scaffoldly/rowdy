@@ -7,9 +7,9 @@ const sandboxId = 'arn:aws:lambda:us-east-1:123456789012:microvm-image:sandbox-b
 
 const setup = (
   options: SandboxToolsOptions = {},
-  create: SandboxFactory['create'] = async () => ({ sandboxId }) as Sandbox
+  create: () => Promise<Sandbox> = async () => ({ sandboxId }) as Sandbox
 ) => {
-  const spy = jest.fn(create);
+  const spy = jest.fn(create as SandboxFactory['create']);
   const notify = jest.fn(async () => {});
   const tool = createSandbox({ create: spy }, options);
   const run = (input: Record<string, unknown> = {}, _meta?: { progressToken: string }) =>
@@ -180,7 +180,9 @@ describe('create_sandbox', () => {
     };
 
     it('notifies a client that asked, while it builds', async () => {
-      const { run, notify } = setup({}, slow);
+      let built: (sandbox: Sandbox) => void = () => {};
+      const { run, notify } = setup({}, () => new Promise((resolve) => (built = resolve)));
+      notify.mockImplementation(async () => built({ sandboxId } as Sandbox));
 
       await run({}, { progressToken: 'token' });
 

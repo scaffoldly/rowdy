@@ -36,6 +36,7 @@ import {
   forkJoin,
   from,
   map,
+  merge,
   finalize,
   Observable,
   of,
@@ -48,6 +49,7 @@ import { deploySources } from '../../api/internal/layers';
 import { Transfer } from '../../api/internal/transfer';
 import { Exec } from '../../api/types';
 import { Environment } from '../../environment';
+import type { Event } from '../../events';
 import { Logger } from '../../log';
 import { ExecSchema } from '../../routes';
 import { ComputeSpec, MICROVM_MEMORY, SandboxCompute } from '../../sandbox/internal/compute';
@@ -99,10 +101,10 @@ export class MicrovmCompute extends AwsClientLogger implements SandboxCompute {
 
   readonly stoppable = true;
 
-  private iam = new IAMClient({ logger: this });
-  private microvms = new LambdaMicrovmsClient({ logger: this });
-  private s3 = new S3Client({ logger: this });
-  private sts = new STSClient({ logger: this });
+  private iam = this.track(new IAMClient({ logger: this }));
+  private microvms = this.track(new LambdaMicrovmsClient({ logger: this }));
+  private s3 = this.track(new S3Client({ logger: this }));
+  private sts = this.track(new STSClient({ logger: this }));
 
   private images: LambdaImageService;
   private imageArn?: string;
@@ -201,6 +203,10 @@ export class MicrovmCompute extends AwsClientLogger implements SandboxCompute {
         controller.abort();
       })
     );
+  }
+
+  override events(): Observable<Event> {
+    return merge(super.events(), this.environment.event$);
   }
 
   stop(): Observable<this> {

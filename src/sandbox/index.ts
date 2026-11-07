@@ -1,5 +1,8 @@
+import type { Observable } from 'rxjs';
+import type { McpServer } from '@modelcontextprotocol/server';
 import type { Writable } from 'stream';
 import type { Exec, ExecFinished } from '../api/types';
+import type { Event, EventCallback } from '../events';
 import type { Level } from '../log';
 import type { Tool } from '../mcp/tool';
 import type { MICROVM_MEMORY } from './internal/compute';
@@ -14,6 +17,8 @@ interface BaseSandboxOptions {
   logLevel?: Level;
   /** Aborts the sandbox's work in progress, including its creation, and stops it if it can `stop`. */
   signal?: AbortSignal;
+  /** Receives every event from the start of `create`, for as long as the sandbox is in use. */
+  onEvent?: EventCallback | PromiseLike<EventCallback>;
 }
 
 export interface LambdaSandboxOptions extends BaseSandboxOptions {
@@ -43,6 +48,8 @@ export interface MicrovmSandboxOptions extends BaseSandboxOptions {
 
 export type SandboxOptions = LambdaSandboxOptions | MicrovmSandboxOptions;
 
+export type { Event, EventCallback };
+
 export interface SandboxToolsLimits {
   /** The most memory a sandbox can have, in megabytes. */
   memory?: number;
@@ -57,6 +64,8 @@ export interface SandboxToolsOptions extends Pick<SandboxOptions, 'logLevel' | '
   name?: string;
   /** What a model can ask for. */
   limits?: SandboxToolsLimits;
+  /** Where tools are registered at runtime, as they become available. */
+  server?: Pick<McpServer, 'registerTool'>;
 }
 
 export type { Tool };
@@ -77,6 +86,8 @@ export interface RunCommandParams {
   stdout?: Writable;
   /** Receives the command's stderr as it is written. */
   stderr?: Writable;
+  /** Receives the sandbox's events while this command runs. */
+  onEvent?: EventCallback | PromiseLike<EventCallback>;
   // TODO: detached
   // /** Resolves once the command has started instead of when it exits. */
   // detached?: boolean;
@@ -92,6 +103,8 @@ export interface RunCommandParams {
 export interface RunCommandOptions {
   /** Kills the command and rejects. On `runtime: 'aws.lambda'` only the waiting stops: it runs on until it exits or times out. */
   signal?: AbortSignal;
+  /** Receives the sandbox's events while this command runs. */
+  onEvent?: EventCallback | PromiseLike<EventCallback>;
 }
 
 // TODO: writeFiles
@@ -137,13 +150,18 @@ export interface Sandbox {
    * started. Safe to call more than once. The next command starts it again. `runtime: 'aws.lambda'` rejects for now.
    */
   stop(): Promise<void>;
+  /** Each event from now on. */
+  events(): Observable<Event>;
 }
+
+/** A sandbox on its way. Await it for the sandbox, and call `events` before that to see what it takes. */
+export interface SandboxPromise extends Promise<Sandbox>, Pick<Sandbox, 'events'> {}
 
 export interface SandboxFactory {
   /** Starts a new sandbox. */
-  create(options?: SandboxOptions): Promise<Sandbox>;
+  create(options?: SandboxOptions): SandboxPromise;
   /** Connects to a sandbox that is already running. */
-  get(lookup: SandboxLookup): Promise<Sandbox>;
+  get(lookup: SandboxLookup): SandboxPromise;
   /** The MCP tools for sandboxes, for a host to add to its own server. */
   tools(options?: SandboxToolsOptions): Tool[];
 }

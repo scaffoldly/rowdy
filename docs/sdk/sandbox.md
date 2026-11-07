@@ -185,6 +185,56 @@ no VM is left running. A second Ctrl+C quits straight away, without waiting. A p
 This only applies during a command. Between commands, Ctrl+C ends the process and leaves the VM
 running until `timeout`, unless the program stops it.
 
+## Events
+
+Rowdy reports each step it takes on AWS. A step has a `type`, which narrows its `lifecycle`:
+
+| `type`     | `lifecycle`               |
+| ---------- | ------------------------- |
+| `describe` | `describing`, `described` |
+| `read`     | `reading`, `read`         |
+| `create`   | `creating`, `created`     |
+| `update`   | `updating`, `updated`     |
+| `dispose`  | `disposing`, `disposed`   |
+| `tag`      | `tagging`, `tagged`       |
+
+`failed` can follow any of them.
+
+```ts
+{ source: 'cdk', type: 'create', lifecycle: 'creating', client: 'IAMClient', action: 'CreateRole', name: 'sandbox-abc' }
+```
+
+Pass `onEvent` to `Sandbox.create` or `runCommand`. It can be a callback or a promise of one. Callbacks run one at a
+time, in order, and an error from one is logged and doesn't affect the sandbox.
+
+```ts
+const sandbox = await Sandbox.create({
+  runtime: 'aws.microvm',
+  onEvent: ({ type, lifecycle, action }) => {
+    if (type === 'create' && lifecycle === 'created') {
+      console.error(action);
+    }
+  },
+});
+
+await sandbox.runCommand({ cmd: 'npm', args: ['test'], onEvent: (event) => console.error(event) });
+```
+
+On `create`, it receives every event for as long as the sandbox is in use. On `runCommand`, it receives what happens
+while that command runs. That includes polling, so filter on `type`.
+
+For an Observable, call `.events()`. Nothing is kept, so it starts from when you subscribe: to see the build, call it on
+what `create` returns, before you await it.
+
+```ts
+const creating = Sandbox.create({ runtime: 'aws.microvm' });
+creating.events().subscribe(console.error);
+const sandbox = await creating;
+```
+
+ECR's repository and credential steps report events, but copying the image's layers doesn't, and neither does a command's
+own output.
+
 ## What rowdy creates
 
 Each sandbox gets its own resources, in the account and region of your credentials:

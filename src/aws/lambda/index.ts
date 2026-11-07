@@ -252,12 +252,12 @@ export class LambdaFunction extends AwsClientLogger {
       : fit(`${image.namespace}+${image.name}`, '@rowdy.run');
   }
 
-  private iam = new IAMClient({ logger: this });
-  private lambda = new LambdaClient({ logger: this });
+  private iam = this.track(new IAMClient({ logger: this }));
+  private lambda = this.track(new LambdaClient({ logger: this }));
   // The SDK's default retries would run a command a second time, and its logger would log the event's env.
   private invoker = new LambdaClient({ maxAttempts: 1 });
-  private scheduler = new SchedulerClient({ logger: this });
-  private s3 = new S3Client({ logger: this });
+  private scheduler = this.track(new SchedulerClient({ logger: this }));
+  private s3 = this.track(new S3Client({ logger: this }));
 
   private type: 'Sandbox' | 'Container';
   private deleting: boolean = false;

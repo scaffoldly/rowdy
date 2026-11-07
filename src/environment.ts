@@ -15,6 +15,7 @@ import {
   race,
   repeat,
   ReplaySubject,
+  Subject,
   Subscription,
   switchMap,
   take,
@@ -24,6 +25,7 @@ import {
 } from 'rxjs';
 import { Routes } from './routes';
 import { defaultPort, originOf } from './cdn';
+import type { Event } from './events';
 import { ILoggable, isLevel, Level, log, Logger, mask, maskEnv, maskJson, Trace } from './log';
 import { ExitContext, ShellExit, ShellProxy, ShellRequest } from './proxy/shell';
 import { ShellPipeline } from './shell/pipeline';
@@ -190,6 +192,8 @@ export class Environment implements ILoggable {
 
   public abort: AbortController;
   public readonly signal: AbortSignal;
+  /** Events from clients that aren't a compute's own, for its stream to include. */
+  public readonly event$ = new Subject<Event>();
   public readonly bin = Object.keys(packageJson.bin)[0];
 
   private _pipelines: Pipeline[] = [new LambdaPipeline(this), new MicrovmPipeline(this)];
