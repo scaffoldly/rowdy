@@ -14,7 +14,7 @@ import {
 import { z } from 'zod';
 import type { SandboxFactory, SandboxOptions, SandboxToolsOptions } from '..';
 import { DEFAULTS } from '../internal/compute';
-import type { Tool } from '../../mcp/tool';
+import { toolResult, type Tool } from '../../mcp/tool';
 
 /** How often a client hears that a build is still going, with or without events, in milliseconds. */
 export const PROGRESS = { delay: 15000 };
@@ -76,12 +76,7 @@ export const createSandbox = (
 
     return lastValueFrom(
       merge(
-        from(created).pipe(
-          map(({ sandboxId }) => ({
-            content: [{ type: 'text' as const, text: JSON.stringify({ sandbox_id: sandboxId }) }],
-            structuredContent: { sandbox_id: sandboxId },
-          }))
-        ),
+        from(created).pipe(map(({ sandboxId }) => toolResult(outputSchema, { sandbox_id: sandboxId }))),
         iif(
           () => progressToken === undefined,
           EMPTY,

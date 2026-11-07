@@ -50,7 +50,7 @@ import { Exec } from '../../api/types';
 import { Environment } from '../../environment';
 import { Logger } from '../../log';
 import { ExecSchema } from '../../routes';
-import { ComputeSpec, MICROVM_MEMORY, SandboxCompute } from '../../sandbox/internal/compute';
+import { ComputeSpec, MICROVM_MEMORY, SandboxCompute, SandboxError } from '../../sandbox/internal/compute';
 import { LambdaImageService } from '../lambda/image';
 import {
   _create,
@@ -179,7 +179,7 @@ export class MicrovmCompute extends AwsClientLogger implements SandboxCompute {
     return defer(() => this.microvms.send(new ListTagsCommand({ Resource: sandboxId }))).pipe(
       map(({ Tags }) => {
         if (Tags?.[COMPUTE_TAG] !== 'microvm') {
-          throw new Error(`Not a sandbox: ${sandboxId}`);
+          throw new SandboxError(`Not a sandbox: ${sandboxId}`);
         }
         this.imageArn = sandboxId;
         return this;

@@ -37,11 +37,14 @@ import {
 } from 'rxjs';
 import { Environment } from '../../environment';
 import { Logger, maskUrl } from '../../log';
+import { describeError } from '../../aws/errors';
 import { LambdaCompute } from '../../aws/lambda/compute';
 import { MicrovmCompute } from '../../aws/microvm/compute';
+import { safeTool } from '../../mcp/tool';
 import { EXEC_STREAM } from '../../proxy/shell';
 import { createSandbox } from '../mcp/create-sandbox';
 import { runCommand } from '../mcp/run-command';
+import { stopSandbox } from '../mcp/stop-sandbox';
 import { DEFAULTS, SandboxCompute, SandboxComputeClass } from './compute';
 import { SandboxPromiseImpl } from './create';
 
@@ -170,7 +173,14 @@ export class SandboxImpl implements Sandbox {
   }
 
   static tools(options?: SandboxToolsOptions): Tool[] {
-    return [createSandbox(SandboxImpl, options), runCommand(SandboxImpl, options)];
+    // A host's stdout is its own, even for a tool that fails before it reaches a sandbox.
+    new Logger('sandbox').withSink('stderr');
+    const tools: Tool[] = [
+      createSandbox(SandboxImpl, options),
+      runCommand(SandboxImpl, options),
+      stopSandbox(SandboxImpl, options),
+    ];
+    return tools.map((tool) => safeTool(tool, describeError));
   }
 
   get sandboxId(): string {
