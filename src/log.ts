@@ -122,8 +122,10 @@ const LEVELS: Record<Level, number> = { error: 0, warn: 1, info: 2, debug: 3, tr
 
 export const isLevel = (value: unknown): value is Level => typeof value === 'string' && value in LEVELS;
 
-// Process-wide: every Logger, children included, shares one level, format and context.
-const state: { level?: Level; format?: Format; context: Record<string, Primitive> } = { context: {} };
+export type Sink = 'stderr';
+
+// Process-wide: every Logger, children included, shares one level, format, sink and context.
+const state: { level?: Level; format?: Format; sink?: Sink; context: Record<string, Primitive> } = { context: {} };
 
 const envLevel = (): Level => {
   const explicit = process.env.ROWDY_LOG_LEVEL?.toLowerCase();
@@ -221,6 +223,12 @@ export class Logger {
     return this;
   }
 
+  /** Sends every level to stderr, for a host whose stdout is its own. Undefined splits them by level again. */
+  withSink(sink: Sink | undefined): this {
+    state.sink = sink;
+    return this;
+  }
+
   withDebugging(): this {
     return this.enabled('debug') ? this : this.withLevel('debug');
   }
@@ -278,7 +286,7 @@ export class Logger {
       return;
     }
 
-    const sink = level === 'trace' ? 'debug' : level;
+    const sink = state.sink ? 'error' : level === 'trace' ? 'debug' : level;
 
     try {
       // A stack is debugging detail: below debug an error is its name and message.
@@ -318,10 +326,11 @@ export class Logger {
    * A line of someone else's output (the command's stdout or stderr), relayed as written: never
    * filtered by level, never recased. A line that is already JSON is passed through untouched.
    */
-  relay = (sink: 'info' | 'error', line: string): void => {
+  relay = (stream: 'info' | 'error', line: string): void => {
     if (!line.trim()) {
       return;
     }
+    const sink = state.sink ? 'error' : stream;
     const text = line.replace(/\s+$/, '');
     if (/^\s*\{.*\}$/.test(text)) {
       // eslint-disable-next-line no-console
