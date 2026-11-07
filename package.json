@@ -50,7 +50,7 @@
   "scripts": {
     "prestart": "yarn build:app",
     "build": "yarn build:exe",
-    "build:app": "tsup src/index.ts src/sandbox/index.ts --sourcemap inline --dts --format cjs --target esnext --cjsInterop --shims",
+    "build:app": "tsup",
     "build:exe": "yarn build:app && pkg .",
     "start": "yarn build:app && node dist/index.js",
     "start:dev": "tsx src/index.ts",
@@ -164,5 +164,17 @@
     "compress": "Brotli",
     "public": true
   },
-  "dependencies": {}
+  "dependencies": {},
+  "peerDependencies": {
+    "@modelcontextprotocol/server": "^2.4.0",
+    "zod": "^4.2.0"
+  },
+  "peerDependenciesMeta": {
+    "@modelcontextprotocol/server": {
+      "optional": true
+    },
+    "zod": {
+      "optional": true
+    }
+  }
 }
