@@ -11,7 +11,9 @@ import { AwsRegistry } from '../src/aws/registry';
 import type { Event as SandboxEvent } from '../src/events';
 import { LambdaFunction } from '../src/aws/lambda/index';
 import { MicrovmCompute } from '../src/aws/microvm/compute';
-import { Exec, ExecFinished } from '../src/api/types';
+import { Exec, ExecFinished, ExecFrame } from '../src/api/types';
+import { execOf } from '../src/aws/exec';
+import { SandboxError } from '../src/sandbox/internal/compute';
 import { EXEC_STREAM, execFrame } from '../src/proxy/shell';
 import { computeHash, SandboxImpl } from '../src/sandbox/internal/sandbox';
 
@@ -732,6 +734,59 @@ describe('sandbox', () => {
       await settled();
 
       expect(process.listenerCount('SIGINT')).toBe(0);
+    });
+  });
+
+  describe('a detached command', () => {
+    const running = (): { frames: Subject<ExecFrame>; exec: jest.SpyInstance } => {
+      jest.spyOn(MicrovmCompute.prototype, 'create').mockImplementation(function (this: MicrovmCompute) {
+        return of(this);
+      });
+      const frames = new Subject<ExecFrame>();
+      const exec = jest.spyOn(MicrovmCompute.prototype, 'exec').mockReturnValue(execOf(() => 'c', frames));
+      return { frames, exec };
+    };
+
+    it('resolves once started, and keeps writing output until it exits', async () => {
+      const { frames, exec } = running();
+      const sandbox = await Sandbox.create();
+      const stdout = new PassThrough();
+      const written: string[] = [];
+      stdout.on('data', (chunk) => written.push(String(chunk)));
+
+      const command = await sandbox.runCommand({ cmd: 'sleep', detached: true, stdout });
+
+      expect(command.exitCode).toBeUndefined();
+      expect(exec.mock.calls[0]![0].spec).toMatchObject({ cmd: 'sleep', detached: true });
+      frames.next({ stream: EXEC_STREAM.STDOUT, payload: Buffer.from('later') });
+      frames.next({ stream: EXEC_STREAM.EXIT, payload: Buffer.from('{"code":0}') });
+      frames.complete();
+      await expect(command.wait()).resolves.toMatchObject({ exitCode: 0 });
+      expect(written.join('')).toBe('later');
+    });
+
+    it('lets go of the command on abort, without stopping anything', async () => {
+      const { frames } = running();
+      const stop = jest.spyOn(MicrovmCompute.prototype, 'stop');
+      const sandbox = await Sandbox.create();
+      const controller = new AbortController();
+
+      await sandbox.runCommand({ cmd: 'sleep', detached: true, signal: controller.signal });
+      expect(frames.observed).toBe(true);
+      controller.abort();
+
+      expect(frames.observed).toBe(false);
+      expect(stop).not.toHaveBeenCalled();
+    });
+
+    it('is refused on Lambda, before anything is invoked', async () => {
+      const invoke = jest.spyOn(LambdaFunction.prototype, 'exec');
+      const sandbox = await Sandbox.create({ runtime: 'aws.lambda' });
+
+      await expect(sandbox.runCommand({ cmd: 'sleep', detached: true })).rejects.toThrow(
+        new SandboxError('detached is not implemented on runtime aws.lambda')
+      );
+      expect(invoke).not.toHaveBeenCalled();
     });
   });
 

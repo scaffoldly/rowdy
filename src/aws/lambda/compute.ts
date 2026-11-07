@@ -77,6 +77,9 @@ export class LambdaCompute implements SandboxCompute {
   }
 
   exec(event: ExecSchema): Observable<Exec> {
+    if (event.spec?.detached) {
+      return throwError(() => new SandboxError('detached is not implemented on runtime aws.lambda'));
+    }
     return this.lambda.exec(event);
   }
 

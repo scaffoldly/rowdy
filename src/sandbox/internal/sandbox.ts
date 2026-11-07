@@ -1,5 +1,7 @@
 import type {
+  Command,
   CommandFinished,
+  DetachedRunCommandParams,
   CommandOutput,
   CommandOutputOptions,
   RunCommandOptions,
@@ -16,9 +18,11 @@ import {
   catchError,
   asapScheduler,
   concatWith,
+  connectable,
   EMPTY,
   finalize,
   defer,
+  firstValueFrom,
   from,
   subscribeOn,
   fromEvent,
@@ -32,11 +36,14 @@ import {
   Observable,
   of,
   race,
+  ReplaySubject,
   switchMap,
   take,
+  takeUntil,
   tap,
   throwError,
 } from 'rxjs';
+import type { Exec, ExecFrame } from '../../api/types';
 import { Environment } from '../../environment';
 import { Logger, maskUrl } from '../../log';
 import { describeError } from '../../aws/errors';
@@ -192,15 +199,14 @@ export class SandboxImpl implements Sandbox {
   }
 
   runCommand(cmd: string, args?: string[], options?: RunCommandOptions): Promise<CommandFinished>;
-  // TODO: detached
-  // runCommand(params: DetachedRunCommandParams): Promise<Command>;
+  runCommand(params: DetachedRunCommandParams): Promise<Command>;
   runCommand(params: RunCommandParams): Promise<CommandFinished>;
   async runCommand(
-    command: string | RunCommandParams,
+    command: string | RunCommandParams | DetachedRunCommandParams,
     args?: string[],
     options?: RunCommandOptions
-  ): Promise<CommandFinished> {
-    const params: RunCommandParams = typeof command === 'string' ? { cmd: command, args, ...options } : command;
+  ): Promise<CommandFinished | Command> {
+    const params = typeof command === 'string' ? { cmd: command, args, ...options } : command;
     // The sandbox's signal covers its commands too.
     const signal = params.signal ? AbortSignal.any([params.signal, this.environment.signal]) : this.environment.signal;
     const onEvent = params.onEvent && Promise.resolve(params.onEvent);
@@ -220,11 +226,37 @@ export class SandboxImpl implements Sandbox {
         )
         .subscribe();
 
+    const exec$ = this.compute.exec({
+      apiVersion: 'rowdy.run/v1alpha1',
+      kind: 'Exec',
+      spec: { cmd: params.cmd, args: params.args, cwd: params.cwd, env: params.env, detached: params.detached },
+      status: undefined,
+    });
+    const written = tap<ExecFrame>(({ stream, payload }) => {
+      if (stream === EXEC_STREAM.STDOUT) params.stdout?.write(payload);
+      if (stream === EXEC_STREAM.STDERR) params.stderr?.write(payload);
+    });
+    const aborted$ = iif(() => signal.aborted, of(signal), fromEvent(signal, 'abort')).pipe(
+      switchMap(() => throwError(() => signal.reason))
+    );
+
+    if (params.detached) {
+      // Followed until the command exits or the signal lets go, whoever awaits the handle.
+      const following$ = connectable(
+        exec$.pipe(
+          switchMap((exec) => merge(of(exec), exec.frames.pipe(written, ignoreElements()))),
+          takeUntil(fromEvent(signal, 'abort')),
+          finalize(() => subscription?.unsubscribe())
+        ),
+        { connector: () => new ReplaySubject<Exec>(1), resetOnDisconnect: false }
+      );
+      following$.connect();
+      return firstValueFrom(race(aborted$, following$));
+    }
+
     return lastValueFrom(
       race(
-        iif(() => signal.aborted, of(signal), fromEvent(signal, 'abort')).pipe(
-          switchMap(() => throwError(() => signal.reason))
-        ),
+        aborted$,
         // Only while a command runs, and only where it can stop: a listener cancels Node's default exit. It's gone
         // after the first, so a second Ctrl+C force-quits.
         this.compute.stoppable
@@ -236,27 +268,7 @@ export class SandboxImpl implements Sandbox {
               concatWith(NEVER)
             )
           : NEVER,
-        this.compute
-          .exec({
-            apiVersion: 'rowdy.run/v1alpha1',
-            kind: 'Exec',
-            spec: { cmd: params.cmd, args: params.args, cwd: params.cwd, env: params.env },
-            status: undefined,
-          })
-          .pipe(
-            switchMap((exec) =>
-              merge(
-                exec.frames.pipe(
-                  tap(({ stream, payload }) => {
-                    if (stream === EXEC_STREAM.STDOUT) params.stdout?.write(payload);
-                    if (stream === EXEC_STREAM.STDERR) params.stderr?.write(payload);
-                  }),
-                  ignoreElements()
-                ),
-                from(exec.wait())
-              )
-            )
-          )
+        exec$.pipe(switchMap((exec) => merge(exec.frames.pipe(written, ignoreElements()), from(exec.wait()))))
       ).pipe(finalize(() => subscription?.unsubscribe()))
     );
   }

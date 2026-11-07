@@ -88,17 +88,20 @@ export interface RunCommandParams {
   stderr?: Writable;
   /** Receives the sandbox's events while this command runs. */
   onEvent?: EventCallback | PromiseLike<EventCallback>;
-  // TODO: detached
-  // /** Resolves once the command has started instead of when it exits. */
-  // detached?: boolean;
+  detached?: false;
   /** Kills the command and rejects. On `runtime: 'aws.lambda'` only the waiting stops: it runs on until it exits or times out. */
   signal?: AbortSignal;
 }
 
-// TODO: detached
-// export interface DetachedRunCommandParams extends RunCommandParams {
-//   detached: true;
-// }
+export interface DetachedRunCommandParams extends Omit<RunCommandParams, 'detached' | 'signal'> {
+  /**
+   * Resolves once the command has started instead of when it exits, and the command outlives this process. Output
+   * keeps reaching `stdout` and `stderr` until it exits. `runtime: 'aws.microvm'` only.
+   */
+  detached: true;
+  /** Stops following the command, without killing it. */
+  signal?: AbortSignal;
+}
 
 export interface RunCommandOptions {
   /** Kills the command and rejects. On `runtime: 'aws.lambda'` only the waiting stops: it runs on until it exits or times out. */
@@ -132,9 +135,8 @@ export interface Sandbox {
   readonly sandboxId: string;
   /** Resolves when the command exits, whatever its exit code; rejects only if it could not run. */
   runCommand(cmd: string, args?: string[], options?: RunCommandOptions): Promise<CommandFinished>;
-  // TODO: detached
-  // /** Resolves once the command has started. */
-  // runCommand(params: DetachedRunCommandParams): Promise<Command>;
+  /** Resolves once the command has started, with its handle. `runtime: 'aws.lambda'` rejects. */
+  runCommand(params: DetachedRunCommandParams): Promise<Command>;
   /**
    * Resolves when the command exits, whatever its exit code; rejects only if it could not run. On a sandbox that can
    * `stop`, Ctrl+C during a command stops it, then exits as usual, so nothing is left running. A second Ctrl+C quits.
