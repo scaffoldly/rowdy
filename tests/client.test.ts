@@ -5,7 +5,17 @@ class TestLogger extends ClientLogger {
   log = new Logger('test');
 
   constructor() {
-    super(/^(?!.*AuthToken)(Create|Run)/, ['rolename', 'name']);
+    super({
+      commands: {
+        describe: /^Describe/,
+        read: /^(Get|List|Head)/,
+        create: /^(?!.*AuthToken)(Create|Run)/,
+        update: /^Put/,
+        dispose: /^Terminate/,
+        tag: /^Tag/,
+      },
+      names: ['rolename', 'name'],
+    });
   }
 }
 
@@ -15,9 +25,9 @@ type Middleware = (next: Handler, context: { clientName?: string; commandName?: 
 /** Tracks a stand-in client and hands back its middleware, to run as a command would. */
 const tracked = (logger: ClientLogger): ((command: string, input?: unknown, next?: Handler) => Promise<unknown>) => {
   let middleware: Middleware | undefined;
-  const client = { middlewareStack: { add: (added: Middleware) => (middleware = added) } };
+  const client = { middlewareStack: { add: (added: Middleware): Middleware => (middleware = added) } };
   logger.track(client as never);
-  return (commandName, input = {}, next = async () => ({})) =>
+  return (commandName, input = {}, next = async (): Promise<unknown> => ({})) =>
     middleware!(next, { clientName: 'IAMClient', commandName })({ input });
 };
 
@@ -58,8 +68,20 @@ describe('ClientLogger', () => {
       expect(info.mock.calls[0]?.[0]).toContain('CreateRole: first');
     });
 
-    it('follows the pattern it was given', () => {
+    it('leaves reads at debug', () => {
       logged('GetRoleCommand');
+      logged('DescribeRepositoriesCommand');
+
+      expect(info).not.toHaveBeenCalled();
+    });
+
+    it('logs a tag at info', () => {
+      logged('TagRoleCommand');
+
+      expect(info).toHaveBeenCalledTimes(1);
+    });
+
+    it('follows the patterns it was given', () => {
       logged('CreateMicrovmAuthTokenCommand');
 
       expect(info).not.toHaveBeenCalled();
@@ -108,15 +130,8 @@ describe('ClientLogger', () => {
     it.each([
       ['DescribeRepositoriesCommand', 'describe', 'describing', 'described'],
       ['GetRoleCommand', 'read', 'reading', 'read'],
-      ['ListMicrovmsCommand', 'read', 'reading', 'read'],
-      ['HeadObjectCommand', 'read', 'reading', 'read'],
       ['CreateRoleCommand', 'create', 'creating', 'created'],
-      ['RunMicrovmCommand', 'create', 'creating', 'created'],
-      ['PublishVersionCommand', 'create', 'creating', 'created'],
-      ['AddPermissionCommand', 'create', 'creating', 'created'],
-      ['UpdateMicrovmImageCommand', 'update', 'updating', 'updated'],
       ['PutObjectCommand', 'update', 'updating', 'updated'],
-      ['DeleteRoleCommand', 'dispose', 'disposing', 'disposed'],
       ['TerminateMicrovmCommand', 'dispose', 'disposing', 'disposed'],
       ['TagResourceCommand', 'tag', 'tagging', 'tagged'],
     ])('types %s', async (command, type, before, after) => {
@@ -128,10 +143,27 @@ describe('ClientLogger', () => {
       ]);
     });
 
-    it('emits nothing for a command that fits no type', async () => {
+    it('emits nothing for a command that matches no pattern', async () => {
       await tracked(client)('InvokeWithResponseStreamCommand');
 
       expect(events).toEqual([]);
+    });
+
+    it('has no opinion of its own on a command', async () => {
+      class Bare extends ClientLogger {
+        log = new Logger('bare');
+      }
+      const bare = new Bare({ commands: { create: /^Invoke/ }, names: [] });
+      const seen: CdkEvent[] = [];
+      bare.events().subscribe((event) => seen.push(event));
+
+      await tracked(bare)('GetRoleCommand');
+      await tracked(bare)('InvokeWithResponseStreamCommand');
+
+      expect(seen.map(({ action, lifecycle }) => [action, lifecycle])).toEqual([
+        ['InvokeWithResponseStream', 'creating'],
+        ['InvokeWithResponseStream', 'created'],
+      ]);
     });
 
     it('emits failed and rethrows when a command fails', async () => {
@@ -177,7 +209,7 @@ describe('ClientLogger', () => {
           maxAttempts: 2,
           retryStrategy: undefined,
           requestHandler: {
-            handle: async () => {
+            handle: async (): Promise<never> => {
               attempts += 1;
               throw Object.assign(new Error('throttled'), { name: 'ThrottlingException', $retryable: {} });
             },

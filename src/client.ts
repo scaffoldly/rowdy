@@ -4,14 +4,12 @@ import { inspect } from 'util';
 import { CdkEvent, CdkEventType, LIFECYCLES } from './event';
 import { Logger, maskJson } from './log';
 
-const TYPES: [RegExp, CdkEventType][] = [
-  [/^Describe/, 'describe'],
-  [/^(Get|List|Head)/, 'read'],
-  [/^(Create|Run|Publish|Add)/, 'create'],
-  [/^(Update|Put)/, 'update'],
-  [/^(Delete|Terminate)/, 'dispose'],
-  [/^Tag/, 'tag'],
-];
+export type ClientLoggerOptions = {
+  /** Which commands are which type, by name. The first match wins. A command with no match isn't logged or emitted. */
+  commands: Partial<Record<CdkEventType, RegExp>>;
+  /** The fields that name what a command is about, most specific first, in lower case. */
+  names: string[];
+};
 
 /**
  * Logs what an AWS SDK client does: a change at info, by name only, and everything at debug. Pass it as a client's
@@ -20,15 +18,7 @@ const TYPES: [RegExp, CdkEventType][] = [
 export abstract class ClientLogger implements SmithyLogger {
   private emitted = new Subject<CdkEvent>();
 
-  /**
-   * @param changes Matches the name of a command that changes something.
-   * @param names The fields that name what a command changes, most specific first, in lower case: AWS's APIs differ in
-   * theirs.
-   */
-  constructor(
-    private changes: RegExp,
-    private names: string[]
-  ) {}
+  constructor(private options: ClientLoggerOptions) {}
 
   abstract get log(): Logger;
 
@@ -37,13 +27,13 @@ export abstract class ClientLogger implements SmithyLogger {
     return this.emitted.asObservable();
   }
 
-  /** Emits events for a client's commands. A command that fits no type of event emits nothing. */
+  /** Emits events for a client's commands. */
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   track<T extends Client<any, any, any>>(client: T): T {
     client.middlewareStack.add(
       (next, { clientName, commandName }) =>
-        async (args) => {
-          const type = TYPES.find(([pattern]) => pattern.test(`${commandName}`))?.[1];
+        async (args): ReturnType<typeof next> => {
+          const type = this.typeOf(commandName);
           if (!type) {
             return next(args);
           }
@@ -71,10 +61,15 @@ export abstract class ClientLogger implements SmithyLogger {
     return client;
   }
 
+  private typeOf(commandName: unknown): CdkEventType | undefined {
+    const types = Object.entries(this.options.commands) as [CdkEventType, RegExp][];
+    return types.find(([, pattern]) => pattern.test(`${commandName}`))?.[0];
+  }
+
   // Names only: an input can carry the function's environment.
   private nameOf(input: unknown): unknown {
     const fields = new Map(Object.entries(input ?? {}).map(([field, value]) => [field.toLowerCase(), value]));
-    return this.names.map((field) => fields.get(field)).find(Boolean);
+    return this.options.names.map((field) => fields.get(field)).find(Boolean);
   }
 
   debug = (..._content: unknown[]): void => {};
@@ -91,7 +86,8 @@ export abstract class ClientLogger implements SmithyLogger {
         input: maskJson(input),
         output: maskJson(output),
       });
-      if (this.changes.test(`${commandName}`)) {
+      const type = this.typeOf(commandName);
+      if (type && type !== 'describe' && type !== 'read') {
         const name = this.nameOf(input);
         this.log.info(`${commandName?.replace(/Command$/, '')}${name ? `: ${name}` : ''}`);
       }

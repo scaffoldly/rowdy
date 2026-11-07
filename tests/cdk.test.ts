@@ -8,8 +8,8 @@ const resource = (
 ): { role: CloudResource<Role, Output>; events: CdkEvent[] } => {
   const role = new CloudResource<Role, Output>(
     {
-      describe: ({ RoleName }) => ({ type: 'IAM Role', label: RoleName }),
-      read: async () => ({ Role: { RoleName: 'role' } }),
+      describe: ({ RoleName }): { type: string; label?: string } => ({ type: 'IAM Role', label: RoleName }),
+      read: async (): Promise<Output> => ({ Role: { RoleName: 'role' } }),
       ...requests,
     },
     (output) => output.Role
