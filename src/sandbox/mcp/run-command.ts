@@ -1,7 +1,8 @@
 import { Writable } from 'stream';
 import { z } from 'zod';
 import type { SandboxFactory, SandboxToolsOptions } from '..';
-import type { Tool } from '../../mcp/tool';
+import { SandboxError } from '../internal/compute';
+import { toolResult, type Tool } from '../../mcp/tool';
 
 /** The most output a result carries, in bytes. */
 export const OUTPUT = { limit: 64 * 1024 };
@@ -38,7 +39,7 @@ export const runCommand = (
   annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
   async run({ sandbox_id: sandboxId, cmd, args, cwd, env, stream }, ctx) {
     if (scope && !sandboxId.split(':').pop()?.startsWith(`${scope}-`)) {
-      throw new Error(`Not a sandbox: ${sandboxId}`);
+      throw new SandboxError(`Not a sandbox: ${sandboxId}`);
     }
 
     const found = await sandbox.get({ sandboxId, signal });
@@ -64,13 +65,11 @@ export const runCommand = (
       signal: ctx.mcpReq.signal,
     });
 
-    const structuredContent = {
+    return toolResult(outputSchema, {
       exit_code: exitCode,
       text: text.toString(),
       truncated: totalBytes > OUTPUT.limit,
       total_bytes: totalBytes,
-    };
-
-    return { content: [{ type: 'text', text: JSON.stringify(structuredContent) }], structuredContent };
+    });
   },
 });

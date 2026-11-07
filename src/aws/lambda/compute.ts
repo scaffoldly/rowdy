@@ -4,7 +4,7 @@ import { Exec } from '../../api/types';
 import type { Event } from '../../events';
 import { Environment } from '../../environment';
 import { ExecSchema } from '../../routes';
-import { ComputeSpec, SandboxCompute } from '../../sandbox/internal/compute';
+import { ComputeSpec, SandboxCompute, SandboxError } from '../../sandbox/internal/compute';
 import { LambdaImageService } from './image';
 import { LambdaFunction } from './index';
 
@@ -68,7 +68,7 @@ export class LambdaCompute implements SandboxCompute {
       map((lambda) => {
         // Exec is refused on any other function, so a handle to one could never run a command.
         if (lambda.Status.Configuration?.Environment?.Variables?.ROWDY_SANDBOX !== 'true') {
-          throw new Error(`Not a sandbox: ${sandboxId}`);
+          throw new SandboxError(`Not a sandbox: ${sandboxId}`);
         }
         return this;
       })
@@ -84,6 +84,6 @@ export class LambdaCompute implements SandboxCompute {
   }
 
   stop(): Observable<this> {
-    return throwError(() => new Error('stop is not implemented on runtime aws.lambda'));
+    return throwError(() => new SandboxError('stop is not implemented on runtime aws.lambda'));
   }
 }

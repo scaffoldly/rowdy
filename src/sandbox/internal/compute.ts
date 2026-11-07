@@ -4,6 +4,9 @@ import type { Environment } from '../../environment';
 import type { Event } from '../../events';
 import type { ExecSchema } from '../../routes';
 
+/** A sandbox can't do this, and trying again won't change that. */
+export class SandboxError extends Error {}
+
 /** What a sandbox has unless its options set it: `timeout` in milliseconds, `memory` in MB. */
 export const DEFAULTS = { timeout: 15 * 60 * 1000, memory: 512 };
 
