@@ -32,7 +32,8 @@ import { Environment, Logger, maskUrl } from '../..';
 import { LambdaCompute } from '../../aws/lambda/compute';
 import { MicrovmCompute } from '../../aws/microvm/compute';
 import { EXEC_STREAM } from '../../proxy/shell';
-import { SandboxCompute, SandboxComputeClass } from './compute';
+import { createSandbox } from '../mcp/create-sandbox';
+import { DEFAULTS, SandboxCompute, SandboxComputeClass } from './compute';
 
 // Kubernetes' alphabet for generated names: no vowels, so a name spells no words.
 const ALPHANUMS = 'bcdfghjklmnpqrstvwxz2456789';
@@ -69,8 +70,8 @@ export class SandboxImpl implements Sandbox {
   static async create(options?: SandboxOptions): Promise<SandboxImpl> {
     const runtime = options?.runtime ?? 'aws.lambda';
     const image = options?.image ?? 'scaffoldly/sandbox';
-    const timeout = options?.timeout ?? 15 * 60 * 1000;
-    const memory = options?.memory ?? 512;
+    const timeout = options?.timeout ?? DEFAULTS.timeout;
+    const memory = options?.memory ?? DEFAULTS.memory;
     const env = { ...RUNTIMES[runtime].env, ...options?.env };
 
     RUNTIMES[runtime].assert({ timeout, memory, env });
@@ -128,8 +129,8 @@ export class SandboxImpl implements Sandbox {
     );
   }
 
-  static tools(_options?: SandboxToolsOptions): Tool[] {
-    return [];
+  static tools(options?: SandboxToolsOptions): Tool[] {
+    return [createSandbox(SandboxImpl, options)];
   }
 
   get sandboxId(): string {
