@@ -5,7 +5,10 @@ import { InvokeWithResponseStreamResponseEvent, LambdaClient } from '@aws-sdk/cl
 import { EMPTY, lastValueFrom, NEVER, Observable, of, Subject, throwError, toArray } from 'rxjs';
 import { PassThrough } from 'stream';
 import { ROWDY_LAYERS } from '../src/api/internal/layers';
+import { CreateRepositoryCommand } from '@aws-sdk/client-ecr';
 import { LambdaCompute } from '../src/aws/lambda/compute';
+import { AwsRegistry } from '../src/aws/registry';
+import type { Event as SandboxEvent } from '../src/events';
 import { LambdaFunction } from '../src/aws/lambda/index';
 import { MicrovmCompute } from '../src/aws/microvm/compute';
 import { Exec, ExecFinished } from '../src/api/types';
@@ -788,6 +791,26 @@ describe('sandbox', () => {
       await getting;
 
       expect(seen).toEqual([event]);
+    });
+
+    it('includes what the registry does', async () => {
+      const sandbox = await SandboxImpl.create();
+      const registry = new AwsRegistry(sandbox['environment']);
+      const send = jest.fn(async () => ({}));
+      registry['ecr'].config.requestHandler = { handle: send } as never;
+      const seen: SandboxEvent[] = [];
+      sandbox.events().subscribe((emitted) => seen.push(emitted));
+
+      await registry['ecr'].send(new CreateRepositoryCommand({ repositoryName: 'acme' })).catch(() => {});
+
+      expect(seen[0]).toEqual({
+        source: 'cdk',
+        type: 'create',
+        lifecycle: 'creating',
+        client: 'ECRClient',
+        action: 'CreateRepository',
+        name: 'acme',
+      });
     });
 
     it('works as a promise', async () => {

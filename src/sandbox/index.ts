@@ -1,4 +1,5 @@
 import type { Observable } from 'rxjs';
+import type { McpServer } from '@modelcontextprotocol/server';
 import type { Writable } from 'stream';
 import type { Exec, ExecFinished } from '../api/types';
 import type { Event, EventCallback } from '../events';
@@ -63,6 +64,8 @@ export interface SandboxToolsOptions extends Pick<SandboxOptions, 'logLevel' | '
   name?: string;
   /** What a model can ask for. */
   limits?: SandboxToolsLimits;
+  /** Where tools are registered at runtime, as they become available. */
+  server?: Pick<McpServer, 'registerTool'>;
 }
 
 export type { Tool };

@@ -1112,6 +1112,7 @@ describe('aws lambda change logs', () => {
     ['RunMicrovmCommand', { imageIdentifier: 'arn', runHookPayload: 'secret' }, 'RunMicrovm: arn'],
     ['TerminateMicrovmCommand', { microvmIdentifier: 'mvm-1' }, 'TerminateMicrovm: mvm-1'],
     ['TagResourceCommand', { FunctionName: 'acme' }, 'TagResource: acme'],
+    ['CreateRepositoryCommand', { repositoryName: 'acme' }, 'CreateRepository: acme'],
   ])('logs %s at info', (commandName, input, message) => {
     const info = jest.spyOn(fn['log'], 'info');
 

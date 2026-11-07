@@ -232,7 +232,8 @@ creating.events().subscribe(console.error);
 const sandbox = await creating;
 ```
 
-Copying the image into ECR doesn't report events yet, and neither does the command's own output.
+ECR's repository and credential steps report events, but copying the image's layers doesn't, and neither does a command's
+own output.
 
 ## What rowdy creates
 

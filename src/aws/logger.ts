@@ -12,7 +12,16 @@ const COMMANDS = {
 };
 
 // The fields that name what a command changes, most specific first, in lower case: AWS's APIs differ in theirs.
-const NAMES = ['functionname', 'rolename', 'name', 'microvmidentifier', 'imageidentifier', 'key', 'bucket'];
+const NAMES = [
+  'functionname',
+  'rolename',
+  'repositoryname',
+  'name',
+  'microvmidentifier',
+  'imageidentifier',
+  'key',
+  'bucket',
+];
 
 /** Logs what an AWS SDK client does, and emits each step of a client it tracks. */
 export abstract class AwsClientLogger extends SmithyClientLogger {
