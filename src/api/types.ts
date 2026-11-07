@@ -19,9 +19,11 @@ export interface Exec {
   readonly cmdId: string;
   /** Undefined while the command runs. */
   readonly exitCode: number | undefined;
-  /** The stdout written so far, or all of it once the command has exited. */
+  /** Whether `stdout` or `stderr` lost their start to the limit on what's kept. */
+  readonly truncated: boolean;
+  /** The stdout written so far, up to the last 1 MiB. */
   stdout(): Promise<string>;
-  /** The stderr written so far, or all of it once the command has exited. */
+  /** The stderr written so far, up to the last 1 MiB. */
   stderr(): Promise<string>;
   /** Resolves when the command exits, whatever its exit code. */
   wait(): Promise<ExecFinished>;

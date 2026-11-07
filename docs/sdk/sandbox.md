@@ -117,12 +117,15 @@ if (finished.exitCode !== 0) {
 }
 ```
 
-| Result     |                                                     |
-| ---------- | --------------------------------------------------- |
-| `cmdId`    | The command's ID.                                   |
-| `exitCode` | The exit code.                                      |
-| `stdout()` | Resolves to everything the command wrote to stdout. |
-| `stderr()` | Resolves to everything the command wrote to stderr. |
+| Result      |                                                                     |
+| ----------- | ------------------------------------------------------------------- |
+| `cmdId`     | The command's ID.                                                   |
+| `exitCode`  | The exit code.                                                      |
+| `stdout()`  | Resolves to what the command wrote to stdout, up to the last 1 MiB. |
+| `stderr()`  | Resolves to what the command wrote to stderr, up to the last 1 MiB. |
+| `truncated` | Whether either lost its start to that limit.                        |
+
+To keep all of a long output, pass `stdout` and `stderr` streams, which get everything.
 
 ## `stop`
 

@@ -13,6 +13,9 @@ import {
 import { Exec, ExecFinished, ExecFrame } from '../api/types';
 import { EXEC_STREAM, ShellExit } from '../proxy/shell';
 
+/** The most of each stream a command's handle keeps, in bytes. A command can print for as long as it runs. */
+export const RETAINED = { bytes: 1024 * 1024 };
+
 /** Docker-style frames from a stream of bytes: a frame can span chunks, and a chunk can hold several frames. */
 export const framesOf = (): OperatorFunction<Uint8Array, ExecFrame> => (chunks) =>
   defer(() => {
@@ -37,9 +40,11 @@ export const framesOf = (): OperatorFunction<Uint8Array, ExecFrame> => (chunks) 
  */
 export const execOf = (cmdId: string, source: Observable<ExecFrame>): Observable<Exec> =>
   new Observable<Exec>((subscriber) => {
-    const frames = new ReplaySubject<ExecFrame>();
-    const stdout: Buffer[] = [];
-    const stderr: Buffer[] = [];
+    // Only a subscriber that's late to a running command needs these.
+    const frames = new ReplaySubject<ExecFrame>(32);
+    let stdout = Buffer.alloc(0);
+    let stderr = Buffer.alloc(0);
+    let truncated = false;
     let exit: ShellExit | undefined;
 
     const exec: Exec = {
@@ -47,9 +52,12 @@ export const execOf = (cmdId: string, source: Observable<ExecFrame>): Observable
       get exitCode() {
         return exit?.code;
       },
+      get truncated() {
+        return truncated;
+      },
       frames: frames.asObservable(),
-      stdout: async () => Buffer.concat(stdout).toString(),
-      stderr: async () => Buffer.concat(stderr).toString(),
+      stdout: async () => stdout.toString(),
+      stderr: async () => stderr.toString(),
       wait: () =>
         lastValueFrom(
           frames.pipe(
@@ -71,8 +79,11 @@ export const execOf = (cmdId: string, source: Observable<ExecFrame>): Observable
     const subscription = source
       .pipe(
         tap(({ stream, payload }) => {
-          if (stream === EXEC_STREAM.STDOUT) stdout.push(payload);
-          if (stream === EXEC_STREAM.STDERR) stderr.push(payload);
+          if (stream === EXEC_STREAM.STDOUT) stdout = Buffer.concat([stdout, payload]);
+          if (stream === EXEC_STREAM.STDERR) stderr = Buffer.concat([stderr, payload]);
+          truncated ||= stdout.length > RETAINED.bytes || stderr.length > RETAINED.bytes;
+          stdout = stdout.subarray(-RETAINED.bytes);
+          stderr = stderr.subarray(-RETAINED.bytes);
           if (stream === EXEC_STREAM.EXIT) exit = JSON.parse(payload.toString());
         })
       )
