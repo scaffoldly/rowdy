@@ -23,7 +23,7 @@ describe('serve', () => {
 
     await serve(environment());
 
-    expect(register.mock.calls.map(([name]) => name)).toEqual(['create_sandbox', 'run_command', 'stop_sandbox']);
+    expect(register.mock.calls.map(([name]) => name)).toEqual(['create_sandbox', 'run_command', 'read_output', 'stop_sandbox']);
     expect(connect).toHaveBeenCalledTimes(1);
   });
 

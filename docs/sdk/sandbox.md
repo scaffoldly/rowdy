@@ -119,13 +119,40 @@ if (finished.exitCode !== 0) {
 
 | Result      |                                                                     |
 | ----------- | ------------------------------------------------------------------- |
-| `cmdId`     | The command's ID.                                                   |
+| `cmdId`     | Where the command's output is logged. See [`output`](#output).      |
 | `exitCode`  | The exit code.                                                      |
 | `stdout()`  | Resolves to what the command wrote to stdout, up to the last 1 MiB. |
 | `stderr()`  | Resolves to what the command wrote to stderr, up to the last 1 MiB. |
 | `truncated` | Whether either lost its start to that limit.                        |
 
 To keep all of a long output, pass `stdout` and `stderr` streams, which get everything.
+
+## `output`
+
+Reads part of a command's output back from CloudWatch Logs by its `cmdId`, any time after it started. Use it for what `stdout()` cut, or from a different process with `Sandbox.get`.
+
+```ts
+const first = await sandbox.output(cmdId);
+const next = await sandbox.output(cmdId, { cursor: first.cursor });
+```
+
+| Option    | What it does                                                           |
+| --------- | ---------------------------------------------------------------------- |
+| `cursor`  | Where an earlier read stopped. Leave it out to start at the beginning. |
+| `stream`  | `stdout` or `stderr`. Defaults to both, merged.                        |
+| `timeout` | Milliseconds to wait for more once what's written has been read.       |
+| `signal`  | Stops the read.                                                        |
+
+Each read answers with at most 64 KiB:
+
+| Field      | What it is                                                                     |
+| ---------- | ------------------------------------------------------------------------------ |
+| `text`     | The output read, in the order it was written.                                  |
+| `cursor`   | Where this read stopped, for the next one.                                     |
+| `exitCode` | Undefined until the read reaches the command's exit.                           |
+| `dropped`  | Whether the command printed more than its log keeps: 16 MiB. The rest is gone. |
+
+A log is behind a running command, by about 10 seconds on `aws.microvm` and 30 on `aws.lambda`, so an undefined `exitCode` can mean only that the rest hasn't arrived. Reading needs `logs:FilterLogEvents`, and `logs:StartLiveTail` with `timeout`.
 
 ## `stop`
 

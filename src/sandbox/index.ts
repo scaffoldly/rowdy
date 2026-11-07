@@ -1,7 +1,7 @@
 import type { Observable } from 'rxjs';
 import type { McpServer } from '@modelcontextprotocol/server';
 import type { Writable } from 'stream';
-import type { Exec, ExecFinished } from '../api/types';
+import type { Exec, ExecFinished, ExecOutput, ExecOutputOptions } from '../api/types';
 import type { Event, EventCallback } from '../events';
 import type { Level } from '../log';
 import type { Tool } from '../mcp/tool';
@@ -124,6 +124,8 @@ export interface RunCommandOptions {
 
 export type Command = Omit<Exec, 'frames'>;
 export type CommandFinished = Omit<ExecFinished, 'frames'>;
+export type CommandOutput = ExecOutput;
+export type CommandOutputOptions = ExecOutputOptions;
 
 /** A running sandbox. */
 export interface Sandbox {
@@ -138,6 +140,11 @@ export interface Sandbox {
    * `stop`, Ctrl+C during a command stops it, then exits as usual, so nothing is left running. A second Ctrl+C quits.
    */
   runCommand(params: RunCommandParams): Promise<CommandFinished>;
+  /**
+   * Reads part of a command's output back from its log, by its `cmdId`, any time after it started. A log is behind a
+   * running command: about 10 seconds on `runtime: 'aws.microvm'` and 30 on `aws.lambda`.
+   */
+  output(cmdId: string, options?: CommandOutputOptions): Promise<CommandOutput>;
   // TODO: writeFiles
   // writeFiles(files: WriteFile[]): Promise<void>;
   // TODO: readFileToBuffer

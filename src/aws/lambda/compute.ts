@@ -1,10 +1,11 @@
 import { defer, last, map, Observable, throwError } from 'rxjs';
 import { deploySources } from '../../api/internal/layers';
-import { Exec } from '../../api/types';
+import { Exec, ExecOutput, ExecOutputOptions } from '../../api/types';
 import type { Event } from '../../events';
 import { Environment } from '../../environment';
 import { ExecSchema } from '../../routes';
 import { ComputeSpec, SandboxCompute, SandboxError } from '../../sandbox/internal/compute';
+import { execOutput } from '../exec';
 import { LambdaImageService } from './image';
 import { LambdaFunction } from './index';
 
@@ -77,6 +78,14 @@ export class LambdaCompute implements SandboxCompute {
 
   exec(event: ExecSchema): Observable<Exec> {
     return this.lambda.exec(event);
+  }
+
+  output(cmdId: string, options?: ExecOutputOptions): Observable<ExecOutput> {
+    return defer(() => {
+      const [, , , region, account] = this.sandboxId.split(':');
+      const logGroup = this.lambda.Status.Configuration?.LoggingConfig?.LogGroup;
+      return execOutput(`arn:aws:logs:${region}:${account}:log-group:${logGroup}`, cmdId, options);
+    });
   }
 
   events(): Observable<Extract<Event, { source: 'cdk' }>> {

@@ -948,7 +948,12 @@ describe('sandbox', () => {
 
   describe('tools', () => {
     it('lists them by name', () => {
-      expect(Sandbox.tools().map(({ name }) => name)).toEqual(['create_sandbox', 'run_command', 'stop_sandbox']);
+      expect(Sandbox.tools().map(({ name }) => name)).toEqual([
+        'create_sandbox',
+        'run_command',
+        'read_output',
+        'stop_sandbox',
+      ]);
     });
   });
 
@@ -1010,6 +1015,22 @@ describe('sandbox', () => {
       const sandbox = await SandboxImpl.create();
 
       await expect(lambdaOf(sandbox)['invoker'].config.maxAttempts()).resolves.toBe(1);
+    });
+
+    it('takes its cmdId from where the function says it logs', async () => {
+      const location = { logGroupName: '/aws/lambda/sandbox', logStreamName: '2026/11/07/[$LATEST]abc' };
+      const { sandbox } = await start(
+        payload(execFrame(EXEC_STREAM.LOG, Buffer.from(JSON.stringify(location)))),
+        payload(execFrame(EXEC_STREAM.EXIT, Buffer.from('{"code":0}')))
+      );
+
+      const { cmdId } = await sandbox.runCommand('sh');
+
+      expect(JSON.parse(Buffer.from(cmdId, 'base64url').toString())).toEqual({
+        logGroupIdentifiers: [expect.stringMatching(/^arn:aws:logs:.+:log-group:\/aws\/lambda\/sandbox$/)],
+        logStreamNamePrefixes: ['2026/11/07/[$LATEST]abc'],
+        logEventFilterPattern: '"rowdy.exec" "req"',
+      });
     });
 
     it('collects stdout, stderr and the exit code', async () => {
