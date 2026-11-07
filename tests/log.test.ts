@@ -148,7 +148,7 @@ describe('Logger', () => {
       saved[key] = process.env[key];
       delete process.env[key];
     }
-    new Logger().withLevel(undefined).withFormat(undefined);
+    new Logger().withLevel(undefined).withFormat(undefined).withSink(undefined);
     Logger.unbind('req', 'requestId', 'instance');
     lines = [];
     spies = (['debug', 'info', 'warn', 'error'] as const).map((sink) =>
@@ -160,12 +160,63 @@ describe('Logger', () => {
 
   afterEach(() => {
     spies.forEach((spy) => spy.mockRestore());
-    new Logger().withLevel(undefined).withFormat(undefined);
+    new Logger().withLevel(undefined).withFormat(undefined).withSink(undefined);
     Logger.unbind('req', 'requestId', 'instance');
     for (const key of ENV) {
       if (saved[key] === undefined) delete process.env[key];
       else process.env[key] = saved[key];
     }
+  });
+
+  describe('sink', () => {
+    it('splits by level by default', () => {
+      const log = new Logger().withLevel('debug');
+
+      log.debug('d');
+      log.info('i');
+      log.warn('w');
+      log.error('e');
+
+      expect(lines.map(({ sink }) => sink)).toEqual(['debug', 'info', 'warn', 'error']);
+    });
+
+    it('sends every level to stderr when asked', () => {
+      const log = new Logger().withLevel('trace').withSink('stderr');
+
+      log.trace('t');
+      log.debug('d');
+      log.info('i');
+      log.warn('w');
+      log.error('e');
+
+      expect(lines.map(({ sink }) => sink)).toEqual(['error', 'error', 'error', 'error', 'error']);
+    });
+
+    it('sends relayed lines there too', () => {
+      new Logger().withSink('stderr').relay('info', 'hello');
+
+      expect(lines).toEqual([{ sink: 'error', text: 'INFO hello' }]);
+    });
+
+    it('sends JSON lines there too', () => {
+      new Logger().withSink('stderr').withFormat('json').info('hello');
+
+      expect(lines.map(({ sink }) => sink)).toEqual(['error']);
+    });
+
+    it('applies to every logger', () => {
+      new Logger().withSink('stderr');
+
+      new Logger('other').child('child').info('hello');
+
+      expect(lines.map(({ sink }) => sink)).toEqual(['error']);
+    });
+
+    it('can go back', () => {
+      new Logger().withSink('stderr').withSink(undefined).info('hello');
+
+      expect(lines.map(({ sink }) => sink)).toEqual(['info']);
+    });
   });
 
   describe('level', () => {
