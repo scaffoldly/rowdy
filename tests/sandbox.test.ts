@@ -739,8 +739,8 @@ describe('sandbox', () => {
   });
 
   describe('tools', () => {
-    it('has none yet', () => {
-      expect(Sandbox.tools()).toEqual([]);
+    it('lists them by name', () => {
+      expect(Sandbox.tools().map(({ name }) => name)).toEqual(['create_sandbox']);
     });
   });
 

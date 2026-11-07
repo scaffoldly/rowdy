@@ -43,7 +43,21 @@ export interface MicrovmSandboxOptions extends BaseSandboxOptions {
 
 export type SandboxOptions = LambdaSandboxOptions | MicrovmSandboxOptions;
 
-export type SandboxToolsOptions = Pick<SandboxOptions, 'logLevel' | 'signal'>;
+export interface SandboxToolsLimits {
+  /** The most memory a sandbox can have, in megabytes. */
+  memory?: number;
+  /** The longest timeout a sandbox can have, in milliseconds. */
+  timeout?: number;
+  /** The runtimes a sandbox can use. The first is the default. */
+  runtimes?: NonNullable<SandboxOptions['runtime']>[];
+}
+
+export interface SandboxToolsOptions extends Pick<SandboxOptions, 'logLevel' | 'signal'> {
+  /** Comes first in every sandbox's name, `{name}-{model's name}-{suffix}`. */
+  name?: string;
+  /** What a model can ask for. */
+  limits?: SandboxToolsLimits;
+}
 
 export type { Tool };
 
