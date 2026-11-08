@@ -1305,13 +1305,20 @@ describe('sandbox', () => {
         const run = tools.find(({ name }) => name === 'run_command')!;
         const result = await run.run(run.inputSchema.parse({ cmd: 'true' }), ctx());
 
-        expect(tools.map(({ name }) => name)).toEqual(['run_command', 'read_output', 'stop_sandbox']);
+        expect(tools.map(({ name }) => name)).toEqual([
+          'run_command',
+          'read_output',
+          'read_file',
+          'write_file',
+          'make_directory',
+          'stop_sandbox',
+        ]);
         tools.forEach(({ inputSchema }) => expect(Object.keys(inputSchema.shape)).not.toContain('sandbox_id'));
         expect(result.structuredContent).toMatchObject({ exit_code: 0, timed_out: false });
         expect(exec).toHaveBeenCalledTimes(1);
       });
 
-      it("leaves out stop_sandbox where the sandbox can't stop", async () => {
+      it('leaves out files and stop_sandbox where the sandbox has neither', async () => {
         const sandbox = await Sandbox.create({ runtime: 'aws.lambda' });
 
         expect(sandbox.tools().map(({ name }) => name)).toEqual(['run_command', 'read_output']);
@@ -1371,7 +1378,14 @@ describe('sandbox', () => {
 
         await call('create_sandbox');
 
-        expect(registered()).toEqual(['run_command_bcdf2', 'read_output_bcdf2', 'stop_sandbox_bcdf2']);
+        expect(registered()).toEqual([
+          'run_command_bcdf2',
+          'read_output_bcdf2',
+          'read_file_bcdf2',
+          'write_file_bcdf2',
+          'make_directory_bcdf2',
+          'stop_sandbox_bcdf2',
+        ]);
       });
 
       it('adds them once for the same sandbox', async () => {
@@ -1380,7 +1394,7 @@ describe('sandbox', () => {
         await call('create_sandbox');
         await call('create_sandbox');
 
-        expect(registered()).toHaveLength(3);
+        expect(registered()).toHaveLength(6);
       });
 
       it('takes them off when stop_sandbox stops it, and adds them again after', async () => {
@@ -1390,8 +1404,15 @@ describe('sandbox', () => {
         await call('stop_sandbox', { sandbox_id: IMAGE });
         await call('create_sandbox');
 
-        expect(removed).toEqual(['run_command_bcdf2', 'read_output_bcdf2', 'stop_sandbox_bcdf2']);
-        expect(registered()).toHaveLength(6);
+        expect(removed).toEqual([
+          'run_command_bcdf2',
+          'read_output_bcdf2',
+          'read_file_bcdf2',
+          'write_file_bcdf2',
+          'make_directory_bcdf2',
+          'stop_sandbox_bcdf2',
+        ]);
+        expect(registered()).toHaveLength(12);
       });
 
       it("takes them off when the sandbox's own stop_sandbox stops it", async () => {
@@ -1402,7 +1423,7 @@ describe('sandbox', () => {
         await (own as (args: unknown, extra: unknown) => Promise<unknown>)({}, ctx());
 
         expect(stop).toHaveBeenCalled();
-        expect(removed).toHaveLength(3);
+        expect(removed).toHaveLength(6);
       });
 
       it("takes them all off when the host's signal aborts", async () => {
@@ -1411,7 +1432,7 @@ describe('sandbox', () => {
         await call('create_sandbox');
         host.abort();
 
-        expect(removed).toHaveLength(3);
+        expect(removed).toHaveLength(6);
       });
 
       it('registers nothing without a server', async () => {
@@ -1437,6 +1458,9 @@ describe('sandbox', () => {
         'create_sandbox',
         'run_command',
         'read_output',
+        'read_file',
+        'write_file',
+        'make_directory',
         'list_sandboxes',
         'stop_sandbox',
       ]);

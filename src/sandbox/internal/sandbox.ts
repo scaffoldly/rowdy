@@ -64,7 +64,10 @@ import { EXEC_STREAM } from '../../proxy/frames';
 import { createSandbox } from '../mcp/create-sandbox';
 import { runCommand } from '../mcp/run-command';
 import { listSandboxes } from '../mcp/list-sandboxes';
+import { makeDirectory } from '../mcp/make-directory';
+import { readFile } from '../mcp/read-file';
 import { readOutput } from '../mcp/read-output';
+import { writeFile } from '../mcp/write-file';
 import { stopSandbox } from '../mcp/stop-sandbox';
 import { DEFAULTS, SandboxCompute, SandboxComputeClass } from './compute';
 import { SandboxPromiseImpl } from './create';
@@ -293,6 +296,9 @@ export class SandboxImpl implements Sandbox {
       registering,
       runCommand(SandboxImpl, options),
       readOutput(SandboxImpl, options),
+      readFile(SandboxImpl, options),
+      writeFile(SandboxImpl, options),
+      makeDirectory(SandboxImpl, options),
       listSandboxes(SandboxImpl, options),
       unregistering,
     ];
@@ -305,9 +311,12 @@ export class SandboxImpl implements Sandbox {
 
   tools(found: SandboxPromiseImpl = new SandboxPromiseImpl(Promise.resolve(this), this)): Tool[] {
     const sandbox = { get: () => found };
+    // Files are aws.microvm only.
+    const microvm = this.compute instanceof MicrovmCompute;
     const tools: Tool[] = [
       runCommand(sandbox),
       readOutput(sandbox),
+      ...(microvm ? [readFile(sandbox), writeFile(sandbox), makeDirectory(sandbox)] : []),
       ...(this.compute.stoppable ? [stopSandbox(sandbox)] : []),
     ];
     // The sandbox_id is this sandbox's, so a model can't name another.

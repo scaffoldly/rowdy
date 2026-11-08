@@ -365,7 +365,12 @@ there's something to do: `Retrying may help.` for throttling or a fault on AWS's
 ## MCP tools
 
 `Sandbox.tools()` is for a model that manages its own sandboxes: `create_sandbox`, `run_command`,
-`read_output`, `list_sandboxes` and `stop_sandbox`. A host adds them to its own server.
+`read_output`, `read_file`, `write_file`, `make_directory`, `list_sandboxes` and `stop_sandbox`. A host
+adds them to its own server.
+
+`read_file` answers 64 KiB at a time, read on with `offset`, and a missing file is `found: false`.
+`write_file` takes one file, as utf8 or base64, with an octal `mode` like `"755"`. The three file tools
+are `aws.microvm` only.
 
 ```ts
 for (const { name, run, ...config } of Sandbox.tools({ name: tenant, limits: { runtimes: ['aws.microvm'] } })) {
@@ -388,7 +393,8 @@ for (const { name, run, ...config } of creating.tools()) {
 }
 ```
 
-These are `run_command`, `read_output`, and `stop_sandbox` where the sandbox can stop, with no `sandbox_id`.
+These are `run_command` and `read_output`, the file tools and `stop_sandbox` on `aws.microvm`, with no
+`sandbox_id`.
 A call waits for the sandbox, and a failed build is each call's error.
 
 ## Not there yet

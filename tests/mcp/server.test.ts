@@ -27,6 +27,9 @@ describe('serve', () => {
       'create_sandbox',
       'run_command',
       'read_output',
+      'read_file',
+      'write_file',
+      'make_directory',
       'list_sandboxes',
       'stop_sandbox',
     ]);
