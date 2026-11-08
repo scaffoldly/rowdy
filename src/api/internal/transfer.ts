@@ -17,7 +17,7 @@ import {
   timer,
   toArray,
 } from 'rxjs';
-import { HttpHeaders } from '../../proxy/http';
+import { HttpHeaders } from '../../proxy/headers';
 import { createHash } from 'crypto';
 import { ILoggable, Logger } from '../../log';
 import { AxiosError, AxiosInstance, AxiosResponse, isAxiosError } from 'axios';
@@ -28,7 +28,7 @@ import { Readable } from 'stream';
 import promiseRetry from 'promise-retry';
 import { readFileSync } from 'fs';
 import { join } from 'path';
-import { Environment } from '../../environment';
+import { concurrency } from '../../concurrency';
 
 export type External = {
   Ref: Partial<{
@@ -263,7 +263,7 @@ export class Transfer implements ILoggable {
               RETRY
             );
             return { img, config: data };
-          }, Environment.CONCURRENCY),
+          }, concurrency()),
           toArray(),
           map((platforms) => {
             checkSource(
@@ -484,7 +484,7 @@ export class Transfer implements ILoggable {
                           return { manifest, image: data, config };
                         })
                       ),
-                    Environment.CONCURRENCY
+                    concurrency()
                   ),
                   toArray()
                 )
@@ -883,7 +883,7 @@ export class Upload implements ILoggable {
   }
 
   static observe(uplods: Upload[], _verify?: boolean): Observable<UploadStatus> {
-    return from(uplods).pipe(mergeMap((upload) => upload.upload(), Environment.CONCURRENCY));
+    return from(uplods).pipe(mergeMap((upload) => upload.upload(), concurrency()));
   }
 
   private upload(): Observable<UploadStatus> {

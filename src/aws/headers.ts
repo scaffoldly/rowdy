@@ -1,4 +1,4 @@
-import { HttpHeaders } from '../proxy/http';
+import { HttpHeaders } from '../proxy/headers';
 import { Logger } from '../log';
 import { ECRClient, GetAuthorizationTokenCommand } from '@aws-sdk/client-ecr';
 

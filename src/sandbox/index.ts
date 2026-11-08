@@ -60,7 +60,7 @@ export interface SandboxToolsLimits {
 }
 
 export interface SandboxToolsOptions extends Pick<SandboxOptions, 'logLevel' | 'signal'> {
-  /** Comes first in every sandbox's name, `{name}-{model's name}-{suffix}`. */
+  /** Comes first in every sandbox's name, `{name}-{model's name}-{suffix}`: letters, digits, `-` and `_` only. */
   name?: string;
   /** What a model can ask for. */
   limits?: SandboxToolsLimits;
@@ -134,20 +134,23 @@ export interface RunCommandOptions {
   onEvent?: EventCallback | PromiseLike<EventCallback>;
 }
 
-// TODO: writeFiles
-// export interface WriteFile {
-//   /** Relative to the sandbox's working directory, unless absolute. */
-//   path: string;
-//   content: Buffer;
-//   mode?: number;
-// }
+export interface WriteFile {
+  /** Relative to where a command starts without a `cwd`, unless absolute. Missing directories are made. */
+  path: string;
+  /** A string is written as UTF-8. */
+  content: string | Uint8Array;
+  mode?: number;
+}
 
-// TODO: readFileToBuffer
-// export interface ReadFile {
-//   /** Relative to the sandbox's working directory, unless absolute. */
-//   path: string;
-//   signal?: AbortSignal;
-// }
+export interface ReadFile {
+  /** Relative to `cwd`, or else to where a command starts without one, unless absolute. */
+  path: string;
+  cwd?: string;
+}
+
+export interface FileOptions {
+  signal?: AbortSignal;
+}
 
 export type Command = Omit<Exec, 'frames'>;
 export type CommandFinished = Omit<ExecFinished, 'frames'>;
@@ -171,13 +174,12 @@ export interface Sandbox {
    * running command: about 10 seconds on `runtime: 'aws.microvm'` and 30 on `aws.lambda`.
    */
   output(cmdId: string, options?: CommandOutputOptions): Promise<CommandOutput>;
-  // TODO: writeFiles
-  // writeFiles(files: WriteFile[]): Promise<void>;
-  // TODO: readFileToBuffer
-  // /** Resolves to null when the file does not exist. */
-  // readFileToBuffer(file: ReadFile): Promise<Buffer | null>;
-  // TODO: mkDir
-  // mkDir(path: string): Promise<void>;
+  /** Writes each file, in order, replacing what was there. `runtime: 'aws.lambda'` rejects for now. */
+  writeFiles(files: WriteFile[], options?: FileOptions): Promise<void>;
+  /** Resolves to null when the file does not exist. `runtime: 'aws.lambda'` rejects for now. */
+  readFileToBuffer(file: ReadFile, options?: FileOptions): Promise<Buffer | null>;
+  /** Makes a directory and its parents, and is fine if it's there. `runtime: 'aws.lambda'` rejects for now. */
+  mkDir(path: string, options?: FileOptions): Promise<void>;
   /**
    * Ends everything running in this sandbox, including a command in progress, and everything a `Sandbox.get` of it
    * started. Safe to call more than once. The next command starts it again. `runtime: 'aws.lambda'` rejects for now.

@@ -4,6 +4,9 @@ import type {
   DetachedRunCommandParams,
   CommandOutput,
   CommandOutputOptions,
+  FileOptions,
+  ReadFile,
+  WriteFile,
   RunCommandOptions,
   RunCommandParams,
   Sandbox,
@@ -17,6 +20,7 @@ import type {
 } from '..';
 import type { RegisteredTool } from '@modelcontextprotocol/server';
 import { isAxiosError } from 'axios';
+import { posix } from 'path';
 import {
   catchError,
   asapScheduler,
@@ -25,6 +29,7 @@ import {
   EMPTY,
   filter,
   finalize,
+  defaultIfEmpty,
   defer,
   firstValueFrom,
   from,
@@ -49,13 +54,13 @@ import {
   toArray,
 } from 'rxjs';
 import type { Exec, ExecFrame } from '../../api/types';
-import { Environment } from '../../environment';
+import { SandboxEnvironment } from './environment';
 import { Logger, maskUrl } from '../../log';
 import { describeError, humanize } from '../../aws/errors';
 import { LambdaCompute } from '../../aws/lambda/compute';
 import { MicrovmCompute } from '../../aws/microvm/compute';
 import { safeTool } from '../../mcp/tool';
-import { EXEC_STREAM } from '../../proxy/shell';
+import { EXEC_STREAM } from '../../proxy/frames';
 import { createSandbox } from '../mcp/create-sandbox';
 import { runCommand } from '../mcp/run-command';
 import { listSandboxes } from '../mcp/list-sandboxes';
@@ -79,7 +84,7 @@ const RUNTIMES: Record<NonNullable<SandboxOptions['runtime']>, SandboxComputeCla
 };
 
 export class SandboxImpl implements Sandbox {
-  private environment: Environment;
+  private environment: SandboxEnvironment;
   private compute: SandboxCompute;
 
   private constructor({ runtime, logLevel, signal }: Pick<SandboxOptions, 'runtime' | 'logLevel' | 'signal'>) {
@@ -91,7 +96,7 @@ export class SandboxImpl implements Sandbox {
     } else if (!process.env.ROWDY_LOG_LEVEL && log.level === 'info') {
       log.withLevel('warn');
     }
-    this.environment = new Environment(log, { signal });
+    this.environment = new SandboxEnvironment(log, { signal });
 
     this.compute = new RUNTIMES[runtime ?? 'aws.microvm'](this.environment);
   }
@@ -224,7 +229,11 @@ export class SandboxImpl implements Sandbox {
   static tools(options?: SandboxToolsOptions): Tool[] {
     // A host's stdout is its own, even for a tool that fails before it reaches a sandbox.
     new Logger('sandbox').withSink('stderr');
-    const { server, logLevel, signal } = options ?? {};
+    const { server, logLevel, signal, name: scope } = options ?? {};
+    // The scope goes in every sandbox's name, and a check that can't match would refuse every call.
+    if (scope !== undefined && !/^[A-Za-z0-9_-]+$/.test(scope)) {
+      throw new RangeError(`name must be letters, digits, '-' or '_', as AWS allows in a name, got ${scope}`);
+    }
 
     // Each sandbox's own tools while they're on the server, so a repeated create doesn't register them twice.
     const registered = new Map<string, RegisteredTool[]>();
@@ -393,20 +402,40 @@ export class SandboxImpl implements Sandbox {
     });
   }
 
-  // TODO: writeFiles
-  // async writeFiles(_files: WriteFile[]): Promise<void> {
-  //   throw new Error('not implemented');
-  // }
+  async writeFiles(files: WriteFile[], options?: FileOptions): Promise<void> {
+    const signal = options?.signal
+      ? AbortSignal.any([options.signal, this.environment.signal])
+      : this.environment.signal;
+    // In order, so a file can follow the one it needs.
+    await lastValueFrom(
+      from(files).pipe(
+        concatMap(({ path, content, mode }) =>
+          this.compute.writeFile(path, typeof content === 'string' ? Buffer.from(content) : content, mode, signal)
+        ),
+        defaultIfEmpty(undefined)
+      )
+    ).catch((error) => {
+      throw humanize(error);
+    });
+  }
 
-  // TODO: readFileToBuffer
-  // async readFileToBuffer(_file: ReadFile): Promise<Buffer | null> {
-  //   throw new Error('not implemented');
-  // }
+  async readFileToBuffer({ path, cwd }: ReadFile, options?: FileOptions): Promise<Buffer | null> {
+    const signal = options?.signal
+      ? AbortSignal.any([options.signal, this.environment.signal])
+      : this.environment.signal;
+    return lastValueFrom(this.compute.readFile(cwd ? posix.resolve(cwd, path) : path, signal)).catch((error) => {
+      throw humanize(error);
+    });
+  }
 
-  // TODO: mkDir
-  // async mkDir(_path: string): Promise<void> {
-  //   throw new Error('not implemented');
-  // }
+  async mkDir(path: string, options?: FileOptions): Promise<void> {
+    const signal = options?.signal
+      ? AbortSignal.any([options.signal, this.environment.signal])
+      : this.environment.signal;
+    await lastValueFrom(this.compute.mkDir(path, signal)).catch((error) => {
+      throw humanize(error);
+    });
+  }
 
   async output(cmdId: string, options?: CommandOutputOptions): Promise<CommandOutput> {
     const signal = options?.signal

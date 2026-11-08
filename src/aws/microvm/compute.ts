@@ -51,28 +51,20 @@ import {
   toArray,
 } from 'rxjs';
 import type { SandboxSummary } from '../../sandbox';
-import { deploySources } from '../../api/internal/layers';
+import { ROWDY_LAYERS } from '../../api/internal/layers';
 import { Transfer } from '../../api/internal/transfer';
 import { Exec, ExecOutput, ExecOutputOptions } from '../../api/types';
-import { Environment } from '../../environment';
+import type { SandboxEnvironment } from '../../sandbox/internal/environment';
 import { Logger } from '../../log';
 import { ExecSchema } from '../../routes';
 import { ComputeSpec, MICROVM_MEMORY, SandboxCompute, SandboxError } from '../../sandbox/internal/compute';
-import { LambdaImageService } from '../lambda/image';
-import {
-  _create,
-  isNotFound,
-  isPropagating,
-  isTransient,
-  LambdaFunction,
-  PROPAGATION,
-  ROWDY_BIN,
-} from '../lambda/index';
+import { _create, isNotFound, isPropagating, isTransient, PROPAGATION, roleName, ROWDY_BIN } from '../lambda/shared';
 import { AwsClientLogger } from '../logger';
-import { EXEC_LOG } from '../../proxy/shell';
+import { EXEC_LOG } from '../../proxy/frames';
 import { execOf, execOutput, framesOf } from '../exec';
-import { EXEC_ID_HEADER, EXEC_PATH, HOOKS_PORT } from '../microvm';
+import { EXEC_ID_HEADER, EXEC_PATH, FILES_PATH, HOOKS_PORT } from './hooks';
 import { ownedBucket } from '../s3';
+import { concurrency } from '../../concurrency';
 
 const BUCKET_PREFIX = 'rowdy-sandboxes-';
 const BUCKET_OWNER = { Key: 'rowdy:owner', Value: 'rowdy-sandboxes' };
@@ -131,7 +123,7 @@ export class MicrovmCompute extends AwsClientLogger implements SandboxCompute {
                   };
                 })
               ),
-            Environment.CONCURRENCY
+            concurrency()
           )
         )
       ),
@@ -158,13 +150,11 @@ export class MicrovmCompute extends AwsClientLogger implements SandboxCompute {
   private s3 = this.track(new S3Client({ logger: this }));
   private sts = this.track(new STSClient({ logger: this }));
 
-  private images: LambdaImageService;
   private imageArn?: string;
   private commands = new Set<AbortController>();
 
-  constructor(private environment: Environment) {
+  constructor(private environment: SandboxEnvironment) {
     super();
-    this.images = new LambdaImageService(environment).withLayersFrom(deploySources(undefined));
   }
 
   override get log(): Logger {
@@ -187,7 +177,7 @@ export class MicrovmCompute extends AwsClientLogger implements SandboxCompute {
       Identity: from(this.sts.send(new GetCallerIdentityCommand({}))),
     }).pipe(
       switchMap(({ ImageUri, Bucket, baseImageArn, Region, Identity }) => {
-        const RoleName = LambdaFunction.roleName(Transfer.normalizeImage(image), name);
+        const RoleName = roleName(Transfer.normalizeImage(image), name);
         const imageIdentifier = `arn:aws:lambda:${Region}:${Identity.Account}:microvm-image:${name}`;
         const Key = `${name}/${ImageUri}.zip`;
 
@@ -216,7 +206,7 @@ export class MicrovmCompute extends AwsClientLogger implements SandboxCompute {
                 'run.rowdy': 'aws',
                 [COMPUTE_TAG]: 'microvm',
                 [TIMEOUT_TAG]: `${timeout / 1000}`,
-                'run.rowdy.user.agent': this.images.userAgent,
+                'run.rowdy.user.agent': this.environment.userAgent,
               },
             })
           ),
@@ -251,7 +241,17 @@ export class MicrovmCompute extends AwsClientLogger implements SandboxCompute {
           this.microvms.send(new GetMicrovmImageVersionCommand({ imageIdentifier: this.sandboxId, imageVersion }))
         ).pipe(
           switchMap(({ logging }) =>
-            this.post(microvmId, endpoint, event, controller.signal).pipe(
+            this.fetchHooks(microvmId, endpoint, EXEC_PATH, {
+              method: 'POST',
+              body: JSON.stringify(event),
+              signal: controller.signal,
+            }).pipe(
+              map((response) => {
+                if (!response.ok || !response.body) {
+                  throw new Error(`Command refused: ${response.status}`);
+                }
+                return response;
+              }),
               switchMap((response) => {
                 const [, , , region, account] = this.sandboxId.split(':');
                 const execId = response.headers.get(EXEC_ID_HEADER) ?? '';
@@ -285,6 +285,45 @@ export class MicrovmCompute extends AwsClientLogger implements SandboxCompute {
         const [, , , region, account] = this.sandboxId.split(':');
         const logGroup = logging?.cloudWatch?.logGroup;
         return execOutput(`arn:aws:logs:${region}:${account}:log-group:${logGroup}`, cmdId, options);
+      })
+    );
+  }
+
+  writeFile(path: string, content: Uint8Array, mode: number | undefined, signal: AbortSignal): Observable<void> {
+    const query = new URLSearchParams({ path, ...(mode === undefined ? {} : { mode: mode.toString(8) }) });
+    return defer(() => this.vm()).pipe(
+      switchMap(({ microvmId, endpoint }) =>
+        this.fetchHooks(microvmId, endpoint, `${FILES_PATH}?${query}`, { method: 'PUT', body: content, signal })
+      ),
+      switchMap(async (response) => {
+        if (response.status !== 204) throw new Error(`Writing ${path} failed: ${await response.text()}`);
+      })
+    );
+  }
+
+  readFile(path: string, signal: AbortSignal): Observable<Buffer | null> {
+    return defer(() => this.vm()).pipe(
+      switchMap(({ microvmId, endpoint }) =>
+        this.fetchHooks(microvmId, endpoint, `${FILES_PATH}?${new URLSearchParams({ path })}`, { signal })
+      ),
+      switchMap(async (response) => {
+        if (response.status === 404) return null;
+        if (response.status !== 200) throw new Error(`Reading ${path} failed: ${await response.text()}`);
+        return Buffer.from(await response.arrayBuffer());
+      })
+    );
+  }
+
+  mkDir(path: string, signal: AbortSignal): Observable<void> {
+    return defer(() => this.vm()).pipe(
+      switchMap(({ microvmId, endpoint }) =>
+        this.fetchHooks(microvmId, endpoint, `${FILES_PATH}?${new URLSearchParams({ path })}`, {
+          method: 'POST',
+          signal,
+        })
+      ),
+      switchMap(async (response) => {
+        if (response.status !== 204) throw new Error(`Making ${path} failed: ${await response.text()}`);
       })
     );
   }
@@ -388,12 +427,12 @@ export class MicrovmCompute extends AwsClientLogger implements SandboxCompute {
     });
   }
 
-  /** Hands the command to rowdy in the VM, whose response carries its frames as they happen. */
-  private post(
+  /** A request to rowdy's hooks server in the VM, with an auth token for it. */
+  private fetchHooks(
     microvmIdentifier: string,
     endpoint: string,
-    event: ExecSchema,
-    signal: AbortSignal
+    path: string,
+    init: RequestInit & { signal: AbortSignal }
   ): Observable<globalThis.Response> {
     return defer(() =>
       this.microvms.send(
@@ -405,35 +444,18 @@ export class MicrovmCompute extends AwsClientLogger implements SandboxCompute {
       )
     ).pipe(
       switchMap(({ authToken }) =>
-        fetch(`https://${endpoint}${EXEC_PATH}`, {
-          method: 'POST',
+        fetch(`https://${endpoint}${path}`, {
+          ...init,
           headers: { ...authToken, 'X-aws-proxy-port': `${HOOKS_PORT}` },
-          body: JSON.stringify(event),
-          signal,
         })
-      ),
-      map((response) => {
-        if (!response.ok || !response.body) {
-          throw new Error(`Command refused: ${response.status}`);
-        }
-        return response;
-      })
+      )
     );
   }
 
   private pull(image: string): Observable<string> {
-    return defer(() =>
-      this.images.pullImage({
-        $typeName: 'runtime.v1.PullImageRequest',
-        image: {
-          $typeName: 'runtime.v1.ImageSpec',
-          image,
-          annotations: {},
-          runtimeHandler: '',
-          userSpecifiedImage: '',
-        },
-      })
-    ).pipe(map(({ imageRef }) => imageRef));
+    return defer(() => this.environment.images.pullImage(image, { layersFrom: [ROWDY_LAYERS] })).pipe(
+      map(({ ImageUri }) => ImageUri)
+    );
   }
 
   /** AWS's newest base image with a version available for this architecture. */

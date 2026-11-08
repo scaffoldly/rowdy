@@ -32,7 +32,8 @@ import {
   tap,
 } from 'rxjs';
 import { Exec, ExecFinished, ExecFrame, ExecOutput, ExecOutputOptions } from '../api/types';
-import { EXEC_LOG, EXEC_STREAM, ShellExit } from '../proxy/shell';
+import { EXEC_LOG, EXEC_STREAM } from '../proxy/frames';
+import type { ShellExit } from '../proxy/shell';
 import { SandboxError } from '../sandbox/internal/compute';
 
 /** The most of each stream a command's handle keeps, in bytes. A command can print for as long as it runs. */

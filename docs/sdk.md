@@ -19,6 +19,9 @@ The SDK uses the AWS SDK's usual credential and region chain, so anything that w
 CLI works here: `AWS_PROFILE`, `AWS_REGION`, an instance or task role, and so on. It acts as those
 credentials, and creates what it needs in that account and region.
 
+For what those credentials need for `aws.microvm`, and a permissions boundary that keeps them from acting
+as an administrator, see [sdk/iam.md](sdk/iam.md).
+
 ## Logging
 
 Your program's stdout stays yours: everything the SDK logs goes to stderr, at every level.

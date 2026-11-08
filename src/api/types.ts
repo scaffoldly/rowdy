@@ -1,7 +1,7 @@
 import { AxiosInstance } from 'axios';
 import { Logger } from '../log';
 import { MonoTypeOperatorFunction, Observable } from 'rxjs';
-import { Environment } from '../environment';
+import type { Environment } from '../environment';
 
 export type ApiVersion = 'rowdy.run/v1alpha1';
 export type ApiKind = 'Routes' | 'Cron' | 'Exec';
@@ -62,7 +62,7 @@ export interface ExecOutput {
 export interface IApi {
   http: AxiosInstance;
   log: Logger;
-  environment: Environment | undefined;
+  environment: Pick<Environment, 'log' | 'event$' | 'registry'> | undefined;
 }
 
 export type PullImageOptions = {

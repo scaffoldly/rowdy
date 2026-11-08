@@ -2,8 +2,8 @@ import { ConnectError, ServiceImpl } from '@connectrpc/connect';
 import { CRI } from '@scaffoldly/rowdy-grpc';
 import { Logger } from '../../log';
 import { fromEvent, lastValueFrom, takeUntil } from 'rxjs';
-import { Rowdy } from '../../api';
-import { Environment } from '../../environment';
+import type { Rowdy } from '../../api';
+import type { Environment } from '../../environment';
 import { PullImageOptions, TPulledImage } from '../../api/types';
 
 // eslint-disable-next-line @typescript-eslint/no-empty-object-type
@@ -14,7 +14,9 @@ export class LambdaImageService implements ILambdaImageService {
   private _authorization?: string;
   private _pulledImages: Map<string, TPulledImage> = new Map();
 
-  constructor(private environment: Environment) {}
+  constructor(
+    private environment: Pick<Environment, 'log' | 'signal' | 'name' | 'version'> & { rowdy: Pick<Rowdy, 'images'> }
+  ) {}
 
   get log(): Logger {
     return this.environment.log.child('image');

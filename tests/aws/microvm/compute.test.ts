@@ -1,11 +1,12 @@
 import { createHash } from 'crypto';
 import { strFromU8, unzipSync } from 'fflate';
-import { lastValueFrom } from 'rxjs';
-import { Environment, Logger } from '../../../src';
+import { lastValueFrom, Observable, of } from 'rxjs';
+import { Logger } from '../../../src';
+import { SandboxEnvironment } from '../../../src/sandbox/internal/environment';
 import { ExecFinished } from '../../../src/api/types';
 import { MicrovmCompute, POLL, TERMINATE_POLL } from '../../../src/aws/microvm/compute';
 import { EXEC_STREAM, execFrame } from '../../../src/proxy/shell';
-import { EXEC_ID_HEADER, EXEC_PATH, HOOKS_PORT } from '../../../src/aws/microvm';
+import { EXEC_ID_HEADER, EXEC_PATH, FILES_PATH, HOOKS_PORT } from '../../../src/aws/microvm';
 import { ComputeSpec } from '../../../src/sandbox/internal/compute';
 
 const IMAGE_URI = '123456789012.dkr.ecr.us-east-1.amazonaws.com/scaffoldly/sandbox@sha256:abc';
@@ -37,7 +38,7 @@ describe('aws microvm compute', () => {
   afterEach(() => jest.restoreAllMocks());
 
   const setup = (handlers: Record<string, Handler> = {}): { compute: MicrovmCompute; sent: Sent[] } => {
-    const compute = new MicrovmCompute(new Environment(new Logger(), {}));
+    const compute = new MicrovmCompute(new SandboxEnvironment(new Logger()));
     const sent: Sent[] = [];
     const defaults: Record<string, Handler> = {
       ListManagedMicrovmImagesCommand: () => ({ items: [{ imageArn: BASE_ARN, createdAt: new Date(1) }] }),
@@ -67,8 +68,8 @@ describe('aws microvm compute', () => {
     });
     jest.spyOn(compute['s3'].config, 'region').mockResolvedValue('us-east-1');
     jest
-      .spyOn(compute['images'], 'pullImage')
-      .mockResolvedValue({ $typeName: 'runtime.v1.PullImageResponse', imageRef: IMAGE_URI });
+      .spyOn(compute['environment'].images, 'pullImage')
+      .mockReturnValue(of({ Image: 'alpine', ImageUri: IMAGE_URI }));
     return { compute, sent };
   };
 
@@ -115,7 +116,9 @@ describe('aws microvm compute', () => {
       await create(compute);
 
       expect(dockerfile(sent)).toBe(`FROM ${IMAGE_URI}\nENTRYPOINT ["/usr/local/bin/rowdy"]\n`);
-      expect(compute['images']['_layersFrom']).toContain('ghcr.io/scaffoldly/rowdy:beta');
+      expect(compute['environment'].images.pullImage).toHaveBeenCalledWith(SPEC.image, {
+        layersFrom: ['ghcr.io/scaffoldly/rowdy:beta'],
+      });
     });
 
     it('keeps the zip in a folder for the sandbox', async () => {
@@ -527,6 +530,70 @@ describe('aws microvm compute', () => {
       await run(compute);
 
       expect(names(sent)).toContain('RunMicrovmCommand');
+    });
+
+    describe('files', () => {
+      const { signal } = new AbortController();
+      const answering = (status: number, body?: string | Uint8Array) => {
+        const built = running();
+        built.fetch.mockImplementation(async () => new Response(body ?? null, { status }));
+        return built;
+      };
+      const called = (fetch: jest.SpyInstance) => {
+        const [url, init] = fetch.mock.calls[0] as [string, RequestInit];
+        return { url: new globalThis.URL(url), init };
+      };
+
+      it('writes a file with PUT, its path and mode in the query', async () => {
+        const { compute, fetch } = answering(204);
+        const content = Buffer.from([0, 255]);
+
+        await lastValueFrom(compute.writeFile('app/run.sh', content, 0o755, signal), { defaultValue: undefined });
+
+        const { url, init } = called(fetch);
+        expect(url.host).toBe('vm.example');
+        expect(url.pathname).toBe(FILES_PATH);
+        expect(Object.fromEntries(url.searchParams)).toEqual({ path: 'app/run.sh', mode: '755' });
+        expect(init).toMatchObject({ method: 'PUT', body: content, signal });
+        expect(init.headers).toMatchObject({ 'X-aws-proxy-auth': 'token', 'X-aws-proxy-port': `${HOOKS_PORT}` });
+      });
+
+      it('reads a file, or null when it is not there', async () => {
+        const found = answering(200, new Uint8Array([1, 2, 3]));
+        await expect(lastValueFrom(found.compute.readFile('a', signal))).resolves.toEqual(Buffer.from([1, 2, 3]));
+
+        jest.restoreAllMocks();
+        const missing = answering(404);
+        await expect(lastValueFrom(missing.compute.readFile('a', signal))).resolves.toBeNull();
+      });
+
+      it('makes a directory with POST', async () => {
+        const { compute, fetch } = answering(204);
+
+        await lastValueFrom(compute.mkDir('/data/cache', signal), { defaultValue: undefined });
+
+        const { url, init } = called(fetch);
+        expect(Object.fromEntries(url.searchParams)).toEqual({ path: '/data/cache' });
+        expect(init.method).toBe('POST');
+      });
+
+      it.each([
+        ['writing', (compute: MicrovmCompute) => compute.writeFile('f', Buffer.from('x'), undefined, signal)],
+        ['reading', (compute: MicrovmCompute) => compute.readFile('f', signal)],
+        ['making', (compute: MicrovmCompute) => compute.mkDir('f', signal)],
+      ])('says why %s failed', async (_, call) => {
+        const { compute } = answering(500, 'EACCES: permission denied');
+
+        await expect(lastValueFrom(call(compute) as Observable<unknown>)).rejects.toThrow('EACCES: permission denied');
+      });
+
+      it('starts the VM like a command would', async () => {
+        const { compute, sent } = answering(204);
+
+        await lastValueFrom(compute.mkDir('d', signal), { defaultValue: undefined });
+
+        expect(sent.map(({ name }) => name)).toContain('RunMicrovmCommand');
+      });
     });
 
     it('starts one VM for two first commands at once, across handles', async () => {

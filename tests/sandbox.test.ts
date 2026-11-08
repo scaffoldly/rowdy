@@ -2,7 +2,20 @@ import { Logger } from '@scaffoldly/rowdy';
 import { CommandFinished, Sandbox, SandboxOptions } from '@scaffoldly/rowdy/sandbox';
 import { AxiosError, AxiosHeaders, InternalAxiosRequestConfig } from 'axios';
 import { InvokeWithResponseStreamResponseEvent, LambdaClient } from '@aws-sdk/client-lambda';
-import { EMPTY, from, lastValueFrom, NEVER, Observable, of, Subject, switchMap, throwError, toArray } from 'rxjs';
+import {
+  EMPTY,
+  from,
+  lastValueFrom,
+  map,
+  NEVER,
+  Observable,
+  of,
+  Subject,
+  switchMap,
+  tap,
+  throwError,
+  toArray,
+} from 'rxjs';
 import type { ServerContext } from '@modelcontextprotocol/server';
 import { PassThrough } from 'stream';
 import { ROWDY_LAYERS } from '../src/api/internal/layers';
@@ -21,7 +34,7 @@ import { computeHash, SandboxImpl } from '../src/sandbox/internal/sandbox';
 
 const FUNCTION_ARN = 'arn:aws:lambda:us-east-1:123456789012:function:sandbox-box';
 
-const lambdaOf = (sandbox: SandboxImpl): LambdaFunction => (sandbox['compute'] as LambdaCompute)['lambda'];
+const lambdaOf = (sandbox: SandboxImpl): LambdaFunction => (sandbox['compute'] as LambdaCompute)['lambda']!;
 
 type Event = InvokeWithResponseStreamResponseEvent;
 
@@ -72,7 +85,8 @@ describe('sandbox', () => {
         resolved = true;
         return sandbox;
       });
-      await Promise.resolve();
+      // The deployer loads on demand, so its deploy starts a few ticks later.
+      while (!observe.mock.calls.length) await new Promise((resolve) => setTimeout(resolve, 0));
       deploy.next(LambdaFunction.prototype);
       await Promise.resolve();
       expect(resolved).toBe(false);
@@ -443,7 +457,8 @@ describe('sandbox', () => {
       const controller = new AbortController();
 
       const created = SandboxImpl.create({ runtime: 'aws.lambda', signal: controller.signal });
-      await Promise.resolve();
+      // The deployer loads on demand, so its deploy starts a few ticks later.
+      while (!observe.mock.calls.length) await new Promise((resolve) => setTimeout(resolve, 0));
       controller.abort('stop');
 
       await expect(created).rejects.toBe('stop');
@@ -893,6 +908,81 @@ describe('sandbox', () => {
     });
   });
 
+  describe('files', () => {
+    const microvm = (): void => {
+      jest.spyOn(MicrovmCompute.prototype, 'create').mockImplementation(function (this: MicrovmCompute) {
+        return of(this);
+      });
+    };
+
+    it('writes each file in order, a string as UTF-8', async () => {
+      microvm();
+      const write = jest.spyOn(MicrovmCompute.prototype, 'writeFile').mockReturnValue(of(undefined));
+      const sandbox = await Sandbox.create();
+      const bytes = new Uint8Array([0, 255]);
+
+      await sandbox.writeFiles([
+        { path: 'a.txt', content: 'hé' },
+        { path: 'b.bin', content: bytes, mode: 0o644 },
+      ]);
+
+      expect(write.mock.calls.map(([path, content, mode]) => [path, Buffer.from(content), mode])).toEqual([
+        ['a.txt', Buffer.from('hé'), undefined],
+        ['b.bin', Buffer.from(bytes), 0o644],
+      ]);
+    });
+
+    it('writes nothing for no files', async () => {
+      microvm();
+      const write = jest.spyOn(MicrovmCompute.prototype, 'writeFile');
+      const sandbox = await Sandbox.create();
+
+      await expect(sandbox.writeFiles([])).resolves.toBeUndefined();
+      expect(write).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      [{ path: 'x.txt', cwd: '/app' }, '/app/x.txt'],
+      [{ path: '/etc/hosts', cwd: '/app' }, '/etc/hosts'],
+      [{ path: 'x.txt' }, 'x.txt'],
+    ])('reads %j from %s', async (file, expected) => {
+      microvm();
+      const read = jest.spyOn(MicrovmCompute.prototype, 'readFile').mockReturnValue(of(Buffer.from('hi')));
+      const sandbox = await Sandbox.create();
+
+      await expect(sandbox.readFileToBuffer(file)).resolves.toEqual(Buffer.from('hi'));
+      expect(read.mock.calls[0]![0]).toBe(expected);
+    });
+
+    it('resolves to null for a file that is not there', async () => {
+      microvm();
+      jest.spyOn(MicrovmCompute.prototype, 'readFile').mockReturnValue(of(null));
+      const sandbox = await Sandbox.create();
+
+      await expect(sandbox.readFileToBuffer({ path: 'missing' })).resolves.toBeNull();
+    });
+
+    it('makes a directory', async () => {
+      microvm();
+      const mkDir = jest.spyOn(MicrovmCompute.prototype, 'mkDir').mockReturnValue(of(undefined));
+      const sandbox = await Sandbox.create();
+
+      await sandbox.mkDir('cache');
+
+      expect(mkDir.mock.calls[0]![0]).toBe('cache');
+    });
+
+    it.each([
+      ['writeFiles', (sandbox: Sandbox) => sandbox.writeFiles([{ path: 'a', content: 'x' }])],
+      ['readFileToBuffer', (sandbox: Sandbox) => sandbox.readFileToBuffer({ path: 'a' })],
+      ['mkDir', (sandbox: Sandbox) => sandbox.mkDir('a')],
+    ])('rejects %s on Lambda', async (_, call) => {
+      const sandbox = await Sandbox.create({ runtime: 'aws.lambda' });
+
+      await expect(call(sandbox)).rejects.toThrow(new SandboxError('files are not implemented on runtime aws.lambda'));
+    });
+  });
+
   describe('a detached command', () => {
     const running = (): { frames: Subject<ExecFrame>; exec: jest.SpyInstance } => {
       jest.spyOn(MicrovmCompute.prototype, 'create').mockImplementation(function (this: MicrovmCompute) {
@@ -1008,8 +1098,10 @@ describe('sandbox', () => {
 
     it('shows a get to a caller who subscribes before awaiting', async () => {
       jest.spyOn(LambdaCompute.prototype, 'attach').mockImplementation(function (this: LambdaCompute) {
-        this['lambda']['emitted'].next(step);
-        return of(this);
+        return this['lambda$'].pipe(
+          tap((lambda) => lambda['emitted'].next(step)),
+          map(() => this)
+        );
       });
       const seen: unknown[] = [];
 
@@ -1330,6 +1422,14 @@ describe('sandbox', () => {
           structuredContent: { sandbox_id: IMAGE },
         });
       });
+    });
+
+    it.each(['github:819991', 'a b', 'tenant/1', ''])('refuses a scope AWS would not take in a name: %j', (name) => {
+      expect(() => Sandbox.tools({ name })).toThrow(RangeError);
+    });
+
+    it('takes a scope of letters, digits, dashes and underscores', () => {
+      expect(() => Sandbox.tools({ name: 'github-819991_a' })).not.toThrow();
     });
 
     it('lists them by name', () => {

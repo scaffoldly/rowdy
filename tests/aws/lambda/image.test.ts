@@ -2,7 +2,7 @@ import { Environment, Logger } from '@scaffoldly/rowdy';
 import { of } from 'rxjs';
 import { create } from '@bufbuild/protobuf';
 import { CRI } from '@scaffoldly/rowdy-grpc';
-import { deploySources } from '../../../src/api/internal/layers';
+import { deploySources } from '../../../src/api/internal/sources';
 import { LambdaImageService } from '../../../src/aws/lambda/image';
 import { TPulledImage } from '../../../src/api/types';
 

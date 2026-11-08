@@ -7,7 +7,7 @@ import {
   GetAuthorizationTokenCommand,
 } from '@aws-sdk/client-ecr';
 import { GetCallerIdentityCommand, STSClient } from '@aws-sdk/client-sts';
-import { Environment } from '../environment';
+import type { Environment } from '../environment';
 import { log, Logger } from '../log';
 import { AwsClientLogger } from './logger';
 
@@ -17,7 +17,7 @@ export class AwsRegistry extends AwsClientLogger implements IRegistryApi {
   private ecr: ECRClient = this.track(new ECRClient({ logger: this }));
   private sts: STSClient = this.track(new STSClient({ logger: this }));
 
-  constructor(private enviornment?: Environment) {
+  constructor(private enviornment?: Pick<Environment, 'log' | 'event$' | 'registry'>) {
     super();
     if (enviornment) {
       this.events().subscribe(enviornment.event$);

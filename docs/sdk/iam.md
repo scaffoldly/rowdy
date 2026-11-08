@@ -1,0 +1,234 @@
+# IAM for the sandbox SDK
+
+> **Proposed.** This is the setup we intend to recommend for `aws.microvm` sandboxes, taken from the
+> AWS calls rowdy makes. It hasn't been tested against a real account yet, and part of it needs a
+> change to rowdy, noted [below](#what-rowdy-doesnt-do-yet). `aws.lambda` isn't covered.
+
+The SDK acts as whatever AWS credentials it finds, as [sdk.md](../sdk.md#aws-credentials) describes.
+To start a microVM sandbox, it creates an IAM role for the VM, gives that role a policy, and passes
+it to Lambda. Credentials that can do all three for any role and any policy can make themselves an
+administrator, so this setup has three parts:
+
+1. **A host role** your code runs as, with only what the SDK calls.
+2. **A trust relationship** saying who may use that role.
+3. **A permissions boundary** that caps every role the host role creates, whatever policy it's given.
+
+Replace `123456789012` with your account ID throughout.
+
+## The host role
+
+Name it `RowdySandboxHost`, or anything else: only the sandbox roles' names matter, below.
+
+### Trust relationship
+
+Who may assume the host role. This example trusts one IAM user in the same account. Use whatever
+principal your code runs as: a user whose keys are in your Worker's environment, an OIDC provider,
+another role, or a service.
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Principal": { "AWS": "arn:aws:iam::123456789012:user/sandbox-host" },
+      "Action": "sts:AssumeRole"
+    }
+  ]
+}
+```
+
+### Permissions
+
+Everything the SDK calls for `aws.microvm`, by what it's for.
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "MicroVMs",
+      "Effect": "Allow",
+      "Action": [
+        "lambda:CreateMicrovmImage",
+        "lambda:UpdateMicrovmImage",
+        "lambda:GetMicrovmImage",
+        "lambda:GetMicrovmImageVersion",
+        "lambda:ListMicrovmImages",
+        "lambda:ListManagedMicrovmImages",
+        "lambda:ListManagedMicrovmImageVersions",
+        "lambda:RunMicrovm",
+        "lambda:GetMicrovm",
+        "lambda:ListMicrovms",
+        "lambda:TerminateMicrovm",
+        "lambda:CreateMicrovmAuthToken",
+        "lambda:ListTags",
+        "lambda:TagResource"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "SandboxRolesOnlyWithTheBoundary",
+      "Effect": "Allow",
+      "Action": ["iam:CreateRole", "iam:PutRolePolicy", "iam:UpdateAssumeRolePolicy"],
+      "Resource": "arn:aws:iam::123456789012:role/*rowdy.run",
+      "Condition": {
+        "StringEquals": {
+          "iam:PermissionsBoundary": "arn:aws:iam::123456789012:policy/RowdySandboxBoundary"
+        }
+      }
+    },
+    {
+      "Sid": "ReadSandboxRoles",
+      "Effect": "Allow",
+      "Action": "iam:GetRole",
+      "Resource": "arn:aws:iam::123456789012:role/*rowdy.run"
+    },
+    {
+      "Sid": "PassSandboxRolesToLambdaOnly",
+      "Effect": "Allow",
+      "Action": "iam:PassRole",
+      "Resource": "arn:aws:iam::123456789012:role/*rowdy.run",
+      "Condition": { "StringEquals": { "iam:PassedToService": "lambda.amazonaws.com" } }
+    },
+    {
+      "Sid": "KeepTheBoundary",
+      "Effect": "Deny",
+      "Action": [
+        "iam:DeleteRolePermissionsBoundary",
+        "iam:PutRolePermissionsBoundary",
+        "iam:CreatePolicyVersion",
+        "iam:DeletePolicy",
+        "iam:DeletePolicyVersion",
+        "iam:SetDefaultPolicyVersion"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "WhoAmI",
+      "Effect": "Allow",
+      "Action": "sts:GetCallerIdentity",
+      "Resource": "*"
+    },
+    {
+      "Sid": "FindTheSandboxBucket",
+      "Effect": "Allow",
+      "Action": "s3:ListAllMyBuckets",
+      "Resource": "*"
+    },
+    {
+      "Sid": "TheSandboxBucket",
+      "Effect": "Allow",
+      "Action": ["s3:CreateBucket", "s3:ListBucket", "s3:GetBucketTagging", "s3:PutBucketTagging", "s3:TagResource"],
+      "Resource": "arn:aws:s3:::rowdy-sandboxes-*"
+    },
+    {
+      "Sid": "SandboxZips",
+      "Effect": "Allow",
+      "Action": ["s3:GetObject", "s3:PutObject"],
+      "Resource": "arn:aws:s3:::rowdy-sandboxes-*/*"
+    },
+    {
+      "Sid": "EcrToken",
+      "Effect": "Allow",
+      "Action": "ecr:GetAuthorizationToken",
+      "Resource": "*"
+    },
+    {
+      "Sid": "CopyImagesIn",
+      "Effect": "Allow",
+      "Action": [
+        "ecr:DescribeRepositories",
+        "ecr:CreateRepository",
+        "ecr:BatchCheckLayerAvailability",
+        "ecr:InitiateLayerUpload",
+        "ecr:UploadLayerPart",
+        "ecr:CompleteLayerUpload",
+        "ecr:PutImage",
+        "ecr:BatchGetImage",
+        "ecr:GetDownloadUrlForLayer"
+      ],
+      "Resource": "arn:aws:ecr:*:123456789012:repository/*"
+    },
+    {
+      "Sid": "ReadCommandOutput",
+      "Effect": "Allow",
+      "Action": ["logs:FilterLogEvents", "logs:StartLiveTail"],
+      "Resource": "arn:aws:logs:*:123456789012:log-group:/aws/lambda-microvms/*"
+    }
+  ]
+}
+```
+
+- **MicroVMs:** these sit under Lambda's `lambda:` prefix. `Resource` is `*` until the ARN forms each
+  action takes are confirmed. `lambda:TagResource` is there because images are created with tags.
+- **IAM:** the host role can only create, change and pass roles whose names end in `rowdy.run`, which
+  is every role rowdy makes, and only with the boundary attached. It can't change the boundary.
+- **S3:** one bucket per account, `rowdy-sandboxes-{random}`, found again by its tag, holds each
+  sandbox's zip. `s3:PutBucketTagging` and `s3:TagResource` cover a bucket created with tags, whichever
+  AWS checks.
+- **ECR:** an image is copied into a repository named after it, like `library/alpine`, so the
+  repository ARN can't be narrower than the account.
+- **CloudWatch Logs:** `read_output` and `sandbox.output()`. `logs:StartLiveTail` is only used with a
+  `timeout`.
+
+## The permissions boundary
+
+A managed policy named `RowdySandboxBoundary`. AWS lets a role with a boundary do only what both its
+own policies and the boundary allow, so a sandbox role can never do more than this, even with a policy
+that grants everything. It matches what rowdy gives each sandbox's role today.
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "ReadSandboxZip",
+      "Effect": "Allow",
+      "Action": "s3:GetObject",
+      "Resource": "arn:aws:s3:::rowdy-sandboxes-*/*"
+    },
+    {
+      "Sid": "WriteSandboxLogs",
+      "Effect": "Allow",
+      "Action": ["logs:CreateLogGroup", "logs:CreateLogStream", "logs:PutLogEvents"],
+      "Resource": "arn:aws:logs:*:123456789012:log-group:/aws/lambda-microvms/*"
+    },
+    {
+      "Sid": "EcrToken",
+      "Effect": "Allow",
+      "Action": "ecr:GetAuthorizationToken",
+      "Resource": "*"
+    },
+    {
+      "Sid": "PullImages",
+      "Effect": "Allow",
+      "Action": ["ecr:BatchCheckLayerAvailability", "ecr:GetDownloadUrlForLayer", "ecr:BatchGetImage"],
+      "Resource": "arn:aws:ecr:*:123456789012:repository/*"
+    }
+  ]
+}
+```
+
+With all three in place, credentials for the host role that leak can create a role that reads sandbox
+zips, writes microVM logs and pulls images in the account, and nothing more.
+
+## The roles rowdy creates
+
+For reference, each microVM sandbox gets a role named `{namespace}+{image}@{name}.rowdy.run`, like
+`library+alpine@sandbox-d99dbbd84.rowdy.run`, which the boundary above caps.
+
+- **Trust:** `lambda.amazonaws.com`, with `sts:AssumeRole` and `sts:TagSession`. It builds the image
+  and runs the VM.
+- **`RowdyPolicy`:** `s3:GetObject` on that sandbox's own zip, writing CloudWatch logs, and pulling from
+  that sandbox's own ECR repository.
+
+## What rowdy doesn't do yet
+
+- **Attach the boundary.** rowdy creates sandbox roles with no `PermissionsBoundary`, so
+  `SandboxRolesOnlyWithTheBoundary` refuses them until it sets one.
+- **Roles that exist already.** A sandbox role made before the boundary has none, so updating its policy
+  is refused too. Add the boundary to it once with an administrator's credentials, or delete it and let
+  rowdy make it again.
+- **Checked against AWS.** We haven't confirmed that microVMs check `iam:PassedToService` against
+  `lambda.amazonaws.com`, or which tagging permission S3 wants for a tagged bucket.

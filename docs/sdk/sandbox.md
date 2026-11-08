@@ -171,6 +171,27 @@ Each read answers with at most 64 KiB:
 
 A log is behind a running command, by about 10 seconds on `aws.microvm` and 30 on `aws.lambda`, so an undefined `exitCode` can mean only that the rest hasn't arrived. Reading needs `logs:FilterLogEvents`, and `logs:StartLiveTail` with `timeout`.
 
+## Files
+
+On `aws.microvm`, files go in and out of the sandbox as bytes, with no shell or tools needed in the image.
+
+```ts
+await sandbox.writeFiles([
+  { path: 'app.js', content: 'console.log("hi")' },
+  { path: 'bin/run.sh', content: Buffer.from('#!/bin/sh\nnode app.js\n'), mode: 0o755 },
+]);
+await sandbox.mkDir('cache');
+
+const config = await sandbox.readFileToBuffer({ path: 'config.json', cwd: '/etc/app' });
+```
+
+- **Paths:** a relative one is from where a command starts without a `cwd`, so `app.js` above is the one `node app.js` finds. `readFileToBuffer` takes its own `cwd` too.
+- **`writeFiles`:** writes each file in order, replacing what was there, and makes missing directories. A string is written as UTF-8.
+- **`readFileToBuffer`:** resolves to `null` when the file isn't there.
+- **`mkDir`:** makes the directory and its parents, and is fine if it's already there.
+
+Each takes a `signal`, and starts the sandbox's VM if it has none, as a command would. On `aws.lambda`, they reject for now.
+
 ## `stop`
 
 `stop()` ends everything running in the sandbox, including a command in progress, whose `runCommand`
@@ -372,5 +393,5 @@ A call waits for the sandbox, and a failed build is each call's error.
 
 ## Not there yet
 
-- `writeFiles`, `readFileToBuffer` and `mkDir`.
+- Files on `aws.lambda`.
 - `stop()` on `aws.lambda`.

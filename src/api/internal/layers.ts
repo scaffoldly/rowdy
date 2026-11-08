@@ -1,4 +1,3 @@
-import { specList } from '../../util/list';
 import type { External } from './transfer';
 
 /** rowdy's own image: its one layer is added to every deployed image, after any layers-from source. */
@@ -16,15 +15,6 @@ export const skippedLevel = (platform: string): 'warn' | 'debug' => (platform ==
 
 /** One platform of a layers-from image: `platform` is `os/architecture`. */
 export type SourcePlatform = { platform: string; image: External['Image']; config: External['Config'] };
-
-/** The user's layers-from images, from repeated flags or `ROWDY_LAYERS_FROM`: the first of a repeat, without rowdy's. */
-export const layerSources = (value: string | string[] | undefined): string[] => {
-  const all = [value ?? []].flat().flatMap((entry) => specList(entry));
-  return [...new Set(all)].filter((source) => source !== ROWDY_LAYERS);
-};
-
-/** The images whose layers a deploy adds, in order: the user's, then rowdy's. */
-export const deploySources = (value: string | string[] | undefined): string[] => [...layerSources(value), ROWDY_LAYERS];
 
 /** The Dockerfile instruction a history entry's `created_by` records, buildkit's or the classic builder's. */
 export const instructionOf = (createdBy: string): string => {
