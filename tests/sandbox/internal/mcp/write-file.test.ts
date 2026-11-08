@@ -1,18 +1,15 @@
 import type { ServerContext } from '@modelcontextprotocol/server';
 import { describe, expect, it, jest } from '@jest/globals';
-import type { Sandbox, SandboxFactory, SandboxToolsOptions } from '../../../src/sandbox';
-import { SandboxError } from '../../../src/sandbox/internal/compute';
-import { writeFile } from '../../../src/sandbox/mcp/write-file';
+import type { SandboxPromise } from '../../../../src/sandbox';
+import { writeFile } from '../../../../src/sandbox/internal/mcp/write-file';
 
-const sandboxId = 'arn:aws:lambda:us-east-1:123456789012:microvm-image:tenant-builds-bcdf245678';
-
-const setup = (options: SandboxToolsOptions = {}) => {
+const setup = () => {
   const writeFiles = jest.fn(async (_files: unknown, _options: unknown) => undefined);
-  const get = jest.fn(async (_lookup: unknown) => ({ writeFiles }) as unknown as Sandbox);
-  const tool = writeFile({ get: get as unknown as SandboxFactory['get'] }, options);
+  const sandbox = Promise.resolve({ writeFiles }) as unknown as SandboxPromise;
+  const tool = writeFile;
   const { signal } = new AbortController();
   const run = (input: Record<string, unknown> = {}) =>
-    tool.run(tool.inputSchema.parse({ sandbox_id: sandboxId, path: 'a.sh', content: 'echo hi', ...input }), {
+    tool.run(sandbox, tool.inputSchema.parse({ path: 'a.sh', content: 'echo hi', ...input }), {
       mcpReq: { signal },
     } as unknown as ServerContext);
   return { tool, run, writeFiles, signal };
@@ -43,14 +40,7 @@ describe('write_file', () => {
   });
 
   it.each(['rwx', '8', '75555'])('refuses a mode that is not octal: %j', (mode) => {
-    expect(() => setup().tool.inputSchema.parse({ sandbox_id: sandboxId, path: 'a', content: '', mode })).toThrow();
-  });
-
-  it('refuses a sandbox outside its scope', async () => {
-    const { run, writeFiles } = setup({ name: 'other' });
-
-    await expect(run()).rejects.toBeInstanceOf(SandboxError);
-    expect(writeFiles).not.toHaveBeenCalled();
+    expect(() => setup().tool.inputSchema.parse({ path: 'a', content: '', mode })).toThrow();
   });
 
   it('replaces what was there', () => {

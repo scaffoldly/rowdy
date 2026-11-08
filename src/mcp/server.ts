@@ -15,7 +15,9 @@ export const INSTRUCTIONS =
 export const serve = ({ name, version, abort, signal }: Environment): Promise<void> => {
   const server = new McpServer({ name, version }, { instructions: INSTRUCTIONS });
 
-  Sandbox.tools({ signal, server }).forEach(({ name, run, ...config }) => server.registerTool(name, config, run));
+  Sandbox.tools().forEach(({ name, run, ...config }) =>
+    server.registerTool(name, config, (input, ctx) => run(input, { ...ctx, server, signal }))
+  );
   server.server.onclose = (): void => abort.abort('MCP client disconnected');
 
   return server.connect(new StdioServerTransport());

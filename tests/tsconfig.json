@@ -11,7 +11,8 @@
     "baseUrl": "..",
     "paths": {
       "@scaffoldly/rowdy": ["src/index"],
-      "@scaffoldly/rowdy/sandbox": ["src/sandbox/index"]
+      "@scaffoldly/rowdy/sandbox": ["src/sandbox/index"],
+      "@scaffoldly/rowdy/mcp": ["src/mcp/index"]
     }
   },
   "include": ["**/*.ts", "../src/**/*.ts"]

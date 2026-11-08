@@ -25,11 +25,7 @@ describe('serve', () => {
 
     expect(register.mock.calls.map(([name]) => name)).toEqual([
       'create_sandbox',
-      'run_command',
-      'read_output',
-      'read_file',
-      'write_file',
-      'make_directory',
+      'get_sandbox',
       'list_sandboxes',
       'stop_sandbox',
     ]);

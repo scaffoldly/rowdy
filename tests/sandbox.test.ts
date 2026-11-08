@@ -1,5 +1,11 @@
 import { Logger } from '@scaffoldly/rowdy';
-import { CommandFinished, Sandbox, SandboxOptions } from '@scaffoldly/rowdy/sandbox';
+import {
+  CommandFinished,
+  Sandbox,
+  SandboxOptions,
+  SandboxSummary,
+  SandboxToolsOptions,
+} from '@scaffoldly/rowdy/sandbox';
 import { AxiosError, AxiosHeaders, InternalAxiosRequestConfig } from 'axios';
 import { InvokeWithResponseStreamResponseEvent, LambdaClient } from '@aws-sdk/client-lambda';
 import {
@@ -31,6 +37,8 @@ import { execOf } from '../src/aws/exec';
 import { SandboxError } from '../src/sandbox/internal/compute';
 import { EXEC_STREAM, execFrame } from '../src/proxy/shell';
 import { computeHash, SandboxImpl } from '../src/sandbox/internal/sandbox';
+import { createSandbox, OWN_TOOLS } from '../src/sandbox/internal/mcp/create-sandbox';
+import { getSandbox } from '../src/sandbox/internal/mcp/get-sandbox';
 
 const FUNCTION_ARN = 'arn:aws:lambda:us-east-1:123456789012:function:sandbox-box';
 
@@ -1328,6 +1336,15 @@ describe('sandbox', () => {
         expect(exec).toHaveBeenCalledTimes(1);
       });
 
+      it('are each named where create_sandbox and get_sandbox say what a sandbox comes with', async () => {
+        microvm();
+        const names = (await Sandbox.create()).tools().map(({ name }) => name);
+
+        names.forEach((name) => expect(OWN_TOOLS).toContain(name));
+        expect(createSandbox.description).toContain(OWN_TOOLS);
+        expect(getSandbox.description).toContain(OWN_TOOLS);
+      });
+
       it('leaves out files and stop_sandbox where the sandbox has neither', async () => {
         const sandbox = await Sandbox.create({ runtime: 'aws.lambda' });
 
@@ -1374,10 +1391,11 @@ describe('sandbox', () => {
           remove: () => void removed.push(name),
         }));
         const host = new AbortController();
-        const tools = Sandbox.tools({ server: { registerTool } as never, signal: host.signal });
-        const call = (name: string, input: Record<string, unknown> = {}) => {
+        const tools = Sandbox.tools();
+        const own = { registerTool };
+        const call = (name: string, input: Record<string, unknown> = {}, server: unknown = own) => {
           const tool = tools.find((each) => each.name === name)!;
-          return tool.run(tool.inputSchema.parse(input), ctx());
+          return tool.run(tool.inputSchema.parse(input), { ...ctx(), server, signal: host.signal } as never);
         };
         const registered = () => registerTool.mock.calls.map(([name]) => name);
         return { call, registerTool, registered, removed, host, stop };
@@ -1445,12 +1463,153 @@ describe('sandbox', () => {
         expect(removed).toHaveLength(6);
       });
 
+      it('adds them to each server a call comes in on, and takes them off only the one stopped on', async () => {
+        const { call, registered, removed } = setup();
+        const other = {
+          registerTool: jest.fn((name: string) => ({ remove: () => void removed.push(`other:${name}`) })),
+        };
+
+        await call('create_sandbox');
+        await call('create_sandbox', {}, other);
+        await call('stop_sandbox', { sandbox_id: IMAGE }, other);
+
+        expect(registered()).toHaveLength(6);
+        expect(other.registerTool).toHaveBeenCalledTimes(6);
+        expect(removed).toHaveLength(6);
+        expect(removed.every((name) => name.startsWith('other:'))).toBe(true);
+      });
+
       it('registers nothing without a server', async () => {
         microvm();
         const create = Sandbox.tools().find(({ name }) => name === 'create_sandbox')!;
 
         await expect(create.run(create.inputSchema.parse({}), ctx())).resolves.toMatchObject({
           structuredContent: { sandbox_id: IMAGE },
+        });
+      });
+    });
+
+    describe("held to the host's options", () => {
+      const call = (
+        name: string,
+        input: Record<string, unknown>,
+        options: SandboxToolsOptions = {},
+        signal?: AbortSignal
+      ) => {
+        const tool = Sandbox.tools(options).find((each) => each.name === name)!;
+        return tool.run(tool.inputSchema.parse(input), { ...ctx(), signal });
+      };
+      const creating = () =>
+        jest
+          .spyOn(SandboxImpl, 'create')
+          .mockReturnValue(Object.assign(Promise.resolve({ sandboxId: IMAGE }), { events: () => EMPTY }) as never);
+      const created = (create: ReturnType<typeof creating>) => create.mock.calls[0]![0] as SandboxOptions;
+      const getting = () =>
+        jest.spyOn(SandboxImpl, 'get').mockImplementation(() => Promise.reject(new SandboxError('found it')) as never);
+
+      describe('create_sandbox', () => {
+        it.each([
+          [undefined, 'builds', 'builds'],
+          ['tenant', 'builds', 'tenant-builds'],
+          ['tenant', undefined, 'tenant'],
+          [undefined, undefined, undefined],
+        ])("names it with the host's name %j first, then the model's %j", async (scope, name, expected) => {
+          const create = creating();
+
+          await call('create_sandbox', { name }, { name: scope });
+
+          expect(created(create).name).toBe(expected);
+        });
+
+        it("passes the host's logLevel, and the call's signal, on", async () => {
+          const create = creating();
+          const { signal } = new AbortController();
+
+          await call('create_sandbox', {}, { logLevel: 'error' }, signal);
+
+          expect(created(create)).toMatchObject({ logLevel: 'error', signal });
+        });
+
+        it.each([
+          [{ memory: 1024 }, { memory: 2048 }, 'memory must be at most 1024 MB, got 2048'],
+          [{ timeout: 60000 }, { timeout: 120000 }, 'timeout must be at most 60000 ms, got 120000'],
+          [{ runtimes: ['aws.microvm' as const] }, { runtime: 'aws.lambda' }, 'runtime must be one of aws.microvm'],
+        ])('refuses past the limits %j: %j', async (limits, input, message) => {
+          const create = creating();
+
+          await expect(call('create_sandbox', input, { limits })).rejects.toThrow(message);
+          expect(create).not.toHaveBeenCalled();
+        });
+
+        it.each([
+          [
+            { memory: 1024, timeout: 60000 },
+            { memory: 1024, timeout: 60000 },
+            { memory: 1024, timeout: 60000 },
+          ],
+          [{ memory: 256, timeout: 60000 }, {}, { memory: 256, timeout: 60000 }],
+          [{ memory: 8192, timeout: 3600000 }, {}, { memory: 512, timeout: 900000 }],
+          [{ runtimes: ['aws.microvm' as const, 'aws.lambda' as const] }, {}, { runtime: 'aws.microvm' }],
+        ])('under the limits %j, makes %j into %j', async (limits, input, expected) => {
+          const create = creating();
+
+          await call('create_sandbox', input, { limits });
+
+          expect(created(create)).toMatchObject(expected);
+        });
+      });
+
+      describe('a sandbox_id', () => {
+        it.each([
+          ['other', IMAGE.replace('box-', 'tenant-')],
+          ['ten', IMAGE.replace('box-', 'tenant-')],
+        ])('is refused outside the scope %j', async (scope, sandboxId) => {
+          const get = getting();
+
+          await expect(call('stop_sandbox', { sandbox_id: sandboxId }, { name: scope })).rejects.toThrow(
+            'Not a sandbox'
+          );
+          expect(get).not.toHaveBeenCalled();
+        });
+
+        it.each([
+          ['tenant', IMAGE.replace('box-', 'tenant-')],
+          ['tenant', 'arn:aws:lambda:us-east-1:123456789012:function:tenant-bcdf2'],
+          [undefined, IMAGE],
+        ])('is looked up in the scope %j, with the host logLevel and signal', async (scope, sandboxId) => {
+          const get = getting();
+          const { signal } = new AbortController();
+
+          await expect(
+            call('stop_sandbox', { sandbox_id: sandboxId }, { name: scope, logLevel: 'error' }, signal)
+          ).rejects.toThrow('found it');
+          expect(get).toHaveBeenCalledWith({ sandboxId, logLevel: 'error', signal });
+        });
+      });
+
+      describe('list_sandboxes', () => {
+        const summaries: SandboxSummary[] = [
+          { sandboxId: IMAGE, name: 'tenant-a-bcdf2', runtime: 'aws.microvm' },
+          { sandboxId: FUNCTION_ARN, name: 'tenant-b-ghjk4', runtime: 'aws.lambda' },
+        ];
+
+        it('lists the scope, with the host signal', async () => {
+          const list = jest.spyOn(SandboxImpl, 'list').mockResolvedValue(summaries);
+          const { signal } = new AbortController();
+
+          await call('list_sandboxes', { runtime: 'aws.microvm' }, { name: 'tenant' }, signal);
+
+          expect(list).toHaveBeenCalledWith({ runtime: 'aws.microvm', name: 'tenant', signal });
+        });
+
+        it('leaves out runtimes the host does not allow', async () => {
+          jest.spyOn(SandboxImpl, 'list').mockResolvedValue(summaries);
+
+          const { structuredContent } = await call('list_sandboxes', {}, { limits: { runtimes: ['aws.lambda'] } });
+
+          expect(
+            (structuredContent as { sandboxes: { runtime: string }[] }).sandboxes.map(({ runtime }) => runtime)
+          ).toEqual(['aws.lambda']);
         });
       });
     });
@@ -1466,11 +1625,7 @@ describe('sandbox', () => {
     it('lists them by name', () => {
       expect(Sandbox.tools().map(({ name }) => name)).toEqual([
         'create_sandbox',
-        'run_command',
-        'read_output',
-        'read_file',
-        'write_file',
-        'make_directory',
+        'get_sandbox',
         'list_sandboxes',
         'stop_sandbox',
       ]);

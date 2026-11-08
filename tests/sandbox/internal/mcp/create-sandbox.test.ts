@@ -1,23 +1,21 @@
 import type { ServerContext } from '@modelcontextprotocol/server';
 import { afterEach, beforeEach, describe, expect, it, jest } from '@jest/globals';
 import { Subject } from 'rxjs';
-import type { Event } from '../../../src/events';
-import type { Sandbox, SandboxFactory, SandboxOptions, SandboxToolsOptions } from '../../../src/sandbox';
-import { PROGRESS, createSandbox } from '../../../src/sandbox/mcp/create-sandbox';
+import type { Event } from '../../../../src/events';
+import type { Sandbox, SandboxFactory, SandboxOptions } from '../../../../src/sandbox';
+import { PROGRESS, createSandbox } from '../../../../src/sandbox/internal/mcp/create-sandbox';
 
 const sandboxId = 'arn:aws:lambda:us-east-1:123456789012:microvm-image:sandbox-bcdf245678';
 
-const setup = (
-  options: SandboxToolsOptions = {},
-  create: (event$: Subject<Event>) => Promise<Sandbox> = async () => ({ sandboxId }) as Sandbox
-) => {
+const setup = (create: (event$: Subject<Event>) => Promise<Sandbox> = async () => ({ sandboxId }) as Sandbox) => {
   const event$ = new Subject<Event>();
   const spy = jest.fn((() =>
     Object.assign(create(event$), { events: () => event$ })) as unknown as SandboxFactory['create']);
   const notify = jest.fn(async (_notification: { params: { message: string; progress: number } }) => {});
-  const tool = createSandbox({ create: spy }, options);
+  const tool = createSandbox;
+  const sandboxes = { create: spy } as unknown as SandboxFactory;
   const run = (input: Record<string, unknown> = {}, _meta?: { progressToken: string }) =>
-    tool.run(tool.inputSchema.parse(input), { mcpReq: { _meta, notify } } as unknown as ServerContext);
+    tool.run(sandboxes, tool.inputSchema.parse(input), { mcpReq: { _meta, notify } } as unknown as ServerContext);
   const passed = (): SandboxOptions => spy.mock.calls[0]?.[0] as SandboxOptions;
   return { tool, run, passed, notify, spy };
 };
@@ -59,112 +57,20 @@ describe('create_sandbox', () => {
     });
   });
 
-  it('passes the host logLevel and signal on', async () => {
-    const { signal } = new AbortController();
-    const { run, passed } = setup({ logLevel: 'error', signal });
-
-    await run();
-
-    expect(passed()).toMatchObject({ logLevel: 'error', signal });
-  });
-
-  it('leaves unset options for the SDK to default', async () => {
+  it('passes on only what the model gave', async () => {
     const { run, passed } = setup();
 
     await run();
 
-    expect(passed()).toMatchObject({ runtime: undefined, timeout: undefined, memory: undefined, name: undefined });
+    expect(passed()).toEqual({});
   });
 
   it('rejects when the SDK rejects', async () => {
-    const { run } = setup({}, async () => {
+    const { run } = setup(async () => {
       throw new RangeError('memory must be whole MB from 128 to 10240, got 1');
     });
 
-    await expect(run({ memory: 1 })).rejects.toThrow(RangeError);
-  });
-
-  describe('name', () => {
-    it("uses the model's name alone without a host name", async () => {
-      const { run, passed } = setup();
-
-      await run({ name: 'builds' });
-
-      expect(passed().name).toBe('builds');
-    });
-
-    it("puts the host's name first", async () => {
-      const { run, passed } = setup({ name: 'tenant' });
-
-      await run({ name: 'builds' });
-
-      expect(passed().name).toBe('tenant-builds');
-    });
-
-    it("uses the host's name alone without a model's name", async () => {
-      const { run, passed } = setup({ name: 'tenant' });
-
-      await run();
-
-      expect(passed().name).toBe('tenant');
-    });
-  });
-
-  describe('limits', () => {
-    it('refuses memory above the cap', async () => {
-      const { run, spy } = setup({ limits: { memory: 1024 } });
-
-      await expect(run({ memory: 2048 })).rejects.toThrow('memory must be at most 1024 MB, got 2048');
-      expect(spy).not.toHaveBeenCalled();
-    });
-
-    it('refuses a timeout above the cap', async () => {
-      const { run, spy } = setup({ limits: { timeout: 60000 } });
-
-      await expect(run({ timeout: 120000 })).rejects.toThrow('timeout must be at most 60000 ms, got 120000');
-      expect(spy).not.toHaveBeenCalled();
-    });
-
-    it('refuses a runtime that is not allowed', async () => {
-      const { run, spy } = setup({ limits: { runtimes: ['aws.microvm'] } });
-
-      await expect(run({ runtime: 'aws.lambda' })).rejects.toThrow(
-        'runtime must be one of aws.microvm, got aws.lambda'
-      );
-      expect(spy).not.toHaveBeenCalled();
-    });
-
-    it('allows values at the cap', async () => {
-      const { run, passed } = setup({ limits: { memory: 1024, timeout: 60000 } });
-
-      await run({ memory: 1024, timeout: 60000 });
-
-      expect(passed()).toMatchObject({ memory: 1024, timeout: 60000 });
-    });
-
-    it('holds an omitted value to a cap below its default', async () => {
-      const { run, passed } = setup({ limits: { memory: 256, timeout: 60000 } });
-
-      await run();
-
-      expect(passed()).toMatchObject({ memory: 256, timeout: 60000 });
-    });
-
-    it('keeps the default of an omitted value under a higher cap', async () => {
-      const { run, passed } = setup({ limits: { memory: 8192, timeout: 3600000 } });
-
-      await run();
-
-      expect(passed()).toMatchObject({ memory: 512, timeout: 900000 });
-    });
-
-    it('defaults to the first allowed runtime', async () => {
-      const { run, passed } = setup({ limits: { runtimes: ['aws.microvm', 'aws.lambda'] } });
-
-      await run();
-
-      expect(passed().runtime).toBe('aws.microvm');
-    });
+    await expect(run({ memory: 1 })).rejects.toThrow('memory must be whole MB from 128 to 10240, got 1');
   });
 
   describe('progress', () => {
@@ -185,7 +91,7 @@ describe('create_sandbox', () => {
 
     it('notifies a client that asked, while it builds', async () => {
       let built: (sandbox: Sandbox) => void = () => {};
-      const { run, notify } = setup({}, () => new Promise((resolve) => (built = resolve)));
+      const { run, notify } = setup(() => new Promise((resolve) => (built = resolve)));
       notify.mockImplementation(async () => built({ sandboxId } as Sandbox));
 
       await run({}, { progressToken: 'token' });
@@ -219,7 +125,7 @@ describe('create_sandbox', () => {
 
     it('reports every step', async () => {
       PROGRESS.delay = 60000;
-      const { run, notify } = setup({}, stepping);
+      const { run, notify } = setup(stepping);
 
       await run({}, { progressToken: 'token' });
 
@@ -232,7 +138,7 @@ describe('create_sandbox', () => {
 
     it('reports a transfer', async () => {
       PROGRESS.delay = 60000;
-      const { run, notify } = setup({}, async (event$) => {
+      const { run, notify } = setup(async (event$) => {
         await Promise.resolve();
         event$.next({
           source: 'transfer',
@@ -250,7 +156,7 @@ describe('create_sandbox', () => {
     });
 
     it('only ever counts up, across steps and the steady notification', async () => {
-      const { run, notify } = setup({}, stepping);
+      const { run, notify } = setup(stepping);
 
       await run({}, { progressToken: 'token' });
 
@@ -259,7 +165,7 @@ describe('create_sandbox', () => {
     });
 
     it('stops when the build is done', async () => {
-      const { run, notify } = setup({}, slow);
+      const { run, notify } = setup(slow);
 
       await run({}, { progressToken: 'token' });
       const { length } = notify.mock.calls;
@@ -269,7 +175,7 @@ describe('create_sandbox', () => {
     });
 
     it('stays quiet for a client that did not ask', async () => {
-      const { run, notify } = setup({}, slow);
+      const { run, notify } = setup(slow);
 
       await run();
 
@@ -277,7 +183,7 @@ describe('create_sandbox', () => {
     });
 
     it('still answers when a notification fails', async () => {
-      const { run, notify } = setup({}, slow);
+      const { run, notify } = setup(slow);
       notify.mockRejectedValue(new Error('closed'));
 
       expect(await run({}, { progressToken: 'token' })).toMatchObject({ structuredContent: { sandbox_id: sandboxId } });

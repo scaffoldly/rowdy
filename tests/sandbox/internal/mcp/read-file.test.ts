@@ -1,22 +1,19 @@
 import type { ServerContext } from '@modelcontextprotocol/server';
 import { describe, expect, it, jest } from '@jest/globals';
-import type { ReadFile, Sandbox, SandboxFactory, SandboxToolsOptions } from '../../../src/sandbox';
-import { SandboxError } from '../../../src/sandbox/internal/compute';
-import { readFile } from '../../../src/sandbox/mcp/read-file';
+import type { ReadFile, SandboxPromise } from '../../../../src/sandbox';
+import { readFile } from '../../../../src/sandbox/internal/mcp/read-file';
 
-const sandboxId = 'arn:aws:lambda:us-east-1:123456789012:microvm-image:tenant-builds-bcdf245678';
-
-const setup = (file: Buffer | null = Buffer.from('hello'), options: SandboxToolsOptions = {}) => {
+const setup = (file: Buffer | null = Buffer.from('hello')) => {
   // Answers the range asked for, as the runtime does.
   const readFileToBuffer = jest.fn(
     async ({ offset = 0, length }: ReadFile, _options: unknown) =>
       file && file.subarray(offset, length === undefined ? undefined : offset + length)
   );
-  const get = jest.fn(async (_lookup: unknown) => ({ readFileToBuffer }) as unknown as Sandbox);
-  const tool = readFile({ get: get as unknown as SandboxFactory['get'] }, options);
+  const sandbox = Promise.resolve({ readFileToBuffer }) as unknown as SandboxPromise;
+  const tool = readFile;
   const { signal } = new AbortController();
   const run = (input: Record<string, unknown> = {}) =>
-    tool.run(tool.inputSchema.parse({ sandbox_id: sandboxId, path: 'a.txt', ...input }), {
+    tool.run(sandbox, tool.inputSchema.parse({ path: 'a.txt', ...input }), {
       mcpReq: { signal },
     } as unknown as ServerContext);
   return { tool, run, readFileToBuffer, signal };
@@ -79,13 +76,6 @@ describe('read_file', () => {
     const { run } = setup(Buffer.alloc(64 * 1024, 'a'));
 
     expect((await run()).structuredContent).toMatchObject({ truncated: false });
-  });
-
-  it('refuses a sandbox outside its scope', async () => {
-    const { run, readFileToBuffer } = setup(Buffer.from(''), { name: 'other' });
-
-    await expect(run()).rejects.toBeInstanceOf(SandboxError);
-    expect(readFileToBuffer).not.toHaveBeenCalled();
   });
 
   it('only reads', () => {
