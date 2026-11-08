@@ -54,11 +54,10 @@ import type { SandboxSummary } from '../../sandbox';
 import { ROWDY_LAYERS } from '../../api/internal/layers';
 import { Transfer } from '../../api/internal/transfer';
 import { Exec, ExecOutput, ExecOutputOptions } from '../../api/types';
-import type { Environment } from '../../environment';
+import type { SandboxEnvironment } from '../../sandbox/internal/environment';
 import { Logger } from '../../log';
 import { ExecSchema } from '../../routes';
 import { ComputeSpec, MICROVM_MEMORY, SandboxCompute, SandboxError } from '../../sandbox/internal/compute';
-import { LambdaImageService } from '../lambda/image';
 import { _create, isNotFound, isPropagating, isTransient, PROPAGATION, roleName, ROWDY_BIN } from '../lambda/shared';
 import { AwsClientLogger } from '../logger';
 import { EXEC_LOG } from '../../proxy/frames';
@@ -151,13 +150,11 @@ export class MicrovmCompute extends AwsClientLogger implements SandboxCompute {
   private s3 = this.track(new S3Client({ logger: this }));
   private sts = this.track(new STSClient({ logger: this }));
 
-  private images: LambdaImageService;
   private imageArn?: string;
   private commands = new Set<AbortController>();
 
-  constructor(private environment: Environment) {
+  constructor(private environment: SandboxEnvironment) {
     super();
-    this.images = new LambdaImageService(environment).withLayersFrom([ROWDY_LAYERS]);
   }
 
   override get log(): Logger {
@@ -209,7 +206,7 @@ export class MicrovmCompute extends AwsClientLogger implements SandboxCompute {
                 'run.rowdy': 'aws',
                 [COMPUTE_TAG]: 'microvm',
                 [TIMEOUT_TAG]: `${timeout / 1000}`,
-                'run.rowdy.user.agent': this.images.userAgent,
+                'run.rowdy.user.agent': this.environment.userAgent,
               },
             })
           ),
@@ -456,18 +453,9 @@ export class MicrovmCompute extends AwsClientLogger implements SandboxCompute {
   }
 
   private pull(image: string): Observable<string> {
-    return defer(() =>
-      this.images.pullImage({
-        $typeName: 'runtime.v1.PullImageRequest',
-        image: {
-          $typeName: 'runtime.v1.ImageSpec',
-          image,
-          annotations: {},
-          runtimeHandler: '',
-          userSpecifiedImage: '',
-        },
-      })
-    ).pipe(map(({ imageRef }) => imageRef));
+    return defer(() => this.environment.images.pullImage(image, { layersFrom: [ROWDY_LAYERS] })).pipe(
+      map(({ ImageUri }) => ImageUri)
+    );
   }
 
   /** AWS's newest base image with a version available for this architecture. */

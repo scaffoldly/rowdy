@@ -1,6 +1,6 @@
 import type { Observable } from 'rxjs';
 import type { Exec, ExecOutput, ExecOutputOptions } from '../../api/types';
-import type { Environment } from '../../environment';
+import type { SandboxEnvironment } from './environment';
 import type { Event } from '../../events';
 import type { SandboxSummary } from '..';
 import type { ExecSchema } from '../../routes';
@@ -50,7 +50,7 @@ export interface SandboxCompute {
 }
 
 export interface SandboxComputeClass {
-  new (environment: Environment): SandboxCompute;
+  new (environment: SandboxEnvironment): SandboxCompute;
   /** Environment variables a sandbox has unless its options set them. */
   readonly env: Record<string, string>;
   /** Throws for a spec this compute can't run, before anything reaches AWS. */
