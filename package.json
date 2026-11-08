@@ -14,6 +14,11 @@
       "import": "./dist/esm/sandbox/index.mjs",
       "default": "./dist/sandbox/index.js"
     },
+    "./mcp": {
+      "types": "./dist/mcp/index.d.ts",
+      "import": "./dist/esm/mcp/index.mjs",
+      "default": "./dist/mcp/index.js"
+    },
     "./package.json": "./package.json"
   },
   "typesVersions": {
@@ -92,7 +97,8 @@
         },
         "moduleNameMapper": {
           "^@scaffoldly/rowdy$": "<rootDir>/src/index.ts",
-          "^@scaffoldly/rowdy/sandbox$": "<rootDir>/src/sandbox/index.ts"
+          "^@scaffoldly/rowdy/sandbox$": "<rootDir>/src/sandbox/index.ts",
+          "^@scaffoldly/rowdy/mcp$": "<rootDir>/src/mcp/index.ts"
         },
         "setupFilesAfterEnv": [
           "<rootDir>/tests/setup.ts"

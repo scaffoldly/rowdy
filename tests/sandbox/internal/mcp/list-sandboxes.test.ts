@@ -1,7 +1,7 @@
 import type { ServerContext } from '@modelcontextprotocol/server';
 import { describe, expect, it, jest } from '@jest/globals';
-import type { SandboxFactory, SandboxSummary, SandboxToolsOptions } from '../../../src/sandbox';
-import { listSandboxes } from '../../../src/sandbox/mcp/list-sandboxes';
+import type { SandboxFactory, SandboxSummary } from '../../../../src/sandbox';
+import { listSandboxes } from '../../../../src/sandbox/internal/mcp/list-sandboxes';
 
 const STARTED = new Date('2026-11-07T21:00:00.000Z');
 const found: SandboxSummary[] = [
@@ -20,10 +20,12 @@ const found: SandboxSummary[] = [
   },
 ];
 
-const setup = (options: SandboxToolsOptions = {}) => {
+const setup = () => {
   const list = jest.fn(async (_options: unknown) => found);
-  const tool = listSandboxes({ list: list as unknown as SandboxFactory['list'] }, options);
-  const run = (input: Record<string, unknown> = {}) => tool.run(tool.inputSchema.parse(input), {} as ServerContext);
+  const tool = listSandboxes;
+  const sandboxes = { list } as unknown as SandboxFactory;
+  const run = (input: Record<string, unknown> = {}) =>
+    tool.run(sandboxes, tool.inputSchema.parse(input), {} as ServerContext);
   return { tool, run, list };
 };
 
@@ -46,21 +48,12 @@ describe('list_sandboxes', () => {
     });
   });
 
-  it('lists only its scope, on the runtime asked for, with the host signal', async () => {
-    const { signal } = new AbortController();
-    const { run, list } = setup({ name: 'tenant', signal });
+  it('lists the runtime asked for', async () => {
+    const { run, list } = setup();
 
     await run({ runtime: 'aws.microvm' });
 
-    expect(list).toHaveBeenCalledWith({ runtime: 'aws.microvm', name: 'tenant', signal });
-  });
-
-  it('leaves out runtimes the host does not allow', async () => {
-    const { run } = setup({ limits: { runtimes: ['aws.lambda'] } });
-
-    const { structuredContent } = await run();
-
-    expect(structuredContent.sandboxes.map(({ runtime }) => runtime)).toEqual(['aws.lambda']);
+    expect(list).toHaveBeenCalledWith({ runtime: 'aws.microvm' });
   });
 
   it('only reads', () => {

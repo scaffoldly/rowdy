@@ -1,10 +1,9 @@
 import type { Observable } from 'rxjs';
-import type { McpServer } from '@modelcontextprotocol/server';
 import type { Writable } from 'stream';
 import type { Exec, ExecFinished, ExecOutput, ExecOutputOptions } from '../api/types';
 import type { Event, EventCallback } from '../events';
 import type { Level } from '../log';
-import type { Tool } from '../mcp/tool';
+import type { BoundTool, ServerContext, Tool } from '../mcp/tool';
 import type { MICROVM_MEMORY } from './internal/compute';
 import { SandboxImpl } from './internal/sandbox';
 
@@ -59,19 +58,14 @@ export interface SandboxToolsLimits {
   runtimes?: NonNullable<SandboxOptions['runtime']>[];
 }
 
-export interface SandboxToolsOptions extends Pick<SandboxOptions, 'logLevel' | 'signal'> {
+export interface SandboxToolsOptions extends Pick<SandboxOptions, 'logLevel'> {
   /** Comes first in every sandbox's name, `{name}-{model's name}-{suffix}`: letters, digits, `-` and `_` only. */
   name?: string;
   /** What a model can ask for. */
   limits?: SandboxToolsLimits;
-  /**
-   * Where each sandbox's own tools are registered once `create_sandbox` makes it, named with its suffix, like
-   * `run_command_bcdf245678`. They come off when it's stopped, or the signal aborts.
-   */
-  server?: Pick<McpServer, 'registerTool'>;
 }
 
-export type { Tool };
+export type { BoundTool, ServerContext, Tool };
 
 /** A sandbox as `Sandbox.list` finds it. */
 export interface SandboxSummary {
@@ -201,7 +195,7 @@ export interface Sandbox {
    * The MCP tools for this sandbox alone, with no `sandbox_id` input: `run_command`, `read_output`, and `stop_sandbox`
    * where it can stop.
    */
-  tools(): Tool[];
+  tools(): BoundTool[];
 }
 
 /**
@@ -218,7 +212,7 @@ export interface SandboxFactory {
   /** The sandboxes in this account and region. */
   list(options?: SandboxListOptions): Promise<SandboxSummary[]>;
   /** The MCP tools for sandboxes, for a host to add to its own server. */
-  tools(options?: SandboxToolsOptions): Tool[];
+  tools(options?: SandboxToolsOptions): BoundTool[];
 }
 
 export const Sandbox: SandboxFactory = {

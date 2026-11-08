@@ -12,13 +12,14 @@ import type {
   Sandbox,
   SandboxListOptions,
   SandboxLookup,
+  SandboxFactory,
   SandboxOptions,
+  SandboxPromise,
   SandboxSummary,
   SandboxToolsOptions,
   Tool,
   Event,
 } from '..';
-import type { RegisteredTool } from '@modelcontextprotocol/server';
 import { isAxiosError } from 'axios';
 import { posix } from 'path';
 import {
@@ -59,17 +60,18 @@ import { Logger, maskUrl } from '../../log';
 import { describeError, humanize } from '../../aws/errors';
 import { LambdaCompute } from '../../aws/lambda/compute';
 import { MicrovmCompute } from '../../aws/microvm/compute';
-import { safeTool } from '../../mcp/tool';
+import { safeTool, type BoundTool } from '../../mcp/tool';
 import { EXEC_STREAM } from '../../proxy/frames';
-import { createSandbox } from '../mcp/create-sandbox';
-import { runCommand } from '../mcp/run-command';
-import { listSandboxes } from '../mcp/list-sandboxes';
-import { makeDirectory } from '../mcp/make-directory';
-import { readFile } from '../mcp/read-file';
-import { readOutput } from '../mcp/read-output';
-import { writeFile } from '../mcp/write-file';
-import { stopSandbox } from '../mcp/stop-sandbox';
-import { DEFAULTS, SandboxCompute, SandboxComputeClass } from './compute';
+import { createSandbox } from './mcp/create-sandbox';
+import { getSandbox } from './mcp/get-sandbox';
+import { runCommand } from './mcp/run-command';
+import { listSandboxes } from './mcp/list-sandboxes';
+import { makeDirectory } from './mcp/make-directory';
+import { readFile } from './mcp/read-file';
+import { readOutput } from './mcp/read-output';
+import { writeFile } from './mcp/write-file';
+import { stopSandbox } from './mcp/stop-sandbox';
+import { DEFAULTS, SandboxCompute, SandboxComputeClass, SandboxError } from './compute';
 import { SandboxPromiseImpl } from './create';
 
 // Kubernetes' alphabet for generated names: no vowels, so a name spells no words.
@@ -229,107 +231,108 @@ export class SandboxImpl implements Sandbox {
     });
   }
 
-  static tools(options?: SandboxToolsOptions): Tool[] {
+  static tools(options?: SandboxToolsOptions): BoundTool[] {
     // A host's stdout is its own, even for a tool that fails before it reaches a sandbox.
     new Logger('sandbox').withSink('stderr');
-    const { server, logLevel, signal, name: scope } = options ?? {};
+    const { logLevel, name: scope, limits } = options ?? {};
     // The scope goes in every sandbox's name, and a check that can't match would refuse every call.
     if (scope !== undefined && !/^[A-Za-z0-9_-]+$/.test(scope)) {
       throw new RangeError(`name must be letters, digits, '-' or '_', as AWS allows in a name, got ${scope}`);
     }
 
-    // Each sandbox's own tools while they're on the server, so a repeated create doesn't register them twice.
-    const registered = new Map<string, RegisteredTool[]>();
-    signal?.addEventListener(
-      'abort',
-      () => {
-        registered.forEach((tools) => tools.forEach((tool) => tool.remove()));
-        registered.clear();
-      },
-      { once: true }
-    );
+    // Working in a sandbox is its own tools, registered on the server as it's created.
+    const tools: Tool<SandboxFactory>[] = [createSandbox, getSandbox, listSandboxes, stopSandbox];
+    return tools.map(({ run, ...tool }): BoundTool => {
+      return {
+        ...tool,
+        run: (input, ctx) => {
+          const { signal } = ctx;
+          // What a model asks for, held to the host's scope and limits.
+          const sandboxes: SandboxFactory = {
+            create: (requested) => {
+              const runtime = requested?.runtime ?? limits?.runtimes?.[0];
+              // An omitted value must not pass a cap below its default.
+              const timeout = requested?.timeout ?? (limits?.timeout && Math.min(limits.timeout, DEFAULTS.timeout));
+              const memory = requested?.memory ?? (limits?.memory && Math.min(limits.memory, DEFAULTS.memory));
 
-    const create = createSandbox(SandboxImpl, options);
-    const stop = stopSandbox(SandboxImpl, options);
-    const registering: typeof create = {
-      ...create,
-      run: async (input, ctx) => {
-        const result = await create.run(input, ctx);
-        const { sandbox_id: sandboxId } = result.structuredContent;
-        if (server && !registered.has(sandboxId)) {
-          // Named with the sandbox's suffix, so two sandboxes' tools don't clash.
-          const suffix = sandboxId.split('-').pop();
-          registered.set(
-            sandboxId,
-            SandboxImpl.get({ sandboxId, logLevel, signal })
-              .tools()
-              .map(({ name, run, ...config }) =>
-                server.registerTool(
-                  `${name}_${suffix}`,
-                  config,
-                  name === 'stop_sandbox'
-                    ? async (args, extra) => {
-                        const stopped = await run(args, extra);
-                        registered.get(sandboxId)?.forEach((tool) => tool.remove());
-                        registered.delete(sandboxId);
-                        return stopped;
-                      }
-                    : run
-                )
-              )
-          );
-        }
-        return result;
-      },
-    };
-    const unregistering: typeof stop = {
-      ...stop,
-      run: async (input, ctx) => {
-        const result = await stop.run(input, ctx);
-        registered.get(input.sandbox_id)?.forEach((tool) => tool.remove());
-        registered.delete(input.sandbox_id);
-        return result;
-      },
-    };
+              if (runtime && limits?.runtimes && !limits.runtimes.includes(runtime)) {
+                throw new RangeError(`runtime must be one of ${limits.runtimes.join(', ')}, got ${runtime}`);
+              }
+              if (timeout && limits?.timeout && timeout > limits.timeout) {
+                throw new RangeError(`timeout must be at most ${limits.timeout} ms, got ${timeout}`);
+              }
+              if (memory && limits?.memory && memory > limits.memory) {
+                throw new RangeError(`memory must be at most ${limits.memory} MB, got ${memory}`);
+              }
 
-    const tools: Tool[] = [
-      registering,
-      runCommand(SandboxImpl, options),
-      readOutput(SandboxImpl, options),
-      readFile(SandboxImpl, options),
-      writeFile(SandboxImpl, options),
-      makeDirectory(SandboxImpl, options),
-      listSandboxes(SandboxImpl, options),
-      unregistering,
-    ];
-    return tools.map((tool) => safeTool(tool, describeError));
+              return SandboxImpl.create({
+                ...requested,
+                runtime,
+                timeout,
+                memory,
+                name: [scope, requested?.name].filter(Boolean).join('-') || undefined,
+                logLevel,
+                signal,
+              } as SandboxOptions);
+            },
+            get: (lookup) => {
+              if (scope && !lookup.sandboxId.split(':').pop()?.startsWith(`${scope}-`)) {
+                throw new SandboxError(`Not a sandbox: ${lookup.sandboxId}`);
+              }
+              return SandboxImpl.get({ ...lookup, logLevel, signal });
+            },
+            list: async (listOptions) =>
+              (await SandboxImpl.list({ ...listOptions, name: scope, signal }))
+                // A runtime the host doesn't allow isn't one a model can use.
+                .filter((each) => !limits?.runtimes || limits.runtimes.includes(each.runtime)),
+            tools: (toolsOptions) => SandboxImpl.tools(toolsOptions),
+          };
+
+          return run(sandboxes, input, ctx);
+        },
+      };
+    });
   }
 
   get sandboxId(): string {
     return this.compute.sandboxId;
   }
 
-  tools(found: SandboxPromiseImpl = new SandboxPromiseImpl(Promise.resolve(this), this)): Tool[] {
-    const sandbox = { get: () => found };
+  tools(found: SandboxPromiseImpl = new SandboxPromiseImpl(Promise.resolve(this), this)): BoundTool[] {
     // Files are aws.microvm only.
     const microvm = this.compute instanceof MicrovmCompute;
-    const tools: Tool[] = [
-      runCommand(sandbox),
-      readOutput(sandbox),
-      ...(microvm ? [readFile(sandbox), writeFile(sandbox), makeDirectory(sandbox)] : []),
-      ...(this.compute.stoppable ? [stopSandbox(sandbox)] : []),
+    const tools: Tool<SandboxPromise>[] = [
+      runCommand,
+      readOutput,
+      ...(microvm ? [readFile, writeFile, makeDirectory] : []),
     ];
-    // The sandbox_id is this sandbox's, so a model can't name another.
-    return tools.map((tool) =>
-      safeTool(
-        {
+    // Every lookup is this sandbox, and the sandbox_id is this one's, so a model can't name another.
+    const sandboxes: SandboxFactory = {
+      create: (options) => SandboxImpl.create(options),
+      get: () => found,
+      list: (options) => SandboxImpl.list(options),
+      tools: (options) => SandboxImpl.tools(options),
+    };
+    const stops: Tool<SandboxFactory>[] = this.compute.stoppable ? [stopSandbox] : [];
+
+    return [
+      ...tools.map(({ run, ...tool }): BoundTool => ({ ...tool, run: (input, ctx) => run(found, input, ctx) })),
+      // Waiting for the sandbox_id is the wait for the sandbox, and a failed build is this call's error.
+      ...stops.map((tool): BoundTool => {
+        const { run } = safeTool(
+          {
+            ...tool,
+            run: async (sdk, input, ctx) => tool.run(sdk, { ...input, sandbox_id: (await found).sandboxId }, ctx),
+          } satisfies Tool<SandboxFactory>,
+          describeError
+        );
+        return {
           ...tool,
           inputSchema: tool.inputSchema.omit({ sandbox_id: true }),
-          run: async (input, ctx) => tool.run({ ...input, sandbox_id: (await found).sandboxId }, ctx),
-        },
-        describeError
-      )
-    );
+          run: (input, ctx) => run(sandboxes, input, ctx),
+        };
+      }),
+    ];
   }
 
   runCommand(cmd: string, args?: string[], options?: RunCommandOptions): Promise<CommandFinished>;
