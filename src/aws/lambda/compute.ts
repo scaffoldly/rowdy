@@ -117,4 +117,16 @@ export class LambdaCompute implements SandboxCompute {
   stop(): Observable<this> {
     return throwError(() => new SandboxError('stop is not implemented on runtime aws.lambda'));
   }
+
+  writeFile(): Observable<void> {
+    return throwError(() => new SandboxError('files are not implemented on runtime aws.lambda'));
+  }
+
+  readFile(): Observable<Buffer | null> {
+    return throwError(() => new SandboxError('files are not implemented on runtime aws.lambda'));
+  }
+
+  mkDir(): Observable<void> {
+    return throwError(() => new SandboxError('files are not implemented on runtime aws.lambda'));
+  }
 }

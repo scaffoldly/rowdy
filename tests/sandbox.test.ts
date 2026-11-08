@@ -893,6 +893,81 @@ describe('sandbox', () => {
     });
   });
 
+  describe('files', () => {
+    const microvm = (): void => {
+      jest.spyOn(MicrovmCompute.prototype, 'create').mockImplementation(function (this: MicrovmCompute) {
+        return of(this);
+      });
+    };
+
+    it('writes each file in order, a string as UTF-8', async () => {
+      microvm();
+      const write = jest.spyOn(MicrovmCompute.prototype, 'writeFile').mockReturnValue(of(undefined));
+      const sandbox = await Sandbox.create();
+      const bytes = new Uint8Array([0, 255]);
+
+      await sandbox.writeFiles([
+        { path: 'a.txt', content: 'hé' },
+        { path: 'b.bin', content: bytes, mode: 0o644 },
+      ]);
+
+      expect(write.mock.calls.map(([path, content, mode]) => [path, Buffer.from(content), mode])).toEqual([
+        ['a.txt', Buffer.from('hé'), undefined],
+        ['b.bin', Buffer.from(bytes), 0o644],
+      ]);
+    });
+
+    it('writes nothing for no files', async () => {
+      microvm();
+      const write = jest.spyOn(MicrovmCompute.prototype, 'writeFile');
+      const sandbox = await Sandbox.create();
+
+      await expect(sandbox.writeFiles([])).resolves.toBeUndefined();
+      expect(write).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      [{ path: 'x.txt', cwd: '/app' }, '/app/x.txt'],
+      [{ path: '/etc/hosts', cwd: '/app' }, '/etc/hosts'],
+      [{ path: 'x.txt' }, 'x.txt'],
+    ])('reads %j from %s', async (file, expected) => {
+      microvm();
+      const read = jest.spyOn(MicrovmCompute.prototype, 'readFile').mockReturnValue(of(Buffer.from('hi')));
+      const sandbox = await Sandbox.create();
+
+      await expect(sandbox.readFileToBuffer(file)).resolves.toEqual(Buffer.from('hi'));
+      expect(read.mock.calls[0]![0]).toBe(expected);
+    });
+
+    it('resolves to null for a file that is not there', async () => {
+      microvm();
+      jest.spyOn(MicrovmCompute.prototype, 'readFile').mockReturnValue(of(null));
+      const sandbox = await Sandbox.create();
+
+      await expect(sandbox.readFileToBuffer({ path: 'missing' })).resolves.toBeNull();
+    });
+
+    it('makes a directory', async () => {
+      microvm();
+      const mkDir = jest.spyOn(MicrovmCompute.prototype, 'mkDir').mockReturnValue(of(undefined));
+      const sandbox = await Sandbox.create();
+
+      await sandbox.mkDir('cache');
+
+      expect(mkDir.mock.calls[0]![0]).toBe('cache');
+    });
+
+    it.each([
+      ['writeFiles', (sandbox: Sandbox) => sandbox.writeFiles([{ path: 'a', content: 'x' }])],
+      ['readFileToBuffer', (sandbox: Sandbox) => sandbox.readFileToBuffer({ path: 'a' })],
+      ['mkDir', (sandbox: Sandbox) => sandbox.mkDir('a')],
+    ])('rejects %s on Lambda', async (_, call) => {
+      const sandbox = await Sandbox.create({ runtime: 'aws.lambda' });
+
+      await expect(call(sandbox)).rejects.toThrow(new SandboxError('files are not implemented on runtime aws.lambda'));
+    });
+  });
+
   describe('a detached command', () => {
     const running = (): { frames: Subject<ExecFrame>; exec: jest.SpyInstance } => {
       jest.spyOn(MicrovmCompute.prototype, 'create').mockImplementation(function (this: MicrovmCompute) {

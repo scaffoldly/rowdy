@@ -39,6 +39,12 @@ export interface SandboxCompute {
   output(cmdId: string, options?: ExecOutputOptions): Observable<ExecOutput>;
   /** Emits once, when nothing is left running. Safe to call more than once. */
   stop(): Observable<this>;
+  /** Emits once, when the file is written. */
+  writeFile(path: string, content: Uint8Array, mode: number | undefined, signal: AbortSignal): Observable<void>;
+  /** Emits the file's bytes once, or null when it isn't there. */
+  readFile(path: string, signal: AbortSignal): Observable<Buffer | null>;
+  /** Emits once, when the directory is there. */
+  mkDir(path: string, signal: AbortSignal): Observable<void>;
   /** Each step of what this compute does on its provider, from now on. */
   events(): Observable<Extract<Event, { source: 'cdk' }>>;
 }

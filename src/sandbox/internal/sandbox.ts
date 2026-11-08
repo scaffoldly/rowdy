@@ -4,6 +4,9 @@ import type {
   DetachedRunCommandParams,
   CommandOutput,
   CommandOutputOptions,
+  FileOptions,
+  ReadFile,
+  WriteFile,
   RunCommandOptions,
   RunCommandParams,
   Sandbox,
@@ -17,6 +20,7 @@ import type {
 } from '..';
 import type { RegisteredTool } from '@modelcontextprotocol/server';
 import { isAxiosError } from 'axios';
+import { posix } from 'path';
 import {
   catchError,
   asapScheduler,
@@ -25,6 +29,7 @@ import {
   EMPTY,
   filter,
   finalize,
+  defaultIfEmpty,
   defer,
   firstValueFrom,
   from,
@@ -393,20 +398,40 @@ export class SandboxImpl implements Sandbox {
     });
   }
 
-  // TODO: writeFiles
-  // async writeFiles(_files: WriteFile[]): Promise<void> {
-  //   throw new Error('not implemented');
-  // }
+  async writeFiles(files: WriteFile[], options?: FileOptions): Promise<void> {
+    const signal = options?.signal
+      ? AbortSignal.any([options.signal, this.environment.signal])
+      : this.environment.signal;
+    // In order, so a file can follow the one it needs.
+    await lastValueFrom(
+      from(files).pipe(
+        concatMap(({ path, content, mode }) =>
+          this.compute.writeFile(path, typeof content === 'string' ? Buffer.from(content) : content, mode, signal)
+        ),
+        defaultIfEmpty(undefined)
+      )
+    ).catch((error) => {
+      throw humanize(error);
+    });
+  }
 
-  // TODO: readFileToBuffer
-  // async readFileToBuffer(_file: ReadFile): Promise<Buffer | null> {
-  //   throw new Error('not implemented');
-  // }
+  async readFileToBuffer({ path, cwd }: ReadFile, options?: FileOptions): Promise<Buffer | null> {
+    const signal = options?.signal
+      ? AbortSignal.any([options.signal, this.environment.signal])
+      : this.environment.signal;
+    return lastValueFrom(this.compute.readFile(cwd ? posix.resolve(cwd, path) : path, signal)).catch((error) => {
+      throw humanize(error);
+    });
+  }
 
-  // TODO: mkDir
-  // async mkDir(_path: string): Promise<void> {
-  //   throw new Error('not implemented');
-  // }
+  async mkDir(path: string, options?: FileOptions): Promise<void> {
+    const signal = options?.signal
+      ? AbortSignal.any([options.signal, this.environment.signal])
+      : this.environment.signal;
+    await lastValueFrom(this.compute.mkDir(path, signal)).catch((error) => {
+      throw humanize(error);
+    });
+  }
 
   async output(cmdId: string, options?: CommandOutputOptions): Promise<CommandOutput> {
     const signal = options?.signal

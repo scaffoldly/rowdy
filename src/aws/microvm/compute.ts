@@ -71,7 +71,7 @@ import {
 import { AwsClientLogger } from '../logger';
 import { EXEC_LOG } from '../../proxy/shell';
 import { execOf, execOutput, framesOf } from '../exec';
-import { EXEC_ID_HEADER, EXEC_PATH, HOOKS_PORT } from '../microvm';
+import { EXEC_ID_HEADER, EXEC_PATH, FILES_PATH, HOOKS_PORT } from '../microvm';
 import { ownedBucket } from '../s3';
 
 const BUCKET_PREFIX = 'rowdy-sandboxes-';
@@ -251,7 +251,17 @@ export class MicrovmCompute extends AwsClientLogger implements SandboxCompute {
           this.microvms.send(new GetMicrovmImageVersionCommand({ imageIdentifier: this.sandboxId, imageVersion }))
         ).pipe(
           switchMap(({ logging }) =>
-            this.post(microvmId, endpoint, event, controller.signal).pipe(
+            this.fetchHooks(microvmId, endpoint, EXEC_PATH, {
+              method: 'POST',
+              body: JSON.stringify(event),
+              signal: controller.signal,
+            }).pipe(
+              map((response) => {
+                if (!response.ok || !response.body) {
+                  throw new Error(`Command refused: ${response.status}`);
+                }
+                return response;
+              }),
               switchMap((response) => {
                 const [, , , region, account] = this.sandboxId.split(':');
                 const execId = response.headers.get(EXEC_ID_HEADER) ?? '';
@@ -285,6 +295,45 @@ export class MicrovmCompute extends AwsClientLogger implements SandboxCompute {
         const [, , , region, account] = this.sandboxId.split(':');
         const logGroup = logging?.cloudWatch?.logGroup;
         return execOutput(`arn:aws:logs:${region}:${account}:log-group:${logGroup}`, cmdId, options);
+      })
+    );
+  }
+
+  writeFile(path: string, content: Uint8Array, mode: number | undefined, signal: AbortSignal): Observable<void> {
+    const query = new URLSearchParams({ path, ...(mode === undefined ? {} : { mode: mode.toString(8) }) });
+    return defer(() => this.vm()).pipe(
+      switchMap(({ microvmId, endpoint }) =>
+        this.fetchHooks(microvmId, endpoint, `${FILES_PATH}?${query}`, { method: 'PUT', body: content, signal })
+      ),
+      switchMap(async (response) => {
+        if (response.status !== 204) throw new Error(`Writing ${path} failed: ${await response.text()}`);
+      })
+    );
+  }
+
+  readFile(path: string, signal: AbortSignal): Observable<Buffer | null> {
+    return defer(() => this.vm()).pipe(
+      switchMap(({ microvmId, endpoint }) =>
+        this.fetchHooks(microvmId, endpoint, `${FILES_PATH}?${new URLSearchParams({ path })}`, { signal })
+      ),
+      switchMap(async (response) => {
+        if (response.status === 404) return null;
+        if (response.status !== 200) throw new Error(`Reading ${path} failed: ${await response.text()}`);
+        return Buffer.from(await response.arrayBuffer());
+      })
+    );
+  }
+
+  mkDir(path: string, signal: AbortSignal): Observable<void> {
+    return defer(() => this.vm()).pipe(
+      switchMap(({ microvmId, endpoint }) =>
+        this.fetchHooks(microvmId, endpoint, `${FILES_PATH}?${new URLSearchParams({ path })}`, {
+          method: 'POST',
+          signal,
+        })
+      ),
+      switchMap(async (response) => {
+        if (response.status !== 204) throw new Error(`Making ${path} failed: ${await response.text()}`);
       })
     );
   }
@@ -388,12 +437,12 @@ export class MicrovmCompute extends AwsClientLogger implements SandboxCompute {
     });
   }
 
-  /** Hands the command to rowdy in the VM, whose response carries its frames as they happen. */
-  private post(
+  /** A request to rowdy's hooks server in the VM, with an auth token for it. */
+  private fetchHooks(
     microvmIdentifier: string,
     endpoint: string,
-    event: ExecSchema,
-    signal: AbortSignal
+    path: string,
+    init: RequestInit & { signal: AbortSignal }
   ): Observable<globalThis.Response> {
     return defer(() =>
       this.microvms.send(
@@ -405,19 +454,11 @@ export class MicrovmCompute extends AwsClientLogger implements SandboxCompute {
       )
     ).pipe(
       switchMap(({ authToken }) =>
-        fetch(`https://${endpoint}${EXEC_PATH}`, {
-          method: 'POST',
+        fetch(`https://${endpoint}${path}`, {
+          ...init,
           headers: { ...authToken, 'X-aws-proxy-port': `${HOOKS_PORT}` },
-          body: JSON.stringify(event),
-          signal,
         })
-      ),
-      map((response) => {
-        if (!response.ok || !response.body) {
-          throw new Error(`Command refused: ${response.status}`);
-        }
-        return response;
-      })
+      )
     );
   }
 
