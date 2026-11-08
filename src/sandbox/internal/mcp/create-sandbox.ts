@@ -122,7 +122,7 @@ export const createSandbox: Tool<SandboxFactory, typeof inputSchema, typeof outp
     outputSchema,
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: true },
     async run(factory, input, ctx) {
-      const { meta, limits, logLevel, signal } = ctx;
+      const { meta, layersFrom, limits, logLevel, signal } = ctx;
       const runtime = input.runtime ?? limits?.runtimes?.[0];
       // An omitted value must not pass a cap below its default.
       const timeout = input.timeout ?? (limits?.timeout && Math.min(limits.timeout, DEFAULTS.timeout));
@@ -144,6 +144,7 @@ export const createSandbox: Tool<SandboxFactory, typeof inputSchema, typeof outp
         timeout,
         memory,
         meta,
+        layersFrom,
         logLevel,
         signal,
       } as SandboxOptions);

@@ -259,7 +259,7 @@ export class LambdaFunction extends AwsClientLogger {
 
   constructor(
     _type: LambdaFunction['type'],
-    public readonly imageService: LambdaImageService
+    public imageService: LambdaImageService
   ) {
     super();
     this.type = _type;

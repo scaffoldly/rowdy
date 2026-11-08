@@ -179,9 +179,9 @@ export class MicrovmCompute extends AwsClientLogger implements SandboxCompute {
     return this.imageArn;
   }
 
-  create({ image, name, timeout, memory, env, meta }: ComputeSpec): Observable<this> {
+  create({ image, name, timeout, memory, env, meta, layersFrom }: ComputeSpec): Observable<this> {
     return forkJoin({
-      ImageUri: this.pull(image),
+      ImageUri: this.pull(image, layersFrom),
       Bucket: ownedBucket(this.s3, this.log, BUCKET_PREFIX, BUCKET_OWNER),
       baseImageArn: this.baseImage(),
       Region: from(this.s3.config.region()),
@@ -477,8 +477,8 @@ export class MicrovmCompute extends AwsClientLogger implements SandboxCompute {
     );
   }
 
-  private pull(image: string): Observable<string> {
-    return defer(() => this.environment.images.pullImage(image, { layersFrom: [ROWDY_LAYERS] })).pipe(
+  private pull(image: string, layersFrom: string[]): Observable<string> {
+    return defer(() => this.environment.images.pullImage(image, { layersFrom: [ROWDY_LAYERS, ...layersFrom] })).pipe(
       map(({ ImageUri }) => ImageUri)
     );
   }

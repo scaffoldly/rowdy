@@ -108,9 +108,10 @@ export class LambdaCompute implements SandboxCompute {
     return FunctionArn;
   }
 
-  create({ image, name, timeout, memory, env, meta }: ComputeSpec): Observable<this> {
+  create({ image, name, timeout, memory, env, meta, layersFrom }: ComputeSpec): Observable<this> {
     return this.lambda$.pipe(
       switchMap((lambda) => {
+        lambda.imageService = lambda.imageService.withLayersFrom([ROWDY_LAYERS, ...layersFrom]);
         lambda
           .withImage(image)
           .withCommand([])

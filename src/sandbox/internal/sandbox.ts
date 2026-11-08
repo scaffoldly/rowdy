@@ -134,10 +134,11 @@ export class SandboxImpl implements Sandbox {
         const env = { ...RUNTIMES[runtime].env, ...options?.env };
 
         const meta = options?.meta ?? {};
+        const layersFrom = options?.layersFrom ?? [];
 
         RUNTIMES[runtime].assert({ timeout, memory, env, meta });
 
-        // The same options reuse a function, and different ones share no env or config. No meta hashes as before.
+        // The same options reuse a function, and different ones share no env or config. No meta or layers hash as before.
         const suffix = computeHash(
           JSON.stringify({
             runtime,
@@ -146,6 +147,7 @@ export class SandboxImpl implements Sandbox {
             memory,
             env: Object.entries(env).sort(),
             ...(Object.keys(meta).length ? { meta: Object.entries(meta).sort() } : {}),
+            ...(layersFrom.length ? { layersFrom } : {}),
           })
         );
 
@@ -159,7 +161,7 @@ export class SandboxImpl implements Sandbox {
           iif(() => signal.aborted, of(signal), fromEvent(signal, 'abort')).pipe(
             switchMap(() => throwError(() => signal.reason))
           ),
-          defer(() => sandbox.compute.create({ image, name, timeout, memory, env, meta })).pipe(
+          defer(() => sandbox.compute.create({ image, name, timeout, memory, env, meta, layersFrom })).pipe(
             map(() => sandbox.stoppingOnAbort())
           )
         );
