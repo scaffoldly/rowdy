@@ -1429,13 +1429,19 @@ describe('sandbox', () => {
           remove: () => void removed.push(name),
         }));
         const host = new AbortController();
+        const changed = jest.fn();
         const own = { registerTool };
         const call = (name: string, input: Record<string, unknown> = {}, server: unknown = own) => {
           const tool = hostTool(name);
-          return tool.run(Sandbox, tool.inputSchema.parse(input), { ...ctx(), server, signal: host.signal } as never);
+          return tool.run(Sandbox, tool.inputSchema.parse(input), {
+            ...ctx(),
+            server,
+            signal: host.signal,
+            changed,
+          } as never);
         };
         const registered = () => registerTool.mock.calls.map(([name]) => name);
-        return { call, registerTool, registered, removed, host, stop };
+        return { call, registerTool, registered, removed, host, stop, changed };
       };
 
       it("adds a new sandbox's own tools, named with its suffix", async () => {
@@ -1498,6 +1504,37 @@ describe('sandbox', () => {
         host.abort();
 
         expect(removed).toHaveLength(6);
+      });
+
+      it('says the tools changed when they go on and when a stop takes them off, once each', async () => {
+        const { call, changed } = setup();
+
+        await call('create_sandbox');
+        await call('create_sandbox');
+        expect(changed).toHaveBeenCalledTimes(1);
+
+        await call('stop_sandbox', { sandbox_id: IMAGE });
+        await call('stop_sandbox', { sandbox_id: IMAGE });
+        expect(changed).toHaveBeenCalledTimes(2);
+      });
+
+      it("says so when the sandbox's own stop_sandbox takes them off", async () => {
+        const { call, registerTool, changed } = setup();
+
+        await call('create_sandbox');
+        const [, , own] = registerTool.mock.calls.find(([name]) => name === 'stop_sandbox_bcdf2')!;
+        await (own as (args: unknown, extra: unknown) => Promise<unknown>)({}, ctx());
+
+        expect(changed).toHaveBeenCalledTimes(2);
+      });
+
+      it("doesn't say so when the signal takes them off", async () => {
+        const { call, changed, host } = setup();
+
+        await call('create_sandbox');
+        host.abort();
+
+        expect(changed).toHaveBeenCalledTimes(1);
       });
 
       it('adds them to each server a call comes in on, and takes them off only the one stopped on', async () => {

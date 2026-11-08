@@ -14,6 +14,11 @@ export type ServerContext = McpServerContext &
     server?: Pick<McpServer, 'registerTool'>;
     /** The host's, for as long as what a call starts may run. Aborting it takes the tools it registered off `server`. */
     signal?: AbortSignal;
+    /**
+     * Called when a tool registers tools on `server` or takes them off, as a server that lasts the session announces
+     * itself. A host that builds a server per request tells its clients to list tools again.
+     */
+    changed?: () => void;
   };
 
 export type Tool<Sdk = unknown, Input extends z.ZodObject = z.ZodObject, Output extends z.ZodObject = z.ZodObject> = {

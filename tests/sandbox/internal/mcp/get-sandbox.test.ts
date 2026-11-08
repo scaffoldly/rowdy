@@ -68,6 +68,17 @@ describe('get_sandbox', () => {
     expect(removed).toEqual(['run_command_bcdf245678']);
   });
 
+  it('says the tools changed when it registers them, and not when they were there', async () => {
+    const { run, registerTool } = setup();
+    const server = { registerTool } as unknown as ServerContext['server'];
+    const changed = jest.fn();
+
+    await run({ server, changed });
+    await run({ server, changed });
+
+    expect(changed).toHaveBeenCalledTimes(1);
+  });
+
   it('registers nothing without a server', async () => {
     const { run, registerTool } = setup();
 

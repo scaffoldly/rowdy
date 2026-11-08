@@ -22,6 +22,9 @@
  * );
  * ```
  *
+ * A host that builds a server per request also passes `changed`, called whenever a sandbox's tools go on or come off
+ * `server`, to tell its clients to list tools again.
+ *
  * `tools.lazy` are registered by those tools, on the `server` a call gives. To wrap their `run` too, give a
  * `server` whose `registerTool` wraps the callback it's handed.
  *
