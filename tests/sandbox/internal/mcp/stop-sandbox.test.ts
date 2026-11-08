@@ -4,7 +4,7 @@ import type { Sandbox, SandboxFactory } from '../../../../src/sandbox';
 import { SandboxError } from '../../../../src/sandbox/internal/compute';
 import { stopSandbox } from '../../../../src/sandbox/internal/mcp/stop-sandbox';
 
-const sandboxId = 'arn:aws:lambda:us-east-1:123456789012:microvm-image:tenant-builds-bcdf245678';
+const sandboxId = 'arn:aws:lambda:us-east-1:123456789012:microvm-image:builds-bcdf245678';
 
 const setup = () => {
   const stop = jest.fn(async () => {});

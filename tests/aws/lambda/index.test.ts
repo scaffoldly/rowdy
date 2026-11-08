@@ -366,10 +366,10 @@ describe('aws lambda volumes', () => {
   it('scopes object access to the key prefix', () => {
     const fn = new LambdaFunction('Container', imageService)
       .withImage('ubuntu:noble-20251001')
-      .withRoutes(Routes.empty().withVolumes(['s3://example-bucket/tenant/42:/data']));
+      .withRoutes(Routes.empty().withVolumes(['s3://example-bucket/data/42:/data']));
     expect(statements(fn).map((s) => (s as { Resource?: string }).Resource)).toEqual([
       'arn:aws:s3:::example-bucket',
-      'arn:aws:s3:::example-bucket/tenant/42/*',
+      'arn:aws:s3:::example-bucket/data/42/*',
     ]);
   });
 

@@ -490,11 +490,11 @@ spec:
 
 describe('volume options', () => {
   it('parses the lock flag after the mountpoint', () => {
-    const volume = Volume.parse('s3://example-bucket/tenant:/data:lock=1');
-    expect(volume.locator).toBe('example-bucket/tenant');
+    const volume = Volume.parse('s3://example-bucket/data:/data:lock=1');
+    expect(volume.locator).toBe('example-bucket/data');
     expect(volume.mountpoint).toBe('/data');
     expect(volume.options).toEqual({ lock: true, local: [] });
-    expect(volume.spec).toBe('s3://example-bucket/tenant:/data:lock=1');
+    expect(volume.spec).toBe('s3://example-bucket/data:/data:lock=1');
   });
 
   it('defaults to no lock', () => {

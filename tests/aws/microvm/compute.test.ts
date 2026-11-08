@@ -20,6 +20,7 @@ const SPEC: ComputeSpec = {
   timeout: 60_000,
   memory: 1024,
   env: { A: 'b' },
+  meta: {},
 };
 
 type Sent = { name: string; input: Record<string, unknown> };
@@ -80,7 +81,7 @@ describe('aws microvm compute', () => {
   const create = (compute: MicrovmCompute): Promise<MicrovmCompute> => lastValueFrom(compute.create(SPEC));
 
   describe('assert', () => {
-    const valid = { timeout: 60_000, memory: 512, env: {} };
+    const valid = { timeout: 60_000, memory: 512, env: {}, meta: {} };
 
     it('allows what AWS allows', () => {
       expect(() => MicrovmCompute.assert({ ...valid, timeout: 28_800_000, memory: 8192 })).not.toThrow();
@@ -99,6 +100,13 @@ describe('aws microvm compute', () => {
 
       expect(() => MicrovmCompute.assert({ ...valid, env })).toThrow('at most 50');
     });
+
+    it.each<Record<string, string>>([{ 'a/b': 'x' }, { k: 'x'.repeat(257) }, { k: 'no#' }])(
+      'refuses meta AWS would not tag: %j',
+      (meta) => {
+        expect(() => MicrovmCompute.assert({ ...valid, meta })).toThrow('meta must be what AWS takes in a tag');
+      }
+    );
   });
 
   describe('create', () => {
@@ -399,6 +407,22 @@ describe('aws microvm compute', () => {
       const { compute } = setup({ ListTagsCommand: () => ({ Tags: {} }) });
 
       await expect(lastValueFrom(compute.attach(IMAGE_ARN))).rejects.toThrow(`Not a sandbox: ${IMAGE_ARN}`);
+    });
+
+    it('connects to a sandbox whose meta has every entry asked for', async () => {
+      const Tags = { 'run.rowdy.aws': 'microvm', 'run.rowdy.meta.sub': 'github:1', 'run.rowdy.meta.x': 'y' };
+      const { compute } = setup({ ListTagsCommand: () => ({ Tags }) });
+
+      await expect(lastValueFrom(compute.attach(IMAGE_ARN, { sub: 'github:1' }))).resolves.toBe(compute);
+    });
+
+    it("refuses a sandbox whose meta doesn't match", async () => {
+      const Tags = { 'run.rowdy.aws': 'microvm', 'run.rowdy.meta.sub': 'github:1' };
+      const { compute } = setup({ ListTagsCommand: () => ({ Tags }) });
+
+      await expect(lastValueFrom(compute.attach(IMAGE_ARN, { sub: 'github:2' }))).rejects.toThrow(
+        `Not a sandbox: ${IMAGE_ARN}`
+      );
     });
   });
 
@@ -806,6 +830,14 @@ describe('aws microvm compute', () => {
       await create(compute);
 
       expect(input(sent, 'CreateMicrovmImageCommand').tags).toMatchObject({ 'run.rowdy.timeout': '60' });
+    });
+
+    it('keeps meta on the image as tags', async () => {
+      const { compute, sent } = setup();
+
+      await lastValueFrom(compute.create({ ...SPEC, meta: { sub: 'github:1' } }));
+
+      expect(input(sent, 'CreateMicrovmImageCommand').tags).toMatchObject({ 'run.rowdy.meta.sub': 'github:1' });
     });
   });
 });

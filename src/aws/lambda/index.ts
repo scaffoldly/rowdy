@@ -108,11 +108,9 @@ import {
   roleName,
   ROWDY_BIN,
 } from './shared';
+import { TAG_KEY_REGEX, TAG_VALUE_REGEX } from '../tags';
 
 export { _create, CONFLICT, fit, isNotFound, isPropagating, isTransient, PROPAGATION, ROWDY_BIN };
-
-const TAG_KEY_REGEX = /^(?!aws:)[A-Za-z0-9 _.:\-=+@]{1,128}$/;
-const TAG_VALUE_REGEX = /^[\p{L}\p{Z}\p{N}_.:/=+\-@]{0,256}$/u;
 
 export const tagify = (prefix: string, map?: object) =>
   Object.entries(JSON.parse(JSON.stringify(map || {}))).reduce(

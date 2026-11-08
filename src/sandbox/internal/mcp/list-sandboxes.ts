@@ -29,8 +29,8 @@ export const listSandboxes: Tool<SandboxFactory, typeof inputSchema, typeof outp
     inputSchema,
     outputSchema,
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
-    async run(sandboxes, { runtime }, { name: scope, limits, signal }) {
-      const found = (await sandboxes.list({ runtime, name: scope, signal }))
+    async run(sandboxes, { runtime }, { meta, limits, signal }) {
+      const found = (await sandboxes.list({ runtime, meta, signal }))
         // A runtime the host doesn't allow isn't one a model can use.
         .filter((each) => !limits?.runtimes || limits.runtimes.includes(each.runtime));
 

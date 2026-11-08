@@ -239,7 +239,7 @@ describe('environment', () => {
     });
 
     it('mounts an s3 volume through the S3Adapter with the default backing directory', async () => {
-      const environment = withVolumes(['s3://example-bucket/tenant/42:/data']);
+      const environment = withVolumes(['s3://example-bucket/data/42:/data']);
       const env = await finalize(environment);
       expect(env.VFS_PREFIX).toBe('/data');
       expect(env.VFS_BACKING).toBe(VFS_BACKING);
@@ -281,7 +281,7 @@ describe('environment', () => {
       const environment = withVolumes([
         's3://example-bucket:/s3:local=*-{journal,wal,shm}',
         `file://${backing}:/scratch`,
-        's3://other-bucket/tenant:/data',
+        's3://other-bucket/data:/data',
       ]);
       const env = await finalize(environment);
       expect(env.VFS_MOUNTS).toBe(`/s3=${VFS_BACKING}:/scratch=${backing}:/data=${VFS_BACKING}.2`);
@@ -295,7 +295,7 @@ describe('environment', () => {
       expect(at('/scratch')?.backing).toBe(backing);
       expect((at('/data')?.adapter as S3Adapter)['options']).toMatchObject({
         bucket: 'other-bucket',
-        prefix: 'tenant',
+        prefix: 'data',
         backing: `${VFS_BACKING}.2`,
       });
     });
