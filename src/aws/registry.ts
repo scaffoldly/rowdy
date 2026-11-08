@@ -8,14 +8,25 @@ import {
 } from '@aws-sdk/client-ecr';
 import { GetCallerIdentityCommand, STSClient } from '@aws-sdk/client-sts';
 import { Environment } from '../environment';
+import { log, Logger } from '../log';
+import { AwsClientLogger } from './logger';
 
 const ECR_REGISTRY_REGEX = /\.dkr\.ecr\.[a-z0-9-]+\.amazonaws\.com?$/;
 
-export class AwsRegistry implements IRegistryApi {
-  private ecr: ECRClient = new ECRClient({});
-  private sts: STSClient = new STSClient({});
+export class AwsRegistry extends AwsClientLogger implements IRegistryApi {
+  private ecr: ECRClient = this.track(new ECRClient({ logger: this }));
+  private sts: STSClient = this.track(new STSClient({ logger: this }));
 
-  constructor(private enviornment?: Environment) {}
+  constructor(private enviornment?: Environment) {
+    super();
+    if (enviornment) {
+      this.events().subscribe(enviornment.event$);
+    }
+  }
+
+  override get log(): Logger {
+    return (this.enviornment?.log ?? log).child('registry');
+  }
 
   withSlug(slug: string): MonoTypeOperatorFunction<TRegistry> {
     return (source) =>

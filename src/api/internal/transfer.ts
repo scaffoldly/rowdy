@@ -7,6 +7,7 @@ import {
   mergeMap,
   Observable,
   of,
+  Observer,
   OperatorFunction,
   reduce,
   retry,
@@ -27,7 +28,7 @@ import { Readable } from 'stream';
 import promiseRetry from 'promise-retry';
 import { readFileSync } from 'fs';
 import { join } from 'path';
-import { Environment } from '../..';
+import { Environment } from '../../environment';
 
 export type External = {
   Ref: Partial<{
@@ -118,6 +119,12 @@ type Response<T> = { data: T | undefined; headers: HttpHeaders; status: number; 
 
 type DockerConfig = {
   auths?: Record<string, { auth?: string }>;
+};
+
+/** How far a copy of an image has got. `summary` is for reading, like `4/9 transfers: 40% complete`. */
+export type TransferEvent = {
+  lifecycle: 'copying' | 'copied' | 'failed';
+  summary: string;
 };
 
 export class Transfer implements ILoggable {
@@ -593,7 +600,11 @@ export class Transfer implements ILoggable {
       );
   }
 
-  static upload(log: Logger, _http: AxiosInstance): OperatorFunction<Transfer, TransferStatus> {
+  static upload(
+    log: Logger,
+    _http: AxiosInstance,
+    events?: Pick<Observer<TransferEvent>, 'next'>
+  ): OperatorFunction<Transfer, TransferStatus> {
     const summary = (transfers: Transfer): string => {
       const uploads = transfers._uploads.flat();
       const totalTransfers = uploads.length;
@@ -613,8 +624,16 @@ export class Transfer implements ILoggable {
         const status = new TransferStatus();
 
         let latest: Transfer | undefined = undefined;
+        let reported: string | undefined = undefined;
         const proc = setInterval(() => {
-          if (latest) log.debug(`Upload progress: ${summary(latest)}`);
+          if (latest) {
+            const progress = summary(latest);
+            log.debug(`Upload progress: ${progress}`);
+            if (progress !== reported) {
+              reported = progress;
+              events?.next({ lifecycle: 'copying', summary: progress });
+            }
+          }
         }, 1000);
 
         const subscription = source
@@ -631,7 +650,13 @@ export class Transfer implements ILoggable {
             }, status),
             tap({
               complete: () => {
-                if (latest) log.info(`Transfer complete: ${summary(latest)}`);
+                if (latest) {
+                  log.info(`Transfer complete: ${summary(latest)}`);
+                  events?.next({ lifecycle: 'copied', summary: summary(latest) });
+                }
+              },
+              error: () => {
+                if (latest) events?.next({ lifecycle: 'failed', summary: summary(latest) });
               },
             })
           )

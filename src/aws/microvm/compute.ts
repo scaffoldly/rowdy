@@ -1,3 +1,4 @@
+import type { StartLiveTailCommandInput } from '@aws-sdk/client-cloudwatch-logs';
 import { HeadObjectCommand, PutObjectCommand, S3Client } from '@aws-sdk/client-s3';
 import {
   CreateRoleCommand,
@@ -19,6 +20,8 @@ import {
   ListManagedMicrovmImageVersionsCommand,
   ListMicrovmsCommand,
   ListTagsCommand,
+  paginateListMicrovmImages,
+  paginateListMicrovms,
   RunMicrovmCommand,
   TerminateMicrovmCommand,
   UpdateMicrovmImageCommand,
@@ -36,21 +39,25 @@ import {
   forkJoin,
   from,
   map,
+  mergeMap,
   finalize,
   Observable,
   of,
   repeat,
+  shareReplay,
   switchMap,
   take,
   throwIfEmpty,
+  toArray,
 } from 'rxjs';
+import type { SandboxSummary } from '../../sandbox';
 import { deploySources } from '../../api/internal/layers';
 import { Transfer } from '../../api/internal/transfer';
-import { Exec } from '../../api/types';
+import { Exec, ExecOutput, ExecOutputOptions } from '../../api/types';
 import { Environment } from '../../environment';
 import { Logger } from '../../log';
 import { ExecSchema } from '../../routes';
-import { ComputeSpec, MICROVM_MEMORY, SandboxCompute } from '../../sandbox/internal/compute';
+import { ComputeSpec, MICROVM_MEMORY, SandboxCompute, SandboxError } from '../../sandbox/internal/compute';
 import { LambdaImageService } from '../lambda/image';
 import {
   _create,
@@ -62,7 +69,8 @@ import {
   ROWDY_BIN,
 } from '../lambda/index';
 import { AwsClientLogger } from '../logger';
-import { execOf, framesOf } from '../exec';
+import { EXEC_LOG } from '../../proxy/shell';
+import { execOf, execOutput, framesOf } from '../exec';
 import { EXEC_ID_HEADER, EXEC_PATH, HOOKS_PORT } from '../microvm';
 import { ownedBucket } from '../s3';
 
@@ -80,10 +88,56 @@ export const POLL = { delay: 5000 };
 /** How often a terminating VM is polled, in milliseconds. */
 export const TERMINATE_POLL = { delay: 250 };
 
-type Vm = { microvmId: string; endpoint: string };
+type Vm = { microvmId: string; endpoint: string; imageVersion: string; startedAt: Date };
+
+/** Each image's VM while it's being found or started, shared by every handle in the process. */
+const STARTING = new Map<string, Observable<Vm>>();
 
 export class MicrovmCompute extends AwsClientLogger implements SandboxCompute {
   static readonly env = {};
+
+  static list(): Observable<SandboxSummary> {
+    const microvms = new LambdaMicrovmsClient({});
+    return forkJoin([
+      from(paginateListMicrovms({ client: microvms }, {})).pipe(
+        concatMap(({ items = [] }) => items),
+        toArray()
+      ),
+      from(paginateListMicrovmImages({ client: microvms }, {})).pipe(
+        concatMap(({ items = [] }) => items),
+        toArray()
+      ),
+    ]).pipe(
+      switchMap(([vms, images]) =>
+        from(images).pipe(
+          mergeMap(
+            ({ imageArn, name }) =>
+              from(microvms.send(new ListTagsCommand({ Resource: imageArn }))).pipe(
+                // An image of the account's own, not a sandbox, has no compute tag.
+                filter(({ Tags }) => Tags?.[COMPUTE_TAG] === 'microvm'),
+                map(({ Tags }): SandboxSummary => {
+                  const [live] = vms.filter(
+                    ({ imageArn: arn, state }) => arn === imageArn && state && !DEAD.includes(state)
+                  );
+                  const seconds = Number(Tags?.[TIMEOUT_TAG]);
+                  return {
+                    sandboxId: imageArn!,
+                    name: name!,
+                    runtime: 'aws.microvm',
+                    running: !!live,
+                    startedAt: live?.startedAt,
+                    stopsAt:
+                      live?.startedAt && seconds ? new Date(live.startedAt.getTime() + seconds * 1000) : undefined,
+                  };
+                })
+              ),
+            Environment.CONCURRENCY
+          )
+        )
+      ),
+      finalize(() => microvms.destroy())
+    );
+  }
 
   static assert({ timeout, memory, env }: Pick<ComputeSpec, 'timeout' | 'memory' | 'env'>): void {
     if (!Number.isInteger(timeout / 1000) || timeout < 1000 || timeout > 28_800_000) {
@@ -99,10 +153,10 @@ export class MicrovmCompute extends AwsClientLogger implements SandboxCompute {
 
   readonly stoppable = true;
 
-  private iam = new IAMClient({ logger: this });
-  private microvms = new LambdaMicrovmsClient({ logger: this });
-  private s3 = new S3Client({ logger: this });
-  private sts = new STSClient({ logger: this });
+  private iam = this.track(new IAMClient({ logger: this }));
+  private microvms = this.track(new LambdaMicrovmsClient({ logger: this }));
+  private s3 = this.track(new S3Client({ logger: this }));
+  private sts = this.track(new STSClient({ logger: this }));
 
   private images: LambdaImageService;
   private imageArn?: string;
@@ -179,7 +233,7 @@ export class MicrovmCompute extends AwsClientLogger implements SandboxCompute {
     return defer(() => this.microvms.send(new ListTagsCommand({ Resource: sandboxId }))).pipe(
       map(({ Tags }) => {
         if (Tags?.[COMPUTE_TAG] !== 'microvm') {
-          throw new Error(`Not a sandbox: ${sandboxId}`);
+          throw new SandboxError(`Not a sandbox: ${sandboxId}`);
         }
         this.imageArn = sandboxId;
         return this;
@@ -192,13 +246,45 @@ export class MicrovmCompute extends AwsClientLogger implements SandboxCompute {
     this.commands.add(controller);
 
     return defer(() => this.vm()).pipe(
-      switchMap(({ microvmId, endpoint }) => this.post(microvmId, endpoint, event, controller.signal)),
-      switchMap((response) =>
-        execOf(response.headers.get(EXEC_ID_HEADER) ?? '', from(response.body!).pipe(framesOf()))
+      switchMap(({ microvmId, endpoint, imageVersion, startedAt }) =>
+        from(
+          this.microvms.send(new GetMicrovmImageVersionCommand({ imageIdentifier: this.sandboxId, imageVersion }))
+        ).pipe(
+          switchMap(({ logging }) =>
+            this.post(microvmId, endpoint, event, controller.signal).pipe(
+              switchMap((response) => {
+                const [, , , region, account] = this.sandboxId.split(':');
+                const execId = response.headers.get(EXEC_ID_HEADER) ?? '';
+                // A stream is named after the VM's start, so one that crosses midnight keeps its day.
+                const day = startedAt.toISOString().slice(0, 10).replace(/-/g, '/');
+                const locator: StartLiveTailCommandInput = {
+                  logGroupIdentifiers: [`arn:aws:logs:${region}:${account}:log-group:${logging?.cloudWatch?.logGroup}`],
+                  logStreamNamePrefixes: [`${day}[${imageVersion}]${microvmId}`],
+                  logEventFilterPattern: `"${EXEC_LOG.key}" "${execId}"`,
+                };
+                const cmdId = Buffer.from(JSON.stringify(locator)).toString('base64url');
+                return execOf(() => cmdId, from(response.body!).pipe(framesOf()));
+              })
+            )
+          )
+        )
       ),
       finalize(() => {
         this.commands.delete(controller);
         controller.abort();
+      })
+    );
+  }
+
+  output(cmdId: string, options?: ExecOutputOptions): Observable<ExecOutput> {
+    return defer(() => this.microvms.send(new GetMicrovmImageCommand({ imageIdentifier: this.sandboxId }))).pipe(
+      switchMap(({ latestActiveImageVersion: imageVersion }) =>
+        this.microvms.send(new GetMicrovmImageVersionCommand({ imageIdentifier: this.sandboxId, imageVersion }))
+      ),
+      switchMap(({ logging }) => {
+        const [, , , region, account] = this.sandboxId.split(':');
+        const logGroup = logging?.cloudWatch?.logGroup;
+        return execOutput(`arn:aws:logs:${region}:${account}:log-group:${logGroup}`, cmdId, options);
       })
     );
   }
@@ -244,7 +330,7 @@ export class MicrovmCompute extends AwsClientLogger implements SandboxCompute {
     const imageIdentifier = this.sandboxId;
     const region = imageIdentifier.split(':')[3];
 
-    return defer(() => this.microvms.send(new GetMicrovmImageCommand({ imageIdentifier }))).pipe(
+    const start$ = defer(() => this.microvms.send(new GetMicrovmImageCommand({ imageIdentifier }))).pipe(
       switchMap(({ latestActiveImageVersion: imageVersion, tags }) =>
         from(this.microvms.send(new ListMicrovmsCommand({ imageIdentifier }))).pipe(
           switchMap(({ items = [] }) => {
@@ -284,13 +370,22 @@ export class MicrovmCompute extends AwsClientLogger implements SandboxCompute {
           first(({ state }) => state !== 'PENDING')
         )
       ),
-      map(({ microvmId, state, stateReason, endpoint }) => {
+      map(({ microvmId, state, stateReason, endpoint, imageVersion, startedAt }) => {
         if (state === undefined || DEAD.includes(state)) {
           throw new Error(`Sandbox ${imageIdentifier} stopped: ${stateReason ?? state}`);
         }
-        return { microvmId: microvmId!, endpoint: endpoint! };
-      })
+        return { microvmId: microvmId!, endpoint: endpoint!, imageVersion: imageVersion!, startedAt: startedAt! };
+      }),
+      finalize(() => STARTING.delete(imageIdentifier)),
+      shareReplay({ bufferSize: 1, refCount: false })
     );
+
+    // Two first commands at once would each start a VM, so a second waits on the first's, whichever handle it's on.
+    return defer(() => {
+      const started$ = STARTING.get(imageIdentifier) ?? start$;
+      STARTING.set(imageIdentifier, started$);
+      return started$;
+    });
   }
 
   /** Hands the command to rowdy in the VM, whose response carries its frames as they happen. */

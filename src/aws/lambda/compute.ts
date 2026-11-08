@@ -1,9 +1,13 @@
-import { defer, last, map, Observable, throwError } from 'rxjs';
+import { LambdaClient, paginateListFunctions } from '@aws-sdk/client-lambda';
+import { concatMap, defer, filter, finalize, from, last, map, Observable, throwError } from 'rxjs';
 import { deploySources } from '../../api/internal/layers';
-import { Exec } from '../../api/types';
+import { Exec, ExecOutput, ExecOutputOptions } from '../../api/types';
+import type { Event } from '../../events';
+import type { SandboxSummary } from '../../sandbox';
 import { Environment } from '../../environment';
 import { ExecSchema } from '../../routes';
-import { ComputeSpec, SandboxCompute } from '../../sandbox/internal/compute';
+import { ComputeSpec, SandboxCompute, SandboxError } from '../../sandbox/internal/compute';
+import { execOutput } from '../exec';
 import { LambdaImageService } from './image';
 import { LambdaFunction } from './index';
 
@@ -25,6 +29,23 @@ export class LambdaCompute implements SandboxCompute {
     if (!Number.isInteger(memory) || memory < 128 || memory > 10240) {
       throw new RangeError(`memory must be whole MB from 128 to 10240, got ${memory}`);
     }
+  }
+
+  static list(): Observable<SandboxSummary> {
+    const lambda = new LambdaClient({});
+    return from(paginateListFunctions({ client: lambda }, {})).pipe(
+      concatMap(({ Functions = [] }) => Functions),
+      // Only a function deployed as a sandbox runs commands.
+      filter(({ Environment: env }) => env?.Variables?.ROWDY_SANDBOX === 'true'),
+      map(
+        ({ FunctionArn, FunctionName }): SandboxSummary => ({
+          sandboxId: FunctionArn!,
+          name: FunctionName!,
+          runtime: 'aws.lambda',
+        })
+      ),
+      finalize(() => lambda.destroy())
+    );
   }
 
   readonly stoppable = false;
@@ -67,7 +88,7 @@ export class LambdaCompute implements SandboxCompute {
       map((lambda) => {
         // Exec is refused on any other function, so a handle to one could never run a command.
         if (lambda.Status.Configuration?.Environment?.Variables?.ROWDY_SANDBOX !== 'true') {
-          throw new Error(`Not a sandbox: ${sandboxId}`);
+          throw new SandboxError(`Not a sandbox: ${sandboxId}`);
         }
         return this;
       })
@@ -75,10 +96,25 @@ export class LambdaCompute implements SandboxCompute {
   }
 
   exec(event: ExecSchema): Observable<Exec> {
+    if (event.spec?.detached) {
+      return throwError(() => new SandboxError('detached is not implemented on runtime aws.lambda'));
+    }
     return this.lambda.exec(event);
   }
 
+  output(cmdId: string, options?: ExecOutputOptions): Observable<ExecOutput> {
+    return defer(() => {
+      const [, , , region, account] = this.sandboxId.split(':');
+      const logGroup = this.lambda.Status.Configuration?.LoggingConfig?.LogGroup;
+      return execOutput(`arn:aws:logs:${region}:${account}:log-group:${logGroup}`, cmdId, options);
+    });
+  }
+
+  events(): Observable<Extract<Event, { source: 'cdk' }>> {
+    return this.lambda.events();
+  }
+
   stop(): Observable<this> {
-    return throwError(() => new Error('stop is not implemented on runtime aws.lambda'));
+    return throwError(() => new SandboxError('stop is not implemented on runtime aws.lambda'));
   }
 }

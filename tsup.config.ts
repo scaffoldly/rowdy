@@ -1,0 +1,15 @@
+import { defineConfig } from 'tsup';
+
+export default defineConfig({
+  entry: ['src/index.ts', 'src/sandbox/index.ts'],
+  sourcemap: 'inline',
+  dts: { resolve: [/^@scaffoldly\/rowdy-cdk/] },
+  format: ['cjs'],
+  target: 'esnext',
+  cjsInterop: true,
+  shims: true,
+  // `rowdy mcp` loads its server on demand: everything else, a cold start included, shouldn't parse it.
+  splitting: true,
+  // tsup leaves peers external by default. These are optional, so requiring one at load would crash without it.
+  noExternal: ['zod', '@modelcontextprotocol/server', 'rxjs'],
+});

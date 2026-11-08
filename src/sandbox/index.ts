@@ -1,6 +1,10 @@
+import type { Observable } from 'rxjs';
+import type { McpServer } from '@modelcontextprotocol/server';
 import type { Writable } from 'stream';
-import type { Exec, ExecFinished } from '../api/types';
+import type { Exec, ExecFinished, ExecOutput, ExecOutputOptions } from '../api/types';
+import type { Event, EventCallback } from '../events';
 import type { Level } from '../log';
+import type { Tool } from '../mcp/tool';
 import type { MICROVM_MEMORY } from './internal/compute';
 import { SandboxImpl } from './internal/sandbox';
 
@@ -13,11 +17,13 @@ interface BaseSandboxOptions {
   logLevel?: Level;
   /** Aborts the sandbox's work in progress, including its creation, and stops it if it can `stop`. */
   signal?: AbortSignal;
+  /** Receives every event from the start of `create`, for as long as the sandbox is in use. */
+  onEvent?: EventCallback | PromiseLike<EventCallback>;
 }
 
 export interface LambdaSandboxOptions extends BaseSandboxOptions {
-  /** Where the sandbox runs. Defaults to `aws.lambda`. */
-  runtime?: 'aws.lambda';
+  /** Where the sandbox runs. */
+  runtime: 'aws.lambda';
   /** Milliseconds until the sandbox stops: whole seconds, 1000 to 900000. */
   timeout?: number;
   /** Memory in megabytes: a whole number, 128 to 10240. */
@@ -30,8 +36,8 @@ export interface LambdaSandboxOptions extends BaseSandboxOptions {
 }
 
 export interface MicrovmSandboxOptions extends BaseSandboxOptions {
-  /** Where the sandbox runs. */
-  runtime: 'aws.microvm';
+  /** Where the sandbox runs. Defaults to `aws.microvm`. */
+  runtime?: 'aws.microvm';
   /** Milliseconds until the sandbox stops: whole seconds, 1000 to 28800000. */
   timeout?: number;
   /** Baseline memory in megabytes. */
@@ -42,7 +48,53 @@ export interface MicrovmSandboxOptions extends BaseSandboxOptions {
 
 export type SandboxOptions = LambdaSandboxOptions | MicrovmSandboxOptions;
 
-export interface SandboxLookup {
+export type { Event, EventCallback } from '../events';
+
+export interface SandboxToolsLimits {
+  /** The most memory a sandbox can have, in megabytes. */
+  memory?: number;
+  /** The longest timeout a sandbox can have, in milliseconds. */
+  timeout?: number;
+  /** The runtimes a sandbox can use. The first is the default. */
+  runtimes?: NonNullable<SandboxOptions['runtime']>[];
+}
+
+export interface SandboxToolsOptions extends Pick<SandboxOptions, 'logLevel' | 'signal'> {
+  /** Comes first in every sandbox's name, `{name}-{model's name}-{suffix}`. */
+  name?: string;
+  /** What a model can ask for. */
+  limits?: SandboxToolsLimits;
+  /**
+   * Where each sandbox's own tools are registered once `create_sandbox` makes it, named with its suffix, like
+   * `run_command_bcdf245678`. They come off when it's stopped, or the signal aborts.
+   */
+  server?: Pick<McpServer, 'registerTool'>;
+}
+
+export type { Tool };
+
+/** A sandbox as `Sandbox.list` finds it. */
+export interface SandboxSummary {
+  sandboxId: string;
+  name: string;
+  runtime: NonNullable<SandboxOptions['runtime']>;
+  /** Whether a microVM is up, and billed. Undefined on `aws.lambda`, which is billed only while a command runs. */
+  running?: boolean;
+  /** When the running microVM started. */
+  startedAt?: Date;
+  /** When the running microVM's `timeout` ends it. */
+  stopsAt?: Date;
+}
+
+export interface SandboxListOptions {
+  /** Only sandboxes on this runtime. Defaults to every runtime. */
+  runtime?: NonNullable<SandboxOptions['runtime']>;
+  /** Only sandboxes whose name starts with `{name}-`. */
+  name?: string;
+  signal?: AbortSignal;
+}
+
+export interface SandboxLookup extends Pick<SandboxOptions, 'logLevel'> {
   sandboxId: string;
   /** Aborts the sandbox's work in progress, and stops it if it can `stop`. */
   signal?: AbortSignal;
@@ -58,21 +110,28 @@ export interface RunCommandParams {
   stdout?: Writable;
   /** Receives the command's stderr as it is written. */
   stderr?: Writable;
-  // TODO: detached
-  // /** Resolves once the command has started instead of when it exits. */
-  // detached?: boolean;
+  /** Receives the sandbox's events while this command runs. */
+  onEvent?: EventCallback | PromiseLike<EventCallback>;
+  detached?: false;
   /** Kills the command and rejects. On `runtime: 'aws.lambda'` only the waiting stops: it runs on until it exits or times out. */
   signal?: AbortSignal;
 }
 
-// TODO: detached
-// export interface DetachedRunCommandParams extends RunCommandParams {
-//   detached: true;
-// }
+export interface DetachedRunCommandParams extends Omit<RunCommandParams, 'detached' | 'signal'> {
+  /**
+   * Resolves once the command has started instead of when it exits, and the command outlives this process. Output
+   * keeps reaching `stdout` and `stderr` until it exits. `runtime: 'aws.microvm'` only.
+   */
+  detached: true;
+  /** Stops following the command, without killing it. */
+  signal?: AbortSignal;
+}
 
 export interface RunCommandOptions {
   /** Kills the command and rejects. On `runtime: 'aws.lambda'` only the waiting stops: it runs on until it exits or times out. */
   signal?: AbortSignal;
+  /** Receives the sandbox's events while this command runs. */
+  onEvent?: EventCallback | PromiseLike<EventCallback>;
 }
 
 // TODO: writeFiles
@@ -92,20 +151,26 @@ export interface RunCommandOptions {
 
 export type Command = Omit<Exec, 'frames'>;
 export type CommandFinished = Omit<ExecFinished, 'frames'>;
+export type CommandOutput = ExecOutput;
+export type CommandOutputOptions = ExecOutputOptions;
 
 /** A running sandbox. */
 export interface Sandbox {
   readonly sandboxId: string;
   /** Resolves when the command exits, whatever its exit code; rejects only if it could not run. */
   runCommand(cmd: string, args?: string[], options?: RunCommandOptions): Promise<CommandFinished>;
-  // TODO: detached
-  // /** Resolves once the command has started. */
-  // runCommand(params: DetachedRunCommandParams): Promise<Command>;
+  /** Resolves once the command has started, with its handle. `runtime: 'aws.lambda'` rejects. */
+  runCommand(params: DetachedRunCommandParams): Promise<Command>;
   /**
    * Resolves when the command exits, whatever its exit code; rejects only if it could not run. On a sandbox that can
    * `stop`, Ctrl+C during a command stops it, then exits as usual, so nothing is left running. A second Ctrl+C quits.
    */
   runCommand(params: RunCommandParams): Promise<CommandFinished>;
+  /**
+   * Reads part of a command's output back from its log, by its `cmdId`, any time after it started. A log is behind a
+   * running command: about 10 seconds on `runtime: 'aws.microvm'` and 30 on `aws.lambda`.
+   */
+  output(cmdId: string, options?: CommandOutputOptions): Promise<CommandOutput>;
   // TODO: writeFiles
   // writeFiles(files: WriteFile[]): Promise<void>;
   // TODO: readFileToBuffer
@@ -118,16 +183,35 @@ export interface Sandbox {
    * started. Safe to call more than once. The next command starts it again. `runtime: 'aws.lambda'` rejects for now.
    */
   stop(): Promise<void>;
+  /** Each event from now on. */
+  events(): Observable<Event>;
+  /**
+   * The MCP tools for this sandbox alone, with no `sandbox_id` input: `run_command`, `read_output`, and `stop_sandbox`
+   * where it can stop.
+   */
+  tools(): Tool[];
 }
+
+/**
+ * A sandbox on its way. Await it for the sandbox, and call `events` before that to see what it takes. Its `tools` are
+ * ready at once, and a call waits for the sandbox.
+ */
+export interface SandboxPromise extends Promise<Sandbox>, Pick<Sandbox, 'events' | 'tools'> {}
 
 export interface SandboxFactory {
   /** Starts a new sandbox. */
-  create(options?: SandboxOptions): Promise<Sandbox>;
+  create(options?: SandboxOptions): SandboxPromise;
   /** Connects to a sandbox that is already running. */
-  get(lookup: SandboxLookup): Promise<Sandbox>;
+  get(lookup: SandboxLookup): SandboxPromise;
+  /** The sandboxes in this account and region. */
+  list(options?: SandboxListOptions): Promise<SandboxSummary[]>;
+  /** The MCP tools for sandboxes, for a host to add to its own server. */
+  tools(options?: SandboxToolsOptions): Tool[];
 }
 
 export const Sandbox: SandboxFactory = {
   create: (options) => SandboxImpl.create(options),
   get: (lookup) => SandboxImpl.get(lookup),
+  list: (options) => SandboxImpl.list(options),
+  tools: (options) => SandboxImpl.tools(options),
 };

@@ -430,7 +430,10 @@ describe('aws microvm compute', () => {
       const built = setup({
         GetMicrovmImageCommand: () => ({ latestActiveImageVersion: '1.0', tags: { 'run.rowdy.timeout': '600' } }),
         ListMicrovmsCommand: () => ({ items: [] }),
-        GetMicrovmImageVersionCommand: () => ({ buildRoleArn: ROLE_ARN }),
+        GetMicrovmImageVersionCommand: () => ({
+          buildRoleArn: ROLE_ARN,
+          logging: { cloudWatch: { logGroup: '/aws/lambda-microvms/sandbox' } },
+        }),
         RunMicrovmCommand: () => ({ microvmId: 'mvm-1' }),
         GetMicrovmCommand: () => ({
           microvmId: 'mvm-1',
@@ -468,7 +471,11 @@ describe('aws microvm compute', () => {
       const done = await run(compute);
 
       expect(done.exitCode).toBe(3);
-      expect(done.cmdId).toBe(CMD);
+      expect(JSON.parse(Buffer.from(done.cmdId, 'base64url').toString())).toEqual({
+        logGroupIdentifiers: ['arn:aws:logs:us-east-1:123456789012:log-group:/aws/lambda-microvms/sandbox'],
+        logStreamNamePrefixes: [`${STARTED.toISOString().slice(0, 10).replace(/-/g, '/')}[1.0]mvm-1`],
+        logEventFilterPattern: `"rowdy.exec" "${CMD}"`,
+      });
       await expect(done.stdout()).resolves.toBe('hello world\n');
       await expect(done.stderr()).resolves.toBe('oops\n');
     });
@@ -522,10 +529,45 @@ describe('aws microvm compute', () => {
       expect(names(sent)).toContain('RunMicrovmCommand');
     });
 
+    it('starts one VM for two first commands at once, across handles', async () => {
+      const first = running();
+      const second = running();
+
+      await Promise.all([run(first.compute), run(second.compute)]);
+
+      const started = [...first.sent, ...second.sent].filter(({ name }) => name === 'RunMicrovmCommand');
+      expect(started).toHaveLength(1);
+    });
+
+    it('looks again for a VM once a start has settled', async () => {
+      const { compute, sent } = running();
+
+      await run(compute);
+      await run(compute);
+
+      expect(sent.filter(({ name }) => name === 'ListMicrovmsCommand')).toHaveLength(2);
+    });
+
+    it('lets a failed start be tried again', async () => {
+      const failing = running({ RunMicrovmCommand: () => Promise.reject(new Error('capacity')) });
+      await expect(run(failing.compute)).rejects.toThrow('capacity');
+
+      const { compute, sent } = running();
+      await run(compute);
+
+      expect(sent.filter(({ name }) => name === 'RunMicrovmCommand')).toHaveLength(1);
+    });
+
     it('waits for a new VM to run', async () => {
       const states = ['PENDING', 'RUNNING'];
       const { compute, sent } = running({
-        GetMicrovmCommand: () => ({ microvmId: 'mvm-1', state: states.shift(), endpoint: 'vm.example' }),
+        GetMicrovmCommand: () => ({
+          microvmId: 'mvm-1',
+          state: states.shift(),
+          endpoint: 'vm.example',
+          imageVersion: '1.0',
+          startedAt: STARTED,
+        }),
       });
 
       await run(compute);

@@ -1,29 +1,68 @@
-import type { CommandFinished, RunCommandOptions, RunCommandParams, Sandbox, SandboxLookup, SandboxOptions } from '..';
+import type {
+  Command,
+  CommandFinished,
+  DetachedRunCommandParams,
+  CommandOutput,
+  CommandOutputOptions,
+  RunCommandOptions,
+  RunCommandParams,
+  Sandbox,
+  SandboxListOptions,
+  SandboxLookup,
+  SandboxOptions,
+  SandboxSummary,
+  SandboxToolsOptions,
+  Tool,
+  Event,
+} from '..';
+import type { RegisteredTool } from '@modelcontextprotocol/server';
 import { isAxiosError } from 'axios';
 import {
   catchError,
+  asapScheduler,
   concatWith,
+  connectable,
+  EMPTY,
+  filter,
+  finalize,
   defer,
+  firstValueFrom,
   from,
+  subscribeOn,
   fromEvent,
   ignoreElements,
   iif,
   lastValueFrom,
   map,
+  concatMap,
   merge,
   NEVER,
+  Observable,
   of,
   race,
+  ReplaySubject,
   switchMap,
   take,
+  takeUntil,
   tap,
   throwError,
+  toArray,
 } from 'rxjs';
-import { Environment, Logger, maskUrl } from '../..';
+import type { Exec, ExecFrame } from '../../api/types';
+import { Environment } from '../../environment';
+import { Logger, maskUrl } from '../../log';
+import { describeError, humanize } from '../../aws/errors';
 import { LambdaCompute } from '../../aws/lambda/compute';
 import { MicrovmCompute } from '../../aws/microvm/compute';
+import { safeTool } from '../../mcp/tool';
 import { EXEC_STREAM } from '../../proxy/shell';
-import { SandboxCompute, SandboxComputeClass } from './compute';
+import { createSandbox } from '../mcp/create-sandbox';
+import { runCommand } from '../mcp/run-command';
+import { listSandboxes } from '../mcp/list-sandboxes';
+import { readOutput } from '../mcp/read-output';
+import { stopSandbox } from '../mcp/stop-sandbox';
+import { DEFAULTS, SandboxCompute, SandboxComputeClass } from './compute';
+import { SandboxPromiseImpl } from './create';
 
 // Kubernetes' alphabet for generated names: no vowels, so a name spells no words.
 const ALPHANUMS = 'bcdfghjklmnpqrstvwxz2456789';
@@ -54,40 +93,63 @@ export class SandboxImpl implements Sandbox {
     }
     this.environment = new Environment(log, { signal });
 
-    this.compute = new RUNTIMES[runtime ?? 'aws.lambda'](this.environment);
+    this.compute = new RUNTIMES[runtime ?? 'aws.microvm'](this.environment);
   }
 
-  static async create(options?: SandboxOptions): Promise<SandboxImpl> {
-    const runtime = options?.runtime ?? 'aws.lambda';
-    const image = options?.image ?? 'scaffoldly/sandbox';
-    const timeout = options?.timeout ?? 15 * 60 * 1000;
-    const memory = options?.memory ?? 512;
-    const env = { ...RUNTIMES[runtime].env, ...options?.env };
-
-    RUNTIMES[runtime].assert({ timeout, memory, env });
-
-    // The same options reuse a function, and different ones share no env or config.
-    const suffix = computeHash(JSON.stringify({ runtime, image, timeout, memory, env: Object.entries(env).sort() }));
-
-    // TODO: a generated suffix, once a sandbox can be deleted: a new name is a new function and role on every create.
-    // Kubernetes' generateName suffix: 5 random characters.
-    // const suffix = Array.from({ length: 5 }, () => ALPHANUMS[randomInt(ALPHANUMS.length)]).join('');
-
-    const name = `${options?.name || 'sandbox'}-${suffix}`;
-
+  static create(options?: SandboxOptions): SandboxPromiseImpl {
+    const runtime = options?.runtime ?? 'aws.microvm';
     const sandbox = new SandboxImpl({ runtime, logLevel: options?.logLevel, signal: options?.signal });
-
     const { signal } = sandbox.environment;
 
-    return lastValueFrom(
-      race(
-        iif(() => signal.aborted, of(signal), fromEvent(signal, 'abort')).pipe(
-          switchMap(() => throwError(() => signal.reason))
-        ),
-        defer(() => sandbox.compute.create({ image, name, timeout, memory, env })).pipe(
-          map(() => sandbox.stoppingOnAbort())
+    if (options?.onEvent) {
+      const onEvent = Promise.resolve(options.onEvent);
+      sandbox
+        .events()
+        .pipe(
+          // One at a time, so a slow callback still sees them in order.
+          concatMap((event) =>
+            from(onEvent.then((callback) => callback(event))).pipe(
+              catchError((error) => {
+                sandbox.environment.log.warn('Event Callback Failed', { error });
+                return EMPTY;
+              })
+            )
+          )
         )
-      ).pipe(
+        .subscribe();
+    }
+
+    const created = lastValueFrom(
+      defer(() => {
+        const image = options?.image ?? 'scaffoldly/sandbox';
+        const timeout = options?.timeout ?? DEFAULTS.timeout;
+        const memory = options?.memory ?? DEFAULTS.memory;
+        const env = { ...RUNTIMES[runtime].env, ...options?.env };
+
+        RUNTIMES[runtime].assert({ timeout, memory, env });
+
+        // The same options reuse a function, and different ones share no env or config.
+        const suffix = computeHash(
+          JSON.stringify({ runtime, image, timeout, memory, env: Object.entries(env).sort() })
+        );
+
+        // TODO: a generated suffix, once a sandbox can be deleted: a new name is a new function and role on every create.
+        // Kubernetes' generateName suffix: 5 random characters.
+        // const suffix = Array.from({ length: 5 }, () => ALPHANUMS[randomInt(ALPHANUMS.length)]).join('');
+
+        const name = `${options?.name || 'sandbox'}-${suffix}`;
+
+        return race(
+          iif(() => signal.aborted, of(signal), fromEvent(signal, 'abort')).pipe(
+            switchMap(() => throwError(() => signal.reason))
+          ),
+          defer(() => sandbox.compute.create({ image, name, timeout, memory, env })).pipe(
+            map(() => sandbox.stoppingOnAbort())
+          )
+        );
+      }).pipe(
+        // Work starts after this returns, so `.events()` on the result sees the first step.
+        subscribeOn(asapScheduler),
         // An AxiosError carries its request headers and sockets into a caller's logs.
         catchError((error) =>
           throwError(() =>
@@ -102,46 +164,217 @@ export class SandboxImpl implements Sandbox {
         tap({ error: (error) => sandbox.environment.abort.abort(error) })
       )
     );
+
+    // What a person reads says what to do next. Tools tell a model their own way.
+    return new SandboxPromiseImpl(
+      created.catch((error) => {
+        throw humanize(error);
+      }),
+      sandbox
+    );
   }
 
-  static async get({ sandboxId, signal: abort }: SandboxLookup): Promise<SandboxImpl> {
+  static get({ sandboxId, logLevel, signal: abort }: SandboxLookup): SandboxPromiseImpl {
     const runtime = sandboxId.includes(':microvm-image:') ? 'aws.microvm' : 'aws.lambda';
-    const sandbox = new SandboxImpl({ runtime, signal: abort });
+    const sandbox = new SandboxImpl({ runtime, logLevel, signal: abort });
     const { signal } = sandbox.environment;
 
-    return lastValueFrom(
+    const attached = lastValueFrom(
       race(
         iif(() => signal.aborted, of(signal), fromEvent(signal, 'abort')).pipe(
           switchMap(() => throwError(() => signal.reason))
         ),
         defer(() => sandbox.compute.attach(sandboxId)).pipe(map(() => sandbox.stoppingOnAbort()))
+      ).pipe(
+        // Work starts after this returns, so `.events()` on the result sees the first step.
+        subscribeOn(asapScheduler)
       )
     );
+
+    return new SandboxPromiseImpl(
+      attached.catch((error) => {
+        throw humanize(error);
+      }),
+      sandbox
+    );
+  }
+
+  static list({ runtime, name, signal }: SandboxListOptions = {}): Promise<SandboxSummary[]> {
+    // A host's stdout is its own.
+    new Logger('sandbox').withSink('stderr');
+    const runtimes = runtime ? [runtime] : (Object.keys(RUNTIMES) as (keyof typeof RUNTIMES)[]);
+
+    return lastValueFrom(
+      race(
+        signal
+          ? iif(() => signal.aborted, of(signal), fromEvent(signal, 'abort')).pipe(
+              switchMap(() => throwError(() => signal.reason))
+            )
+          : NEVER,
+        merge(...runtimes.map((each) => RUNTIMES[each].list())).pipe(
+          filter((found) => !name || found.name.startsWith(`${name}-`)),
+          toArray()
+        )
+      )
+    ).catch((error) => {
+      throw humanize(error);
+    });
+  }
+
+  static tools(options?: SandboxToolsOptions): Tool[] {
+    // A host's stdout is its own, even for a tool that fails before it reaches a sandbox.
+    new Logger('sandbox').withSink('stderr');
+    const { server, logLevel, signal } = options ?? {};
+
+    // Each sandbox's own tools while they're on the server, so a repeated create doesn't register them twice.
+    const registered = new Map<string, RegisteredTool[]>();
+    signal?.addEventListener(
+      'abort',
+      () => {
+        registered.forEach((tools) => tools.forEach((tool) => tool.remove()));
+        registered.clear();
+      },
+      { once: true }
+    );
+
+    const create = createSandbox(SandboxImpl, options);
+    const stop = stopSandbox(SandboxImpl, options);
+    const registering: typeof create = {
+      ...create,
+      run: async (input, ctx) => {
+        const result = await create.run(input, ctx);
+        const { sandbox_id: sandboxId } = result.structuredContent;
+        if (server && !registered.has(sandboxId)) {
+          // Named with the sandbox's suffix, so two sandboxes' tools don't clash.
+          const suffix = sandboxId.split('-').pop();
+          registered.set(
+            sandboxId,
+            SandboxImpl.get({ sandboxId, logLevel, signal })
+              .tools()
+              .map(({ name, run, ...config }) =>
+                server.registerTool(
+                  `${name}_${suffix}`,
+                  config,
+                  name === 'stop_sandbox'
+                    ? async (args, extra) => {
+                        const stopped = await run(args, extra);
+                        registered.get(sandboxId)?.forEach((tool) => tool.remove());
+                        registered.delete(sandboxId);
+                        return stopped;
+                      }
+                    : run
+                )
+              )
+          );
+        }
+        return result;
+      },
+    };
+    const unregistering: typeof stop = {
+      ...stop,
+      run: async (input, ctx) => {
+        const result = await stop.run(input, ctx);
+        registered.get(input.sandbox_id)?.forEach((tool) => tool.remove());
+        registered.delete(input.sandbox_id);
+        return result;
+      },
+    };
+
+    const tools: Tool[] = [
+      registering,
+      runCommand(SandboxImpl, options),
+      readOutput(SandboxImpl, options),
+      listSandboxes(SandboxImpl, options),
+      unregistering,
+    ];
+    return tools.map((tool) => safeTool(tool, describeError));
   }
 
   get sandboxId(): string {
     return this.compute.sandboxId;
   }
 
+  tools(found: SandboxPromiseImpl = new SandboxPromiseImpl(Promise.resolve(this), this)): Tool[] {
+    const sandbox = { get: () => found };
+    const tools: Tool[] = [
+      runCommand(sandbox),
+      readOutput(sandbox),
+      ...(this.compute.stoppable ? [stopSandbox(sandbox)] : []),
+    ];
+    // The sandbox_id is this sandbox's, so a model can't name another.
+    return tools.map((tool) =>
+      safeTool(
+        {
+          ...tool,
+          inputSchema: tool.inputSchema.omit({ sandbox_id: true }),
+          run: async (input, ctx) => tool.run({ ...input, sandbox_id: (await found).sandboxId }, ctx),
+        },
+        describeError
+      )
+    );
+  }
+
   runCommand(cmd: string, args?: string[], options?: RunCommandOptions): Promise<CommandFinished>;
-  // TODO: detached
-  // runCommand(params: DetachedRunCommandParams): Promise<Command>;
+  runCommand(params: DetachedRunCommandParams): Promise<Command>;
   runCommand(params: RunCommandParams): Promise<CommandFinished>;
   async runCommand(
-    command: string | RunCommandParams,
+    command: string | RunCommandParams | DetachedRunCommandParams,
     args?: string[],
     options?: RunCommandOptions
-  ): Promise<CommandFinished> {
-    const params: RunCommandParams =
-      typeof command === 'string' ? { cmd: command, args, signal: options?.signal } : command;
+  ): Promise<CommandFinished | Command> {
+    const params = typeof command === 'string' ? { cmd: command, args, ...options } : command;
     // The sandbox's signal covers its commands too.
     const signal = params.signal ? AbortSignal.any([params.signal, this.environment.signal]) : this.environment.signal;
+    const onEvent = params.onEvent && Promise.resolve(params.onEvent);
+    const subscription =
+      onEvent &&
+      this.events()
+        .pipe(
+          // One at a time, so a slow callback still sees them in order.
+          concatMap((event) =>
+            from(onEvent.then((callback) => callback(event))).pipe(
+              catchError((error) => {
+                this.environment.log.warn('Event Callback Failed', { error });
+                return EMPTY;
+              })
+            )
+          )
+        )
+        .subscribe();
+
+    const exec$ = this.compute.exec({
+      apiVersion: 'rowdy.run/v1alpha1',
+      kind: 'Exec',
+      spec: { cmd: params.cmd, args: params.args, cwd: params.cwd, env: params.env, detached: params.detached },
+      status: undefined,
+    });
+    const written = tap<ExecFrame>(({ stream, payload }) => {
+      if (stream === EXEC_STREAM.STDOUT) params.stdout?.write(payload);
+      if (stream === EXEC_STREAM.STDERR) params.stderr?.write(payload);
+    });
+    const aborted$ = iif(() => signal.aborted, of(signal), fromEvent(signal, 'abort')).pipe(
+      switchMap(() => throwError(() => signal.reason))
+    );
+
+    if (params.detached) {
+      // Followed until the command exits or the signal lets go, whoever awaits the handle.
+      const following$ = connectable(
+        exec$.pipe(
+          switchMap((exec) => merge(of(exec), exec.frames.pipe(written, ignoreElements()))),
+          takeUntil(fromEvent(signal, 'abort')),
+          finalize(() => subscription?.unsubscribe())
+        ),
+        { connector: () => new ReplaySubject<Exec>(1), resetOnDisconnect: false }
+      );
+      following$.connect();
+      return firstValueFrom(race(aborted$, following$)).catch((error) => {
+        throw humanize(error);
+      });
+    }
 
     return lastValueFrom(
       race(
-        iif(() => signal.aborted, of(signal), fromEvent(signal, 'abort')).pipe(
-          switchMap(() => throwError(() => signal.reason))
-        ),
+        aborted$,
         // Only while a command runs, and only where it can stop: a listener cancels Node's default exit. It's gone
         // after the first, so a second Ctrl+C force-quits.
         this.compute.stoppable
@@ -153,29 +386,11 @@ export class SandboxImpl implements Sandbox {
               concatWith(NEVER)
             )
           : NEVER,
-        this.compute
-          .exec({
-            apiVersion: 'rowdy.run/v1alpha1',
-            kind: 'Exec',
-            spec: { cmd: params.cmd, args: params.args, cwd: params.cwd, env: params.env },
-            status: undefined,
-          })
-          .pipe(
-            switchMap((exec) =>
-              merge(
-                exec.frames.pipe(
-                  tap(({ stream, payload }) => {
-                    if (stream === EXEC_STREAM.STDOUT) params.stdout?.write(payload);
-                    if (stream === EXEC_STREAM.STDERR) params.stderr?.write(payload);
-                  }),
-                  ignoreElements()
-                ),
-                from(exec.wait())
-              )
-            )
-          )
-      )
-    );
+        exec$.pipe(switchMap((exec) => merge(exec.frames.pipe(written, ignoreElements()), from(exec.wait()))))
+      ).pipe(finalize(() => subscription?.unsubscribe()))
+    ).catch((error) => {
+      throw humanize(error);
+    });
   }
 
   // TODO: writeFiles
@@ -193,8 +408,23 @@ export class SandboxImpl implements Sandbox {
   //   throw new Error('not implemented');
   // }
 
+  async output(cmdId: string, options?: CommandOutputOptions): Promise<CommandOutput> {
+    const signal = options?.signal
+      ? AbortSignal.any([options.signal, this.environment.signal])
+      : this.environment.signal;
+    return lastValueFrom(this.compute.output(cmdId, { ...options, signal })).catch((error) => {
+      throw humanize(error);
+    });
+  }
+
   async stop(): Promise<void> {
-    await lastValueFrom(this.compute.stop());
+    await lastValueFrom(this.compute.stop()).catch((error) => {
+      throw humanize(error);
+    });
+  }
+
+  events(): Observable<Event> {
+    return merge(this.compute.events(), this.environment.event$);
   }
 
   // Only once there's a sandbox: an abort before that has nothing to stop.

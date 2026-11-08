@@ -1,7 +1,15 @@
 import type { Observable } from 'rxjs';
-import type { Exec } from '../../api/types';
+import type { Exec, ExecOutput, ExecOutputOptions } from '../../api/types';
 import type { Environment } from '../../environment';
+import type { Event } from '../../events';
+import type { SandboxSummary } from '..';
 import type { ExecSchema } from '../../routes';
+
+/** A sandbox can't do this, and trying again won't change that. */
+export class SandboxError extends Error {}
+
+/** What a sandbox has unless its options set it: `timeout` in milliseconds, `memory` in MB. */
+export const DEFAULTS = { timeout: 15 * 60 * 1000, memory: 512 };
 
 /** The sizes AWS offers a microVM, in MB. */
 export const MICROVM_MEMORY = [512, 1024, 2048, 4096, 8192] as const;
@@ -27,8 +35,12 @@ export interface SandboxCompute {
   attach(sandboxId: string): Observable<this>;
   /** Emits the command's handle once, and completes with the command. */
   exec(event: ExecSchema): Observable<Exec>;
+  /** Emits once, with part of a command's output read back from its log. */
+  output(cmdId: string, options?: ExecOutputOptions): Observable<ExecOutput>;
   /** Emits once, when nothing is left running. Safe to call more than once. */
   stop(): Observable<this>;
+  /** Each step of what this compute does on its provider, from now on. */
+  events(): Observable<Extract<Event, { source: 'cdk' }>>;
 }
 
 export interface SandboxComputeClass {
@@ -37,4 +49,6 @@ export interface SandboxComputeClass {
   readonly env: Record<string, string>;
   /** Throws for a spec this compute can't run, before anything reaches AWS. */
   assert(spec: Pick<ComputeSpec, 'timeout' | 'memory' | 'env'>): void;
+  /** Each sandbox on this compute, once. */
+  list(): Observable<SandboxSummary>;
 }

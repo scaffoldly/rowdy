@@ -8,7 +8,7 @@ role and what it runs on, and carries each command's output back as it is writte
 ```ts
 import { Sandbox } from '@scaffoldly/rowdy/sandbox';
 
-const sandbox = await Sandbox.create({ runtime: 'aws.microvm' });
+const sandbox = await Sandbox.create();
 
 try {
   const result = await sandbox.runCommand('echo', ['hello world']);
@@ -28,7 +28,7 @@ Installing the package and AWS credentials are covered in [the SDK docs](../sdk.
 checks them against that choice, and `Sandbox.create` throws a `RangeError` for a value out of range
 before anything reaches AWS.
 
-|                         | `aws.lambda` (default)             | `aws.microvm`                        |
+|                         | `aws.lambda`                       | `aws.microvm` (default)              |
 | ----------------------- | ---------------------------------- | ------------------------------------ |
 | Runs on                 | A Lambda function                  | A Lambda MicroVM                     |
 | `timeout`, in ms        | 1000 to 900000, whole seconds      | 1000 to 28800000, whole seconds      |
@@ -60,7 +60,7 @@ const sandbox = await Sandbox.create({
 
 | Option     | Default              |                                                                            |
 | ---------- | -------------------- | -------------------------------------------------------------------------- |
-| `runtime`  | `aws.lambda`         | See [Runtime](#runtime).                                                   |
+| `runtime`  | `aws.microvm`        | See [Runtime](#runtime).                                                   |
 | `image`    | `scaffoldly/sandbox` | The container image. An image with no registry comes from `mirror.gcr.io`. |
 | `name`     | `sandbox`            | The prefix of the generated name, `{name}-{suffix}`.                       |
 | `timeout`  | 15 minutes           | See [Runtime](#runtime).                                                   |
@@ -117,12 +117,59 @@ if (finished.exitCode !== 0) {
 }
 ```
 
-| Result     |                                                     |
-| ---------- | --------------------------------------------------- |
-| `cmdId`    | The command's ID.                                   |
-| `exitCode` | The exit code.                                      |
-| `stdout()` | Resolves to everything the command wrote to stdout. |
-| `stderr()` | Resolves to everything the command wrote to stderr. |
+| Result      |                                                                     |
+| ----------- | ------------------------------------------------------------------- |
+| `cmdId`     | Where the command's output is logged. See [`output`](#output).      |
+| `exitCode`  | The exit code.                                                      |
+| `stdout()`  | Resolves to what the command wrote to stdout, up to the last 1 MiB. |
+| `stderr()`  | Resolves to what the command wrote to stderr, up to the last 1 MiB. |
+| `truncated` | Whether either lost its start to that limit.                        |
+
+To keep all of a long output, pass `stdout` and `stderr` streams, which get everything.
+
+## Detached commands
+
+On `aws.microvm`, `detached: true` resolves once the command has started, and the command outlives this process.
+
+```ts
+const command = await sandbox.runCommand({
+  cmd: 'npm',
+  args: ['run', 'build'],
+  detached: true,
+  stdout: process.stdout,
+});
+
+const { exitCode } = await command.wait();
+```
+
+Output keeps reaching `stdout` and `stderr` until the command exits. Its `signal` stops following the command, without killing it: only `stop()` or the sandbox's `timeout` ends it. [`output`](#output) reads what it printed from anywhere. On `aws.lambda`, `detached` rejects.
+
+## `output`
+
+Reads part of a command's output back from CloudWatch Logs by its `cmdId`, any time after it started. Use it for what `stdout()` cut, or from a different process with `Sandbox.get`.
+
+```ts
+const first = await sandbox.output(cmdId);
+const next = await sandbox.output(cmdId, { cursor: first.cursor });
+```
+
+| Option    | What it does                                                           |
+| --------- | ---------------------------------------------------------------------- |
+| `cursor`  | Where an earlier read stopped. Leave it out to start at the beginning. |
+| `stream`  | `stdout` or `stderr`. Defaults to both, merged.                        |
+| `timeout` | Milliseconds to wait for more once what's written has been read.       |
+| `signal`  | Stops the read.                                                        |
+
+Each read answers with at most 64 KiB:
+
+| Field      | What it is                                                                     |
+| ---------- | ------------------------------------------------------------------------------ |
+| `text`     | The output read, in the order it was written.                                  |
+| `cursor`   | Where this read stopped, for the next one.                                     |
+| `exitCode` | Undefined until the read reaches the command's exit.                           |
+| `dropped`  | Whether the command printed more than its log keeps: 16 MiB. The rest is gone. |
+
+A log is behind a running command, by about 10 seconds on `aws.microvm` and 30 on `aws.lambda`, so an undefined `exitCode` can mean only that the rest hasn't arrived. Reading needs `logs:FilterLogEvents`, and `logs:StartLiveTail` with `timeout`.
 
 ## `stop`
 
@@ -151,8 +198,24 @@ arn:aws:lambda:us-east-1:123456789012:function:sandbox-bcdf245678
 arn:aws:lambda:us-east-1:123456789012:microvm-image:sandbox-bcdf245678
 ```
 
-`get` rejects with `Not a sandbox` for anything `create` didn't make. It takes a `signal`, and logs at
+`get` rejects with `Not a sandbox` for anything `create` didn't make. It takes a `signal` and a `logLevel`, and logs at
 the level described in [Logging](../sdk.md#logging).
+
+## `Sandbox.list`
+
+Lists the sandboxes in the account and region, on every runtime, to find a lost `sandboxId` or see what's billed.
+
+```ts
+const running = (await Sandbox.list({ runtime: 'aws.microvm' })).filter(({ running }) => running);
+```
+
+| Option    | What it does                                               |
+| --------- | ---------------------------------------------------------- |
+| `runtime` | Only sandboxes on this runtime. Defaults to every runtime. |
+| `name`    | Only sandboxes whose name starts with `{name}-`.           |
+| `signal`  | Rejects the listing.                                       |
+
+Each has its `sandboxId`, `name` and `runtime`. A microVM sandbox also says whether it's `running`, and if it is, `startedAt` and `stopsAt`, when its `timeout` ends it. A Lambda sandbox is billed only while a command runs, so it has neither.
 
 ## Aborting
 
@@ -185,6 +248,78 @@ no VM is left running. A second Ctrl+C quits straight away, without waiting. A p
 This only applies during a command. Between commands, Ctrl+C ends the process and leaves the VM
 running until `timeout`, unless the program stops it.
 
+## Events
+
+Rowdy reports what it does. Every event has a readable `message`. Check `source` before anything else, since the rest
+depends on it. A step on AWS has `source: 'cdk'` and a
+`type`, which narrows its `lifecycle`:
+
+| `type`     | `lifecycle`               |
+| ---------- | ------------------------- |
+| `describe` | `describing`, `described` |
+| `read`     | `reading`, `read`         |
+| `create`   | `creating`, `created`     |
+| `update`   | `updating`, `updated`     |
+| `dispose`  | `disposing`, `disposed`   |
+| `tag`      | `tagging`, `tagged`       |
+
+`failed` can follow any of them.
+
+```ts
+{
+  source: 'cdk',
+  message: 'CreateRole: creating',
+  type: 'create',
+  lifecycle: 'creating',
+  client: 'IAMClient',
+  action: 'CreateRole',
+  name: 'sandbox-abc',
+}
+```
+
+Copying an image into ECR reports its progress with `source: 'transfer'`, whenever that changes:
+
+```ts
+{
+  source: 'transfer',
+  message: 'Copying the image: 4/9 transfers: 40% complete',
+  lifecycle: 'copying',
+  summary: '4/9 transfers: 40% complete',
+}
+```
+
+`lifecycle` is `copying`, `copied` or `failed`.
+
+Pass `onEvent` to `Sandbox.create` or `runCommand`. It can be a callback or a promise of one. Callbacks run one at a
+time, in order, and an error from one is logged and doesn't affect the sandbox.
+
+```ts
+const sandbox = await Sandbox.create({
+  runtime: 'aws.microvm',
+  onEvent: (event) => {
+    if (event.source === 'cdk' && event.type === 'create' && event.lifecycle === 'created') {
+      console.error(event.action);
+    }
+  },
+});
+
+await sandbox.runCommand({ cmd: 'npm', args: ['test'], onEvent: (event) => console.error(event) });
+```
+
+On `create`, it receives every event for as long as the sandbox is in use. On `runCommand`, it receives what happens
+while that command runs. That includes polling, so filter on `type`.
+
+For an Observable, call `.events()`. Nothing is kept, so it starts from when you subscribe: to see the build, call it on
+what `create` returns, before you await it.
+
+```ts
+const creating = Sandbox.create({ runtime: 'aws.microvm' });
+creating.events().subscribe(console.error);
+const sandbox = await creating;
+```
+
+A command's own output isn't an event.
+
 ## What rowdy creates
 
 Each sandbox gets its own resources, in the account and region of your credentials:
@@ -200,10 +335,42 @@ found again by its `rowdy:owner` tag.
 The credentials you run with need to be able to create all of these. Nothing deletes them yet, since
 `stop()` only ends what's running.
 
+## Errors
+
+A rejection keeps its class, so `instanceof RangeError` still works, and its message says what to do next when
+there's something to do: `Retrying may help.` for throttling or a fault on AWS's side, or
+`Check the AWS credentials and permissions this runs with.` for a denial or an expired token.
+
+## MCP tools
+
+`Sandbox.tools()` is for a model that manages its own sandboxes: `create_sandbox`, `run_command`,
+`read_output`, `list_sandboxes` and `stop_sandbox`. A host adds them to its own server.
+
+```ts
+for (const { name, run, ...config } of Sandbox.tools({ name: tenant, limits: { runtimes: ['aws.microvm'] } })) {
+  server.registerTool(name, config, run);
+}
+```
+
+Pass the `server` too, and each sandbox `create_sandbox` makes gets tools of its own on it, named with its
+suffix, like `run_command_bcdf245678`, with no `sandbox_id` to give. They come off when it's stopped, or the
+`signal` aborts. The server has to last the session, so this doesn't suit one built per request.
+
+A host that owns one sandbox gives a model only that one, with `tools()` on it, or on `Sandbox.create`'s
+result before it's ready:
+
+```ts
+const creating = Sandbox.create();
+
+for (const { name, run, ...config } of creating.tools()) {
+  server.registerTool(name, config, run);
+}
+```
+
+These are `run_command`, `read_output`, and `stop_sandbox` where the sandbox can stop, with no `sandbox_id`.
+A call waits for the sandbox, and a failed build is each call's error.
+
 ## Not there yet
 
 - `writeFiles`, `readFileToBuffer` and `mkDir`.
-- `detached` commands.
 - `stop()` on `aws.lambda`.
-- Starting two commands at once on an `aws.microvm` sandbox with no VM yet may start two VMs. Run the first
-  command on its own.

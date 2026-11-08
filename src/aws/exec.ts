@@ -1,17 +1,42 @@
 import {
+  CloudWatchLogsClient,
+  paginateFilterLogEvents,
+  StartLiveTailCommand,
+  StartLiveTailCommandInput,
+} from '@aws-sdk/client-cloudwatch-logs';
+import {
   concatMap,
   defer,
+  delay,
+  EMPTY,
   endWith,
+  filter,
+  finalize,
+  from,
+  fromEvent,
   ignoreElements,
   lastValueFrom,
   map,
+  merge,
+  NEVER,
   Observable,
   OperatorFunction,
+  reduce,
   ReplaySubject,
+  scan,
+  share,
+  switchMap,
+  take,
+  takeUntil,
+  takeWhile,
   tap,
 } from 'rxjs';
-import { Exec, ExecFinished, ExecFrame } from '../api/types';
-import { EXEC_STREAM, ShellExit } from '../proxy/shell';
+import { Exec, ExecFinished, ExecFrame, ExecOutput, ExecOutputOptions } from '../api/types';
+import { EXEC_LOG, EXEC_STREAM, ShellExit } from '../proxy/shell';
+import { SandboxError } from '../sandbox/internal/compute';
+
+/** The most of each stream a command's handle keeps, in bytes. A command can print for as long as it runs. */
+export const RETAINED = { bytes: 1024 * 1024 };
 
 /** Docker-style frames from a stream of bytes: a frame can span chunks, and a chunk can hold several frames. */
 export const framesOf = (): OperatorFunction<Uint8Array, ExecFrame> => (chunks) =>
@@ -35,21 +60,28 @@ export const framesOf = (): OperatorFunction<Uint8Array, ExecFrame> => (chunks) 
  * A command's handle over its frames, emitted once, completing with them. Unsubscribing stops waiting and fails the
  * handle; the command runs on until it exits or times out.
  */
-export const execOf = (cmdId: string, source: Observable<ExecFrame>): Observable<Exec> =>
+export const execOf = (cmdId: () => string, source: Observable<ExecFrame>): Observable<Exec> =>
   new Observable<Exec>((subscriber) => {
-    const frames = new ReplaySubject<ExecFrame>();
-    const stdout: Buffer[] = [];
-    const stderr: Buffer[] = [];
+    // Only a subscriber that's late to a running command needs these.
+    const frames = new ReplaySubject<ExecFrame>(32);
+    let stdout = Buffer.alloc(0);
+    let stderr = Buffer.alloc(0);
+    let truncated = false;
     let exit: ShellExit | undefined;
 
     const exec: Exec = {
-      cmdId,
+      get cmdId() {
+        return cmdId();
+      },
       get exitCode() {
         return exit?.code;
       },
+      get truncated() {
+        return truncated;
+      },
       frames: frames.asObservable(),
-      stdout: async () => Buffer.concat(stdout).toString(),
-      stderr: async () => Buffer.concat(stderr).toString(),
+      stdout: async () => stdout.toString(),
+      stderr: async () => stderr.toString(),
       wait: () =>
         lastValueFrom(
           frames.pipe(
@@ -71,8 +103,11 @@ export const execOf = (cmdId: string, source: Observable<ExecFrame>): Observable
     const subscription = source
       .pipe(
         tap(({ stream, payload }) => {
-          if (stream === EXEC_STREAM.STDOUT) stdout.push(payload);
-          if (stream === EXEC_STREAM.STDERR) stderr.push(payload);
+          if (stream === EXEC_STREAM.STDOUT) stdout = Buffer.concat([stdout, payload]);
+          if (stream === EXEC_STREAM.STDERR) stderr = Buffer.concat([stderr, payload]);
+          truncated ||= stdout.length > RETAINED.bytes || stderr.length > RETAINED.bytes;
+          stdout = stdout.subarray(-RETAINED.bytes);
+          stderr = stderr.subarray(-RETAINED.bytes);
           if (stream === EXEC_STREAM.EXIT) exit = JSON.parse(payload.toString());
         })
       )
@@ -92,4 +127,140 @@ export const execOf = (cmdId: string, source: Observable<ExecFrame>): Observable
       subscription.unsubscribe();
       frames.error(new Error('Exec abandoned'));
     };
+  });
+
+/** The most one read of a command's output answers with, in bytes. */
+export const EXEC_OUTPUT = { limit: 64 * 1024 };
+
+type ExecLine = { timestamp: number; seq: number; stream: number; data: string; dropped?: boolean };
+
+/**
+ * Part of a command's output, from its log. `cmdId` comes from the caller, so it reaches only `logGroup`. History can
+ * come back short while frames are still reaching CloudWatch, and `timeout` tails for them: frames are answered in
+ * `seq` order, so one seen by both counts once, and a read stops at a gap.
+ */
+export const execOutput = (
+  logGroup: string,
+  cmdId: string,
+  { cursor, stream, timeout, signal }: ExecOutputOptions = {}
+): Observable<ExecOutput> =>
+  defer(() => {
+    let locator: StartLiveTailCommandInput | undefined;
+    try {
+      locator = JSON.parse(Buffer.from(cmdId, 'base64url').toString());
+    } catch {
+      locator = undefined;
+    }
+    const [identifier, ...others] = Array.isArray(locator?.logGroupIdentifiers) ? locator.logGroupIdentifiers : [];
+    if (identifier !== logGroup || others.length) {
+      throw new SandboxError('Not a command in this sandbox.');
+    }
+
+    const [startTime = 0, start = 0] = cursor?.split('.').map(Number) ?? [];
+    if (!Number.isSafeInteger(startTime) || !Number.isSafeInteger(start)) {
+      throw new SandboxError('Not a cursor from this command.');
+    }
+
+    const [logStreamNamePrefix] = locator?.logStreamNamePrefixes ?? [];
+    const filterPattern = locator?.logEventFilterPattern;
+    const logs = new CloudWatchLogsClient({ region: logGroup.split(':')[3] });
+    const abort = new AbortController();
+
+    // Pages can be empty before the events arrive, so only a missing token ends this.
+    const history$ = from(
+      paginateFilterLogEvents(
+        { client: logs },
+        { logGroupIdentifier: logGroup, logStreamNamePrefix, filterPattern, startTime }
+      )
+    ).pipe(concatMap(({ events = [] }) => events));
+
+    const session$ = defer(() =>
+      logs.send(
+        new StartLiveTailCommand({
+          logGroupIdentifiers: [logGroup],
+          logStreamNamePrefixes: logStreamNamePrefix ? [logStreamNamePrefix] : undefined,
+          logEventFilterPattern: filterPattern,
+        }),
+        { abortSignal: abort.signal }
+      )
+    ).pipe(
+      switchMap(({ responseStream }) => responseStream ?? EMPTY),
+      share()
+    );
+
+    // Tail first: a frame landing between the two would otherwise be missed by both.
+    const tailed$ = session$.pipe(
+      filter(({ sessionStart }) => !!sessionStart),
+      take(1),
+      switchMap(() => history$),
+      share()
+    );
+
+    const events$ =
+      timeout === undefined
+        ? history$
+        : merge(tailed$, session$.pipe(concatMap(({ sessionUpdate }) => sessionUpdate?.sessionResults ?? []))).pipe(
+            // The wait is for what's still to come, so it starts once history is read.
+            takeUntil(tailed$.pipe(ignoreElements(), endWith(undefined), delay(timeout)))
+          );
+
+    let bytes = 0;
+
+    const line$ = events$.pipe(
+      takeUntil(signal ? fromEvent(signal, 'abort') : NEVER),
+      // What's in a log isn't all rowdy's: a line that isn't a frame is skipped.
+      concatMap(({ message = '', timestamp = 0 }) => {
+        try {
+          const line: Omit<ExecLine, 'timestamp'> | undefined = JSON.parse(message)[EXEC_LOG.key];
+          return line ? [{ ...line, timestamp }] : [];
+        } catch {
+          return [];
+        }
+      }),
+      scan(
+        ({ waiting, next }, line) => {
+          if (line.seq >= next) waiting.set(line.seq, line);
+          const ready: ExecLine[] = [];
+          for (let found = waiting.get(next); found; found = waiting.get(next)) {
+            ready.push(found);
+            waiting.delete(next);
+            next += 1;
+          }
+          return { waiting, next, ready };
+        },
+        { waiting: new Map<number, ExecLine>(), next: start, ready: [] as ExecLine[] }
+      ),
+      concatMap(({ ready }) => ready)
+    );
+
+    return line$.pipe(
+      map((line) => {
+        const output = line.stream === EXEC_STREAM.STDOUT || line.stream === EXEC_STREAM.STDERR;
+        const wanted = !stream || line.stream === EXEC_STREAM[stream === 'stdout' ? 'STDOUT' : 'STDERR'];
+        return { ...line, payload: Buffer.from(line.data, 'base64'), kept: output && wanted };
+      }),
+      takeWhile(({ payload, kept }) => (bytes += kept ? payload.length : 0) <= EXEC_OUTPUT.limit),
+      takeWhile((line) => line.stream !== EXEC_STREAM.EXIT, true),
+      reduce(
+        (read, { timestamp, seq, stream: from, payload, kept, dropped }) => {
+          if (kept) read.chunks.push(payload);
+          read.dropped ||= !!dropped;
+          // The cursor stays on an exit, so reading on from the end still says how it ended.
+          if (from === EXEC_STREAM.EXIT) read.exitCode = (JSON.parse(payload.toString()) as ShellExit).code;
+          else read.cursor = `${timestamp}.${seq + 1}`;
+          return read;
+        },
+        {
+          chunks: [] as Buffer[],
+          cursor: cursor ?? '0.0',
+          exitCode: undefined as number | undefined,
+          dropped: false,
+        }
+      ),
+      map(({ chunks, ...read }) => ({ ...read, text: Buffer.concat(chunks).toString() })),
+      finalize(() => {
+        abort.abort();
+        logs.destroy();
+      })
+    );
   });

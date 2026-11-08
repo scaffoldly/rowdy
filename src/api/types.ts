@@ -19,9 +19,11 @@ export interface Exec {
   readonly cmdId: string;
   /** Undefined while the command runs. */
   readonly exitCode: number | undefined;
-  /** The stdout written so far, or all of it once the command has exited. */
+  /** Whether `stdout` or `stderr` lost their start to the limit on what's kept. */
+  readonly truncated: boolean;
+  /** The stdout written so far, up to the last 1 MiB. */
   stdout(): Promise<string>;
-  /** The stderr written so far, or all of it once the command has exited. */
+  /** The stderr written so far, up to the last 1 MiB. */
   stderr(): Promise<string>;
   /** Resolves when the command exits, whatever its exit code. */
   wait(): Promise<ExecFinished>;
@@ -33,6 +35,28 @@ export interface Exec {
 
 export interface ExecFinished extends Exec {
   readonly exitCode: number;
+}
+
+export interface ExecOutputOptions {
+  /** Where an earlier read stopped. Leave it out to start at the beginning. */
+  cursor?: string;
+  /** Keep only this stream. Defaults to both, merged. */
+  stream?: 'stdout' | 'stderr';
+  /** Milliseconds to wait for more once what's written has been read. Defaults to not waiting. */
+  timeout?: number;
+  signal?: AbortSignal;
+}
+
+/** Part of a command's output, read back from its log. */
+export interface ExecOutput {
+  /** The output read, in the order it was written. */
+  text: string;
+  /** Where this read stopped, for the next one. */
+  cursor: string;
+  /** Undefined until the read reaches the command's exit. */
+  exitCode: number | undefined;
+  /** Whether the command printed more than its log keeps, so the rest is gone. */
+  dropped: boolean;
 }
 
 export interface IApi {
