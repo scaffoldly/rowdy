@@ -60,7 +60,7 @@ export interface SandboxToolsLimits {
 }
 
 export interface SandboxToolsOptions extends Pick<SandboxOptions, 'logLevel' | 'signal'> {
-  /** Comes first in every sandbox's name, `{name}-{model's name}-{suffix}`. */
+  /** Comes first in every sandbox's name, `{name}-{model's name}-{suffix}`: letters, digits, `-` and `_` only. */
   name?: string;
   /** What a model can ask for. */
   limits?: SandboxToolsLimits;

@@ -51,28 +51,21 @@ import {
   toArray,
 } from 'rxjs';
 import type { SandboxSummary } from '../../sandbox';
-import { deploySources } from '../../api/internal/layers';
+import { ROWDY_LAYERS } from '../../api/internal/layers';
 import { Transfer } from '../../api/internal/transfer';
 import { Exec, ExecOutput, ExecOutputOptions } from '../../api/types';
-import { Environment } from '../../environment';
+import type { Environment } from '../../environment';
 import { Logger } from '../../log';
 import { ExecSchema } from '../../routes';
 import { ComputeSpec, MICROVM_MEMORY, SandboxCompute, SandboxError } from '../../sandbox/internal/compute';
 import { LambdaImageService } from '../lambda/image';
-import {
-  _create,
-  isNotFound,
-  isPropagating,
-  isTransient,
-  LambdaFunction,
-  PROPAGATION,
-  ROWDY_BIN,
-} from '../lambda/index';
+import { _create, isNotFound, isPropagating, isTransient, PROPAGATION, roleName, ROWDY_BIN } from '../lambda/shared';
 import { AwsClientLogger } from '../logger';
-import { EXEC_LOG } from '../../proxy/shell';
+import { EXEC_LOG } from '../../proxy/frames';
 import { execOf, execOutput, framesOf } from '../exec';
-import { EXEC_ID_HEADER, EXEC_PATH, FILES_PATH, HOOKS_PORT } from '../microvm';
+import { EXEC_ID_HEADER, EXEC_PATH, FILES_PATH, HOOKS_PORT } from './hooks';
 import { ownedBucket } from '../s3';
+import { concurrency } from '../../concurrency';
 
 const BUCKET_PREFIX = 'rowdy-sandboxes-';
 const BUCKET_OWNER = { Key: 'rowdy:owner', Value: 'rowdy-sandboxes' };
@@ -131,7 +124,7 @@ export class MicrovmCompute extends AwsClientLogger implements SandboxCompute {
                   };
                 })
               ),
-            Environment.CONCURRENCY
+            concurrency()
           )
         )
       ),
@@ -164,7 +157,7 @@ export class MicrovmCompute extends AwsClientLogger implements SandboxCompute {
 
   constructor(private environment: Environment) {
     super();
-    this.images = new LambdaImageService(environment).withLayersFrom(deploySources(undefined));
+    this.images = new LambdaImageService(environment).withLayersFrom([ROWDY_LAYERS]);
   }
 
   override get log(): Logger {
@@ -187,7 +180,7 @@ export class MicrovmCompute extends AwsClientLogger implements SandboxCompute {
       Identity: from(this.sts.send(new GetCallerIdentityCommand({}))),
     }).pipe(
       switchMap(({ ImageUri, Bucket, baseImageArn, Region, Identity }) => {
-        const RoleName = LambdaFunction.roleName(Transfer.normalizeImage(image), name);
+        const RoleName = roleName(Transfer.normalizeImage(image), name);
         const imageIdentifier = `arn:aws:lambda:${Region}:${Identity.Account}:microvm-image:${name}`;
         const Key = `${name}/${ImageUri}.zip`;
 
