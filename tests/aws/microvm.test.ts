@@ -174,6 +174,54 @@ describe('aws microvm pipeline', () => {
       expect(readFileSync(join(cwd, 'rel.txt'), 'utf8')).toBe('hi');
     });
 
+    describe('a range', () => {
+      const file = (): string => {
+        const path = join(dir(), 'range');
+        writeFileSync(path, '0123456789');
+        return path;
+      };
+
+      it.each([
+        ['bytes=2-5', '2345', 'bytes 2-5/10'],
+        ['bytes=7-', '789', 'bytes 7-9/10'],
+        ['bytes=8-100', '89', 'bytes 8-9/10'],
+      ])('reads only %s', async (range, body, contentRange) => {
+        const url = await serve();
+
+        const response = await fetch(at(url, file()), { headers: { range } });
+
+        expect(response.status).toBe(206);
+        expect(response.headers.get('content-range')).toBe(contentRange);
+        expect(await response.text()).toBe(body);
+      });
+
+      it('answers 416 with the size from past the end', async () => {
+        const url = await serve();
+
+        const response = await fetch(at(url, file()), { headers: { range: 'bytes=10-' } });
+
+        expect(response.status).toBe(416);
+        expect(response.headers.get('content-range')).toBe('bytes */10');
+      });
+
+      it.each(['bytes=5-2', 'bytes=-3', 'lines=1-2'])('reads it all for %s', async (range) => {
+        const url = await serve();
+
+        const response = await fetch(at(url, file()), { headers: { range } });
+
+        expect(response.status).toBe(200);
+        expect(await response.text()).toBe('0123456789');
+      });
+
+      it('answers 404 for a file that is not there', async () => {
+        const url = await serve();
+
+        const response = await fetch(at(url, join(dir(), 'missing')), { headers: { range: 'bytes=0-1' } });
+
+        expect(response.status).toBe(404);
+      });
+    });
+
     it('answers 404 for a file that is not there', async () => {
       const url = await serve();
 

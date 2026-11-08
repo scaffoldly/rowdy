@@ -1,5 +1,5 @@
 import { randomUUID } from 'crypto';
-import { chmod, mkdir, readFile, writeFile } from 'fs/promises';
+import { chmod, mkdir, open, readFile, writeFile } from 'fs/promises';
 import { createServer, IncomingMessage, ServerResponse } from 'http';
 import { dirname, resolve } from 'path';
 import { catchError, defer, from, map, NEVER, Observable, of } from 'rxjs';
@@ -158,7 +158,7 @@ export class MicrovmHookProxy extends Proxy<MicrovmPipeline, number> {
   }
 }
 
-type MicrovmFile = { status: number; body?: Buffer };
+type MicrovmFile = { status: number; body?: Buffer; headers?: Record<string, string> };
 
 export class MicrovmFileProxy extends Proxy<MicrovmPipeline, MicrovmFile> {
   constructor(
@@ -181,7 +181,26 @@ export class MicrovmFileProxy extends Proxy<MicrovmPipeline, MicrovmFile> {
       }
       const target = resolve(path);
       if (req.method === 'GET') {
-        return { status: 200, body: await readFile(target) };
+        // `bytes=start-end`, end inclusive and optional. A range it can't read is ignored, as HTTP allows.
+        const range = /^bytes=(\d+)-(\d*)$/.exec(req.headers.range ?? '');
+        if (!range || (range[2] !== '' && Number(range[2]) < Number(range[1]))) {
+          return { status: 200, body: await readFile(target) };
+        }
+        const file = await open(target);
+        try {
+          const { size } = await file.stat();
+          const start = Number(range[1]);
+          if (start >= size) return { status: 416, headers: { 'content-range': `bytes */${size}` } };
+          const length = Math.min(range[2] === '' ? size : Number(range[2]) + 1, size) - start;
+          const { buffer: read, bytesRead } = await file.read(Buffer.alloc(length), 0, length, start);
+          return {
+            status: 206,
+            body: read.subarray(0, bytesRead),
+            headers: { 'content-range': `bytes ${start}-${start + bytesRead - 1}/${size}` },
+          };
+        } finally {
+          await file.close();
+        }
       }
       if (req.method === 'PUT') {
         const body = await buffer(req);
@@ -208,8 +227,9 @@ export class MicrovmFileProxy extends Proxy<MicrovmPipeline, MicrovmFile> {
   @Trace(log)
   override into(): Observable<Response<MicrovmPipeline>> {
     return this.invoke().pipe(
-      map(({ status, body }) => {
+      map(({ status, body, headers }) => {
         const response = new MicrovmResponse(this.pipeline, this.hook).withStatus(status);
+        Object.entries(headers ?? {}).forEach(([name, value]) => response.withHeader(name, value));
         if (body) {
           response.withHeader('content-type', 'application/octet-stream').next(new Chunk(body, body.length));
         }
