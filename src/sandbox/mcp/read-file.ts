@@ -20,7 +20,6 @@ const outputSchema = z.object({
   content: z.string().describe('The bytes read, at most 64 KiB, in the encoding asked for.'),
   encoding: z.enum(['utf8', 'base64']),
   truncated: z.boolean().describe('Whether the file goes on past this read. Read on with offset.'),
-  total_bytes: z.number().describe("The file's size."),
 });
 
 export const readFile = (
@@ -41,15 +40,17 @@ export const readFile = (
     }
 
     const found = await sandbox.get({ sandboxId, logLevel, signal });
-    const file = await found.readFileToBuffer({ path, cwd }, { signal: ctx.mcpReq.signal });
-    const read = file?.subarray(offset, offset + OUTPUT.limit) ?? Buffer.alloc(0);
+    // One byte past the limit says whether there's more.
+    const file = await found.readFileToBuffer(
+      { path, cwd, offset, length: OUTPUT.limit + 1 },
+      { signal: ctx.mcpReq.signal }
+    );
 
     return toolResult(outputSchema, {
       found: file !== null,
-      content: read.toString(encoding),
+      content: (file?.subarray(0, OUTPUT.limit) ?? Buffer.alloc(0)).toString(encoding),
       encoding,
-      truncated: !!file && offset + read.length < file.length,
-      total_bytes: file?.length ?? 0,
+      truncated: !!file && file.length > OUTPUT.limit,
     });
   },
 });

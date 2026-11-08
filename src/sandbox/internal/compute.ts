@@ -2,7 +2,7 @@ import type { Observable } from 'rxjs';
 import type { Exec, ExecOutput, ExecOutputOptions } from '../../api/types';
 import type { SandboxEnvironment } from './environment';
 import type { Event } from '../../events';
-import type { SandboxSummary } from '..';
+import type { FileRange, SandboxSummary } from '..';
 import type { ExecSchema } from '../../routes';
 
 /** A sandbox can't do this, and trying again won't change that. */
@@ -42,7 +42,7 @@ export interface SandboxCompute {
   /** Emits once, when the file is written. */
   writeFile(path: string, content: Uint8Array, mode: number | undefined, signal: AbortSignal): Observable<void>;
   /** Emits the file's bytes once, or null when it isn't there. */
-  readFile(path: string, signal: AbortSignal): Observable<Buffer | null>;
+  readFile(path: string, range: FileRange, signal: AbortSignal): Observable<Buffer | null>;
   /** Emits once, when the directory is there. */
   mkDir(path: string, signal: AbortSignal): Observable<void>;
   /** Each step of what this compute does on its provider, from now on. */

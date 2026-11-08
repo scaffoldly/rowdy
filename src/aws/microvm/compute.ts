@@ -50,7 +50,7 @@ import {
   throwIfEmpty,
   toArray,
 } from 'rxjs';
-import type { SandboxSummary } from '../../sandbox';
+import type { FileRange, SandboxSummary } from '../../sandbox';
 import { ROWDY_LAYERS } from '../../api/internal/layers';
 import { Transfer } from '../../api/internal/transfer';
 import { Exec, ExecOutput, ExecOutputOptions } from '../../api/types';
@@ -301,15 +301,27 @@ export class MicrovmCompute extends AwsClientLogger implements SandboxCompute {
     );
   }
 
-  readFile(path: string, signal: AbortSignal): Observable<Buffer | null> {
+  readFile(path: string, { offset, length }: FileRange, signal: AbortSignal): Observable<Buffer | null> {
+    const ranged = offset !== undefined || length !== undefined;
+    const start = offset ?? 0;
+    const end = length === undefined ? undefined : start + length;
     return defer(() => this.vm()).pipe(
       switchMap(({ microvmId, endpoint }) =>
-        this.fetchHooks(microvmId, endpoint, `${FILES_PATH}?${new URLSearchParams({ path })}`, { signal })
+        this.fetchHooks(microvmId, endpoint, `${FILES_PATH}?${new URLSearchParams({ path })}`, {
+          signal,
+          headers: ranged ? { range: `bytes=${start}-${end === undefined ? '' : end - 1}` } : undefined,
+        })
       ),
       switchMap(async (response) => {
         if (response.status === 404) return null;
-        if (response.status !== 200) throw new Error(`Reading ${path} failed: ${await response.text()}`);
-        return Buffer.from(await response.arrayBuffer());
+        // From past the end.
+        if (response.status === 416) return Buffer.alloc(0);
+        if (response.status !== 200 && response.status !== 206) {
+          throw new Error(`Reading ${path} failed: ${await response.text()}`);
+        }
+        const body = Buffer.from(await response.arrayBuffer());
+        // A runtime without ranges, or one that ignored this range, sends the whole file.
+        return ranged && response.status === 200 ? body.subarray(start, end) : body;
       })
     );
   }
@@ -432,7 +444,7 @@ export class MicrovmCompute extends AwsClientLogger implements SandboxCompute {
     microvmIdentifier: string,
     endpoint: string,
     path: string,
-    init: RequestInit & { signal: AbortSignal }
+    init: Omit<RequestInit, 'headers'> & { headers?: Record<string, string>; signal: AbortSignal }
   ): Observable<globalThis.Response> {
     return defer(() =>
       this.microvms.send(
@@ -446,7 +458,7 @@ export class MicrovmCompute extends AwsClientLogger implements SandboxCompute {
       switchMap(({ authToken }) =>
         fetch(`https://${endpoint}${path}`, {
           ...init,
-          headers: { ...authToken, 'X-aws-proxy-port': `${HOOKS_PORT}` },
+          headers: { ...init.headers, ...authToken, 'X-aws-proxy-port': `${HOOKS_PORT}` },
         })
       )
     );

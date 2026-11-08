@@ -187,7 +187,7 @@ const config = await sandbox.readFileToBuffer({ path: 'config.json', cwd: '/etc/
 
 - **Paths:** a relative one is from where a command starts without a `cwd`, so `app.js` above is the one `node app.js` finds. `readFileToBuffer` takes its own `cwd` too.
 - **`writeFiles`:** writes each file in order, replacing what was there, and makes missing directories. A string is written as UTF-8.
-- **`readFileToBuffer`:** resolves to `null` when the file isn't there.
+- **`readFileToBuffer`:** resolves to `null` when the file isn't there. `offset` and `length` read part of a file, and only that part leaves the VM. From past the end, it's no bytes.
 - **`mkDir`:** makes the directory and its parents, and is fine if it's already there.
 
 Each takes a `signal`, and starts the sandbox's VM if it has none, as a command would. On `aws.lambda`, they reject for now.

@@ -142,7 +142,14 @@ export interface WriteFile {
   mode?: number;
 }
 
-export interface ReadFile {
+export interface FileRange {
+  /** The byte to start at. Defaults to 0. */
+  offset?: number;
+  /** The most bytes to read. Defaults to the rest of the file. */
+  length?: number;
+}
+
+export interface ReadFile extends FileRange {
   /** Relative to `cwd`, or else to where a command starts without one, unless absolute. */
   path: string;
   cwd?: string;
@@ -176,7 +183,10 @@ export interface Sandbox {
   output(cmdId: string, options?: CommandOutputOptions): Promise<CommandOutput>;
   /** Writes each file, in order, replacing what was there. `runtime: 'aws.lambda'` rejects for now. */
   writeFiles(files: WriteFile[], options?: FileOptions): Promise<void>;
-  /** Resolves to null when the file does not exist. `runtime: 'aws.lambda'` rejects for now. */
+  /**
+   * Resolves to null when the file does not exist, and to no bytes from past its end. `runtime: 'aws.lambda'` rejects
+   * for now.
+   */
   readFileToBuffer(file: ReadFile, options?: FileOptions): Promise<Buffer | null>;
   /** Makes a directory and its parents, and is fine if it's there. `runtime: 'aws.lambda'` rejects for now. */
   mkDir(path: string, options?: FileOptions): Promise<void>;

@@ -954,6 +954,16 @@ describe('sandbox', () => {
       expect(read.mock.calls[0]![0]).toBe(expected);
     });
 
+    it('reads a range', async () => {
+      microvm();
+      const read = jest.spyOn(MicrovmCompute.prototype, 'readFile').mockReturnValue(of(Buffer.from('hi')));
+      const sandbox = await Sandbox.create();
+
+      await sandbox.readFileToBuffer({ path: 'x.txt', offset: 5, length: 2 });
+
+      expect(read.mock.calls[0]![1]).toEqual({ offset: 5, length: 2 });
+    });
+
     it('resolves to null for a file that is not there', async () => {
       microvm();
       jest.spyOn(MicrovmCompute.prototype, 'readFile').mockReturnValue(of(null));

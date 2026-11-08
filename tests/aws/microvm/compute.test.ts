@@ -560,11 +560,37 @@ describe('aws microvm compute', () => {
 
       it('reads a file, or null when it is not there', async () => {
         const found = answering(200, new Uint8Array([1, 2, 3]));
-        await expect(lastValueFrom(found.compute.readFile('a', signal))).resolves.toEqual(Buffer.from([1, 2, 3]));
+        await expect(lastValueFrom(found.compute.readFile('a', {}, signal))).resolves.toEqual(Buffer.from([1, 2, 3]));
+        expect(called(found.fetch).init.headers).not.toHaveProperty('range');
 
         jest.restoreAllMocks();
         const missing = answering(404);
-        await expect(lastValueFrom(missing.compute.readFile('a', signal))).resolves.toBeNull();
+        await expect(lastValueFrom(missing.compute.readFile('a', {}, signal))).resolves.toBeNull();
+      });
+
+      it.each([
+        [{ offset: 2, length: 3 }, 'bytes=2-4'],
+        [{ offset: 7 }, 'bytes=7-'],
+        [{ length: 4 }, 'bytes=0-3'],
+      ])('asks for only %j, as %s', async (range, header) => {
+        const { compute, fetch } = answering(206, new Uint8Array([2, 3, 4]));
+
+        await expect(lastValueFrom(compute.readFile('a', range, signal))).resolves.toEqual(Buffer.from([2, 3, 4]));
+        expect(called(fetch).init.headers).toMatchObject({ range: header, 'X-aws-proxy-auth': 'token' });
+      });
+
+      it('cuts the range itself from a runtime that sent the whole file', async () => {
+        const { compute } = answering(200, new Uint8Array([0, 1, 2, 3, 4, 5]));
+
+        await expect(lastValueFrom(compute.readFile('a', { offset: 2, length: 3 }, signal))).resolves.toEqual(
+          Buffer.from([2, 3, 4])
+        );
+      });
+
+      it('reads no bytes from past the end', async () => {
+        const { compute } = answering(416);
+
+        await expect(lastValueFrom(compute.readFile('a', { offset: 10 }, signal))).resolves.toEqual(Buffer.alloc(0));
       });
 
       it('makes a directory with POST', async () => {
@@ -579,7 +605,7 @@ describe('aws microvm compute', () => {
 
       it.each([
         ['writing', (compute: MicrovmCompute) => compute.writeFile('f', Buffer.from('x'), undefined, signal)],
-        ['reading', (compute: MicrovmCompute) => compute.readFile('f', signal)],
+        ['reading', (compute: MicrovmCompute) => compute.readFile('f', {}, signal)],
         ['making', (compute: MicrovmCompute) => compute.mkDir('f', signal)],
       ])('says why %s failed', async (_, call) => {
         const { compute } = answering(500, 'EACCES: permission denied');

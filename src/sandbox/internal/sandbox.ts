@@ -428,11 +428,13 @@ export class SandboxImpl implements Sandbox {
     });
   }
 
-  async readFileToBuffer({ path, cwd }: ReadFile, options?: FileOptions): Promise<Buffer | null> {
+  async readFileToBuffer({ path, cwd, offset, length }: ReadFile, options?: FileOptions): Promise<Buffer | null> {
     const signal = options?.signal
       ? AbortSignal.any([options.signal, this.environment.signal])
       : this.environment.signal;
-    return lastValueFrom(this.compute.readFile(cwd ? posix.resolve(cwd, path) : path, signal)).catch((error) => {
+    return lastValueFrom(
+      this.compute.readFile(cwd ? posix.resolve(cwd, path) : path, { offset, length }, signal)
+    ).catch((error) => {
       throw humanize(error);
     });
   }
