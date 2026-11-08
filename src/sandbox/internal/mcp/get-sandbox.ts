@@ -4,7 +4,7 @@ import type { SandboxFactory } from '../..';
 import { describeError } from '../../../aws/errors';
 import { safeTool, toolResult } from '../../../mcp/internal/tool';
 import type { Tool } from '../../../mcp/internal/types';
-import { OWN_TOOLS, registerTools } from './create-sandbox';
+import { OWN_TOOLS, registerSandbox } from './create-sandbox';
 
 const inputSchema = z.object({
   sandbox_id: z.string().describe('From create_sandbox or list_sandboxes.'),
@@ -24,14 +24,14 @@ export const getSandbox: Tool<SandboxFactory, typeof inputSchema, typeof outputS
     inputSchema,
     outputSchema,
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
-    async run(sandboxes, { sandbox_id: sandboxId }, ctx) {
+    async run(factory, { sandbox_id: sandboxId }, ctx) {
       const { meta, logLevel, signal } = ctx;
 
       return lastValueFrom(
-        from(sandboxes.get({ sandboxId, meta, logLevel, signal })).pipe(
-          map((found) => {
-            const result = toolResult(outputSchema, { sandbox_id: found.sandboxId });
-            const names = registerTools(found, ctx);
+        from(factory.get({ sandboxId, meta, logLevel, signal })).pipe(
+          map((sandbox) => {
+            const result = toolResult(outputSchema, { sandbox_id: sandbox.sandboxId });
+            const names = registerSandbox(sandbox, sandbox.sandboxId, ctx);
             // A client can list the new tools late, or not at all, until it hears they changed.
             if (names.length) result.content.push({ type: 'text', text: `Its tools: ${names.join(', ')}.` });
             return result;

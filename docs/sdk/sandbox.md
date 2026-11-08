@@ -416,7 +416,18 @@ tell its clients to list tools again:
 run(Sandbox, input, { ...ctx, server, signal, changed: () => handler.notify.toolsChanged() });
 ```
 
-That server is gone after its request, so the host also registers each sandbox's tools on every new one.
+That server is gone after its request, so the host puts each sandbox's tools back on every new one, with
+`registerTools`. It lists every sandbox with the context's `meta`, on its `limits.runtimes`, and registers each
+one's tools:
+
+```ts
+import { registerTools } from '@scaffoldly/rowdy/mcp';
+
+await registerTools(Sandbox, { ...ctx, server, signal, meta, changed });
+```
+
+Each call lists sandboxes on AWS, so a host calls it for the requests that need the tools, a `tools/list` or a
+call to one of them.
 
 `read_file` answers 64 KiB at a time, read on with `offset`, and a missing file is `found: false`.
 `write_file` takes one file, as utf8 or base64, with an octal `mode` like `"755"`.

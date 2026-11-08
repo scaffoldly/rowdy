@@ -23,15 +23,15 @@ import type { ServerContext, Tool } from '../../../mcp/internal/types';
 export const REGISTERED = new WeakMap<Pick<McpServer, 'registerTool'>, Map<string, RegisteredTool[]>>();
 
 /**
- * Registers a sandbox's own tools, named with its suffix, on the server a call came in on, once per server. Answers
- * with their names there, or none without a server.
+ * Registers a sandbox's own tools, named with its suffix, on the context's server, once per server. Answers with their
+ * names there, or none without a server. A sandbox that isn't ready yet is fine: each call waits for it.
  */
-export const registerTools = (
-  sandbox: Sandbox,
+export const registerSandbox = (
+  sandbox: Pick<Sandbox, 'tools'>,
+  sandboxId: string,
   { server, signal, meta, limits, logLevel, changed }: ServerContext
 ): string[] => {
   if (!server) return [];
-  const { sandboxId } = sandbox;
   // Named with the sandbox's suffix, so two sandboxes' tools don't clash.
   const suffix = sandboxId.split('-').pop();
   const tools = sandbox.tools();
@@ -59,6 +59,24 @@ export const registerTools = (
     { once: true }
   );
   return names;
+};
+
+/**
+ * Registers the own tools of every sandbox with the context's `meta`, on its runtimes, on the context's server. Answers
+ * with their names there, or none without a server. A host that builds a server per request calls it for each.
+ */
+export const registerTools = async (
+  factory: Pick<SandboxFactory, 'list' | 'get'>,
+  ctx: ServerContext
+): Promise<string[]> => {
+  const { server, meta, limits, logLevel, signal } = ctx;
+  if (!server) return [];
+  const sandboxes = (await factory.list({ meta, signal }))
+    // A runtime the host doesn't allow isn't one a model can use.
+    .filter((sandbox) => !limits?.runtimes || limits.runtimes.includes(sandbox.runtime));
+  return sandboxes.flatMap(({ sandboxId }) =>
+    registerSandbox(factory.get({ sandboxId, meta, logLevel, signal }), sandboxId, ctx)
+  );
 };
 
 /** What a sandbox comes with, for the tools that register its own. */
@@ -103,7 +121,7 @@ export const createSandbox: Tool<SandboxFactory, typeof inputSchema, typeof outp
     inputSchema,
     outputSchema,
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: true },
-    async run(sandboxes, input, ctx) {
+    async run(factory, input, ctx) {
       const { meta, limits, logLevel, signal } = ctx;
       const runtime = input.runtime ?? limits?.runtimes?.[0];
       // An omitted value must not pass a cap below its default.
@@ -120,7 +138,7 @@ export const createSandbox: Tool<SandboxFactory, typeof inputSchema, typeof outp
         throw new RangeError(`memory must be at most ${limits.memory} MB, got ${memory}`);
       }
 
-      const created = sandboxes.create({
+      const created = factory.create({
         ...input,
         runtime,
         timeout,
@@ -135,9 +153,9 @@ export const createSandbox: Tool<SandboxFactory, typeof inputSchema, typeof outp
       return lastValueFrom(
         merge(
           from(created).pipe(
-            map((found) => {
-              const result = toolResult(outputSchema, { sandbox_id: found.sandboxId });
-              const names = registerTools(found, ctx);
+            map((sandbox) => {
+              const result = toolResult(outputSchema, { sandbox_id: sandbox.sandboxId });
+              const names = registerSandbox(sandbox, sandbox.sandboxId, ctx);
               // A client can list the new tools late, or not at all, until it hears they changed.
               if (names.length) result.content.push({ type: 'text', text: `Its tools: ${names.join(', ')}.` });
               return result;

@@ -1,5 +1,5 @@
 import { describe, expect, it, jest } from '@jest/globals';
-import type { BoundTool, Sandbox, SandboxFactory, ServerContext } from '../../../../src/sandbox';
+import type { BoundTool, Sandbox, SandboxFactory, SandboxPromise, ServerContext } from '../../../../src/sandbox';
 import { getSandbox } from '../../../../src/sandbox/internal/mcp/get-sandbox';
 
 const sandboxId = 'arn:aws:lambda:us-east-1:123456789012:microvm-image:builds-bcdf245678';
@@ -9,7 +9,9 @@ const setup = () => {
   const tools = (): BoundTool[] => [
     { name: 'run_command', title: '', description: '', inputSchema: {} as never, run: own },
   ];
-  const get = jest.fn((_lookup: unknown) => Promise.resolve({ sandboxId, tools } as unknown as Sandbox));
+  const get = jest.fn(
+    (_lookup: unknown) => Promise.resolve({ sandboxId, tools } as unknown as Sandbox) as unknown as SandboxPromise
+  );
   const sandboxes = { get } as unknown as SandboxFactory;
   const removed: string[] = [];
   const registerTool = jest.fn((name: string, _config: unknown, _run: unknown) => ({

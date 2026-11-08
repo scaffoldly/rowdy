@@ -23,7 +23,12 @@
  * ```
  *
  * A host that builds a server per request also passes `changed`, called whenever a sandbox's tools go on or come off
- * `server`, to tell its clients to list tools again.
+ * `server`, to tell its clients to list tools again. Its new server starts with none of them, so before each request
+ * it puts back the tools of every sandbox with its `meta` with `registerTools`:
+ *
+ * ```ts
+ * await registerTools(Sandbox, { ...ctx, server, signal, meta, changed });
+ * ```
  *
  * `tools.lazy` are registered by those tools, on the `server` a call gives. To wrap their `run` too, give a
  * `server` whose `registerTool` wraps the callback it's handed.
@@ -42,6 +47,7 @@ import { stopSandbox } from '../sandbox/internal/mcp/stop-sandbox';
 import { writeFile } from '../sandbox/internal/mcp/write-file';
 
 export type { ServerContext, Tool } from './internal/types';
+export { registerTools } from '../sandbox/internal/mcp/create-sandbox';
 
 // A host's stdout is its own, even for a tool that fails before it reaches a sandbox.
 new Logger('sandbox').withSink('stderr');
