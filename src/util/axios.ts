@@ -1,7 +1,7 @@
 import axios, { AxiosInstance, AxiosError, AxiosResponse, InternalAxiosRequestConfig, AxiosHeaders } from 'axios';
 import { parse } from 'auth-header';
 import { Logger } from '../log';
-import { HttpHeaders } from '../proxy/http';
+import { HttpHeaders } from '../proxy/headers';
 import { headers as awsHeaders } from '../aws/headers';
 
 const headers = async (

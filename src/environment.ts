@@ -51,13 +51,13 @@ import {
 } from '@scaffoldly/rowdy-vfs';
 import { Volume } from './routes';
 import { LambdaImageService } from './aws/lambda/image';
-import { cpus } from 'os';
 import { readFileSync, rmSync } from 'fs';
 import { dirname, join } from 'path';
 import { internalIpV4Sync } from 'internal-ip';
 import { deployFailedSummary, deploySummary, writeGithubOutput, writeGithubSummary } from './util/github';
 import { isStaticElf, programOf } from './util/elf';
-import { deploySources } from './api/internal/layers';
+import { deploySources } from './api/internal/sources';
+import { concurrency } from './concurrency';
 
 export type { Secrets } from './secrets';
 type Args = yargs.ArgumentsCamelCase<
@@ -174,22 +174,8 @@ export class Environment implements ILoggable {
   // How long a graceful shutdown gets after the command exits before rowdy exits outright.
   static readonly EXIT_GRACE_MS = 2000;
 
-  private static _CONCURRENCY = {
-    MIN: 1,
-    MAX: 10,
-    CURRENT: 0,
-  };
-
   static get CONCURRENCY(): number {
-    if (Environment._CONCURRENCY.CURRENT === 0) {
-      const num = cpus()?.length || Environment._CONCURRENCY.MIN;
-      // Use all of the possible CPUs, up to MAX
-      Environment._CONCURRENCY.CURRENT = Math.min(
-        Math.max(Environment._CONCURRENCY.MIN, num),
-        Environment._CONCURRENCY.MAX
-      );
-    }
-    return Environment._CONCURRENCY.CURRENT;
+    return concurrency();
   }
 
   public abort: AbortController;

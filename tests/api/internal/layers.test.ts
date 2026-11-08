@@ -2,13 +2,12 @@ import { readFileSync } from 'fs';
 import { join } from 'path';
 import {
   checkSource,
-  deploySources,
   instructionOf,
-  layerSources,
   ROWDY_LAYERS,
   skippedLevel,
   SourcePlatform,
 } from '../../../src/api/internal/layers';
+import { deploySources, layerSources } from '../../../src/api/internal/sources';
 import { External } from '../../../src/api/internal/transfer';
 import { specList } from '../../../src/util/list';
 

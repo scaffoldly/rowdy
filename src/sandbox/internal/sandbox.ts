@@ -60,7 +60,7 @@ import { describeError, humanize } from '../../aws/errors';
 import { LambdaCompute } from '../../aws/lambda/compute';
 import { MicrovmCompute } from '../../aws/microvm/compute';
 import { safeTool } from '../../mcp/tool';
-import { EXEC_STREAM } from '../../proxy/shell';
+import { EXEC_STREAM } from '../../proxy/frames';
 import { createSandbox } from '../mcp/create-sandbox';
 import { runCommand } from '../mcp/run-command';
 import { listSandboxes } from '../mcp/list-sandboxes';

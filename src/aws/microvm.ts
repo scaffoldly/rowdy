@@ -11,26 +11,14 @@ import { Chunk, Pipeline, Proxy, Request, Response, Result } from '../pipeline';
 import { EXEC_CONTENT_TYPE, EXEC_STREAM, execFrame, ShellProxy, ShellRequest, ShellResponse } from '../proxy/shell';
 import { isExecEvent } from './lambda';
 import { URI } from '../routes';
+import { EXEC_ID_HEADER, EXEC_PATH, FILES_PATH, HOOKS_PORT } from './microvm/hooks';
 
 const log = root.child('microvm');
 
-/** The port an image's hook configuration must name: the first of Linux's ephemeral range, clear of a user's server. */
-export const HOOKS_PORT = 32768;
+export { EXEC_ID_HEADER, EXEC_PATH, FILES_PATH, HOOKS_PORT };
 
 const HOOKS_PATH = '/aws/lambda-microvms/runtime/v1/';
 const HOOKS: ReadonlySet<string> = new Set(['ready', 'validate', 'run']);
-
-/** Takes an Exec event. Apart from the hooks, which a holder of a VM's auth token can also reach. */
-export const EXEC_PATH = '/rowdy/exec';
-
-/**
- * At the `path` query, relative to where a command starts: PUT writes a file's bytes, GET answers them, and POST makes
- * a directory. PUT and POST make missing parents and take an octal `mode`. Reachable as `EXEC_PATH` is, and no wider.
- */
-export const FILES_PATH = '/rowdy/files';
-
-/** Carries a command's id on the response whose body is its frames. */
-export const EXEC_ID_HEADER = 'x-rowdy-cmd-id';
 
 export class MicrovmPipeline extends Pipeline {
   public readonly imageArn: string | undefined = process.env.AWS_LAMBDA_MICROVM_IMAGE_ARN;

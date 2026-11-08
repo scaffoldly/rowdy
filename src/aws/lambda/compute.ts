@@ -1,6 +1,6 @@
 import { LambdaClient, paginateListFunctions } from '@aws-sdk/client-lambda';
 import { concatMap, defer, filter, finalize, from, last, map, Observable, throwError } from 'rxjs';
-import { deploySources } from '../../api/internal/layers';
+import { ROWDY_LAYERS } from '../../api/internal/layers';
 import { Exec, ExecOutput, ExecOutputOptions } from '../../api/types';
 import type { Event } from '../../events';
 import type { SandboxSummary } from '../../sandbox';
@@ -53,10 +53,7 @@ export class LambdaCompute implements SandboxCompute {
   private lambda: LambdaFunction;
 
   constructor(environment: Environment) {
-    this.lambda = new LambdaFunction(
-      'Sandbox',
-      new LambdaImageService(environment).withLayersFrom(deploySources(undefined))
-    );
+    this.lambda = new LambdaFunction('Sandbox', new LambdaImageService(environment).withLayersFrom([ROWDY_LAYERS]));
   }
 
   get sandboxId(): string {
