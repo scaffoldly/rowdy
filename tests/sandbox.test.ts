@@ -1407,6 +1407,14 @@ describe('sandbox', () => {
       });
     });
 
+    it.each(['github:819991', 'a b', 'tenant/1', ''])('refuses a scope AWS would not take in a name: %j', (name) => {
+      expect(() => Sandbox.tools({ name })).toThrow(RangeError);
+    });
+
+    it('takes a scope of letters, digits, dashes and underscores', () => {
+      expect(() => Sandbox.tools({ name: 'github-819991_a' })).not.toThrow();
+    });
+
     it('lists them by name', () => {
       expect(Sandbox.tools().map(({ name }) => name)).toEqual([
         'create_sandbox',

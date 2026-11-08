@@ -229,7 +229,11 @@ export class SandboxImpl implements Sandbox {
   static tools(options?: SandboxToolsOptions): Tool[] {
     // A host's stdout is its own, even for a tool that fails before it reaches a sandbox.
     new Logger('sandbox').withSink('stderr');
-    const { server, logLevel, signal } = options ?? {};
+    const { server, logLevel, signal, name: scope } = options ?? {};
+    // The scope goes in every sandbox's name, and a check that can't match would refuse every call.
+    if (scope !== undefined && !/^[A-Za-z0-9_-]+$/.test(scope)) {
+      throw new RangeError(`name must be letters, digits, '-' or '_', as AWS allows in a name, got ${scope}`);
+    }
 
     // Each sandbox's own tools while they're on the server, so a repeated create doesn't register them twice.
     const registered = new Map<string, RegisteredTool[]>();
