@@ -2,7 +2,7 @@ import { describe, expect, it, jest } from '@jest/globals';
 import type { BoundTool, Sandbox, SandboxFactory, ServerContext } from '../../../../src/sandbox';
 import { getSandbox } from '../../../../src/sandbox/internal/mcp/get-sandbox';
 
-const sandboxId = 'arn:aws:lambda:us-east-1:123456789012:microvm-image:tenant-builds-bcdf245678';
+const sandboxId = 'arn:aws:lambda:us-east-1:123456789012:microvm-image:builds-bcdf245678';
 
 const setup = () => {
   const own = jest.fn(async (_args: unknown, _ctx: unknown) => ({ content: [] }));

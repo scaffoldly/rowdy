@@ -58,6 +58,7 @@ import type { SandboxEnvironment } from '../../sandbox/internal/environment';
 import { Logger } from '../../log';
 import { ExecSchema } from '../../routes';
 import { ComputeSpec, MICROVM_MEMORY, SandboxCompute, SandboxError } from '../../sandbox/internal/compute';
+import { META_TAG, TAG_KEY_REGEX, TAG_VALUE_REGEX } from '../tags';
 import { _create, isNotFound, isPropagating, isTransient, PROPAGATION, roleName, ROWDY_BIN } from '../lambda/shared';
 import { AwsClientLogger } from '../logger';
 import { EXEC_LOG } from '../../proxy/frames';
@@ -120,6 +121,11 @@ export class MicrovmCompute extends AwsClientLogger implements SandboxCompute {
                     startedAt: live?.startedAt,
                     stopsAt:
                       live?.startedAt && seconds ? new Date(live.startedAt.getTime() + seconds * 1000) : undefined,
+                    meta: Object.fromEntries(
+                      Object.entries(Tags ?? {})
+                        .filter(([key]) => key.startsWith(META_TAG))
+                        .map(([key, value]) => [key.slice(META_TAG.length), value])
+                    ),
                   };
                 })
               ),
@@ -131,7 +137,7 @@ export class MicrovmCompute extends AwsClientLogger implements SandboxCompute {
     );
   }
 
-  static assert({ timeout, memory, env }: Pick<ComputeSpec, 'timeout' | 'memory' | 'env'>): void {
+  static assert({ timeout, memory, env, meta }: Pick<ComputeSpec, 'timeout' | 'memory' | 'env' | 'meta'>): void {
     if (!Number.isInteger(timeout / 1000) || timeout < 1000 || timeout > 28_800_000) {
       throw new RangeError(`timeout must be whole seconds from 1000 to 28800000 ms, got ${timeout}`);
     }
@@ -141,6 +147,11 @@ export class MicrovmCompute extends AwsClientLogger implements SandboxCompute {
     if (Object.keys(env).length > 50) {
       throw new RangeError(`env must have at most 50 variables, got ${Object.keys(env).length}`);
     }
+    Object.entries(meta).forEach(([key, value]) => {
+      if (!TAG_KEY_REGEX.test(`${META_TAG}${key}`) || !TAG_VALUE_REGEX.test(value)) {
+        throw new RangeError(`meta must be what AWS takes in a tag, got ${key}=${value}`);
+      }
+    });
   }
 
   readonly stoppable = true;
@@ -168,7 +179,7 @@ export class MicrovmCompute extends AwsClientLogger implements SandboxCompute {
     return this.imageArn;
   }
 
-  create({ image, name, timeout, memory, env }: ComputeSpec): Observable<this> {
+  create({ image, name, timeout, memory, env, meta }: ComputeSpec): Observable<this> {
     return forkJoin({
       ImageUri: this.pull(image),
       Bucket: ownedBucket(this.s3, this.log, BUCKET_PREFIX, BUCKET_OWNER),
@@ -207,6 +218,7 @@ export class MicrovmCompute extends AwsClientLogger implements SandboxCompute {
                 [COMPUTE_TAG]: 'microvm',
                 [TIMEOUT_TAG]: `${timeout / 1000}`,
                 'run.rowdy.user.agent': this.environment.userAgent,
+                ...Object.fromEntries(Object.entries(meta).map(([key, value]) => [`${META_TAG}${key}`, value])),
               },
             })
           ),
@@ -219,10 +231,11 @@ export class MicrovmCompute extends AwsClientLogger implements SandboxCompute {
     );
   }
 
-  attach(sandboxId: string): Observable<this> {
+  attach(sandboxId: string, meta: Record<string, string> = {}): Observable<this> {
     return defer(() => this.microvms.send(new ListTagsCommand({ Resource: sandboxId }))).pipe(
       map(({ Tags }) => {
-        if (Tags?.[COMPUTE_TAG] !== 'microvm') {
+        const matches = Object.entries(meta).every(([key, value]) => Tags?.[`${META_TAG}${key}`] === value);
+        if (Tags?.[COMPUTE_TAG] !== 'microvm' || !matches) {
           throw new SandboxError(`Not a sandbox: ${sandboxId}`);
         }
         this.imageArn = sandboxId;

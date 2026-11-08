@@ -1,4 +1,4 @@
-import { LambdaClient, paginateListFunctions } from '@aws-sdk/client-lambda';
+import { LambdaClient, ListTagsCommand, paginateListFunctions } from '@aws-sdk/client-lambda';
 import {
   concatMap,
   defer,
@@ -7,6 +7,7 @@ import {
   from,
   last,
   map,
+  mergeMap,
   Observable,
   shareReplay,
   switchMap,
@@ -19,6 +20,8 @@ import type { Event } from '../../events';
 import type { SandboxSummary } from '../../sandbox';
 import type { ExecSchema } from '../../routes';
 import { ComputeSpec, SandboxCompute, SandboxError } from '../../sandbox/internal/compute';
+import { META_TAG, TAG_KEY_REGEX, TAG_VALUE_REGEX } from '../tags';
+import { concurrency } from '../../concurrency';
 import type { SandboxEnvironment } from '../../sandbox/internal/environment';
 import { execOutput } from '../exec';
 import type { LambdaFunction } from './index';
@@ -34,13 +37,18 @@ export class LambdaCompute implements SandboxCompute {
   };
 
   // Lambda takes Timeout in whole seconds, 1 to 900, and MemorySize in whole MB, 128 to 10240.
-  static assert({ timeout, memory }: Pick<ComputeSpec, 'timeout' | 'memory'>): void {
+  static assert({ timeout, memory, meta }: Pick<ComputeSpec, 'timeout' | 'memory' | 'meta'>): void {
     if (!Number.isInteger(timeout / 1000) || timeout < 1000 || timeout > 900_000) {
       throw new RangeError(`timeout must be whole seconds from 1000 to 900000 ms, got ${timeout}`);
     }
     if (!Number.isInteger(memory) || memory < 128 || memory > 10240) {
       throw new RangeError(`memory must be whole MB from 128 to 10240, got ${memory}`);
     }
+    Object.entries(meta).forEach(([key, value]) => {
+      if (!TAG_KEY_REGEX.test(`${META_TAG}${key}`) || !TAG_VALUE_REGEX.test(value)) {
+        throw new RangeError(`meta must be what AWS takes in a tag, got ${key}=${value}`);
+      }
+    });
   }
 
   static list(): Observable<SandboxSummary> {
@@ -49,12 +57,23 @@ export class LambdaCompute implements SandboxCompute {
       concatMap(({ Functions = [] }) => Functions),
       // Only a function deployed as a sandbox runs commands.
       filter(({ Environment: env }) => env?.Variables?.ROWDY_SANDBOX === 'true'),
-      map(
-        ({ FunctionArn, FunctionName }): SandboxSummary => ({
-          sandboxId: FunctionArn!,
-          name: FunctionName!,
-          runtime: 'aws.lambda',
-        })
+      mergeMap(
+        ({ FunctionArn, FunctionName }) =>
+          from(lambda.send(new ListTagsCommand({ Resource: FunctionArn }))).pipe(
+            map(
+              ({ Tags }): SandboxSummary => ({
+                sandboxId: FunctionArn!,
+                name: FunctionName!,
+                runtime: 'aws.lambda',
+                meta: Object.fromEntries(
+                  Object.entries(Tags ?? {})
+                    .filter(([key]) => key.startsWith(META_TAG))
+                    .map(([key, value]) => [key.slice(META_TAG.length), value])
+                ),
+              })
+            )
+          ),
+        concurrency()
       ),
       finalize(() => lambda.destroy())
     );
@@ -89,7 +108,7 @@ export class LambdaCompute implements SandboxCompute {
     return FunctionArn;
   }
 
-  create({ image, name, timeout, memory, env }: ComputeSpec): Observable<this> {
+  create({ image, name, timeout, memory, env, meta }: ComputeSpec): Observable<this> {
     return this.lambda$.pipe(
       switchMap((lambda) => {
         lambda
@@ -100,6 +119,7 @@ export class LambdaCompute implements SandboxCompute {
           // The suffix keeps a sandbox off a function deployed any other way, whose exec must stay off.
           .withName(name);
         Object.entries(env).forEach(([key, value]) => lambda.withEnvironment(key, value));
+        Object.entries(meta).forEach(([key, value]) => lambda.withTag(`${META_TAG}${key}`, value));
         return defer(() => lambda.observe());
       }),
       last(),
@@ -107,12 +127,14 @@ export class LambdaCompute implements SandboxCompute {
     );
   }
 
-  attach(sandboxId: string): Observable<this> {
+  attach(sandboxId: string, meta: Record<string, string> = {}): Observable<this> {
     return this.lambda$.pipe(
       switchMap((lambda) => lambda.withArn(sandboxId)),
       map((lambda) => {
+        const { Configuration, Tags } = lambda.Status;
+        const matches = Object.entries(meta).every(([key, value]) => Tags?.[`${META_TAG}${key}`] === value);
         // Exec is refused on any other function, so a handle to one could never run a command.
-        if (lambda.Status.Configuration?.Environment?.Variables?.ROWDY_SANDBOX !== 'true') {
+        if (Configuration?.Environment?.Variables?.ROWDY_SANDBOX !== 'true' || !matches) {
           throw new SandboxError(`Not a sandbox: ${sandboxId}`);
         }
         return this;
@@ -137,7 +159,7 @@ export class LambdaCompute implements SandboxCompute {
     );
   }
 
-  events(): Observable<Extract<Event, { source: 'cdk' }>> {
+  events(): Observable<Event> {
     return this.lambda$.pipe(switchMap((lambda) => lambda.events()));
   }
 

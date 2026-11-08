@@ -12,6 +12,11 @@ interface BaseSandboxOptions {
   image?: string;
   /** The prefix of a generated name, `{name}-{suffix}`. Defaults to `sandbox`. */
   name?: string;
+  /**
+   * Kept on the sandbox as tags, `run.rowdy.meta.{key}`, for `list` and `get` to match. Different meta is a different
+   * sandbox. Keys and values are what AWS takes in a tag.
+   */
+  meta?: Record<string, string>;
   /** Applies to the whole process. Defaults to ROWDY_LOG_LEVEL, ROWDY_DEBUG or ROWDY_TRACE, then `warn`. */
   logLevel?: Level;
   /** Aborts the sandbox's work in progress, including its creation, and stops it if it can `stop`. */
@@ -58,9 +63,7 @@ export interface SandboxToolsLimits {
   runtimes?: NonNullable<SandboxOptions['runtime']>[];
 }
 
-export interface SandboxToolsOptions extends Pick<SandboxOptions, 'logLevel'> {
-  /** Comes first in every sandbox's name, `{name}-{model's name}-{suffix}`: letters, digits, `-` and `_` only. */
-  name?: string;
+export interface SandboxToolsOptions extends Pick<SandboxOptions, 'logLevel' | 'meta'> {
   /** What a model can ask for. */
   limits?: SandboxToolsLimits;
 }
@@ -78,18 +81,22 @@ export interface SandboxSummary {
   startedAt?: Date;
   /** When the running microVM's `timeout` ends it. */
   stopsAt?: Date;
+  /** What `create` was given as `meta`. */
+  meta: Record<string, string>;
 }
 
 export interface SandboxListOptions {
   /** Only sandboxes on this runtime. Defaults to every runtime. */
   runtime?: NonNullable<SandboxOptions['runtime']>;
-  /** Only sandboxes whose name starts with `{name}-`. */
-  name?: string;
+  /** Only sandboxes whose `meta` has every one of these. */
+  meta?: Record<string, string>;
   signal?: AbortSignal;
 }
 
 export interface SandboxLookup extends Pick<SandboxOptions, 'logLevel'> {
   sandboxId: string;
+  /** Refuses a sandbox whose `meta` doesn't have every one of these. */
+  meta?: Record<string, string>;
   /** Aborts the sandbox's work in progress, and stops it if it can `stop`. */
   signal?: AbortSignal;
 }

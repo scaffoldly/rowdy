@@ -66,6 +66,7 @@ const sandbox = await Sandbox.create({
 | `timeout`  | 15 minutes           | See [Runtime](#runtime).                                                   |
 | `memory`   | 512                  | See [Runtime](#runtime).                                                   |
 | `env`      |                      | Environment variables for every command.                                   |
+| `meta`     |                      | Kept with the sandbox, for `list` and `get` to match. See [Meta](#meta).   |
 | `logLevel` | `warn`               | See [Logging](../sdk.md#logging).                                          |
 | `signal`   |                      | See [Aborting](#aborting).                                                 |
 
@@ -74,8 +75,8 @@ A private image is read with the credentials `docker login` saved for its regist
 On `aws.lambda`, `HOME` defaults to `/tmp`, the only writable path, and the `XDG_*` base directories to
 their usual places under it. `env` can override them.
 
-The suffix is a hash of `runtime`, `image`, `timeout`, `memory` and `env`, so the same values under the
-same `name` give you the same sandbox. A second `create` doesn't build anything, and on `aws.microvm` it
+The suffix is a hash of `runtime`, `image`, `timeout`, `memory`, `env` and `meta`, so the same values under
+the same `name` give you the same sandbox. A second `create` doesn't build anything, and on `aws.microvm` it
 shares the first one's VM. A different `name` or value gives a sandbox of its own.
 
 `create` resolves when the sandbox is ready for a command, with nothing running yet. On `aws.microvm` the
@@ -230,13 +231,29 @@ Lists the sandboxes in the account and region, on every runtime, to find a lost 
 const running = (await Sandbox.list({ runtime: 'aws.microvm' })).filter(({ running }) => running);
 ```
 
-| Option    | What it does                                               |
-| --------- | ---------------------------------------------------------- |
-| `runtime` | Only sandboxes on this runtime. Defaults to every runtime. |
-| `name`    | Only sandboxes whose name starts with `{name}-`.           |
-| `signal`  | Rejects the listing.                                       |
+| Option    | What it does                                                |
+| --------- | ----------------------------------------------------------- |
+| `runtime` | Only sandboxes on this runtime. Defaults to every runtime.  |
+| `meta`    | Only sandboxes whose `meta` has every one of these entries. |
+| `signal`  | Rejects the listing.                                        |
 
-Each has its `sandboxId`, `name` and `runtime`. A microVM sandbox also says whether it's `running`, and if it is, `startedAt` and `stopsAt`, when its `timeout` ends it. A Lambda sandbox is billed only while a command runs, so it has neither.
+Each has its `sandboxId`, `name`, `runtime` and `meta`. A microVM sandbox also says whether it's `running`, and if it is, `startedAt` and `stopsAt`, when its `timeout` ends it. A Lambda sandbox is billed only while a command runs, so it has neither.
+
+## Meta
+
+`meta` is a host's own labels for a sandbox, like who it's for. A sandbox keeps what `create` was given, and
+`Sandbox.list` and `Sandbox.get` match on it:
+
+```ts
+const sandbox = await Sandbox.create({ meta: { sub: 'github:1' } });
+
+const ours = await Sandbox.list({ meta: { sub: 'github:1' } });
+const again = await Sandbox.get({ sandboxId, meta: { sub: 'github:1' } });
+```
+
+`get` refuses a sandbox whose `meta` doesn't have every entry given, as it does one that isn't a sandbox.
+Different `meta` is a different sandbox, even with the same options. On AWS each entry is a tag,
+`run.rowdy.meta.{key}`, so keys and values are what AWS takes in a tag.
 
 ## Aborting
 
@@ -367,7 +384,7 @@ there's something to do: `Retrying may help.` for throttling or a fault on AWS's
 `@scaffoldly/rowdy/mcp` has the tools for a model that manages its own sandboxes, keyed by name. A host adds
 `tools.factory` to its own server: `create_sandbox`, `get_sandbox`, `list_sandboxes` and `stop_sandbox`. Each
 `run` takes the SDK first, then the input, then the call's context with what the host adds: the `server`, its
-`signal`, and optionally a scope `name`, `limits` and `logLevel`.
+`signal`, and optionally `meta`, `limits` and `logLevel`.
 
 ```ts
 import { Sandbox, type SandboxFactory } from '@scaffoldly/rowdy/sandbox';
@@ -376,13 +393,13 @@ import { tools, type Tool } from '@scaffoldly/rowdy/mcp';
 const factory: Tool<SandboxFactory>[] = Object.values(tools.factory);
 factory.forEach(({ name, run, ...config }) =>
   server.registerTool(name, config, (input, ctx) =>
-    run(Sandbox, input, { ...ctx, server, signal, name: tenant, limits: { runtimes: ['aws.microvm'] } })
+    run(Sandbox, input, { ...ctx, server, signal, meta: { sub }, limits: { runtimes: ['aws.microvm'] } })
   )
 );
 ```
 
-The scope `name` comes first in every sandbox's name, and a `sandbox_id` outside it is refused. `limits` cap
-what a model can ask for.
+`meta` goes on every sandbox a call creates, and a call only lists, gets or stops sandboxes with it, so a model
+can't reach another's. `limits` cap what a model can ask for.
 
 Each sandbox `create_sandbox` makes gets tools of its own on that server, `tools.lazy`, named with its suffix,
 like `run_command_bcdf245678`, with no `sandbox_id` to give: `run_command` and `read_output`, and on

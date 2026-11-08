@@ -4,8 +4,8 @@ import type { RunCommandParams, SandboxPromise } from '../../../../src/sandbox';
 import { PROGRESS } from '../../../../src/sandbox/internal/mcp/create-sandbox';
 import { OUTPUT, runCommand, WAIT } from '../../../../src/sandbox/internal/mcp/run-command';
 
-const sandboxId = 'arn:aws:lambda:us-east-1:123456789012:microvm-image:tenant-builds-bcdf245678';
-const lambdaId = 'arn:aws:lambda:us-east-1:123456789012:function:tenant-bcdf245678';
+const sandboxId = 'arn:aws:lambda:us-east-1:123456789012:microvm-image:builds-bcdf245678';
+const lambdaId = 'arn:aws:lambda:us-east-1:123456789012:function:sandbox-bcdf245678';
 
 const setup = (
   output: { exitCode?: number; writes?: [stream: 'stdout' | 'stderr', text: string][]; running?: boolean } = {}

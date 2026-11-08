@@ -25,12 +25,8 @@ export const stopSandbox: Tool<SandboxFactory, typeof inputSchema, typeof output
     inputSchema,
     outputSchema,
     annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: true },
-    async run(sandboxes, { sandbox_id: sandboxId }, { server, signal, name: scope, logLevel }) {
-      if (scope && !sandboxId.split(':').pop()?.startsWith(`${scope}-`)) {
-        throw new SandboxError(`Not a sandbox: ${sandboxId}`);
-      }
-
-      const found = await sandboxes.get({ sandboxId, logLevel, signal });
+    async run(sandboxes, { sandbox_id: sandboxId }, { server, signal, meta, logLevel }) {
+      const found = await sandboxes.get({ sandboxId, meta, logLevel, signal });
       await found.stop().catch((error) => {
         // A failed stop can leave a VM running. It's billed until someone notices.
         if (error instanceof Error && !(error instanceof SandboxError)) {

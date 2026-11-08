@@ -28,7 +28,7 @@ export const REGISTERED = new WeakMap<Pick<McpServer, 'registerTool'>, Map<strin
  */
 export const registerTools = (
   sandbox: Sandbox,
-  { server, signal, name: scope, limits, logLevel }: ServerContext
+  { server, signal, meta, limits, logLevel }: ServerContext
 ): string[] => {
   if (!server) return [];
   const { sandboxId } = sandbox;
@@ -42,7 +42,7 @@ export const registerTools = (
 
   const sandboxTools = tools.map(({ name, run, ...config }) =>
     server.registerTool(`${name}_${suffix}`, config, (args, extra) =>
-      run(args, { ...extra, server, signal, name: scope, limits, logLevel })
+      run(args, { ...extra, server, signal, meta, limits, logLevel })
     )
   );
   onServer.set(sandboxId, sandboxTools);
@@ -102,11 +102,7 @@ export const createSandbox: Tool<SandboxFactory, typeof inputSchema, typeof outp
     outputSchema,
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: true },
     async run(sandboxes, input, ctx) {
-      const { name: scope, limits, logLevel, signal } = ctx;
-      // The scope goes in every sandbox's name, and AWS takes only these in one.
-      if (scope !== undefined && !/^[A-Za-z0-9_-]+$/.test(scope)) {
-        throw new RangeError(`name must be letters, digits, '-' or '_', as AWS allows in a name, got ${scope}`);
-      }
+      const { meta, limits, logLevel, signal } = ctx;
       const runtime = input.runtime ?? limits?.runtimes?.[0];
       // An omitted value must not pass a cap below its default.
       const timeout = input.timeout ?? (limits?.timeout && Math.min(limits.timeout, DEFAULTS.timeout));
@@ -127,7 +123,7 @@ export const createSandbox: Tool<SandboxFactory, typeof inputSchema, typeof outp
         runtime,
         timeout,
         memory,
-        name: [scope, input.name].filter(Boolean).join('-') || undefined,
+        meta,
         logLevel,
         signal,
       } as SandboxOptions);

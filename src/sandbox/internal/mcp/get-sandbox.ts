@@ -4,7 +4,6 @@ import type { SandboxFactory } from '../..';
 import { describeError } from '../../../aws/errors';
 import { safeTool, toolResult } from '../../../mcp/internal/tool';
 import type { Tool } from '../../../mcp/internal/types';
-import { SandboxError } from '../compute';
 import { OWN_TOOLS, registerTools } from './create-sandbox';
 
 const inputSchema = z.object({
@@ -26,13 +25,10 @@ export const getSandbox: Tool<SandboxFactory, typeof inputSchema, typeof outputS
     outputSchema,
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
     async run(sandboxes, { sandbox_id: sandboxId }, ctx) {
-      const { name: scope, logLevel, signal } = ctx;
-      if (scope && !sandboxId.split(':').pop()?.startsWith(`${scope}-`)) {
-        throw new SandboxError(`Not a sandbox: ${sandboxId}`);
-      }
+      const { meta, logLevel, signal } = ctx;
 
       return lastValueFrom(
-        from(sandboxes.get({ sandboxId, logLevel, signal })).pipe(
+        from(sandboxes.get({ sandboxId, meta, logLevel, signal })).pipe(
           map((found) => {
             const result = toolResult(outputSchema, { sandbox_id: found.sandboxId });
             const names = registerTools(found, ctx);
