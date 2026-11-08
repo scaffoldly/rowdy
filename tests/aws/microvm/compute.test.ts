@@ -1,7 +1,8 @@
 import { createHash } from 'crypto';
 import { strFromU8, unzipSync } from 'fflate';
-import { lastValueFrom, Observable } from 'rxjs';
-import { Environment, Logger } from '../../../src';
+import { lastValueFrom, Observable, of } from 'rxjs';
+import { Logger } from '../../../src';
+import { SandboxEnvironment } from '../../../src/sandbox/internal/environment';
 import { ExecFinished } from '../../../src/api/types';
 import { MicrovmCompute, POLL, TERMINATE_POLL } from '../../../src/aws/microvm/compute';
 import { EXEC_STREAM, execFrame } from '../../../src/proxy/shell';
@@ -37,7 +38,7 @@ describe('aws microvm compute', () => {
   afterEach(() => jest.restoreAllMocks());
 
   const setup = (handlers: Record<string, Handler> = {}): { compute: MicrovmCompute; sent: Sent[] } => {
-    const compute = new MicrovmCompute(new Environment(new Logger(), {}));
+    const compute = new MicrovmCompute(new SandboxEnvironment(new Logger()));
     const sent: Sent[] = [];
     const defaults: Record<string, Handler> = {
       ListManagedMicrovmImagesCommand: () => ({ items: [{ imageArn: BASE_ARN, createdAt: new Date(1) }] }),
@@ -67,8 +68,8 @@ describe('aws microvm compute', () => {
     });
     jest.spyOn(compute['s3'].config, 'region').mockResolvedValue('us-east-1');
     jest
-      .spyOn(compute['images'], 'pullImage')
-      .mockResolvedValue({ $typeName: 'runtime.v1.PullImageResponse', imageRef: IMAGE_URI });
+      .spyOn(compute['environment'].images, 'pullImage')
+      .mockReturnValue(of({ Image: 'alpine', ImageUri: IMAGE_URI }));
     return { compute, sent };
   };
 
@@ -115,7 +116,9 @@ describe('aws microvm compute', () => {
       await create(compute);
 
       expect(dockerfile(sent)).toBe(`FROM ${IMAGE_URI}\nENTRYPOINT ["/usr/local/bin/rowdy"]\n`);
-      expect(compute['images']['_layersFrom']).toContain('ghcr.io/scaffoldly/rowdy:beta');
+      expect(compute['environment'].images.pullImage).toHaveBeenCalledWith(SPEC.image, {
+        layersFrom: ['ghcr.io/scaffoldly/rowdy:beta'],
+      });
     });
 
     it('keeps the zip in a folder for the sandbox', async () => {

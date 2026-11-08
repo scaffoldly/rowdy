@@ -54,7 +54,7 @@ import {
   toArray,
 } from 'rxjs';
 import type { Exec, ExecFrame } from '../../api/types';
-import { Environment } from '../../environment';
+import { SandboxEnvironment } from './environment';
 import { Logger, maskUrl } from '../../log';
 import { describeError, humanize } from '../../aws/errors';
 import { LambdaCompute } from '../../aws/lambda/compute';
@@ -84,7 +84,7 @@ const RUNTIMES: Record<NonNullable<SandboxOptions['runtime']>, SandboxComputeCla
 };
 
 export class SandboxImpl implements Sandbox {
-  private environment: Environment;
+  private environment: SandboxEnvironment;
   private compute: SandboxCompute;
 
   private constructor({ runtime, logLevel, signal }: Pick<SandboxOptions, 'runtime' | 'logLevel' | 'signal'>) {
@@ -96,7 +96,7 @@ export class SandboxImpl implements Sandbox {
     } else if (!process.env.ROWDY_LOG_LEVEL && log.level === 'info') {
       log.withLevel('warn');
     }
-    this.environment = new Environment(log, { signal });
+    this.environment = new SandboxEnvironment(log, { signal });
 
     this.compute = new RUNTIMES[runtime ?? 'aws.microvm'](this.environment);
   }

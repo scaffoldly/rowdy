@@ -2,7 +2,20 @@ import { Logger } from '@scaffoldly/rowdy';
 import { CommandFinished, Sandbox, SandboxOptions } from '@scaffoldly/rowdy/sandbox';
 import { AxiosError, AxiosHeaders, InternalAxiosRequestConfig } from 'axios';
 import { InvokeWithResponseStreamResponseEvent, LambdaClient } from '@aws-sdk/client-lambda';
-import { EMPTY, from, lastValueFrom, NEVER, Observable, of, Subject, switchMap, throwError, toArray } from 'rxjs';
+import {
+  EMPTY,
+  from,
+  lastValueFrom,
+  map,
+  NEVER,
+  Observable,
+  of,
+  Subject,
+  switchMap,
+  tap,
+  throwError,
+  toArray,
+} from 'rxjs';
 import type { ServerContext } from '@modelcontextprotocol/server';
 import { PassThrough } from 'stream';
 import { ROWDY_LAYERS } from '../src/api/internal/layers';
@@ -21,7 +34,7 @@ import { computeHash, SandboxImpl } from '../src/sandbox/internal/sandbox';
 
 const FUNCTION_ARN = 'arn:aws:lambda:us-east-1:123456789012:function:sandbox-box';
 
-const lambdaOf = (sandbox: SandboxImpl): LambdaFunction => (sandbox['compute'] as LambdaCompute)['lambda'];
+const lambdaOf = (sandbox: SandboxImpl): LambdaFunction => (sandbox['compute'] as LambdaCompute)['lambda']!;
 
 type Event = InvokeWithResponseStreamResponseEvent;
 
@@ -72,7 +85,8 @@ describe('sandbox', () => {
         resolved = true;
         return sandbox;
       });
-      await Promise.resolve();
+      // The deployer loads on demand, so its deploy starts a few ticks later.
+      while (!observe.mock.calls.length) await new Promise((resolve) => setTimeout(resolve, 0));
       deploy.next(LambdaFunction.prototype);
       await Promise.resolve();
       expect(resolved).toBe(false);
@@ -443,7 +457,8 @@ describe('sandbox', () => {
       const controller = new AbortController();
 
       const created = SandboxImpl.create({ runtime: 'aws.lambda', signal: controller.signal });
-      await Promise.resolve();
+      // The deployer loads on demand, so its deploy starts a few ticks later.
+      while (!observe.mock.calls.length) await new Promise((resolve) => setTimeout(resolve, 0));
       controller.abort('stop');
 
       await expect(created).rejects.toBe('stop');
@@ -1083,8 +1098,10 @@ describe('sandbox', () => {
 
     it('shows a get to a caller who subscribes before awaiting', async () => {
       jest.spyOn(LambdaCompute.prototype, 'attach').mockImplementation(function (this: LambdaCompute) {
-        this['lambda']['emitted'].next(step);
-        return of(this);
+        return this['lambda$'].pipe(
+          tap((lambda) => lambda['emitted'].next(step)),
+          map(() => this)
+        );
       });
       const seen: unknown[] = [];
 
