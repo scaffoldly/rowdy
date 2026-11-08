@@ -1,8 +1,8 @@
 import { McpServer } from '@modelcontextprotocol/server';
 import { afterEach, describe, expect, it, jest } from '@jest/globals';
-import type { Environment } from '../../src/environment';
-import { INSTRUCTIONS, serve } from '../../src/mcp/server';
-import { Sandbox } from '../../src/sandbox';
+import type { Environment } from '../../../src/environment';
+import { INSTRUCTIONS, serve } from '../../../src/mcp/internal/server';
+import { tools } from '../../../src/mcp';
 
 const environment = (): Environment =>
   ({
@@ -25,8 +25,7 @@ describe('serve', () => {
 
     expect(register.mock.calls.map(([name]) => name)).toEqual([
       'create_sandbox',
-      'run_command',
-      'read_output',
+      'get_sandbox',
       'list_sandboxes',
       'stop_sandbox',
     ]);
@@ -42,7 +41,9 @@ describe('serve', () => {
   });
 
   it('names no tool, so tools can change without it', () => {
-    Sandbox.tools().forEach(({ name }) => expect(INSTRUCTIONS).not.toContain(name));
+    [...Object.values(tools.factory), ...Object.values(tools.lazy)].forEach(({ name }) =>
+      expect(INSTRUCTIONS).not.toContain(name)
+    );
   });
 
   it('aborts when the client hangs up', async () => {

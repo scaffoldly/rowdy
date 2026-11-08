@@ -13,7 +13,7 @@ const shared: Options = {
 export default defineConfig([
   {
     ...shared,
-    entry: ['src/index.ts', 'src/sandbox/index.ts'],
+    entry: ['src/index.ts', 'src/sandbox/index.ts', 'src/mcp/index.ts'],
     dts: { resolve: [/^@scaffoldly\/rowdy-cdk/] },
     format: ['cjs'],
     cjsInterop: true,
@@ -21,8 +21,8 @@ export default defineConfig([
   // An ESM host, like a Cloudflare Worker, has no `__filename` or `require` for the CommonJS build to use.
   {
     ...shared,
-    entry: { index: 'src/sandbox/index.ts' },
-    outDir: 'dist/esm/sandbox',
+    entry: { 'sandbox/index': 'src/sandbox/index.ts', 'mcp/index': 'src/mcp/index.ts' },
+    outDir: 'dist/esm',
     format: ['esm'],
     // A Worker has no `import.meta.url` either, so a shim for `__dirname` would crash at load.
     shims: false,

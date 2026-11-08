@@ -1,5 +1,5 @@
 import { isServerError, isThrottlingError, isTransientError } from '@smithy/core/retry';
-import type { ToolFailure } from '../mcp/tool';
+import type { ToolFailure } from '../mcp/internal/types';
 import { SandboxError } from '../sandbox/internal/compute';
 
 // The ones that arrive without a 401 or 403.

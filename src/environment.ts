@@ -286,7 +286,7 @@ export class Environment implements ILoggable {
           // Stdout is the protocol.
           this.log.withSink('stderr');
           this._subscriptions.push(
-            from(import('./mcp/server'))
+            from(import('./mcp/internal/server'))
               .pipe(switchMap(({ serve }) => serve(this)))
               .subscribe({
                 error: (error: Error) => {

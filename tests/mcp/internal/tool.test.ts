@@ -1,8 +1,9 @@
 import type { ServerContext } from '@modelcontextprotocol/server';
 import { afterEach, describe, expect, it, jest } from '@jest/globals';
 import { z } from 'zod';
-import { safeTool, Tool, toolResult } from '../../src/mcp/tool';
-import { Logger } from '../../src/log';
+import { safeTool, toolResult } from '../../../src/mcp/internal/tool';
+import type { Tool } from '../../../src/mcp/internal/types';
+import { Logger } from '../../../src/log';
 
 describe('toolResult', () => {
   const schema = z.object({ sandbox_id: z.string() });
@@ -41,7 +42,7 @@ describe('safeTool', () => {
     );
 
   const message = async (tool: Tool): Promise<string> =>
-    tool.run({}, {} as ServerContext).then(
+    tool.run(undefined, {}, {} as ServerContext).then(
       () => '',
       ({ message }) => message
     );
@@ -58,6 +59,16 @@ describe('safeTool', () => {
     jest.spyOn(console, 'warn').mockImplementation(() => {});
 
     expect(await message(failing(() => ({ message: 'safe', remedy })))).toBe(expected);
+  });
+
+  it('passes on an error another safe tool already made safe', async () => {
+    const warned = jest.spyOn(console, 'warn').mockImplementation(() => {});
+    const inner = failing(() => ({ message: 'safe', remedy: 'retry' }));
+
+    expect(await message(safeTool(inner, () => ({ message: 'redone', remedy: 'none' })))).toBe(
+      'safe Retrying may help.'
+    );
+    expect(warned.mock.calls.length).toBeLessThanOrEqual(1);
   });
 
   it('adds nothing without a remedy', async () => {
@@ -78,7 +89,7 @@ describe('safeTool', () => {
       () => ({ message: '' })
     );
 
-    await expect(tool.run({}, {} as ServerContext)).resolves.toMatchObject({ structuredContent: {} });
+    await expect(tool.run(undefined, {}, {} as ServerContext)).resolves.toMatchObject({ structuredContent: {} });
   });
 
   it('logs the whole error', async () => {

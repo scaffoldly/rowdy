@@ -66,6 +66,7 @@ const sandbox = await Sandbox.create({
 | `timeout`  | 15 minutes           | See [Runtime](#runtime).                                                   |
 | `memory`   | 512                  | See [Runtime](#runtime).                                                   |
 | `env`      |                      | Environment variables for every command.                                   |
+| `meta`     |                      | Kept with the sandbox, for `list` and `get` to match. See [Meta](#meta).   |
 | `logLevel` | `warn`               | See [Logging](../sdk.md#logging).                                          |
 | `signal`   |                      | See [Aborting](#aborting).                                                 |
 
@@ -74,8 +75,8 @@ A private image is read with the credentials `docker login` saved for its regist
 On `aws.lambda`, `HOME` defaults to `/tmp`, the only writable path, and the `XDG_*` base directories to
 their usual places under it. `env` can override them.
 
-The suffix is a hash of `runtime`, `image`, `timeout`, `memory` and `env`, so the same values under the
-same `name` give you the same sandbox. A second `create` doesn't build anything, and on `aws.microvm` it
+The suffix is a hash of `runtime`, `image`, `timeout`, `memory`, `env` and `meta`, so the same values under
+the same `name` give you the same sandbox. A second `create` doesn't build anything, and on `aws.microvm` it
 shares the first one's VM. A different `name` or value gives a sandbox of its own.
 
 `create` resolves when the sandbox is ready for a command, with nothing running yet. On `aws.microvm` the
@@ -187,7 +188,7 @@ const config = await sandbox.readFileToBuffer({ path: 'config.json', cwd: '/etc/
 
 - **Paths:** a relative one is from where a command starts without a `cwd`, so `app.js` above is the one `node app.js` finds. `readFileToBuffer` takes its own `cwd` too.
 - **`writeFiles`:** writes each file in order, replacing what was there, and makes missing directories. A string is written as UTF-8.
-- **`readFileToBuffer`:** resolves to `null` when the file isn't there.
+- **`readFileToBuffer`:** resolves to `null` when the file isn't there. `offset` and `length` read part of a file, and only that part leaves the VM. From past the end, it's no bytes.
 - **`mkDir`:** makes the directory and its parents, and is fine if it's already there.
 
 Each takes a `signal`, and starts the sandbox's VM if it has none, as a command would. On `aws.lambda`, they reject for now.
@@ -230,13 +231,29 @@ Lists the sandboxes in the account and region, on every runtime, to find a lost 
 const running = (await Sandbox.list({ runtime: 'aws.microvm' })).filter(({ running }) => running);
 ```
 
-| Option    | What it does                                               |
-| --------- | ---------------------------------------------------------- |
-| `runtime` | Only sandboxes on this runtime. Defaults to every runtime. |
-| `name`    | Only sandboxes whose name starts with `{name}-`.           |
-| `signal`  | Rejects the listing.                                       |
+| Option    | What it does                                                |
+| --------- | ----------------------------------------------------------- |
+| `runtime` | Only sandboxes on this runtime. Defaults to every runtime.  |
+| `meta`    | Only sandboxes whose `meta` has every one of these entries. |
+| `signal`  | Rejects the listing.                                        |
 
-Each has its `sandboxId`, `name` and `runtime`. A microVM sandbox also says whether it's `running`, and if it is, `startedAt` and `stopsAt`, when its `timeout` ends it. A Lambda sandbox is billed only while a command runs, so it has neither.
+Each has its `sandboxId`, `name`, `runtime` and `meta`. A microVM sandbox also says whether it's `running`, and if it is, `startedAt` and `stopsAt`, when its `timeout` ends it. A Lambda sandbox is billed only while a command runs, so it has neither.
+
+## Meta
+
+`meta` is a host's own labels for a sandbox, like who it's for. A sandbox keeps what `create` was given, and
+`Sandbox.list` and `Sandbox.get` match on it:
+
+```ts
+const sandbox = await Sandbox.create({ meta: { sub: 'github:1' } });
+
+const ours = await Sandbox.list({ meta: { sub: 'github:1' } });
+const again = await Sandbox.get({ sandboxId, meta: { sub: 'github:1' } });
+```
+
+`get` refuses a sandbox whose `meta` doesn't have every entry given, as it does one that isn't a sandbox.
+Different `meta` is a different sandbox, even with the same options. On AWS each entry is a tag,
+`run.rowdy.meta.{key}`, so keys and values are what AWS takes in a tag.
 
 ## Aborting
 
@@ -364,18 +381,56 @@ there's something to do: `Retrying may help.` for throttling or a fault on AWS's
 
 ## MCP tools
 
-`Sandbox.tools()` is for a model that manages its own sandboxes: `create_sandbox`, `run_command`,
-`read_output`, `list_sandboxes` and `stop_sandbox`. A host adds them to its own server.
+`@scaffoldly/rowdy/mcp` has the tools for a model that manages its own sandboxes, keyed by name. A host adds
+`tools.factory` to its own server: `create_sandbox`, `get_sandbox`, `list_sandboxes` and `stop_sandbox`. Each
+`run` takes the SDK first, then the input, then the call's context with what the host adds: the `server`, its
+`signal`, and optionally `meta`, `limits` and `logLevel`.
 
 ```ts
-for (const { name, run, ...config } of Sandbox.tools({ name: tenant, limits: { runtimes: ['aws.microvm'] } })) {
-  server.registerTool(name, config, run);
-}
+import { Sandbox, type SandboxFactory } from '@scaffoldly/rowdy/sandbox';
+import { tools, type Tool } from '@scaffoldly/rowdy/mcp';
+
+const factory: Tool<SandboxFactory>[] = Object.values(tools.factory);
+factory.forEach(({ name, run, ...config }) =>
+  server.registerTool(name, config, (input, ctx) =>
+    run(Sandbox, input, { ...ctx, server, signal, meta: { sub }, limits: { runtimes: ['aws.microvm'] } })
+  )
+);
 ```
 
-Pass the `server` too, and each sandbox `create_sandbox` makes gets tools of its own on it, named with its
-suffix, like `run_command_bcdf245678`, with no `sandbox_id` to give. They come off when it's stopped, or the
-`signal` aborts. The server has to last the session, so this doesn't suit one built per request.
+`meta` goes on every sandbox a call creates, and a call only lists, gets or stops sandboxes with it, so a model
+can't reach another's. `limits` cap what a model can ask for.
+
+Each sandbox `create_sandbox` makes gets tools of its own on that server, `tools.lazy`, named with its suffix,
+like `run_command_bcdf245678`, with no `sandbox_id` to give: `run_command` and `read_output`, and on
+`aws.microvm` `read_file`, `write_file`, `make_directory` and `stop_sandbox`. `get_sandbox` gives a sandbox
+that's already there, like one from `list_sandboxes`, its tools again. Without a `server`, a model can create
+a sandbox but not work in it. The `signal` is the host's, for as long as what the call starts may run. The
+tools come off that server when the sandbox is stopped there, or the `signal` aborts.
+
+A server that lasts the session announces those changes to its client itself. A host that builds a server per
+request passes `changed` too, and rowdy calls it whenever a sandbox's tools go on or come off, so the host can
+tell its clients to list tools again:
+
+```ts
+run(Sandbox, input, { ...ctx, server, signal, changed: () => handler.notify.toolsChanged() });
+```
+
+That server is gone after its request, so the host puts each sandbox's tools back on every new one, with
+`registerTools`. It lists every sandbox with the context's `meta`, on its `limits.runtimes`, and registers each
+one's tools:
+
+```ts
+import { registerTools } from '@scaffoldly/rowdy/mcp';
+
+await registerTools(Sandbox, { ...ctx, server, signal, meta, changed });
+```
+
+Each call lists sandboxes on AWS, so a host calls it for the requests that need the tools, a `tools/list` or a
+call to one of them.
+
+`read_file` answers 64 KiB at a time, read on with `offset`, and a missing file is `found: false`.
+`write_file` takes one file, as utf8 or base64, with an octal `mode` like `"755"`.
 
 A host that owns one sandbox gives a model only that one, with `tools()` on it, or on `Sandbox.create`'s
 result before it's ready:
@@ -388,7 +443,8 @@ for (const { name, run, ...config } of creating.tools()) {
 }
 ```
 
-These are `run_command`, `read_output`, and `stop_sandbox` where the sandbox can stop, with no `sandbox_id`.
+These are `run_command` and `read_output`, the file tools and `stop_sandbox` on `aws.microvm`, with no
+`sandbox_id`.
 A call waits for the sandbox, and a failed build is each call's error.
 
 ## Not there yet

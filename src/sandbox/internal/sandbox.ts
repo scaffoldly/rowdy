@@ -12,13 +12,13 @@ import type {
   Sandbox,
   SandboxListOptions,
   SandboxLookup,
+  SandboxFactory,
   SandboxOptions,
+  SandboxPromise,
   SandboxSummary,
-  SandboxToolsOptions,
   Tool,
   Event,
 } from '..';
-import type { RegisteredTool } from '@modelcontextprotocol/server';
 import { isAxiosError } from 'axios';
 import { posix } from 'path';
 import {
@@ -59,13 +59,15 @@ import { Logger, maskUrl } from '../../log';
 import { describeError, humanize } from '../../aws/errors';
 import { LambdaCompute } from '../../aws/lambda/compute';
 import { MicrovmCompute } from '../../aws/microvm/compute';
-import { safeTool } from '../../mcp/tool';
+import { safeTool } from '../../mcp/internal/tool';
+import type { BoundTool } from '../../mcp/internal/types';
 import { EXEC_STREAM } from '../../proxy/frames';
-import { createSandbox } from '../mcp/create-sandbox';
-import { runCommand } from '../mcp/run-command';
-import { listSandboxes } from '../mcp/list-sandboxes';
-import { readOutput } from '../mcp/read-output';
-import { stopSandbox } from '../mcp/stop-sandbox';
+import { runCommand } from './mcp/run-command';
+import { makeDirectory } from './mcp/make-directory';
+import { readFile } from './mcp/read-file';
+import { readOutput } from './mcp/read-output';
+import { writeFile } from './mcp/write-file';
+import { stopSandbox } from './mcp/stop-sandbox';
 import { DEFAULTS, SandboxCompute, SandboxComputeClass } from './compute';
 import { SandboxPromiseImpl } from './create';
 
@@ -131,11 +133,20 @@ export class SandboxImpl implements Sandbox {
         const memory = options?.memory ?? DEFAULTS.memory;
         const env = { ...RUNTIMES[runtime].env, ...options?.env };
 
-        RUNTIMES[runtime].assert({ timeout, memory, env });
+        const meta = options?.meta ?? {};
 
-        // The same options reuse a function, and different ones share no env or config.
+        RUNTIMES[runtime].assert({ timeout, memory, env, meta });
+
+        // The same options reuse a function, and different ones share no env or config. No meta hashes as before.
         const suffix = computeHash(
-          JSON.stringify({ runtime, image, timeout, memory, env: Object.entries(env).sort() })
+          JSON.stringify({
+            runtime,
+            image,
+            timeout,
+            memory,
+            env: Object.entries(env).sort(),
+            ...(Object.keys(meta).length ? { meta: Object.entries(meta).sort() } : {}),
+          })
         );
 
         // TODO: a generated suffix, once a sandbox can be deleted: a new name is a new function and role on every create.
@@ -148,7 +159,7 @@ export class SandboxImpl implements Sandbox {
           iif(() => signal.aborted, of(signal), fromEvent(signal, 'abort')).pipe(
             switchMap(() => throwError(() => signal.reason))
           ),
-          defer(() => sandbox.compute.create({ image, name, timeout, memory, env })).pipe(
+          defer(() => sandbox.compute.create({ image, name, timeout, memory, env, meta })).pipe(
             map(() => sandbox.stoppingOnAbort())
           )
         );
@@ -179,7 +190,7 @@ export class SandboxImpl implements Sandbox {
     );
   }
 
-  static get({ sandboxId, logLevel, signal: abort }: SandboxLookup): SandboxPromiseImpl {
+  static get({ sandboxId, logLevel, signal: abort, meta }: SandboxLookup): SandboxPromiseImpl {
     const runtime = sandboxId.includes(':microvm-image:') ? 'aws.microvm' : 'aws.lambda';
     const sandbox = new SandboxImpl({ runtime, logLevel, signal: abort });
     const { signal } = sandbox.environment;
@@ -189,7 +200,7 @@ export class SandboxImpl implements Sandbox {
         iif(() => signal.aborted, of(signal), fromEvent(signal, 'abort')).pipe(
           switchMap(() => throwError(() => signal.reason))
         ),
-        defer(() => sandbox.compute.attach(sandboxId)).pipe(map(() => sandbox.stoppingOnAbort()))
+        defer(() => sandbox.compute.attach(sandboxId, meta)).pipe(map(() => sandbox.stoppingOnAbort()))
       ).pipe(
         // Work starts after this returns, so `.events()` on the result sees the first step.
         subscribeOn(asapScheduler)
@@ -204,7 +215,7 @@ export class SandboxImpl implements Sandbox {
     );
   }
 
-  static list({ runtime, name, signal }: SandboxListOptions = {}): Promise<SandboxSummary[]> {
+  static list({ runtime, meta = {}, signal }: SandboxListOptions = {}): Promise<SandboxSummary[]> {
     // A host's stdout is its own.
     new Logger('sandbox').withSink('stderr');
     const runtimes = runtime ? [runtime] : (Object.keys(RUNTIMES) as (keyof typeof RUNTIMES)[]);
@@ -217,7 +228,7 @@ export class SandboxImpl implements Sandbox {
             )
           : NEVER,
         merge(...runtimes.map((each) => RUNTIMES[each].list())).pipe(
-          filter((found) => !name || found.name.startsWith(`${name}-`)),
+          filter((found) => Object.entries(meta).every(([key, value]) => found.meta[key] === value)),
           toArray()
         )
       )
@@ -226,101 +237,44 @@ export class SandboxImpl implements Sandbox {
     });
   }
 
-  static tools(options?: SandboxToolsOptions): Tool[] {
-    // A host's stdout is its own, even for a tool that fails before it reaches a sandbox.
-    new Logger('sandbox').withSink('stderr');
-    const { server, logLevel, signal, name: scope } = options ?? {};
-    // The scope goes in every sandbox's name, and a check that can't match would refuse every call.
-    if (scope !== undefined && !/^[A-Za-z0-9_-]+$/.test(scope)) {
-      throw new RangeError(`name must be letters, digits, '-' or '_', as AWS allows in a name, got ${scope}`);
-    }
-
-    // Each sandbox's own tools while they're on the server, so a repeated create doesn't register them twice.
-    const registered = new Map<string, RegisteredTool[]>();
-    signal?.addEventListener(
-      'abort',
-      () => {
-        registered.forEach((tools) => tools.forEach((tool) => tool.remove()));
-        registered.clear();
-      },
-      { once: true }
-    );
-
-    const create = createSandbox(SandboxImpl, options);
-    const stop = stopSandbox(SandboxImpl, options);
-    const registering: typeof create = {
-      ...create,
-      run: async (input, ctx) => {
-        const result = await create.run(input, ctx);
-        const { sandbox_id: sandboxId } = result.structuredContent;
-        if (server && !registered.has(sandboxId)) {
-          // Named with the sandbox's suffix, so two sandboxes' tools don't clash.
-          const suffix = sandboxId.split('-').pop();
-          registered.set(
-            sandboxId,
-            SandboxImpl.get({ sandboxId, logLevel, signal })
-              .tools()
-              .map(({ name, run, ...config }) =>
-                server.registerTool(
-                  `${name}_${suffix}`,
-                  config,
-                  name === 'stop_sandbox'
-                    ? async (args, extra) => {
-                        const stopped = await run(args, extra);
-                        registered.get(sandboxId)?.forEach((tool) => tool.remove());
-                        registered.delete(sandboxId);
-                        return stopped;
-                      }
-                    : run
-                )
-              )
-          );
-        }
-        return result;
-      },
-    };
-    const unregistering: typeof stop = {
-      ...stop,
-      run: async (input, ctx) => {
-        const result = await stop.run(input, ctx);
-        registered.get(input.sandbox_id)?.forEach((tool) => tool.remove());
-        registered.delete(input.sandbox_id);
-        return result;
-      },
-    };
-
-    const tools: Tool[] = [
-      registering,
-      runCommand(SandboxImpl, options),
-      readOutput(SandboxImpl, options),
-      listSandboxes(SandboxImpl, options),
-      unregistering,
-    ];
-    return tools.map((tool) => safeTool(tool, describeError));
-  }
-
   get sandboxId(): string {
     return this.compute.sandboxId;
   }
 
-  tools(found: SandboxPromiseImpl = new SandboxPromiseImpl(Promise.resolve(this), this)): Tool[] {
-    const sandbox = { get: () => found };
-    const tools: Tool[] = [
-      runCommand(sandbox),
-      readOutput(sandbox),
-      ...(this.compute.stoppable ? [stopSandbox(sandbox)] : []),
+  tools(found: SandboxPromiseImpl = new SandboxPromiseImpl(Promise.resolve(this), this)): BoundTool[] {
+    // Files are aws.microvm only.
+    const microvm = this.compute instanceof MicrovmCompute;
+    const tools: Tool<SandboxPromise>[] = [
+      runCommand,
+      readOutput,
+      ...(microvm ? [readFile, writeFile, makeDirectory] : []),
     ];
-    // The sandbox_id is this sandbox's, so a model can't name another.
-    return tools.map((tool) =>
-      safeTool(
-        {
+    // Every lookup is this sandbox, and the sandbox_id is this one's, so a model can't name another.
+    const sandboxes: SandboxFactory = {
+      create: (options) => SandboxImpl.create(options),
+      get: () => found,
+      list: (options) => SandboxImpl.list(options),
+    };
+    const stops: Tool<SandboxFactory>[] = this.compute.stoppable ? [stopSandbox] : [];
+
+    return [
+      ...tools.map(({ run, ...tool }): BoundTool => ({ ...tool, run: (input, ctx) => run(found, input, ctx) })),
+      // Waiting for the sandbox_id is the wait for the sandbox, and a failed build is this call's error.
+      ...stops.map((tool): BoundTool => {
+        const { run } = safeTool(
+          {
+            ...tool,
+            run: async (sdk, input, ctx) => tool.run(sdk, { ...input, sandbox_id: (await found).sandboxId }, ctx),
+          } satisfies Tool<SandboxFactory>,
+          describeError
+        );
+        return {
           ...tool,
           inputSchema: tool.inputSchema.omit({ sandbox_id: true }),
-          run: async (input, ctx) => tool.run({ ...input, sandbox_id: (await found).sandboxId }, ctx),
-        },
-        describeError
-      )
-    );
+          run: (input, ctx) => run(sandboxes, input, ctx),
+        };
+      }),
+    ];
   }
 
   runCommand(cmd: string, args?: string[], options?: RunCommandOptions): Promise<CommandFinished>;
@@ -419,11 +373,13 @@ export class SandboxImpl implements Sandbox {
     });
   }
 
-  async readFileToBuffer({ path, cwd }: ReadFile, options?: FileOptions): Promise<Buffer | null> {
+  async readFileToBuffer({ path, cwd, offset, length }: ReadFile, options?: FileOptions): Promise<Buffer | null> {
     const signal = options?.signal
       ? AbortSignal.any([options.signal, this.environment.signal])
       : this.environment.signal;
-    return lastValueFrom(this.compute.readFile(cwd ? posix.resolve(cwd, path) : path, signal)).catch((error) => {
+    return lastValueFrom(
+      this.compute.readFile(cwd ? posix.resolve(cwd, path) : path, { offset, length }, signal)
+    ).catch((error) => {
       throw humanize(error);
     });
   }

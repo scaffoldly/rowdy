@@ -50,7 +50,7 @@ import {
   throwIfEmpty,
   toArray,
 } from 'rxjs';
-import type { SandboxSummary } from '../../sandbox';
+import type { FileRange, SandboxSummary } from '../../sandbox';
 import { ROWDY_LAYERS } from '../../api/internal/layers';
 import { Transfer } from '../../api/internal/transfer';
 import { Exec, ExecOutput, ExecOutputOptions } from '../../api/types';
@@ -58,6 +58,7 @@ import type { SandboxEnvironment } from '../../sandbox/internal/environment';
 import { Logger } from '../../log';
 import { ExecSchema } from '../../routes';
 import { ComputeSpec, MICROVM_MEMORY, SandboxCompute, SandboxError } from '../../sandbox/internal/compute';
+import { META_TAG, TAG_KEY_REGEX, TAG_VALUE_REGEX } from '../tags';
 import { _create, isNotFound, isPropagating, isTransient, PROPAGATION, roleName, ROWDY_BIN } from '../lambda/shared';
 import { AwsClientLogger } from '../logger';
 import { EXEC_LOG } from '../../proxy/frames';
@@ -120,6 +121,11 @@ export class MicrovmCompute extends AwsClientLogger implements SandboxCompute {
                     startedAt: live?.startedAt,
                     stopsAt:
                       live?.startedAt && seconds ? new Date(live.startedAt.getTime() + seconds * 1000) : undefined,
+                    meta: Object.fromEntries(
+                      Object.entries(Tags ?? {})
+                        .filter(([key]) => key.startsWith(META_TAG))
+                        .map(([key, value]) => [key.slice(META_TAG.length), value])
+                    ),
                   };
                 })
               ),
@@ -131,7 +137,7 @@ export class MicrovmCompute extends AwsClientLogger implements SandboxCompute {
     );
   }
 
-  static assert({ timeout, memory, env }: Pick<ComputeSpec, 'timeout' | 'memory' | 'env'>): void {
+  static assert({ timeout, memory, env, meta }: Pick<ComputeSpec, 'timeout' | 'memory' | 'env' | 'meta'>): void {
     if (!Number.isInteger(timeout / 1000) || timeout < 1000 || timeout > 28_800_000) {
       throw new RangeError(`timeout must be whole seconds from 1000 to 28800000 ms, got ${timeout}`);
     }
@@ -141,6 +147,11 @@ export class MicrovmCompute extends AwsClientLogger implements SandboxCompute {
     if (Object.keys(env).length > 50) {
       throw new RangeError(`env must have at most 50 variables, got ${Object.keys(env).length}`);
     }
+    Object.entries(meta).forEach(([key, value]) => {
+      if (!TAG_KEY_REGEX.test(`${META_TAG}${key}`) || !TAG_VALUE_REGEX.test(value)) {
+        throw new RangeError(`meta must be what AWS takes in a tag, got ${key}=${value}`);
+      }
+    });
   }
 
   readonly stoppable = true;
@@ -168,7 +179,7 @@ export class MicrovmCompute extends AwsClientLogger implements SandboxCompute {
     return this.imageArn;
   }
 
-  create({ image, name, timeout, memory, env }: ComputeSpec): Observable<this> {
+  create({ image, name, timeout, memory, env, meta }: ComputeSpec): Observable<this> {
     return forkJoin({
       ImageUri: this.pull(image),
       Bucket: ownedBucket(this.s3, this.log, BUCKET_PREFIX, BUCKET_OWNER),
@@ -207,6 +218,7 @@ export class MicrovmCompute extends AwsClientLogger implements SandboxCompute {
                 [COMPUTE_TAG]: 'microvm',
                 [TIMEOUT_TAG]: `${timeout / 1000}`,
                 'run.rowdy.user.agent': this.environment.userAgent,
+                ...Object.fromEntries(Object.entries(meta).map(([key, value]) => [`${META_TAG}${key}`, value])),
               },
             })
           ),
@@ -219,10 +231,11 @@ export class MicrovmCompute extends AwsClientLogger implements SandboxCompute {
     );
   }
 
-  attach(sandboxId: string): Observable<this> {
+  attach(sandboxId: string, meta: Record<string, string> = {}): Observable<this> {
     return defer(() => this.microvms.send(new ListTagsCommand({ Resource: sandboxId }))).pipe(
       map(({ Tags }) => {
-        if (Tags?.[COMPUTE_TAG] !== 'microvm') {
+        const matches = Object.entries(meta).every(([key, value]) => Tags?.[`${META_TAG}${key}`] === value);
+        if (Tags?.[COMPUTE_TAG] !== 'microvm' || !matches) {
           throw new SandboxError(`Not a sandbox: ${sandboxId}`);
         }
         this.imageArn = sandboxId;
@@ -301,15 +314,27 @@ export class MicrovmCompute extends AwsClientLogger implements SandboxCompute {
     );
   }
 
-  readFile(path: string, signal: AbortSignal): Observable<Buffer | null> {
+  readFile(path: string, { offset, length }: FileRange, signal: AbortSignal): Observable<Buffer | null> {
+    const ranged = offset !== undefined || length !== undefined;
+    const start = offset ?? 0;
+    const end = length === undefined ? undefined : start + length;
     return defer(() => this.vm()).pipe(
       switchMap(({ microvmId, endpoint }) =>
-        this.fetchHooks(microvmId, endpoint, `${FILES_PATH}?${new URLSearchParams({ path })}`, { signal })
+        this.fetchHooks(microvmId, endpoint, `${FILES_PATH}?${new URLSearchParams({ path })}`, {
+          signal,
+          headers: ranged ? { range: `bytes=${start}-${end === undefined ? '' : end - 1}` } : undefined,
+        })
       ),
       switchMap(async (response) => {
         if (response.status === 404) return null;
-        if (response.status !== 200) throw new Error(`Reading ${path} failed: ${await response.text()}`);
-        return Buffer.from(await response.arrayBuffer());
+        // From past the end.
+        if (response.status === 416) return Buffer.alloc(0);
+        if (response.status !== 200 && response.status !== 206) {
+          throw new Error(`Reading ${path} failed: ${await response.text()}`);
+        }
+        const body = Buffer.from(await response.arrayBuffer());
+        // A runtime without ranges, or one that ignored this range, sends the whole file.
+        return ranged && response.status === 200 ? body.subarray(start, end) : body;
       })
     );
   }
@@ -432,7 +457,7 @@ export class MicrovmCompute extends AwsClientLogger implements SandboxCompute {
     microvmIdentifier: string,
     endpoint: string,
     path: string,
-    init: RequestInit & { signal: AbortSignal }
+    init: Omit<RequestInit, 'headers'> & { headers?: Record<string, string>; signal: AbortSignal }
   ): Observable<globalThis.Response> {
     return defer(() =>
       this.microvms.send(
@@ -446,7 +471,7 @@ export class MicrovmCompute extends AwsClientLogger implements SandboxCompute {
       switchMap(({ authToken }) =>
         fetch(`https://${endpoint}${path}`, {
           ...init,
-          headers: { ...authToken, 'X-aws-proxy-port': `${HOOKS_PORT}` },
+          headers: { ...init.headers, ...authToken, 'X-aws-proxy-port': `${HOOKS_PORT}` },
         })
       )
     );

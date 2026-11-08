@@ -1,10 +1,9 @@
 import type { Observable } from 'rxjs';
-import type { McpServer } from '@modelcontextprotocol/server';
 import type { Writable } from 'stream';
 import type { Exec, ExecFinished, ExecOutput, ExecOutputOptions } from '../api/types';
 import type { Event, EventCallback } from '../events';
 import type { Level } from '../log';
-import type { Tool } from '../mcp/tool';
+import type { BoundTool, ServerContext, Tool } from '../mcp/internal/types';
 import type { MICROVM_MEMORY } from './internal/compute';
 import { SandboxImpl } from './internal/sandbox';
 
@@ -13,6 +12,11 @@ interface BaseSandboxOptions {
   image?: string;
   /** The prefix of a generated name, `{name}-{suffix}`. Defaults to `sandbox`. */
   name?: string;
+  /**
+   * Kept on the sandbox as tags, `run.rowdy.meta.{key}`, for `list` and `get` to match. Different meta is a different
+   * sandbox. Keys and values are what AWS takes in a tag.
+   */
+  meta?: Record<string, string>;
   /** Applies to the whole process. Defaults to ROWDY_LOG_LEVEL, ROWDY_DEBUG or ROWDY_TRACE, then `warn`. */
   logLevel?: Level;
   /** Aborts the sandbox's work in progress, including its creation, and stops it if it can `stop`. */
@@ -59,19 +63,12 @@ export interface SandboxToolsLimits {
   runtimes?: NonNullable<SandboxOptions['runtime']>[];
 }
 
-export interface SandboxToolsOptions extends Pick<SandboxOptions, 'logLevel' | 'signal'> {
-  /** Comes first in every sandbox's name, `{name}-{model's name}-{suffix}`: letters, digits, `-` and `_` only. */
-  name?: string;
+export interface SandboxToolsOptions extends Pick<SandboxOptions, 'logLevel' | 'meta'> {
   /** What a model can ask for. */
   limits?: SandboxToolsLimits;
-  /**
-   * Where each sandbox's own tools are registered once `create_sandbox` makes it, named with its suffix, like
-   * `run_command_bcdf245678`. They come off when it's stopped, or the signal aborts.
-   */
-  server?: Pick<McpServer, 'registerTool'>;
 }
 
-export type { Tool };
+export type { BoundTool, ServerContext, Tool };
 
 /** A sandbox as `Sandbox.list` finds it. */
 export interface SandboxSummary {
@@ -84,18 +81,22 @@ export interface SandboxSummary {
   startedAt?: Date;
   /** When the running microVM's `timeout` ends it. */
   stopsAt?: Date;
+  /** What `create` was given as `meta`. */
+  meta: Record<string, string>;
 }
 
 export interface SandboxListOptions {
   /** Only sandboxes on this runtime. Defaults to every runtime. */
   runtime?: NonNullable<SandboxOptions['runtime']>;
-  /** Only sandboxes whose name starts with `{name}-`. */
-  name?: string;
+  /** Only sandboxes whose `meta` has every one of these. */
+  meta?: Record<string, string>;
   signal?: AbortSignal;
 }
 
 export interface SandboxLookup extends Pick<SandboxOptions, 'logLevel'> {
   sandboxId: string;
+  /** Refuses a sandbox whose `meta` doesn't have every one of these. */
+  meta?: Record<string, string>;
   /** Aborts the sandbox's work in progress, and stops it if it can `stop`. */
   signal?: AbortSignal;
 }
@@ -142,7 +143,14 @@ export interface WriteFile {
   mode?: number;
 }
 
-export interface ReadFile {
+export interface FileRange {
+  /** The byte to start at. Defaults to 0. */
+  offset?: number;
+  /** The most bytes to read. Defaults to the rest of the file. */
+  length?: number;
+}
+
+export interface ReadFile extends FileRange {
   /** Relative to `cwd`, or else to where a command starts without one, unless absolute. */
   path: string;
   cwd?: string;
@@ -176,7 +184,10 @@ export interface Sandbox {
   output(cmdId: string, options?: CommandOutputOptions): Promise<CommandOutput>;
   /** Writes each file, in order, replacing what was there. `runtime: 'aws.lambda'` rejects for now. */
   writeFiles(files: WriteFile[], options?: FileOptions): Promise<void>;
-  /** Resolves to null when the file does not exist. `runtime: 'aws.lambda'` rejects for now. */
+  /**
+   * Resolves to null when the file does not exist, and to no bytes from past its end. `runtime: 'aws.lambda'` rejects
+   * for now.
+   */
   readFileToBuffer(file: ReadFile, options?: FileOptions): Promise<Buffer | null>;
   /** Makes a directory and its parents, and is fine if it's there. `runtime: 'aws.lambda'` rejects for now. */
   mkDir(path: string, options?: FileOptions): Promise<void>;
@@ -191,7 +202,7 @@ export interface Sandbox {
    * The MCP tools for this sandbox alone, with no `sandbox_id` input: `run_command`, `read_output`, and `stop_sandbox`
    * where it can stop.
    */
-  tools(): Tool[];
+  tools(): BoundTool[];
 }
 
 /**
@@ -207,13 +218,10 @@ export interface SandboxFactory {
   get(lookup: SandboxLookup): SandboxPromise;
   /** The sandboxes in this account and region. */
   list(options?: SandboxListOptions): Promise<SandboxSummary[]>;
-  /** The MCP tools for sandboxes, for a host to add to its own server. */
-  tools(options?: SandboxToolsOptions): Tool[];
 }
 
 export const Sandbox: SandboxFactory = {
   create: (options) => SandboxImpl.create(options),
   get: (lookup) => SandboxImpl.get(lookup),
   list: (options) => SandboxImpl.list(options),
-  tools: (options) => SandboxImpl.tools(options),
 };

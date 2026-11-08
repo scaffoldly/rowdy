@@ -1,5 +1,14 @@
 import { Logger } from '@scaffoldly/rowdy';
-import { CommandFinished, Sandbox, SandboxOptions } from '@scaffoldly/rowdy/sandbox';
+import {
+  CommandFinished,
+  Sandbox,
+  SandboxFactory,
+  SandboxOptions,
+  SandboxSummary,
+  SandboxToolsOptions,
+  Tool,
+} from '@scaffoldly/rowdy/sandbox';
+import * as mcp from '@scaffoldly/rowdy/mcp';
 import { AxiosError, AxiosHeaders, InternalAxiosRequestConfig } from 'axios';
 import { InvokeWithResponseStreamResponseEvent, LambdaClient } from '@aws-sdk/client-lambda';
 import {
@@ -31,6 +40,8 @@ import { execOf } from '../src/aws/exec';
 import { SandboxError } from '../src/sandbox/internal/compute';
 import { EXEC_STREAM, execFrame } from '../src/proxy/shell';
 import { computeHash, SandboxImpl } from '../src/sandbox/internal/sandbox';
+import { createSandbox, OWN_TOOLS } from '../src/sandbox/internal/mcp/create-sandbox';
+import { getSandbox } from '../src/sandbox/internal/mcp/get-sandbox';
 
 const FUNCTION_ARN = 'arn:aws:lambda:us-east-1:123456789012:function:sandbox-box';
 
@@ -159,6 +170,30 @@ describe('sandbox', () => {
 
       expect(name.mock.calls[0]).toEqual(name.mock.calls[1]);
       expect(name.mock.calls[0]).not.toEqual([`sandbox-${computeHash(UNHASHED)}`]);
+    });
+
+    it('gives different meta a different name, and no meta the name it had before', async () => {
+      const name = jest.spyOn(LambdaFunction.prototype, 'withName');
+      const tag = jest.spyOn(LambdaFunction.prototype, 'withTag');
+
+      await SandboxImpl.create({ runtime: 'aws.lambda' });
+      await SandboxImpl.create({ runtime: 'aws.lambda', meta: {} });
+      await SandboxImpl.create({ runtime: 'aws.lambda', meta: { sub: 'github:1' } });
+      await SandboxImpl.create({ runtime: 'aws.lambda', meta: { sub: 'github:2' } });
+
+      const [none, empty, one, two] = name.mock.calls.map(([each]) => each);
+      expect(empty).toBe(none);
+      expect(new Set([none, one, two]).size).toBe(3);
+      expect(tag).toHaveBeenCalledWith('run.rowdy.meta.sub', 'github:1');
+    });
+
+    it('refuses meta AWS would not tag, before anything reaches AWS', async () => {
+      const name = jest.spyOn(LambdaFunction.prototype, 'withName');
+
+      await expect(SandboxImpl.create({ runtime: 'aws.lambda', meta: { 'a/b': 'x' } })).rejects.toThrow(
+        'meta must be what AWS takes in a tag'
+      );
+      expect(name).not.toHaveBeenCalled();
     });
 
     it('deploys a sandbox, marked so it may exec', async () => {
@@ -816,7 +851,10 @@ describe('sandbox', () => {
             });
           case 'ListTagsCommand':
             return Promise.resolve({
-              Tags: command.input.Resource === IMAGE ? { 'run.rowdy.aws': 'microvm', 'run.rowdy.timeout': '600' } : {},
+              Tags:
+                command.input.Resource === IMAGE
+                  ? { 'run.rowdy.aws': 'microvm', 'run.rowdy.timeout': '600', 'run.rowdy.meta.sub': 'github:1' }
+                  : {},
             });
           default:
             return Promise.reject(new Error(`unexpected ${command.constructor.name}`));
@@ -839,11 +877,13 @@ describe('sandbox', () => {
             running: true,
             startedAt: STARTED,
             stopsAt: new Date(STARTED.getTime() + 600_000),
+            meta: { sub: 'github:1' },
           },
           {
             sandboxId: 'arn:aws:lambda:us-east-1:123456789012:function:sandbox-ghjk4',
             name: 'sandbox-ghjk4',
             runtime: 'aws.lambda',
+            meta: {},
           },
         ])
       );
@@ -866,13 +906,15 @@ describe('sandbox', () => {
       expect(lambda).not.toHaveBeenCalled();
     });
 
-    it('keeps only names under a prefix', async () => {
+    it('keeps only sandboxes whose meta has every entry asked for', async () => {
       functions();
       microvms();
 
-      const found = await Sandbox.list({ name: 'box' });
+      const found = await Sandbox.list({ meta: { sub: 'github:1' } });
 
-      expect(found.map(({ name }) => name)).toEqual(['box-bcdf2']);
+      expect(found.map(({ name, meta }) => ({ name, meta }))).toEqual([
+        { name: 'box-bcdf2', meta: { sub: 'github:1' } },
+      ]);
     });
 
     it('rejects on abort', async () => {
@@ -952,6 +994,16 @@ describe('sandbox', () => {
 
       await expect(sandbox.readFileToBuffer(file)).resolves.toEqual(Buffer.from('hi'));
       expect(read.mock.calls[0]![0]).toBe(expected);
+    });
+
+    it('reads a range', async () => {
+      microvm();
+      const read = jest.spyOn(MicrovmCompute.prototype, 'readFile').mockReturnValue(of(Buffer.from('hi')));
+      const sandbox = await Sandbox.create();
+
+      await sandbox.readFileToBuffer({ path: 'x.txt', offset: 5, length: 2 });
+
+      expect(read.mock.calls[0]![1]).toEqual({ offset: 5, length: 2 });
     });
 
     it('resolves to null for a file that is not there', async () => {
@@ -1305,13 +1357,29 @@ describe('sandbox', () => {
         const run = tools.find(({ name }) => name === 'run_command')!;
         const result = await run.run(run.inputSchema.parse({ cmd: 'true' }), ctx());
 
-        expect(tools.map(({ name }) => name)).toEqual(['run_command', 'read_output', 'stop_sandbox']);
+        expect(tools.map(({ name }) => name)).toEqual([
+          'run_command',
+          'read_output',
+          'read_file',
+          'write_file',
+          'make_directory',
+          'stop_sandbox',
+        ]);
         tools.forEach(({ inputSchema }) => expect(Object.keys(inputSchema.shape)).not.toContain('sandbox_id'));
         expect(result.structuredContent).toMatchObject({ exit_code: 0, timed_out: false });
         expect(exec).toHaveBeenCalledTimes(1);
       });
 
-      it("leaves out stop_sandbox where the sandbox can't stop", async () => {
+      it('are each named where create_sandbox and get_sandbox say what a sandbox comes with', async () => {
+        microvm();
+        const names = (await Sandbox.create()).tools().map(({ name }) => name);
+
+        names.forEach((name) => expect(OWN_TOOLS).toContain(name));
+        expect(createSandbox.description).toContain(OWN_TOOLS);
+        expect(getSandbox.description).toContain(OWN_TOOLS);
+      });
+
+      it('leaves out files and stop_sandbox where the sandbox has neither', async () => {
         const sandbox = await Sandbox.create({ runtime: 'aws.lambda' });
 
         expect(sandbox.tools().map(({ name }) => name)).toEqual(['run_command', 'read_output']);
@@ -1349,6 +1417,10 @@ describe('sandbox', () => {
       });
     });
 
+    // What a host serves first, each run with the SDK's factory.
+    const factoryTools: Tool<SandboxFactory>[] = Object.values(mcp.tools.factory);
+    const hostTool = (name: string) => factoryTools.find((each) => each.name === name)!;
+
     describe('registered on a server as they arrive', () => {
       const setup = () => {
         const { stop } = microvm();
@@ -1357,13 +1429,19 @@ describe('sandbox', () => {
           remove: () => void removed.push(name),
         }));
         const host = new AbortController();
-        const tools = Sandbox.tools({ server: { registerTool } as never, signal: host.signal });
-        const call = (name: string, input: Record<string, unknown> = {}) => {
-          const tool = tools.find((each) => each.name === name)!;
-          return tool.run(tool.inputSchema.parse(input), ctx());
+        const changed = jest.fn();
+        const own = { registerTool };
+        const call = (name: string, input: Record<string, unknown> = {}, server: unknown = own) => {
+          const tool = hostTool(name);
+          return tool.run(Sandbox, tool.inputSchema.parse(input), {
+            ...ctx(),
+            server,
+            signal: host.signal,
+            changed,
+          } as never);
         };
         const registered = () => registerTool.mock.calls.map(([name]) => name);
-        return { call, registerTool, registered, removed, host, stop };
+        return { call, registerTool, registered, removed, host, stop, changed };
       };
 
       it("adds a new sandbox's own tools, named with its suffix", async () => {
@@ -1371,7 +1449,14 @@ describe('sandbox', () => {
 
         await call('create_sandbox');
 
-        expect(registered()).toEqual(['run_command_bcdf2', 'read_output_bcdf2', 'stop_sandbox_bcdf2']);
+        expect(registered()).toEqual([
+          'run_command_bcdf2',
+          'read_output_bcdf2',
+          'read_file_bcdf2',
+          'write_file_bcdf2',
+          'make_directory_bcdf2',
+          'stop_sandbox_bcdf2',
+        ]);
       });
 
       it('adds them once for the same sandbox', async () => {
@@ -1380,7 +1465,7 @@ describe('sandbox', () => {
         await call('create_sandbox');
         await call('create_sandbox');
 
-        expect(registered()).toHaveLength(3);
+        expect(registered()).toHaveLength(6);
       });
 
       it('takes them off when stop_sandbox stops it, and adds them again after', async () => {
@@ -1390,8 +1475,15 @@ describe('sandbox', () => {
         await call('stop_sandbox', { sandbox_id: IMAGE });
         await call('create_sandbox');
 
-        expect(removed).toEqual(['run_command_bcdf2', 'read_output_bcdf2', 'stop_sandbox_bcdf2']);
-        expect(registered()).toHaveLength(6);
+        expect(removed).toEqual([
+          'run_command_bcdf2',
+          'read_output_bcdf2',
+          'read_file_bcdf2',
+          'write_file_bcdf2',
+          'make_directory_bcdf2',
+          'stop_sandbox_bcdf2',
+        ]);
+        expect(registered()).toHaveLength(12);
       });
 
       it("takes them off when the sandbox's own stop_sandbox stops it", async () => {
@@ -1402,7 +1494,7 @@ describe('sandbox', () => {
         await (own as (args: unknown, extra: unknown) => Promise<unknown>)({}, ctx());
 
         expect(stop).toHaveBeenCalled();
-        expect(removed).toHaveLength(3);
+        expect(removed).toHaveLength(6);
       });
 
       it("takes them all off when the host's signal aborts", async () => {
@@ -1411,35 +1503,172 @@ describe('sandbox', () => {
         await call('create_sandbox');
         host.abort();
 
-        expect(removed).toHaveLength(3);
+        expect(removed).toHaveLength(6);
+      });
+
+      it('says the tools changed when they go on and when a stop takes them off, once each', async () => {
+        const { call, changed } = setup();
+
+        await call('create_sandbox');
+        await call('create_sandbox');
+        expect(changed).toHaveBeenCalledTimes(1);
+
+        await call('stop_sandbox', { sandbox_id: IMAGE });
+        await call('stop_sandbox', { sandbox_id: IMAGE });
+        expect(changed).toHaveBeenCalledTimes(2);
+      });
+
+      it("says so when the sandbox's own stop_sandbox takes them off", async () => {
+        const { call, registerTool, changed } = setup();
+
+        await call('create_sandbox');
+        const [, , own] = registerTool.mock.calls.find(([name]) => name === 'stop_sandbox_bcdf2')!;
+        await (own as (args: unknown, extra: unknown) => Promise<unknown>)({}, ctx());
+
+        expect(changed).toHaveBeenCalledTimes(2);
+      });
+
+      it("doesn't say so when the signal takes them off", async () => {
+        const { call, changed, host } = setup();
+
+        await call('create_sandbox');
+        host.abort();
+
+        expect(changed).toHaveBeenCalledTimes(1);
+      });
+
+      it('adds them to each server a call comes in on, and takes them off only the one stopped on', async () => {
+        const { call, registered, removed } = setup();
+        const other = {
+          registerTool: jest.fn((name: string) => ({ remove: () => void removed.push(`other:${name}`) })),
+        };
+
+        await call('create_sandbox');
+        await call('create_sandbox', {}, other);
+        await call('stop_sandbox', { sandbox_id: IMAGE }, other);
+
+        expect(registered()).toHaveLength(6);
+        expect(other.registerTool).toHaveBeenCalledTimes(6);
+        expect(removed).toHaveLength(6);
+        expect(removed.every((name) => name.startsWith('other:'))).toBe(true);
       });
 
       it('registers nothing without a server', async () => {
         microvm();
-        const create = Sandbox.tools().find(({ name }) => name === 'create_sandbox')!;
+        const create = hostTool('create_sandbox');
 
-        await expect(create.run(create.inputSchema.parse({}), ctx())).resolves.toMatchObject({
+        await expect(create.run(Sandbox, create.inputSchema.parse({}), ctx())).resolves.toMatchObject({
           structuredContent: { sandbox_id: IMAGE },
         });
       });
     });
 
-    it.each(['github:819991', 'a b', 'tenant/1', ''])('refuses a scope AWS would not take in a name: %j', (name) => {
-      expect(() => Sandbox.tools({ name })).toThrow(RangeError);
-    });
+    describe("held to the host's options", () => {
+      const call = (
+        name: string,
+        input: Record<string, unknown>,
+        options: SandboxToolsOptions = {},
+        signal?: AbortSignal
+      ) => {
+        const tool = hostTool(name);
+        return tool.run(Sandbox, tool.inputSchema.parse(input), { ...ctx(), ...options, signal });
+      };
+      const creating = () =>
+        jest
+          .spyOn(SandboxImpl, 'create')
+          .mockReturnValue(Object.assign(Promise.resolve({ sandboxId: IMAGE }), { events: () => EMPTY }) as never);
+      const created = (create: ReturnType<typeof creating>) => create.mock.calls[0]![0] as SandboxOptions;
+      const getting = () =>
+        jest.spyOn(SandboxImpl, 'get').mockImplementation(() => Promise.reject(new SandboxError('found it')) as never);
 
-    it('takes a scope of letters, digits, dashes and underscores', () => {
-      expect(() => Sandbox.tools({ name: 'github-819991_a' })).not.toThrow();
-    });
+      describe('create_sandbox', () => {
+        it("passes the call's meta on, and the model's name as it gave it", async () => {
+          const create = creating();
 
-    it('lists them by name', () => {
-      expect(Sandbox.tools().map(({ name }) => name)).toEqual([
-        'create_sandbox',
-        'run_command',
-        'read_output',
-        'list_sandboxes',
-        'stop_sandbox',
-      ]);
+          await call('create_sandbox', { name: 'builds' }, { meta: { sub: 'github:1' } });
+
+          expect(created(create)).toMatchObject({ name: 'builds', meta: { sub: 'github:1' } });
+        });
+
+        it("passes the host's logLevel, and the call's signal, on", async () => {
+          const create = creating();
+          const { signal } = new AbortController();
+
+          await call('create_sandbox', {}, { logLevel: 'error' }, signal);
+
+          expect(created(create)).toMatchObject({ logLevel: 'error', signal });
+        });
+
+        it.each([
+          [{ memory: 1024 }, { memory: 2048 }, 'memory must be at most 1024 MB, got 2048'],
+          [{ timeout: 60000 }, { timeout: 120000 }, 'timeout must be at most 60000 ms, got 120000'],
+          [{ runtimes: ['aws.microvm' as const] }, { runtime: 'aws.lambda' }, 'runtime must be one of aws.microvm'],
+        ])('refuses past the limits %j: %j', async (limits, input, message) => {
+          const create = creating();
+
+          await expect(call('create_sandbox', input, { limits })).rejects.toThrow(message);
+          expect(create).not.toHaveBeenCalled();
+        });
+
+        it.each([
+          [
+            { memory: 1024, timeout: 60000 },
+            { memory: 1024, timeout: 60000 },
+            { memory: 1024, timeout: 60000 },
+          ],
+          [{ memory: 256, timeout: 60000 }, {}, { memory: 256, timeout: 60000 }],
+          [{ memory: 8192, timeout: 3600000 }, {}, { memory: 512, timeout: 900000 }],
+          [{ runtimes: ['aws.microvm' as const, 'aws.lambda' as const] }, {}, { runtime: 'aws.microvm' }],
+        ])('under the limits %j, makes %j into %j', async (limits, input, expected) => {
+          const create = creating();
+
+          await call('create_sandbox', input, { limits });
+
+          expect(created(create)).toMatchObject(expected);
+        });
+      });
+
+      describe('a sandbox_id', () => {
+        it.each(['stop_sandbox', 'get_sandbox'])(
+          'is looked up by %s with the call meta, logLevel and signal',
+          async (name) => {
+            const get = getting();
+            const { signal } = new AbortController();
+            const meta = { sub: 'github:1' };
+
+            await expect(call(name, { sandbox_id: IMAGE }, { meta, logLevel: 'error' }, signal)).rejects.toThrow(
+              'found it'
+            );
+            expect(get).toHaveBeenCalledWith({ sandboxId: IMAGE, meta, logLevel: 'error', signal });
+          }
+        );
+      });
+
+      describe('list_sandboxes', () => {
+        const summaries: SandboxSummary[] = [
+          { sandboxId: IMAGE, name: 'a-bcdf2', runtime: 'aws.microvm', meta: { sub: 'github:1' } },
+          { sandboxId: FUNCTION_ARN, name: 'b-ghjk4', runtime: 'aws.lambda', meta: { sub: 'github:1' } },
+        ];
+
+        it("lists the call's meta, with its signal", async () => {
+          const list = jest.spyOn(SandboxImpl, 'list').mockResolvedValue(summaries);
+          const { signal } = new AbortController();
+
+          await call('list_sandboxes', { runtime: 'aws.microvm' }, { meta: { sub: 'github:1' } }, signal);
+
+          expect(list).toHaveBeenCalledWith({ runtime: 'aws.microvm', meta: { sub: 'github:1' }, signal });
+        });
+
+        it('leaves out runtimes the host does not allow', async () => {
+          jest.spyOn(SandboxImpl, 'list').mockResolvedValue(summaries);
+
+          const { structuredContent } = await call('list_sandboxes', {}, { limits: { runtimes: ['aws.lambda'] } });
+
+          expect(
+            (structuredContent as { sandboxes: { runtime: string }[] }).sandboxes.map(({ runtime }) => runtime)
+          ).toEqual(['aws.lambda']);
+        });
+      });
     });
   });
 
@@ -1719,8 +1948,8 @@ describe('sandbox', () => {
     });
   });
 
-  it('exposes only create, get, list and tools', () => {
-    expect(Object.keys(Sandbox).sort()).toEqual(['create', 'get', 'list', 'tools']);
+  it('exposes only create, get and list', () => {
+    expect(Object.keys(Sandbox).sort()).toEqual(['create', 'get', 'list']);
   });
 
   it('feeds its signal to its environment', async () => {
@@ -1754,7 +1983,7 @@ describe('sandbox', () => {
       const sandbox = (await Sandbox.get({ sandboxId: arn })) as SandboxImpl;
 
       expect(sandbox['compute']).toBeInstanceOf(MicrovmCompute);
-      expect(attach).toHaveBeenCalledWith(arn);
+      expect(attach).toHaveBeenCalledWith(arn, undefined);
       expect(withArn).not.toHaveBeenCalled();
     });
 
