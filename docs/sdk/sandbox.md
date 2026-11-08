@@ -262,7 +262,7 @@ Different `meta` is a different sandbox, even with the same options. On AWS each
 any image:
 
 ```ts
-const sandbox = await Sandbox.create({ image: 'alpine', layersFrom: ['tunneld/tunneld:latest'] });
+const sandbox = await Sandbox.create({ image: 'python:3.12-slim', layersFrom: ['busybox'] });
 ```
 
 Each one must be public, a single layer, and built only with `COPY` or `ADD`. Its layer goes in for each of
