@@ -1,8 +1,9 @@
 import type { ServerContext } from '@modelcontextprotocol/server';
 import { afterEach, describe, expect, it, jest } from '@jest/globals';
 import { z } from 'zod';
-import { safeTool, Tool, toolResult } from '../../src/mcp/tool';
-import { Logger } from '../../src/log';
+import { safeTool, toolResult } from '../../../src/mcp/internal/tool';
+import type { Tool } from '../../../src/mcp/internal/types';
+import { Logger } from '../../../src/log';
 
 describe('toolResult', () => {
   const schema = z.object({ sandbox_id: z.string() });

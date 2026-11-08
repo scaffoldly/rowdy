@@ -2,7 +2,8 @@ import { z } from 'zod';
 import type { SandboxFactory } from '../..';
 import { SandboxError } from '../compute';
 import { describeError } from '../../../aws/errors';
-import { safeTool, toolResult, type Tool } from '../../../mcp/tool';
+import { safeTool, toolResult } from '../../../mcp/internal/tool';
+import type { Tool } from '../../../mcp/internal/types';
 import { REGISTERED } from './create-sandbox';
 
 const inputSchema = z.object({
@@ -24,8 +25,12 @@ export const stopSandbox: Tool<SandboxFactory, typeof inputSchema, typeof output
     inputSchema,
     outputSchema,
     annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: true },
-    async run(sandboxes, { sandbox_id: sandboxId }, { server }) {
-      const found = await sandboxes.get({ sandboxId });
+    async run(sandboxes, { sandbox_id: sandboxId }, { server, signal, name: scope, logLevel }) {
+      if (scope && !sandboxId.split(':').pop()?.startsWith(`${scope}-`)) {
+        throw new SandboxError(`Not a sandbox: ${sandboxId}`);
+      }
+
+      const found = await sandboxes.get({ sandboxId, logLevel, signal });
       await found.stop().catch((error) => {
         // A failed stop can leave a VM running. It's billed until someone notices.
         if (error instanceof Error && !(error instanceof SandboxError)) {

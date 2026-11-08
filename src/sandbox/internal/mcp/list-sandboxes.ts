@@ -1,7 +1,8 @@
 import { z } from 'zod';
 import type { SandboxFactory } from '../..';
 import { describeError } from '../../../aws/errors';
-import { safeTool, toolResult, type Tool } from '../../../mcp/tool';
+import { safeTool, toolResult } from '../../../mcp/internal/tool';
+import type { Tool } from '../../../mcp/internal/types';
 
 const inputSchema = z.object({
   runtime: z.enum(['aws.microvm', 'aws.lambda']).optional().describe('Only sandboxes on this runtime.'),
@@ -28,8 +29,10 @@ export const listSandboxes: Tool<SandboxFactory, typeof inputSchema, typeof outp
     inputSchema,
     outputSchema,
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
-    async run(sandboxes, { runtime }) {
-      const found = await sandboxes.list({ runtime });
+    async run(sandboxes, { runtime }, { name: scope, limits, signal }) {
+      const found = (await sandboxes.list({ runtime, name: scope, signal }))
+        // A runtime the host doesn't allow isn't one a model can use.
+        .filter((each) => !limits?.runtimes || limits.runtimes.includes(each.runtime));
 
       return toolResult(outputSchema, {
         sandboxes: found.map(({ sandboxId, name, runtime: on, running, startedAt, stopsAt }) => ({

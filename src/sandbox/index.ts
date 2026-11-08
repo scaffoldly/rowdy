@@ -3,7 +3,7 @@ import type { Writable } from 'stream';
 import type { Exec, ExecFinished, ExecOutput, ExecOutputOptions } from '../api/types';
 import type { Event, EventCallback } from '../events';
 import type { Level } from '../log';
-import type { BoundTool, ServerContext, Tool } from '../mcp/tool';
+import type { BoundTool, ServerContext, Tool } from '../mcp/internal/types';
 import type { MICROVM_MEMORY } from './internal/compute';
 import { SandboxImpl } from './internal/sandbox';
 
@@ -211,13 +211,10 @@ export interface SandboxFactory {
   get(lookup: SandboxLookup): SandboxPromise;
   /** The sandboxes in this account and region. */
   list(options?: SandboxListOptions): Promise<SandboxSummary[]>;
-  /** The MCP tools for sandboxes, for a host to add to its own server. */
-  tools(options?: SandboxToolsOptions): BoundTool[];
 }
 
 export const Sandbox: SandboxFactory = {
   create: (options) => SandboxImpl.create(options),
   get: (lookup) => SandboxImpl.get(lookup),
   list: (options) => SandboxImpl.list(options),
-  tools: (options) => SandboxImpl.tools(options),
 };

@@ -1,3 +1,32 @@
+/**
+ * rowdy's MCP tools, for a host to serve from its own server, one by one.
+ *
+ * `tools.factory` go on the server at the start. Each `run` takes the SDK first, then the input, then the call's
+ * context with what the host adds: the `server`, so `create_sandbox` and `get_sandbox` can register a sandbox's own
+ * tools on it, the host's `signal`, and optionally a scope `name`, `limits` and `logLevel`. A host wraps `run` with
+ * whatever it does around a call.
+ *
+ * @example
+ * ```ts
+ * import { McpServer } from '@modelcontextprotocol/server';
+ * import { Sandbox } from '@scaffoldly/rowdy/sandbox';
+ * import { tools } from '@scaffoldly/rowdy/mcp';
+ *
+ * const server = new McpServer({ name: 'my-host', version: '1.0.0' });
+ * const { signal } = new AbortController();
+ *
+ * const { name, run, ...config } = tools.factory.create_sandbox;
+ * server.registerTool(name, config, (input, ctx) =>
+ *   run(Sandbox, input, { ...ctx, server, signal, name: 'tenant', limits: { runtimes: ['aws.microvm'] } })
+ * );
+ * ```
+ *
+ * `tools.lazy` are registered by those tools, on the `server` a call gives. To wrap their `run` too, give a
+ * `server` whose `registerTool` wraps the callback it's handed.
+ *
+ * @module
+ */
+import { Logger } from '../log';
 import { createSandbox } from '../sandbox/internal/mcp/create-sandbox';
 import { getSandbox } from '../sandbox/internal/mcp/get-sandbox';
 import { listSandboxes } from '../sandbox/internal/mcp/list-sandboxes';
@@ -8,15 +37,26 @@ import { runCommand } from '../sandbox/internal/mcp/run-command';
 import { stopSandbox } from '../sandbox/internal/mcp/stop-sandbox';
 import { writeFile } from '../sandbox/internal/mcp/write-file';
 
-export type { BoundTool, ServerContext, Tool } from './tool';
+export type { ServerContext, Tool } from './internal/types';
 
-/** Every tool, unbound: each `run` takes the SDK its group is named for, first. */
+// A host's stdout is its own, even for a tool that fails before it reaches a sandbox.
+new Logger('sandbox').withSink('stderr');
+
+/** Every tool, unbound, keyed by its name. Each `run` takes the SDK it acts on, first. */
 export const tools = {
-  /** On the server from the start, each run with a `SandboxFactory`. */
-  factory: [createSandbox, getSandbox, listSandboxes, stopSandbox],
-  /**
-   * Registered for each sandbox as `create_sandbox` or `get_sandbox` gives it, each run with its `SandboxPromise`. A
-   * sandbox that can stop gets its own `stop_sandbox` too, from `factory`.
-   */
-  sandbox: [runCommand, readOutput, readFile, writeFile, makeDirectory],
+  /** On the server from the start. */
+  factory: {
+    create_sandbox: createSandbox,
+    get_sandbox: getSandbox,
+    list_sandboxes: listSandboxes,
+    stop_sandbox: stopSandbox,
+  },
+  /** Registered later, by the tool that gives what they act on, each run with it. */
+  lazy: {
+    run_command: runCommand,
+    read_output: readOutput,
+    read_file: readFile,
+    write_file: writeFile,
+    make_directory: makeDirectory,
+  },
 };

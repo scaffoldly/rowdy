@@ -16,7 +16,6 @@ import type {
   SandboxOptions,
   SandboxPromise,
   SandboxSummary,
-  SandboxToolsOptions,
   Tool,
   Event,
 } from '..';
@@ -60,18 +59,16 @@ import { Logger, maskUrl } from '../../log';
 import { describeError, humanize } from '../../aws/errors';
 import { LambdaCompute } from '../../aws/lambda/compute';
 import { MicrovmCompute } from '../../aws/microvm/compute';
-import { safeTool, type BoundTool } from '../../mcp/tool';
+import { safeTool } from '../../mcp/internal/tool';
+import type { BoundTool } from '../../mcp/internal/types';
 import { EXEC_STREAM } from '../../proxy/frames';
-import { createSandbox } from './mcp/create-sandbox';
-import { getSandbox } from './mcp/get-sandbox';
 import { runCommand } from './mcp/run-command';
-import { listSandboxes } from './mcp/list-sandboxes';
 import { makeDirectory } from './mcp/make-directory';
 import { readFile } from './mcp/read-file';
 import { readOutput } from './mcp/read-output';
 import { writeFile } from './mcp/write-file';
 import { stopSandbox } from './mcp/stop-sandbox';
-import { DEFAULTS, SandboxCompute, SandboxComputeClass, SandboxError } from './compute';
+import { DEFAULTS, SandboxCompute, SandboxComputeClass } from './compute';
 import { SandboxPromiseImpl } from './create';
 
 // Kubernetes' alphabet for generated names: no vowels, so a name spells no words.
@@ -231,69 +228,6 @@ export class SandboxImpl implements Sandbox {
     });
   }
 
-  static tools(options?: SandboxToolsOptions): BoundTool[] {
-    // A host's stdout is its own, even for a tool that fails before it reaches a sandbox.
-    new Logger('sandbox').withSink('stderr');
-    const { logLevel, name: scope, limits } = options ?? {};
-    // The scope goes in every sandbox's name, and a check that can't match would refuse every call.
-    if (scope !== undefined && !/^[A-Za-z0-9_-]+$/.test(scope)) {
-      throw new RangeError(`name must be letters, digits, '-' or '_', as AWS allows in a name, got ${scope}`);
-    }
-
-    // Working in a sandbox is its own tools, registered on the server as it's created.
-    const tools: Tool<SandboxFactory>[] = [createSandbox, getSandbox, listSandboxes, stopSandbox];
-    return tools.map(({ run, ...tool }): BoundTool => {
-      return {
-        ...tool,
-        run: (input, ctx) => {
-          const { signal } = ctx;
-          // What a model asks for, held to the host's scope and limits.
-          const sandboxes: SandboxFactory = {
-            create: (requested) => {
-              const runtime = requested?.runtime ?? limits?.runtimes?.[0];
-              // An omitted value must not pass a cap below its default.
-              const timeout = requested?.timeout ?? (limits?.timeout && Math.min(limits.timeout, DEFAULTS.timeout));
-              const memory = requested?.memory ?? (limits?.memory && Math.min(limits.memory, DEFAULTS.memory));
-
-              if (runtime && limits?.runtimes && !limits.runtimes.includes(runtime)) {
-                throw new RangeError(`runtime must be one of ${limits.runtimes.join(', ')}, got ${runtime}`);
-              }
-              if (timeout && limits?.timeout && timeout > limits.timeout) {
-                throw new RangeError(`timeout must be at most ${limits.timeout} ms, got ${timeout}`);
-              }
-              if (memory && limits?.memory && memory > limits.memory) {
-                throw new RangeError(`memory must be at most ${limits.memory} MB, got ${memory}`);
-              }
-
-              return SandboxImpl.create({
-                ...requested,
-                runtime,
-                timeout,
-                memory,
-                name: [scope, requested?.name].filter(Boolean).join('-') || undefined,
-                logLevel,
-                signal,
-              } as SandboxOptions);
-            },
-            get: (lookup) => {
-              if (scope && !lookup.sandboxId.split(':').pop()?.startsWith(`${scope}-`)) {
-                throw new SandboxError(`Not a sandbox: ${lookup.sandboxId}`);
-              }
-              return SandboxImpl.get({ ...lookup, logLevel, signal });
-            },
-            list: async (listOptions) =>
-              (await SandboxImpl.list({ ...listOptions, name: scope, signal }))
-                // A runtime the host doesn't allow isn't one a model can use.
-                .filter((each) => !limits?.runtimes || limits.runtimes.includes(each.runtime)),
-            tools: (toolsOptions) => SandboxImpl.tools(toolsOptions),
-          };
-
-          return run(sandboxes, input, ctx);
-        },
-      };
-    });
-  }
-
   get sandboxId(): string {
     return this.compute.sandboxId;
   }
@@ -311,7 +245,6 @@ export class SandboxImpl implements Sandbox {
       create: (options) => SandboxImpl.create(options),
       get: () => found,
       list: (options) => SandboxImpl.list(options),
-      tools: (options) => SandboxImpl.tools(options),
     };
     const stops: Tool<SandboxFactory>[] = this.compute.stoppable ? [stopSandbox] : [];
 

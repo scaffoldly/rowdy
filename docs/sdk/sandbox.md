@@ -364,39 +364,36 @@ there's something to do: `Retrying may help.` for throttling or a fault on AWS's
 
 ## MCP tools
 
-`Sandbox.tools()` is for a model that manages its own sandboxes: `create_sandbox`, `get_sandbox`,
-`list_sandboxes` and `stop_sandbox`. A host adds them to its own server, and gives each call that `server` and its own `signal`:
+`@scaffoldly/rowdy/mcp` has the tools for a model that manages its own sandboxes, keyed by name. A host adds
+`tools.factory` to its own server: `create_sandbox`, `get_sandbox`, `list_sandboxes` and `stop_sandbox`. Each
+`run` takes the SDK first, then the input, then the call's context with what the host adds: the `server`, its
+`signal`, and optionally a scope `name`, `limits` and `logLevel`.
 
 ```ts
-for (const { name, run, ...config } of Sandbox.tools({ name: tenant, limits: { runtimes: ['aws.microvm'] } })) {
-  server.registerTool(name, config, (input, ctx) => run(input, { ...ctx, server, signal }));
-}
+import { Sandbox, type SandboxFactory } from '@scaffoldly/rowdy/sandbox';
+import { tools, type Tool } from '@scaffoldly/rowdy/mcp';
+
+const factory: Tool<SandboxFactory>[] = Object.values(tools.factory);
+factory.forEach(({ name, run, ...config }) =>
+  server.registerTool(name, config, (input, ctx) =>
+    run(Sandbox, input, { ...ctx, server, signal, name: tenant, limits: { runtimes: ['aws.microvm'] } })
+  )
+);
 ```
 
-Each sandbox `create_sandbox` makes gets tools of its own on that server, named with its suffix, like
-`run_command_bcdf245678`, with no `sandbox_id` to give: `run_command` and `read_output`, and on `aws.microvm`
-`read_file`, `write_file`, `make_directory` and `stop_sandbox`. `get_sandbox` gives a sandbox that's already
-there, like one from `list_sandboxes`, its tools again. Without a `server`, a model can create a sandbox but
-not work in it. The `signal` is the host's, for as long as what the call starts may run. The tools
-come off that server when the sandbox is stopped there, or the `signal` aborts. The server has to last the
-session, so this doesn't suit one built per request.
+The scope `name` comes first in every sandbox's name, and a `sandbox_id` outside it is refused. `limits` cap
+what a model can ask for.
+
+Each sandbox `create_sandbox` makes gets tools of its own on that server, `tools.lazy`, named with its suffix,
+like `run_command_bcdf245678`, with no `sandbox_id` to give: `run_command` and `read_output`, and on
+`aws.microvm` `read_file`, `write_file`, `make_directory` and `stop_sandbox`. `get_sandbox` gives a sandbox
+that's already there, like one from `list_sandboxes`, its tools again. Without a `server`, a model can create
+a sandbox but not work in it. The `signal` is the host's, for as long as what the call starts may run. The
+tools come off that server when the sandbox is stopped there, or the `signal` aborts. The server has to last
+the session, so this doesn't suit one built per request.
 
 `read_file` answers 64 KiB at a time, read on with `offset`, and a missing file is `found: false`.
 `write_file` takes one file, as utf8 or base64, with an octal `mode` like `"755"`.
-
-`@scaffoldly/rowdy/mcp` exports every tool, unbound, for a host that builds its own. Each `run` takes the SDK
-its group is named for, first. `tools.factory` are on the server from the start and take a `SandboxFactory`:
-`create_sandbox`, `get_sandbox`, `list_sandboxes` and `stop_sandbox`. `tools.sandbox` are registered for each
-sandbox and take its `SandboxPromise`: `run_command`, `read_output`, `read_file`, `write_file` and
-`make_directory`.
-
-```ts
-import * as mcp from '@scaffoldly/rowdy/mcp';
-
-mcp.tools.factory.forEach(({ name, run, ...config }) =>
-  server.registerTool(name, config, (input, ctx) => run(Sandbox, input, { ...ctx, server, signal }))
-);
-```
 
 A host that owns one sandbox gives a model only that one, with `tools()` on it, or on `Sandbox.create`'s
 result before it's ready:

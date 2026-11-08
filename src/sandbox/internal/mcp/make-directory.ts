@@ -1,7 +1,8 @@
 import { z } from 'zod';
 import type { SandboxPromise } from '../..';
 import { describeError } from '../../../aws/errors';
-import { safeTool, toolResult, type Tool } from '../../../mcp/tool';
+import { safeTool, toolResult } from '../../../mcp/internal/tool';
+import type { Tool } from '../../../mcp/internal/types';
 
 const inputSchema = z.object({
   path: z.string().describe('Absolute, or relative to where commands start.'),

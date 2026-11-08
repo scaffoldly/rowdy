@@ -2,10 +2,13 @@ import { Logger } from '@scaffoldly/rowdy';
 import {
   CommandFinished,
   Sandbox,
+  SandboxFactory,
   SandboxOptions,
   SandboxSummary,
   SandboxToolsOptions,
+  Tool,
 } from '@scaffoldly/rowdy/sandbox';
+import * as mcp from '@scaffoldly/rowdy/mcp';
 import { AxiosError, AxiosHeaders, InternalAxiosRequestConfig } from 'axios';
 import { InvokeWithResponseStreamResponseEvent, LambdaClient } from '@aws-sdk/client-lambda';
 import {
@@ -1383,6 +1386,10 @@ describe('sandbox', () => {
       });
     });
 
+    // What a host serves first, each run with the SDK's factory.
+    const factoryTools: Tool<SandboxFactory>[] = Object.values(mcp.tools.factory);
+    const hostTool = (name: string) => factoryTools.find((each) => each.name === name)!;
+
     describe('registered on a server as they arrive', () => {
       const setup = () => {
         const { stop } = microvm();
@@ -1391,11 +1398,10 @@ describe('sandbox', () => {
           remove: () => void removed.push(name),
         }));
         const host = new AbortController();
-        const tools = Sandbox.tools();
         const own = { registerTool };
         const call = (name: string, input: Record<string, unknown> = {}, server: unknown = own) => {
-          const tool = tools.find((each) => each.name === name)!;
-          return tool.run(tool.inputSchema.parse(input), { ...ctx(), server, signal: host.signal } as never);
+          const tool = hostTool(name);
+          return tool.run(Sandbox, tool.inputSchema.parse(input), { ...ctx(), server, signal: host.signal } as never);
         };
         const registered = () => registerTool.mock.calls.map(([name]) => name);
         return { call, registerTool, registered, removed, host, stop };
@@ -1481,9 +1487,9 @@ describe('sandbox', () => {
 
       it('registers nothing without a server', async () => {
         microvm();
-        const create = Sandbox.tools().find(({ name }) => name === 'create_sandbox')!;
+        const create = hostTool('create_sandbox');
 
-        await expect(create.run(create.inputSchema.parse({}), ctx())).resolves.toMatchObject({
+        await expect(create.run(Sandbox, create.inputSchema.parse({}), ctx())).resolves.toMatchObject({
           structuredContent: { sandbox_id: IMAGE },
         });
       });
@@ -1496,8 +1502,8 @@ describe('sandbox', () => {
         options: SandboxToolsOptions = {},
         signal?: AbortSignal
       ) => {
-        const tool = Sandbox.tools(options).find((each) => each.name === name)!;
-        return tool.run(tool.inputSchema.parse(input), { ...ctx(), signal });
+        const tool = hostTool(name);
+        return tool.run(Sandbox, tool.inputSchema.parse(input), { ...ctx(), ...options, signal });
       };
       const creating = () =>
         jest
@@ -1614,21 +1620,24 @@ describe('sandbox', () => {
       });
     });
 
-    it.each(['github:819991', 'a b', 'tenant/1', ''])('refuses a scope AWS would not take in a name: %j', (name) => {
-      expect(() => Sandbox.tools({ name })).toThrow(RangeError);
-    });
+    it.each(['github:819991', 'a b', 'tenant/1', ''])(
+      'refuses a scope AWS would not take in a name: %j',
+      async (name) => {
+        const create = hostTool('create_sandbox');
 
-    it('takes a scope of letters, digits, dashes and underscores', () => {
-      expect(() => Sandbox.tools({ name: 'github-819991_a' })).not.toThrow();
-    });
+        await expect(create.run(Sandbox, create.inputSchema.parse({}), { ...ctx(), name })).rejects.toThrow(
+          "name must be letters, digits, '-' or '_'"
+        );
+      }
+    );
 
-    it('lists them by name', () => {
-      expect(Sandbox.tools().map(({ name }) => name)).toEqual([
-        'create_sandbox',
-        'get_sandbox',
-        'list_sandboxes',
-        'stop_sandbox',
-      ]);
+    it('takes a scope of letters, digits, dashes and underscores', async () => {
+      microvm();
+      const create = hostTool('create_sandbox');
+
+      await expect(
+        create.run(Sandbox, create.inputSchema.parse({}), { ...ctx(), name: 'github-819991_a' })
+      ).resolves.toMatchObject({ structuredContent: { sandbox_id: expect.any(String) } });
     });
   });
 
@@ -1908,8 +1917,8 @@ describe('sandbox', () => {
     });
   });
 
-  it('exposes only create, get, list and tools', () => {
-    expect(Object.keys(Sandbox).sort()).toEqual(['create', 'get', 'list', 'tools']);
+  it('exposes only create, get and list', () => {
+    expect(Object.keys(Sandbox).sort()).toEqual(['create', 'get', 'list']);
   });
 
   it('feeds its signal to its environment', async () => {

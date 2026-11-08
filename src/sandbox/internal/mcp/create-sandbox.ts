@@ -14,8 +14,10 @@ import {
 import { z } from 'zod';
 import type { McpServer, RegisteredTool } from '@modelcontextprotocol/server';
 import type { Sandbox, SandboxFactory, SandboxOptions } from '../..';
+import { DEFAULTS } from '../compute';
 import { describeError } from '../../../aws/errors';
-import { safeTool, toolResult, type ServerContext, type Tool } from '../../../mcp/tool';
+import { safeTool, toolResult } from '../../../mcp/internal/tool';
+import type { ServerContext, Tool } from '../../../mcp/internal/types';
 
 /** Each sandbox's own tools on each server, so a repeated create doesn't register them twice. */
 export const REGISTERED = new WeakMap<Pick<McpServer, 'registerTool'>, Map<string, RegisteredTool[]>>();
@@ -24,7 +26,10 @@ export const REGISTERED = new WeakMap<Pick<McpServer, 'registerTool'>, Map<strin
  * Registers a sandbox's own tools, named with its suffix, on the server a call came in on, once per server. Answers
  * with their names there, or none without a server.
  */
-export const registerTools = (sandbox: Sandbox, { server, signal }: ServerContext): string[] => {
+export const registerTools = (
+  sandbox: Sandbox,
+  { server, signal, name: scope, limits, logLevel }: ServerContext
+): string[] => {
   if (!server) return [];
   const { sandboxId } = sandbox;
   // Named with the sandbox's suffix, so two sandboxes' tools don't clash.
@@ -36,7 +41,9 @@ export const registerTools = (sandbox: Sandbox, { server, signal }: ServerContex
   if (onServer.has(sandboxId)) return names;
 
   const sandboxTools = tools.map(({ name, run, ...config }) =>
-    server.registerTool(`${name}_${suffix}`, config, (args, extra) => run(args, { ...extra, server, signal }))
+    server.registerTool(`${name}_${suffix}`, config, (args, extra) =>
+      run(args, { ...extra, server, signal, name: scope, limits, logLevel })
+    )
   );
   onServer.set(sandboxId, sandboxTools);
   // They come off when the call's signal aborts, unless a stop took them off first.
@@ -95,7 +102,35 @@ export const createSandbox: Tool<SandboxFactory, typeof inputSchema, typeof outp
     outputSchema,
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: true },
     async run(sandboxes, input, ctx) {
-      const created = sandboxes.create(input as SandboxOptions);
+      const { name: scope, limits, logLevel, signal } = ctx;
+      // The scope goes in every sandbox's name, and AWS takes only these in one.
+      if (scope !== undefined && !/^[A-Za-z0-9_-]+$/.test(scope)) {
+        throw new RangeError(`name must be letters, digits, '-' or '_', as AWS allows in a name, got ${scope}`);
+      }
+      const runtime = input.runtime ?? limits?.runtimes?.[0];
+      // An omitted value must not pass a cap below its default.
+      const timeout = input.timeout ?? (limits?.timeout && Math.min(limits.timeout, DEFAULTS.timeout));
+      const memory = input.memory ?? (limits?.memory && Math.min(limits.memory, DEFAULTS.memory));
+
+      if (runtime && limits?.runtimes && !limits.runtimes.includes(runtime)) {
+        throw new RangeError(`runtime must be one of ${limits.runtimes.join(', ')}, got ${runtime}`);
+      }
+      if (timeout && limits?.timeout && timeout > limits.timeout) {
+        throw new RangeError(`timeout must be at most ${limits.timeout} ms, got ${timeout}`);
+      }
+      if (memory && limits?.memory && memory > limits.memory) {
+        throw new RangeError(`memory must be at most ${limits.memory} MB, got ${memory}`);
+      }
+
+      const created = sandboxes.create({
+        ...input,
+        runtime,
+        timeout,
+        memory,
+        name: [scope, input.name].filter(Boolean).join('-') || undefined,
+        logLevel,
+        signal,
+      } as SandboxOptions);
 
       const progressToken = ctx.mcpReq._meta?.progressToken;
 

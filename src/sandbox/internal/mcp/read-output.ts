@@ -1,7 +1,8 @@
 import { z } from 'zod';
 import type { SandboxPromise } from '../..';
 import { describeError } from '../../../aws/errors';
-import { safeTool, toolResult, type Tool } from '../../../mcp/tool';
+import { safeTool, toolResult } from '../../../mcp/internal/tool';
+import type { Tool } from '../../../mcp/internal/types';
 
 const inputSchema = z.object({
   cmd_id: z.string().describe('From run_command.'),
