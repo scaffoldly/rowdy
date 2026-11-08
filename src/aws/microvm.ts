@@ -1,13 +1,16 @@
 import { randomUUID } from 'crypto';
+import { chmod, mkdir, readFile, writeFile } from 'fs/promises';
 import { createServer, IncomingMessage, ServerResponse } from 'http';
-import { defer, from, map, NEVER, Observable, of } from 'rxjs';
-import { text } from 'stream/consumers';
+import { dirname, resolve } from 'path';
+import { catchError, defer, from, map, NEVER, Observable, of } from 'rxjs';
+import { buffer, text } from 'stream/consumers';
 import { CRI } from '@scaffoldly/rowdy-grpc';
 import { Environment } from '../environment';
 import { log as root, Trace } from '../log';
-import { Pipeline, Proxy, Request, Response, Result } from '../pipeline';
+import { Chunk, Pipeline, Proxy, Request, Response, Result } from '../pipeline';
 import { EXEC_CONTENT_TYPE, EXEC_STREAM, execFrame, ShellProxy, ShellRequest, ShellResponse } from '../proxy/shell';
 import { isExecEvent } from './lambda';
+import { URI } from '../routes';
 
 const log = root.child('microvm');
 
@@ -19,6 +22,12 @@ const HOOKS: ReadonlySet<string> = new Set(['ready', 'validate', 'run']);
 
 /** Takes an Exec event. Apart from the hooks, which a holder of a VM's auth token can also reach. */
 export const EXEC_PATH = '/rowdy/exec';
+
+/**
+ * At the `path` query, relative to where a command starts: PUT writes a file's bytes, GET answers them, and POST makes
+ * a directory. PUT and POST make missing parents and take an octal `mode`. Reachable as `EXEC_PATH` is, and no wider.
+ */
+export const FILES_PATH = '/rowdy/files';
 
 /** Carries a command's id on the response whose body is its frames. */
 export const EXEC_ID_HEADER = 'x-rowdy-cmd-id';
@@ -69,7 +78,7 @@ export class MicrovmPipeline extends Pipeline {
 export class MicrovmRequest extends Request<MicrovmPipeline> {
   constructor(
     pipeline: MicrovmPipeline,
-    private readonly req: IncomingMessage,
+    public readonly req: IncomingMessage,
     public readonly res: ServerResponse
   ) {
     super(pipeline);
@@ -86,8 +95,17 @@ export class MicrovmRequest extends Request<MicrovmPipeline> {
     return this.req.url === EXEC_PATH;
   }
 
+  private get files(): URLSearchParams | undefined {
+    const url = URI.from(`http://localhost${this.req.url ?? ''}`);
+    return url.pathname === FILES_PATH ? url.searchParams : undefined;
+  }
+
   @Trace(log)
-  override into(): Observable<Proxy<MicrovmPipeline, number | ShellResponse>> {
+  override into(): Observable<Proxy<MicrovmPipeline, number | ShellResponse | MicrovmFile>> {
+    const { files } = this;
+    if (files) {
+      return of(new MicrovmFileProxy(this.pipeline, this, files));
+    }
     if (!this.isExec) {
       this.req.resume();
       return of(new MicrovmHookProxy(this.pipeline, this, this.hook ? 200 : 404));
@@ -115,7 +133,7 @@ export class MicrovmRequest extends Request<MicrovmPipeline> {
   }
 
   override brief(): Record<string, string | number | boolean> {
-    return { hook: this.isExec ? 'exec' : (this.hook ?? 'unknown') };
+    return { hook: this.isExec ? 'exec' : this.files ? 'files' : (this.hook ?? 'unknown') };
   }
 
   override repr(): string {
@@ -149,6 +167,73 @@ export class MicrovmHookProxy extends Proxy<MicrovmPipeline, number> {
 
   override repr(): string {
     return `MicrovmHookProxy(hook=${this.hook.brief().hook}, status=${this.status})`;
+  }
+}
+
+type MicrovmFile = { status: number; body?: Buffer };
+
+export class MicrovmFileProxy extends Proxy<MicrovmPipeline, MicrovmFile> {
+  constructor(
+    pipeline: MicrovmPipeline,
+    private readonly hook: MicrovmRequest,
+    private readonly query: URLSearchParams
+  ) {
+    super(pipeline, hook);
+  }
+
+  override invoke(): Observable<MicrovmFile> {
+    const { req } = this.hook;
+    const path = this.query.get('path');
+    const mode = this.query.get('mode');
+
+    return defer(async (): Promise<MicrovmFile> => {
+      if (!path || (mode !== null && !/^[0-7]{1,4}$/.test(mode))) {
+        req.resume();
+        return { status: 400, body: Buffer.from('path is required, and mode is octal') };
+      }
+      const target = resolve(path);
+      if (req.method === 'GET') {
+        return { status: 200, body: await readFile(target) };
+      }
+      if (req.method === 'PUT') {
+        const body = await buffer(req);
+        await mkdir(dirname(target), { recursive: true });
+        await writeFile(target, body);
+        if (mode !== null) await chmod(target, parseInt(mode, 8));
+        return { status: 204 };
+      }
+      if (req.method === 'POST') {
+        req.resume();
+        await mkdir(target, { recursive: true });
+        if (mode !== null) await chmod(target, parseInt(mode, 8));
+        return { status: 204 };
+      }
+      req.resume();
+      return { status: 405 };
+    }).pipe(
+      catchError((error: NodeJS.ErrnoException) =>
+        of({ status: error.code === 'ENOENT' ? 404 : 500, body: Buffer.from(error.message) })
+      )
+    );
+  }
+
+  @Trace(log)
+  override into(): Observable<Response<MicrovmPipeline>> {
+    return this.invoke().pipe(
+      map(({ status, body }) => {
+        const response = new MicrovmResponse(this.pipeline, this.hook).withStatus(status);
+        if (body) {
+          response.withHeader('content-type', 'application/octet-stream').next(new Chunk(body, body.length));
+        }
+        response.complete();
+        return response;
+      })
+    );
+  }
+
+  // A file's path can say what's in it, so it isn't logged.
+  override repr(): string {
+    return `MicrovmFileProxy(method=${this.hook.req.method})`;
   }
 }
 

@@ -4,7 +4,17 @@ import { createServer } from 'http';
 import { AddressInfo } from 'net';
 import { mergeMap, Observable, Subscription } from 'rxjs';
 import { Environment, Logger } from '../../src';
-import { EXEC_ID_HEADER, EXEC_PATH, HOOKS_PORT, MicrovmPipeline, MicrovmRequest } from '../../src/aws/microvm';
+import {
+  EXEC_ID_HEADER,
+  EXEC_PATH,
+  FILES_PATH,
+  HOOKS_PORT,
+  MicrovmPipeline,
+  MicrovmRequest,
+} from '../../src/aws/microvm';
+import { mkdtempSync, readFileSync, realpathSync, statSync, writeFileSync } from 'fs';
+import { tmpdir } from 'os';
+import { join } from 'path';
 import { EXEC_CONTENT_TYPE, EXEC_STREAM, KILL_GRACE } from '../../src/proxy/shell';
 import { Pipeline, Result } from '../../src/pipeline';
 
@@ -121,6 +131,93 @@ describe('aws microvm pipeline', () => {
     }
     throw new Error('hooks never listened');
   };
+
+  describe('files', () => {
+    const at = (url: string, path: string, mode?: string): string =>
+      `${url}${FILES_PATH}?path=${encodeURIComponent(path)}${mode ? `&mode=${mode}` : ''}`;
+    const dir = (): string => realpathSync(mkdtempSync(join(tmpdir(), 'rowdy-files-')));
+
+    it('writes bytes as they are, and reads them back', async () => {
+      const url = await serve();
+      const path = join(dir(), 'bin');
+      const bytes = Buffer.from([0, 255, 10, 13, 128]);
+
+      const put = await fetch(at(url, path), { method: 'PUT', body: bytes });
+      const got = await fetch(at(url, path));
+
+      expect(put.status).toBe(204);
+      expect(readFileSync(path)).toEqual(bytes);
+      expect(got.status).toBe(200);
+      expect(Buffer.from(await got.arrayBuffer())).toEqual(bytes);
+    });
+
+    it("makes a file's missing directories, and sets its mode", async () => {
+      const url = await serve();
+      const path = join(dir(), 'a', 'b', 'run.sh');
+
+      await fetch(at(url, path, '755'), { method: 'PUT', body: '#!/bin/sh' });
+
+      expect(statSync(path).mode & 0o777).toBe(0o755);
+    });
+
+    it('takes a relative path from where a command starts', async () => {
+      const url = await serve();
+      const cwd = dir();
+      const was = process.cwd();
+      process.chdir(cwd);
+      try {
+        await fetch(at(url, 'rel.txt'), { method: 'PUT', body: 'hi' });
+      } finally {
+        process.chdir(was);
+      }
+
+      expect(readFileSync(join(cwd, 'rel.txt'), 'utf8')).toBe('hi');
+    });
+
+    it('answers 404 for a file that is not there', async () => {
+      const url = await serve();
+
+      expect((await fetch(at(url, join(dir(), 'missing')))).status).toBe(404);
+    });
+
+    it('makes a directory and its parents, and again without failing', async () => {
+      const url = await serve();
+      const path = join(dir(), 'x', 'y');
+
+      const first = await fetch(at(url, path, '700'), { method: 'POST' });
+      const again = await fetch(at(url, path), { method: 'POST' });
+
+      expect([first.status, again.status]).toEqual([204, 204]);
+      expect(statSync(path).isDirectory()).toBe(true);
+      expect(statSync(path).mode & 0o777).toBe(0o700);
+    });
+
+    it('says why it could not, as text', async () => {
+      const url = await serve();
+      const path = join(dir(), 'file');
+      writeFileSync(path, 'x');
+
+      const response = await fetch(at(url, join(path, 'under')), { method: 'PUT', body: 'y' });
+
+      expect(response.status).toBe(500);
+      expect(await response.text()).toMatch(/ENOTDIR|EEXIST/);
+    });
+
+    it.each([
+      ['no path', (url: string) => `${url}${FILES_PATH}`],
+      ['a mode that is not octal', (url: string) => at(url, '/tmp/x', '999')],
+    ])('refuses %s', async (_, to) => {
+      const url = await serve();
+
+      expect((await fetch(to(url), { method: 'PUT', body: 'x' })).status).toBe(400);
+    });
+
+    it('refuses other methods', async () => {
+      const url = await serve();
+
+      expect((await fetch(at(url, '/tmp/x'), { method: 'DELETE' })).status).toBe(405);
+    });
+  });
 
   it.each(['ready', 'validate', 'run'])('answers the %s hook', async (hook) => {
     const url = await serve();
