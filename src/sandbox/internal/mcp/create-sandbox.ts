@@ -28,7 +28,7 @@ export const REGISTERED = new WeakMap<Pick<McpServer, 'registerTool'>, Map<strin
  */
 export const registerTools = (
   sandbox: Sandbox,
-  { server, signal, meta, limits, logLevel }: ServerContext
+  { server, signal, meta, limits, logLevel, changed }: ServerContext
 ): string[] => {
   if (!server) return [];
   const { sandboxId } = sandbox;
@@ -42,11 +42,13 @@ export const registerTools = (
 
   const sandboxTools = tools.map(({ name, run, ...config }) =>
     server.registerTool(`${name}_${suffix}`, config, (args, extra) =>
-      run(args, { ...extra, server, signal, meta, limits, logLevel })
+      run(args, { ...extra, server, signal, meta, limits, logLevel, changed })
     )
   );
   onServer.set(sandboxId, sandboxTools);
-  // They come off when the call's signal aborts, unless a stop took them off first.
+  changed?.();
+  // They come off when the call's signal aborts, unless a stop took them off first. That isn't announced: a host
+  // that builds a server per request aborts it with the request, and the server goes with it.
   signal?.addEventListener(
     'abort',
     () => {

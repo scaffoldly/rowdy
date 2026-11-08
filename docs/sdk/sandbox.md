@@ -406,8 +406,17 @@ like `run_command_bcdf245678`, with no `sandbox_id` to give: `run_command` and `
 `aws.microvm` `read_file`, `write_file`, `make_directory` and `stop_sandbox`. `get_sandbox` gives a sandbox
 that's already there, like one from `list_sandboxes`, its tools again. Without a `server`, a model can create
 a sandbox but not work in it. The `signal` is the host's, for as long as what the call starts may run. The
-tools come off that server when the sandbox is stopped there, or the `signal` aborts. The server has to last
-the session, so this doesn't suit one built per request.
+tools come off that server when the sandbox is stopped there, or the `signal` aborts.
+
+A server that lasts the session announces those changes to its client itself. A host that builds a server per
+request passes `changed` too, and rowdy calls it whenever a sandbox's tools go on or come off, so the host can
+tell its clients to list tools again:
+
+```ts
+run(Sandbox, input, { ...ctx, server, signal, changed: () => handler.notify.toolsChanged() });
+```
+
+That server is gone after its request, so the host also registers each sandbox's tools on every new one.
 
 `read_file` answers 64 KiB at a time, read on with `offset`, and a missing file is `found: false`.
 `write_file` takes one file, as utf8 or base64, with an octal `mode` like `"755"`.

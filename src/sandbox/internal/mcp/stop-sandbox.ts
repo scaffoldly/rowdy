@@ -25,7 +25,7 @@ export const stopSandbox: Tool<SandboxFactory, typeof inputSchema, typeof output
     inputSchema,
     outputSchema,
     annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: true },
-    async run(sandboxes, { sandbox_id: sandboxId }, { server, signal, meta, logLevel }) {
+    async run(sandboxes, { sandbox_id: sandboxId }, { server, signal, meta, logLevel, changed }) {
       const found = await sandboxes.get({ sandboxId, meta, logLevel, signal });
       await found.stop().catch((error) => {
         // A failed stop can leave a VM running. It's billed until someone notices.
@@ -37,8 +37,10 @@ export const stopSandbox: Tool<SandboxFactory, typeof inputSchema, typeof output
 
       // Its own tools come off the server this stop came in on.
       const onServer = server && REGISTERED.get(server);
-      onServer?.get(sandboxId)?.forEach((tool) => tool.remove());
+      const sandboxTools = onServer?.get(sandboxId);
+      sandboxTools?.forEach((tool) => tool.remove());
       onServer?.delete(sandboxId);
+      if (sandboxTools) changed?.();
 
       return toolResult(outputSchema, { sandbox_id: sandboxId });
     },
