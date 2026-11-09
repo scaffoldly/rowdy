@@ -1,6 +1,6 @@
 # Sandbox Image
 
-The base image for [`@scaffoldly/rowdy/sandbox`](https://github.com/scaffoldly/rowdy): Python, Node, npm, pip, git and curl on Debian trixie, in one layer, for `linux/amd64` and `linux/arm64`.
+The base image for [`@scaffoldly/rowdy/sandbox`](https://github.com/scaffoldly/rowdy): Python, Node, npm, pip, git, curl and jq on Debian trixie, with procps (`ps`, `pkill`, `pgrep`, `top`), iproute2 (`ss`, `ip`), `lsof`, `file`, and busybox for other everyday tools (`killall`, `wget`, `unzip`, `xz`, `less`, `vi`, `nc` and more), in one layer, for `linux/amd64` and `linux/arm64`.
 
 ```
 ghcr.io/scaffoldly/sandbox
