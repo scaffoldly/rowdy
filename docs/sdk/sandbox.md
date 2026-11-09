@@ -262,11 +262,13 @@ Different `meta` is a different sandbox, even with the same options. On AWS each
 any image:
 
 ```ts
-const sandbox = await Sandbox.create({ image: 'python:3.12-slim', layersFrom: ['busybox'] });
+const sandbox = await Sandbox.create({ image: 'python:3.12-slim', layersFrom: ['ghcr.io/jqlang/jq:latest'] });
 ```
 
-Each one must be public, a single layer, and built only with `COPY` or `ADD`. Its layer goes in for each of
-the sandbox image's platforms it's published for, and is skipped on the others. The layers are part of the
+Each one must be public and set no `Env` but `PATH`. Only its layers go in, not its config, so jq above is at
+`/jq`, where its image put it. An image built `FROM scratch` with a static binary fits any base; one that ships
+a whole root filesystem replaces the base's `/bin` and libraries. Its layers go in for each of the sandbox
+image's platforms it's published for, and are skipped on the others. The layers are part of the
 image the sandbox is built from, so a sandbox started again after a `stop` still has them. Different layers
 are a different sandbox.
 

@@ -1,11 +1,7 @@
 import type { External } from './transfer';
 
-/** rowdy's own image: its one layer is added to every deployed image, after any layers-from source. */
+/** rowdy's own image: its layer is added to every deployed image, after any layers-from source. */
 export const ROWDY_LAYERS = 'ghcr.io/scaffoldly/rowdy:beta';
-
-// The one non-empty history entry must add files; only these may sit beside it.
-const LAYER_INSTRUCTIONS: ReadonlyArray<string> = ['COPY', 'ADD'];
-const EMPTY_INSTRUCTIONS: ReadonlyArray<string> = ['ENTRYPOINT', 'CMD', 'LABEL'];
 
 // The function runs this platform's copy; a source missing from any other cannot reach it.
 const DEPLOYED_PLATFORM = 'linux/amd64';
@@ -16,46 +12,25 @@ export const skippedLevel = (platform: string): 'warn' | 'debug' => (platform ==
 /** One platform of a layers-from image: `platform` is `os/architecture`. */
 export type SourcePlatform = { platform: string; image: External['Image']; config: External['Config'] };
 
-/** The Dockerfile instruction a history entry's `created_by` records, buildkit's or the classic builder's. */
-export const instructionOf = (createdBy: string): string => {
-  const nop = /^\/bin\/sh -c #\(nop\)\s+/.exec(createdBy);
-  if (nop) {
-    return (createdBy.slice(nop[0].length).split(/\s+/)[0] ?? '').toUpperCase();
-  }
-  if (createdBy.startsWith('/bin/sh -c ')) {
-    return 'RUN';
-  }
-  return (createdBy.trim().split(/\s+/)[0] ?? '').toUpperCase();
-};
-
-// The first rule a platform breaks, in the order of rowdy's own final stage; undefined when it keeps them all.
+// The first rule a platform breaks; undefined when its layers can go in as they are.
 const brokenRule = ({ image, config }: SourcePlatform): string | undefined => {
   const layers = image.layers ?? [];
-  if (layers.length !== 1) {
-    return `${layers.length} layers`;
+  if (!layers.length) {
+    return 'no layers';
   }
   const diffIds = config.rootfs?.diff_ids ?? [];
-  if (diffIds.length !== 1) {
-    return `${diffIds.length} diff_ids`;
+  if (diffIds.length !== layers.length) {
+    return `${layers.length} layers but ${diffIds.length} diff_ids`;
   }
   const history = config.history;
   if (!history?.length) {
     return 'no history';
   }
-  let layerEntries = 0;
-  for (const entry of history) {
-    const instruction = instructionOf(typeof entry.created_by === 'string' ? entry.created_by : '');
-    const empty = entry.empty_layer === true;
-    if (!(empty ? EMPTY_INSTRUCTIONS : LAYER_INSTRUCTIONS).includes(instruction)) {
-      return `${instruction || 'an unnamed step'} in history`;
-    }
-    if (!empty) {
-      layerEntries++;
-    }
+  const layerEntries = history.filter((entry) => entry.empty_layer !== true).length;
+  if (layerEntries !== layers.length) {
+    return `${layers.length} layers but ${layerEntries} layer entries in history`;
   }
-  if (layerEntries !== 1) {
-    return `${layerEntries} layer entries in history`;
-  }
+  // Only the layers go in, not the config, so a tool that needs its own env wouldn't get it.
   const env = (config.config?.Env ?? []).find((entry) => !entry.startsWith('PATH='));
   if (env !== undefined) {
     return `Env sets ${env.split('=')[0]}`;
@@ -63,7 +38,7 @@ const brokenRule = ({ image, config }: SourcePlatform): string | undefined => {
   return undefined;
 };
 
-/** Throws for the first platform of `from` that is not one layer, as rowdy's own image is. rowdy's own is exempt. */
+/** Throws for the first platform of `from` whose layers can't go in as they are. rowdy's own is exempt. */
 export const checkSource = (from: string, platforms: SourcePlatform[]): void => {
   if (from === ROWDY_LAYERS) {
     return;
@@ -72,7 +47,7 @@ export const checkSource = (from: string, platforms: SourcePlatform[]): void => 
     const rule = brokenRule(source);
     if (rule) {
       throw new Error(
-        `layers-from ${from} (${source.platform}): ${rule}; a layers-from image must be one layer, as rowdy's is (FROM scratch, one COPY, ENTRYPOINT)`
+        `layers-from ${from} (${source.platform}): ${rule}; only its layers go in, so they must match its config and it can't set Env beyond PATH`
       );
     }
   }

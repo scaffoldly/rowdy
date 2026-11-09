@@ -243,7 +243,7 @@ export class Transfer implements ILoggable {
 
   /**
    * A layers-from image, collected and checked: every platform but attestations, with its config. Errors for an
-   * image that is not one layer, before anything is uploaded.
+   * image whose layers can't go in as they are, before anything is uploaded.
    */
   static source(log: Logger, http: AxiosInstance, ref: string): Observable<Source> {
     return of(ref).pipe(

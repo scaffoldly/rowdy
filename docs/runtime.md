@@ -22,7 +22,7 @@ the deploying account's ECR, and adds itself on the way.
   `ghcr.io/scaffoldly/rowdy:beta` publish, rowdy's layers are appended on top of the image's own.
   That is one layer holding a single file, `/usr/local/bin/rowdy`. The binary is statically linked,
   so it runs on any base: distroless, scratch, Alpine, Debian. A platform rowdy does not publish is
-  copied unchanged. Images given with `--layers-from` add their one layer before rowdy's; see
+  copied unchanged. Images given with `--layers-from` add their layers before rowdy's; see
   [Your own layers](#your-own-layers).
 - **What changes in the config.** Only what the new layer needs: its uncompressed digest is appended
   to `rootfs.diff_ids` and rowdy's build history to `history`. `ENTRYPOINT`, `CMD`, `ENV`,
@@ -38,30 +38,31 @@ The function runs the `linux/amd64` copy, by digest: its image URI is
 ### Your own layers
 
 `--layers-from <image>` (repeatable, or `ROWDY_LAYERS_FROM`, one per line) adds another image's
-layer the same way, so a tool is on the deployed image without
+layers the same way, so a tool is on the deployed image without
 the app's Dockerfile installing it:
 
 ```sh
-rowdy create aws lambda ghcr.io/owner/app:latest --layers-from ghcr.io/tunnel-pizza/tunneld:latest
+rowdy create aws lambda ghcr.io/owner/app:latest --layers-from ghcr.io/jqlang/jq:latest
 ```
 
 The layers go on in the order given, then rowdy's last, so `/usr/local/bin/rowdy` is always rowdy's.
 A repeated image is added once, and naming rowdy's own image adds nothing. A source is read
 anonymously, never with the app image's registry credentials, so it must be public.
 
-A source must be built like rowdy's own final stage: `FROM scratch`, one `COPY` of a static binary,
-an `ENTRYPOINT`. On every platform it publishes, before anything is copied, rowdy checks:
+Only a source's layers go in, never its config, so its files land on the image as they are, and its
+`ENTRYPOINT`, `ENV`, `WORKDIR` and the like don't. A source built `FROM scratch` with a static binary,
+like rowdy's own, fits any base. One that ships a whole root filesystem, like an Alpine-based image,
+replaces the base's `/bin` and libraries. On every platform it publishes, before anything is copied,
+rowdy checks:
 
-- one layer, and one entry in `rootfs.diff_ids`;
-- a `history`, whose one non-empty entry is a `COPY` or `ADD`;
-- no other step but `ENTRYPOINT`, `CMD` or `LABEL`: no `RUN`, `ENV`, `ARG`, `USER`, `WORKDIR` and the
-  like;
-- no `Env` but buildkit's default `PATH`.
+- at least one layer, with one entry in `rootfs.diff_ids` for each;
+- a `history` with one non-empty entry for each layer;
+- no `Env` but buildkit's default `PATH`, since a tool that needs its own wouldn't get it.
 
 A source that breaks any of them fails the deploy, naming the image, the platform and the rule:
 
 ```
-layers-from ghcr.io/owner/tool:latest (linux/amd64): 2 layers; a layers-from image must be one layer, as rowdy's is (FROM scratch, one COPY, ENTRYPOINT)
+layers-from ghcr.io/owner/tool:latest (linux/amd64): Env sets FOO; only its layers go in, so they must match its config and it can't set Env beyond PATH
 ```
 
 The layer's size and files are not inspected. rowdy's own image is built by this repository and

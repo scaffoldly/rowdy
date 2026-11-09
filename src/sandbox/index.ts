@@ -18,8 +18,8 @@ interface BaseSandboxOptions {
    */
   meta?: Record<string, string>;
   /**
-   * Public, single-layer images whose layer goes into the sandbox's image, after rowdy's, for the platforms each is
-   * published for. Different layers are a different sandbox.
+   * Public images whose layers go into the sandbox's image, after rowdy's, for the platforms each is published for.
+   * Only their layers go in, not their config. Different layers are a different sandbox.
    */
   layersFrom?: string[];
   /** Applies to the whole process. Defaults to ROWDY_LOG_LEVEL, ROWDY_DEBUG or ROWDY_TRACE, then `warn`. */
