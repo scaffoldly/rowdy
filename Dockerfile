@@ -3,7 +3,8 @@
 # Copyright (c) 2015 Joyent, Inc. MIT: see LICENSE.docker-node. The node stage comes from nodejs/docker-node at
 # 4730c96eda1aefbf7b952fd725d6b37e9e531a8c.
 # Modifications copyright 2026 Scaffoldly.
-# Modified: rebuilt on debian-slim from only the files Python, Node, git and curl need, so without compilers, -dev
+# Modified: rebuilt on debian-slim from only the files Python, Node, git, curl, jq, procps, iproute2, lsof, file and
+# busybox need, so without compilers, -dev
 # libraries, gh, Yarn or Node's headers; Python, Node and the Node release keys are bumped; ca-certificates, the pip and certifi upgrade,
 # and NODE_OPTIONS come from e2bdev/base's image history. Its removal of the emSign ECC G3 and Comodo AAA roots is
 # left out, as trixie's ca-certificates no longer ships them.
@@ -52,14 +53,15 @@ RUN ARCH= && dpkgArch="$(dpkg --print-architecture)" \
   && mv /opt/node/LICENSE /opt/node/share/doc/node/LICENSE \
   && ln -s node /opt/node/bin/nodejs
 
-# Python, Node, git and curl, each with only the shared libraries it links, in a tree for the final image.
+# Python, Node, git, curl, jq, procps, iproute2, lsof, file and busybox, each with only the shared libraries it
+# links, in a tree for the final image.
 FROM python:3.15.2-slim AS rootfs
 
 # The final image is assembled by COPY, so its SBOM needs this stage scanned too.
 ARG BUILDKIT_SBOM_SCAN_STAGE=true
 
 RUN DEBIAN_FRONTEND=noninteractive apt-get update && apt-get install -y --no-install-recommends \
-  ca-certificates curl git libatomic1 libstdc++6
+  busybox ca-certificates curl file git iproute2 jq libatomic1 libstdc++6 lsof procps
 
 RUN pip install --no-cache-dir --upgrade "pip>=26.2.2" "certifi>=2026.10.19"
 
@@ -70,12 +72,16 @@ RUN set -eu \
   && mkdir /rootfs \
   && cp -a --parents \
     /etc/ca-certificates.conf /etc/ssl \
-    /usr/bin/curl /usr/bin/git /usr/lib/git-core /usr/lib/ssl /usr/share/ca-certificates /usr/share/git-core \
+    /etc/magic /etc/magic.mime \
+    /usr/bin/busybox /usr/bin/curl /usr/bin/file /usr/bin/git /usr/bin/ip /usr/bin/jq /usr/bin/lsof /usr/bin/ss \
+    /usr/lib/git-core /usr/lib/ssl /usr/share/ca-certificates /usr/share/git-core /usr/share/iproute2 \
     /usr/local/bin/node /usr/local/bin/nodejs /usr/local/bin/npm /usr/local/bin/npx \
     /usr/local/bin/pip /usr/local/bin/pip3 /usr/local/bin/python /usr/local/bin/python3 /usr/local/bin/python3.15 \
     /usr/local/lib/libpython3.15.so.1.0 /usr/local/lib/libpython3.so \
     /usr/local/lib/node_modules/npm /usr/local/lib/python3.15 /usr/local/share/doc/node \
     /rootfs \
+  && dpkg -L procps | grep -E '^/usr/s?bin/' | xargs cp -a --parents -t /rootfs \
+  && dpkg -L libmagic-mgc | grep 'magic\.mgc$' | xargs cp -a --parents -t /rootfs \
   && find /usr/share/doc -name copyright -exec cp -a --parents {} /rootfs \; \
   && find /rootfs -type f -perm /111 -o -type f -name '*.so*' \
     | xargs ldd 2>/dev/null \
@@ -96,7 +102,10 @@ ENV NODE_OPTIONS=--use-openssl-ca
 
 COPY --from=rootfs /rootfs/ /
 
+# busybox fills in only the tools nothing on PATH provides. Its own --install would put some in /usr/sbin, ahead of
+# the real ones in /usr/bin.
 RUN ldconfig \
+  && for tool in $(busybox --list); do command -v "$tool" >/dev/null || ln -s busybox "/usr/bin/$tool"; done \
   && echo 'export NODE_OPTIONS="--use-openssl-ca${NODE_OPTIONS:+ $NODE_OPTIONS}"' > /etc/profile.d/node-ca.sh \
   && groupadd -r node && useradd -r -g node -s /bin/bash -m node
 
@@ -106,7 +115,15 @@ RUN python3 --version \
   && node --version \
   && npm --version \
   && git --version \
-  && curl --version
+  && curl --version \
+  && ps --version \
+  && pkill --version \
+  && jq --version \
+  && ss --version \
+  && ip -V \
+  && lsof -v 2>&1 | grep -q revision \
+  && file --version \
+  && busybox --help >/dev/null
 
 # A single layer. Environment and labels don't carry over from a COPY.
 FROM scratch
@@ -115,11 +132,11 @@ FROM scratch
 # /usr/local/share/doc/node/LICENSE, /usr/local/lib/python3.15/LICENSE.txt, and each package under node_modules
 # and site-packages.
 LABEL org.opencontainers.image.title="scaffoldly/sandbox" \
-  org.opencontainers.image.description="Python, Node, git and curl for a rowdy sandbox" \
+  org.opencontainers.image.description="Python, Node, git, curl, jq, procps, iproute2, lsof, file and busybox for a rowdy sandbox" \
   org.opencontainers.image.url="https://rowdy.run" \
   org.opencontainers.image.source="https://github.com/scaffoldly/rowdy" \
   org.opencontainers.image.vendor="Scaffoldly" \
-  org.opencontainers.image.licenses="PSF-2.0 AND MIT AND Artistic-2.0 AND MPL-2.0 AND GPL-2.0-only AND curl"
+  org.opencontainers.image.licenses="PSF-2.0 AND MIT AND Artistic-2.0 AND MPL-2.0 AND GPL-2.0-only AND GPL-2.0-or-later AND LGPL-2.0-or-later AND LGPL-2.1-or-later AND BSD-2-Clause AND lsof AND curl"
 
 ENV PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
