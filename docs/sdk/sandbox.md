@@ -266,9 +266,13 @@ const sandbox = await Sandbox.create({ image: 'python:3.12-slim', layersFrom: ['
 ```
 
 Each one must be public and set no `Env` but `PATH`. Only its layers go in, not its config, so jq above is at
-`/jq`, where its image put it. An image built `FROM scratch` with a static binary fits any base; one that ships
-a whole root filesystem replaces the base's `/bin` and libraries. Its layers go in for each of the sandbox
-image's platforms it's published for, and are skipped on the others. The layers are part of the
+`/jq`, where its image put it. Its layers go in for each of the sandbox image's platforms it's published for,
+and are skipped on the others.
+
+**Use images that add only their own files.** An image built `FROM scratch` with a static binary, like jq's or
+rowdy's own, fits any base. An image that ships a whole root filesystem, like `alpine` or anything built from
+it, overwrites the sandbox image's `/bin`, libraries and C library, and can leave it unable to run. rowdy
+doesn't look at the files a layer adds, so it can't refuse one like that. The layers are part of the
 image the sandbox is built from, so a sandbox started again after a `stop` still has them. Different layers
 are a different sandbox.
 

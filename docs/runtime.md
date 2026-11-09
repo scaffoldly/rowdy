@@ -50,10 +50,14 @@ A repeated image is added once, and naming rowdy's own image adds nothing. A sou
 anonymously, never with the app image's registry credentials, so it must be public.
 
 Only a source's layers go in, never its config, so its files land on the image as they are, and its
-`ENTRYPOINT`, `ENV`, `WORKDIR` and the like don't. A source built `FROM scratch` with a static binary,
-like rowdy's own, fits any base. One that ships a whole root filesystem, like an Alpine-based image,
-replaces the base's `/bin` and libraries. On every platform it publishes, before anything is copied,
-rowdy checks:
+`ENTRYPOINT`, `ENV`, `WORKDIR` and the like don't.
+
+**Use sources that add only their own files.** A source built `FROM scratch` with a static binary, like
+rowdy's own, fits any base. A source that ships a whole root filesystem, like `alpine` or anything built
+from it, overwrites the app image's `/bin`, libraries and C library, and can leave it unable to run. The
+checks below don't look at a layer's files, so they don't catch that.
+
+On every platform a source publishes, before anything is copied, rowdy checks:
 
 - at least one layer, with one entry in `rootfs.diff_ids` for each;
 - a `history` with one non-empty entry for each layer;
