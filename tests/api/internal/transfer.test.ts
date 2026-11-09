@@ -88,6 +88,15 @@ describe('upload', () => {
     expect(http.get).toHaveBeenCalledTimes(RETRY.retries + 1);
   });
 
+  it('does not retry once the host is out of outgoing requests', async () => {
+    const http = mocks();
+    http.get.mockRejectedValue(new AxiosError('Too many subrequests.', 'ERR_NETWORK', config()));
+
+    await expect(run(upload(http))).rejects.toThrow('Too many subrequests.');
+
+    expect(http.get).toHaveBeenCalledTimes(1);
+  });
+
   it('does not retry a source download the registry refuses', async () => {
     const http = mocks();
     http.get.mockRejectedValue(failure(403));

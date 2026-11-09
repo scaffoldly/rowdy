@@ -44,6 +44,7 @@ describe('registerTools', () => {
     const names = await mcp.registerTools(factory, {
       server: { registerTool },
       meta,
+      pollInterval: 15000,
       limits: { runtimes: ['aws.microvm'] },
     } as unknown as ServerContext);
 
@@ -53,6 +54,7 @@ describe('registerTools', () => {
       sandboxId: 'arn:aws:lambda:us-east-1:123456789012:microvm-image:a-bcdf2',
       meta,
       logLevel: undefined,
+      pollInterval: 15000,
       signal: undefined,
     });
     expect(registerTool.mock.calls.map(([name]) => name)).toEqual(['run_command_bcdf2']);

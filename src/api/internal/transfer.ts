@@ -107,6 +107,8 @@ const RETRYABLE: ReadonlySet<number | undefined> = new Set([429, 500, 502, 503, 
 const retryOn =
   (retry: (error: unknown) => never, { also, replayable = true }: { also?: number; replayable?: boolean } = {}) =>
   (error: AxiosError | (Error & { status?: number })): never => {
+    // A Cloudflare Worker's cap on outgoing requests holds for the rest of the request.
+    if (/too many subrequests/i.test(error.message)) throw error;
     const status = isAxiosError(error) ? (error.response?.status ?? 500) : error.status;
     if (replayable && status && (status === also || RETRYABLE.has(status))) return retry(error);
     throw error;

@@ -75,6 +75,12 @@ describe('describeError', () => {
     expect(describeError(Object.assign(new Error('no'), { code })).remedy).toBe('retry');
   });
 
+  it('says a host ran out of outgoing requests, without saying to call again', () => {
+    expect(describeError(new Error('Too many subrequests.'))).toEqual({
+      message: 'This host ran out of outgoing requests for one call.',
+    });
+  });
+
   it('never retries what a sandbox can not do', () => {
     expect(describeError(new SandboxError('Not a sandbox: x')).remedy).toBe('none');
   });

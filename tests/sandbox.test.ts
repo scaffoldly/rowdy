@@ -413,6 +413,15 @@ describe('sandbox', () => {
       expect(error.message).toBe('GET https://mirror.gcr.io/v2/e2bdev/base/blobs/sha256:abc: 404');
     });
 
+    it('keeps what failed when an http request gets no response', async () => {
+      const config: InternalAxiosRequestConfig = { headers: new AxiosHeaders(), method: 'get', url: 'https://x/v2/' };
+      observe.mockReturnValue(throwError(() => new AxiosError('Too many subrequests.', 'ERR_NETWORK', config)));
+
+      const error = await SandboxImpl.create({ runtime: 'aws.lambda' }).catch((e) => e);
+
+      expect(error.message).toBe('GET https://x/v2/: Too many subrequests.');
+    });
+
     it('aborts its environment when the deploy fails', async () => {
       const error = new Error('Region is missing');
       const abort = jest.spyOn(AbortController.prototype, 'abort');
@@ -1599,6 +1608,28 @@ describe('sandbox', () => {
       const getting = () =>
         jest.spyOn(SandboxImpl, 'get').mockImplementation(() => Promise.reject(new SandboxError('found it')) as never);
 
+      describe('out of outgoing requests', () => {
+        const capped = () => new Error('Too many subrequests.');
+
+        it('tells the model to make the same create_sandbox again', async () => {
+          jest
+            .spyOn(SandboxImpl, 'create')
+            .mockImplementation(() => Object.assign(Promise.reject(capped()), { events: () => EMPTY }) as never);
+
+          await expect(call('create_sandbox', {})).rejects.toThrow(
+            'This host ran out of outgoing requests for one call. What finished is kept, so the same call goes on from there. Retrying may help.'
+          );
+        });
+
+        it.each(['get_sandbox', 'stop_sandbox'])('leaves calling %s again to the model', async (name) => {
+          jest.spyOn(SandboxImpl, 'get').mockImplementation(() => Promise.reject(capped()) as never);
+
+          const error: Error = await call(name, { sandbox_id: IMAGE }).catch((e) => e);
+
+          expect(error.message).toBe('This host ran out of outgoing requests for one call.');
+        });
+      });
+
       describe('create_sandbox', () => {
         it("passes the call's meta on, and the model's name as it gave it", async () => {
           const create = creating();
@@ -1618,13 +1649,15 @@ describe('sandbox', () => {
           expect(Object.keys(tool.inputSchema.shape)).not.toContain('layersFrom');
         });
 
-        it("passes the host's logLevel, and the call's signal, on", async () => {
+        it("passes the host's logLevel and pollInterval, and the call's signal, on", async () => {
           const create = creating();
           const { signal } = new AbortController();
+          const tool = hostTool('create_sandbox');
 
-          await call('create_sandbox', {}, { logLevel: 'error' }, signal);
+          await call('create_sandbox', {}, { logLevel: 'error', pollInterval: 15000 }, signal);
 
-          expect(created(create)).toMatchObject({ logLevel: 'error', signal });
+          expect(created(create)).toMatchObject({ logLevel: 'error', pollInterval: 15000, signal });
+          expect(Object.keys(tool.inputSchema.shape)).not.toContain('pollInterval');
         });
 
         it.each([
@@ -1658,16 +1691,22 @@ describe('sandbox', () => {
 
       describe('a sandbox_id', () => {
         it.each(['stop_sandbox', 'get_sandbox'])(
-          'is looked up by %s with the call meta, logLevel and signal',
+          'is looked up by %s with the call meta, logLevel, pollInterval and signal',
           async (name) => {
             const get = getting();
             const { signal } = new AbortController();
             const meta = { sub: 'github:1' };
 
-            await expect(call(name, { sandbox_id: IMAGE }, { meta, logLevel: 'error' }, signal)).rejects.toThrow(
-              'found it'
-            );
-            expect(get).toHaveBeenCalledWith({ sandboxId: IMAGE, meta, logLevel: 'error', signal });
+            await expect(
+              call(name, { sandbox_id: IMAGE }, { meta, logLevel: 'error', pollInterval: 15000 }, signal)
+            ).rejects.toThrow('found it');
+            expect(get).toHaveBeenCalledWith({
+              sandboxId: IMAGE,
+              meta,
+              logLevel: 'error',
+              pollInterval: 15000,
+              signal,
+            });
           }
         );
       });

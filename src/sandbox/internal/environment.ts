@@ -21,11 +21,14 @@ export class SandboxEnvironment implements IApi {
   readonly name = packageJson.name;
   readonly version = packageJson.version;
   readonly registry: string | undefined = undefined;
+  /** Milliseconds between checks on AWS, or undefined for each check's own default. */
+  readonly pollInterval: number | undefined;
 
   constructor(
     public readonly log: Logger,
-    { signal }: { signal?: AbortSignal } = {}
+    { signal, pollInterval }: { signal?: AbortSignal; pollInterval?: number } = {}
   ) {
+    this.pollInterval = pollInterval;
     if (signal?.aborted) {
       this.abort.abort(signal.reason);
     }
