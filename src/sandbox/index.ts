@@ -24,6 +24,11 @@ interface BaseSandboxOptions {
   layersFrom?: string[];
   /** Applies to the whole process. Defaults to ROWDY_LOG_LEVEL, ROWDY_DEBUG or ROWDY_TRACE, then `warn`. */
   logLevel?: Level;
+  /**
+   * Milliseconds between checks on a build, a starting microVM or a stopping one, each a request to AWS. Defaults to
+   * 5000 for a build or a start, and 250 for a stop. Only `aws.microvm` polls.
+   */
+  pollInterval?: number;
   /** Aborts the sandbox's work in progress, including its creation, and stops it if it can `stop`. */
   signal?: AbortSignal;
   /** Receives every event from the start of `create`, for as long as the sandbox is in use. */
@@ -68,7 +73,7 @@ export interface SandboxToolsLimits {
   runtimes?: NonNullable<SandboxOptions['runtime']>[];
 }
 
-export interface SandboxToolsOptions extends Pick<SandboxOptions, 'logLevel' | 'meta' | 'layersFrom'> {
+export interface SandboxToolsOptions extends Pick<SandboxOptions, 'logLevel' | 'meta' | 'layersFrom' | 'pollInterval'> {
   /** What a model can ask for. */
   limits?: SandboxToolsLimits;
 }
@@ -98,7 +103,7 @@ export interface SandboxListOptions {
   signal?: AbortSignal;
 }
 
-export interface SandboxLookup extends Pick<SandboxOptions, 'logLevel'> {
+export interface SandboxLookup extends Pick<SandboxOptions, 'logLevel' | 'pollInterval'> {
   sandboxId: string;
   /** Refuses a sandbox whose `meta` doesn't have every one of these. */
   meta?: Record<string, string>;

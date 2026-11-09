@@ -39,8 +39,11 @@ describe('aws microvm compute', () => {
   afterAll(() => Object.assign(POLL, timing));
   afterEach(() => jest.restoreAllMocks());
 
-  const setup = (handlers: Record<string, Handler> = {}): { compute: MicrovmCompute; sent: Sent[] } => {
-    const compute = new MicrovmCompute(new SandboxEnvironment(new Logger()));
+  const setup = (
+    handlers: Record<string, Handler> = {},
+    environment = new SandboxEnvironment(new Logger())
+  ): { compute: MicrovmCompute; sent: Sent[] } => {
+    const compute = new MicrovmCompute(environment);
     const sent: Sent[] = [];
     const defaults: Record<string, Handler> = {
       ListManagedMicrovmImagesCommand: () => ({ items: [{ imageArn: BASE_ARN, createdAt: new Date(1) }] }),
@@ -111,6 +114,23 @@ describe('aws microvm compute', () => {
   });
 
   describe('create', () => {
+    it('checks on a build at the pollInterval it was given', async () => {
+      const at: number[] = [];
+      const { compute } = setup(
+        {
+          GetMicrovmImageVersionCommand: () => {
+            at.push(Date.now());
+            return { state: at.length < 2 ? 'BUILDING' : 'SUCCESSFUL' };
+          },
+        },
+        new SandboxEnvironment(new Logger(), { pollInterval: 60 })
+      );
+
+      await create(compute);
+
+      expect(at[1]! - at[0]!).toBeGreaterThanOrEqual(50);
+    });
+
     it('resolves with the image as the sandbox', async () => {
       const { compute } = setup();
 

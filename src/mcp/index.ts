@@ -3,7 +3,7 @@
  *
  * `tools.factory` go on the server at the start. Each `run` takes the SDK first, then the input, then the call's
  * context with what the host adds: the `server`, so `create_sandbox` and `get_sandbox` can register a sandbox's own
- * tools on it, the host's `signal`, and optionally `meta`, `layersFrom`, `limits` and `logLevel`. `meta` goes on every
+ * tools on it, the host's `signal`, and optionally `meta`, `layersFrom`, `limits`, `logLevel` and `pollInterval`. `meta` goes on every
  * sandbox a call creates, and a call only finds sandboxes with it. `layersFrom` goes into every sandbox a call creates. A host wraps `run` with
  * whatever it does around a call.
  *

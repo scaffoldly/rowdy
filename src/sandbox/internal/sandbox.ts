@@ -89,7 +89,12 @@ export class SandboxImpl implements Sandbox {
   private environment: SandboxEnvironment;
   private compute: SandboxCompute;
 
-  private constructor({ runtime, logLevel, signal }: Pick<SandboxOptions, 'runtime' | 'logLevel' | 'signal'>) {
+  private constructor({
+    runtime,
+    logLevel,
+    pollInterval,
+    signal,
+  }: Pick<SandboxOptions, 'runtime' | 'logLevel' | 'pollInterval' | 'signal'>) {
     // A host's stdout is its own. Its terminal stays quiet unless logLevel, ROWDY_LOG_LEVEL, ROWDY_DEBUG or ROWDY_TRACE
     // says otherwise.
     const log = new Logger('sandbox').withSink('stderr');
@@ -98,14 +103,19 @@ export class SandboxImpl implements Sandbox {
     } else if (!process.env.ROWDY_LOG_LEVEL && log.level === 'info') {
       log.withLevel('warn');
     }
-    this.environment = new SandboxEnvironment(log, { signal });
+    this.environment = new SandboxEnvironment(log, { signal, pollInterval });
 
     this.compute = new RUNTIMES[runtime ?? 'aws.microvm'](this.environment);
   }
 
   static create(options?: SandboxOptions): SandboxPromiseImpl {
     const runtime = options?.runtime ?? 'aws.microvm';
-    const sandbox = new SandboxImpl({ runtime, logLevel: options?.logLevel, signal: options?.signal });
+    const sandbox = new SandboxImpl({
+      runtime,
+      logLevel: options?.logLevel,
+      pollInterval: options?.pollInterval,
+      signal: options?.signal,
+    });
     const { signal } = sandbox.environment;
 
     if (options?.onEvent) {
@@ -173,7 +183,8 @@ export class SandboxImpl implements Sandbox {
           throwError(() =>
             isAxiosError(error)
               ? new Error(
-                  `${error.config?.method?.toUpperCase()} ${maskUrl(error.config?.url ?? '')}: ${error.response?.status ?? error.code}`
+                  // Without a response, what failed is in the message.
+                  `${error.config?.method?.toUpperCase()} ${maskUrl(error.config?.url ?? '')}: ${error.response?.status ?? (error.message || error.code)}`
                 )
               : error
           )
@@ -192,9 +203,9 @@ export class SandboxImpl implements Sandbox {
     );
   }
 
-  static get({ sandboxId, logLevel, signal: abort, meta }: SandboxLookup): SandboxPromiseImpl {
+  static get({ sandboxId, logLevel, pollInterval, signal: abort, meta }: SandboxLookup): SandboxPromiseImpl {
     const runtime = sandboxId.includes(':microvm-image:') ? 'aws.microvm' : 'aws.lambda';
-    const sandbox = new SandboxImpl({ runtime, logLevel, signal: abort });
+    const sandbox = new SandboxImpl({ runtime, logLevel, pollInterval, signal: abort });
     const { signal } = sandbox.environment;
 
     const attached = lastValueFrom(

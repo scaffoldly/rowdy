@@ -15,7 +15,7 @@ import { z } from 'zod';
 import type { McpServer, RegisteredTool } from '@modelcontextprotocol/server';
 import type { Sandbox, SandboxFactory, SandboxOptions } from '../..';
 import { DEFAULTS } from '../compute';
-import { describeError } from '../../../aws/errors';
+import { describeError, OUT_OF_REQUESTS } from '../../../aws/errors';
 import { safeTool, toolResult } from '../../../mcp/internal/tool';
 import type { ServerContext, Tool } from '../../../mcp/internal/types';
 
@@ -29,7 +29,7 @@ export const REGISTERED = new WeakMap<Pick<McpServer, 'registerTool'>, Map<strin
 export const registerSandbox = (
   sandbox: Pick<Sandbox, 'tools'>,
   sandboxId: string,
-  { server, signal, meta, limits, logLevel, changed }: ServerContext
+  { server, signal, meta, limits, logLevel, pollInterval, changed }: ServerContext
 ): string[] => {
   if (!server) return [];
   // Named with the sandbox's suffix, so two sandboxes' tools don't clash.
@@ -42,7 +42,7 @@ export const registerSandbox = (
 
   const sandboxTools = tools.map(({ name, run, ...config }) =>
     server.registerTool(`${name}_${suffix}`, config, (args, extra) =>
-      run(args, { ...extra, server, signal, meta, limits, logLevel, changed })
+      run(args, { ...extra, server, signal, meta, limits, logLevel, pollInterval, changed })
     )
   );
   onServer.set(sandboxId, sandboxTools);
@@ -69,13 +69,13 @@ export const registerTools = async (
   factory: Pick<SandboxFactory, 'list' | 'get'>,
   ctx: ServerContext
 ): Promise<string[]> => {
-  const { server, meta, limits, logLevel, signal } = ctx;
+  const { server, meta, limits, logLevel, pollInterval, signal } = ctx;
   if (!server) return [];
   const sandboxes = (await factory.list({ meta, signal }))
     // A runtime the host doesn't allow isn't one a model can use.
     .filter((sandbox) => !limits?.runtimes || limits.runtimes.includes(sandbox.runtime));
   return sandboxes.flatMap(({ sandboxId }) =>
-    registerSandbox(factory.get({ sandboxId, meta, logLevel, signal }), sandboxId, ctx)
+    registerSandbox(factory.get({ sandboxId, meta, logLevel, pollInterval, signal }), sandboxId, ctx)
   );
 };
 
@@ -122,7 +122,7 @@ export const createSandbox: Tool<SandboxFactory, typeof inputSchema, typeof outp
     outputSchema,
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: true },
     async run(factory, input, ctx) {
-      const { meta, layersFrom, limits, logLevel, signal } = ctx;
+      const { meta, layersFrom, limits, logLevel, pollInterval, signal } = ctx;
       const runtime = input.runtime ?? limits?.runtimes?.[0];
       // An omitted value must not pass a cap below its default.
       const timeout = input.timeout ?? (limits?.timeout && Math.min(limits.timeout, DEFAULTS.timeout));
@@ -146,6 +146,7 @@ export const createSandbox: Tool<SandboxFactory, typeof inputSchema, typeof outp
         meta,
         layersFrom,
         logLevel,
+        pollInterval,
         signal,
       } as SandboxOptions);
 
@@ -186,5 +187,12 @@ export const createSandbox: Tool<SandboxFactory, typeof inputSchema, typeof outp
       );
     },
   },
-  describeError
+  // What finished before a host's cap on requests stays in AWS, so the same create goes on from there.
+  (error) =>
+    error instanceof Error && OUT_OF_REQUESTS.test(error.message)
+      ? {
+          message: `${describeError(error).message} What finished is kept, so the same call goes on from there.`,
+          remedy: 'retry',
+        }
+      : describeError(error)
 );

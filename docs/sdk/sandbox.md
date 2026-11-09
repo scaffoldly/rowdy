@@ -58,18 +58,19 @@ const sandbox = await Sandbox.create({
 });
 ```
 
-| Option       | Default              |                                                                            |
-| ------------ | -------------------- | -------------------------------------------------------------------------- |
-| `runtime`    | `aws.microvm`        | See [Runtime](#runtime).                                                   |
-| `image`      | `scaffoldly/sandbox` | The container image. An image with no registry comes from `mirror.gcr.io`. |
-| `name`       | `sandbox`            | The prefix of the generated name, `{name}-{suffix}`.                       |
-| `timeout`    | 15 minutes           | See [Runtime](#runtime).                                                   |
-| `memory`     | 512                  | See [Runtime](#runtime).                                                   |
-| `env`        |                      | Environment variables for every command.                                   |
-| `meta`       |                      | Kept with the sandbox, for `list` and `get` to match. See [Meta](#meta).   |
-| `layersFrom` |                      | Images whose layer goes into the sandbox's image. See [Layers](#layers).   |
-| `logLevel`   | `warn`               | See [Logging](../sdk.md#logging).                                          |
-| `signal`     |                      | See [Aborting](#aborting).                                                 |
+| Option         | Default              |                                                                                                           |
+| -------------- | -------------------- | --------------------------------------------------------------------------------------------------------- |
+| `runtime`      | `aws.microvm`        | See [Runtime](#runtime).                                                                                  |
+| `image`        | `scaffoldly/sandbox` | The container image. An image with no registry comes from `mirror.gcr.io`.                                |
+| `name`         | `sandbox`            | The prefix of the generated name, `{name}-{suffix}`.                                                      |
+| `timeout`      | 15 minutes           | See [Runtime](#runtime).                                                                                  |
+| `memory`       | 512                  | See [Runtime](#runtime).                                                                                  |
+| `env`          |                      | Environment variables for every command.                                                                  |
+| `meta`         |                      | Kept with the sandbox, for `list` and `get` to match. See [Meta](#meta).                                  |
+| `layersFrom`   |                      | Images whose layer goes into the sandbox's image. See [Layers](#layers).                                  |
+| `logLevel`     | `warn`               | See [Logging](../sdk.md#logging).                                                                         |
+| `pollInterval` | 5000, 250 to stop    | Milliseconds between checks on a microVM sandbox as it builds, starts or stops. Each is a request to AWS. |
+| `signal`       |                      | See [Aborting](#aborting).                                                                                |
 
 A private image is read with the credentials `docker login` saved for its registry.
 
@@ -221,7 +222,7 @@ arn:aws:lambda:us-east-1:123456789012:function:sandbox-bcdf245678
 arn:aws:lambda:us-east-1:123456789012:microvm-image:sandbox-bcdf245678
 ```
 
-`get` rejects with `Not a sandbox` for anything `create` didn't make. It takes a `signal` and a `logLevel`, and logs at
+`get` rejects with `Not a sandbox` for anything `create` didn't make. It takes a `signal`, a `logLevel` and a `pollInterval`, and logs at
 the level described in [Logging](../sdk.md#logging).
 
 ## `Sandbox.list`
@@ -400,12 +401,17 @@ A rejection keeps its class, so `instanceof RangeError` still works, and its mes
 there's something to do: `Retrying may help.` for throttling or a fault on AWS's side, or
 `Check the AWS credentials and permissions this runs with.` for a denial or an expired token.
 
+A host can cap how many requests one of its own requests sends, as a Cloudflare Worker on the free plan does at 50.
+A `create` that hits the cap partway keeps what finished in AWS: the image layers already copied, the role, the
+build. The same `create` again goes on from there, so a big image can take a few calls. A larger `pollInterval`
+spends fewer requests waiting on the build.
+
 ## MCP tools
 
 `@scaffoldly/rowdy/mcp` has the tools for a model that manages its own sandboxes, keyed by name. A host adds
 `tools.factory` to its own server: `create_sandbox`, `get_sandbox`, `list_sandboxes` and `stop_sandbox`. Each
 `run` takes the SDK first, then the input, then the call's context with what the host adds: the `server`, its
-`signal`, and optionally `meta`, `layersFrom`, `limits` and `logLevel`.
+`signal`, and optionally `meta`, `layersFrom`, `limits`, `logLevel` and `pollInterval`.
 
 ```ts
 import { Sandbox, type SandboxFactory } from '@scaffoldly/rowdy/sandbox';
@@ -421,7 +427,9 @@ factory.forEach(({ name, run, ...config }) =>
 
 `meta` goes on every sandbox a call creates, and a call only lists, gets or stops sandboxes with it, so a model
 can't reach another's. `layersFrom` goes into every sandbox a call creates, and a model can't change it.
-`limits` cap what a model can ask for.
+`limits` cap what a model can ask for. `pollInterval` is for a host with a cap on its requests, as in
+[Errors](#errors). A `create_sandbox` that hits the cap tells the model to make the same call again. Any other
+tool only says the host ran out, since a command may already have run.
 
 Each sandbox `create_sandbox` makes gets tools of its own on that server, `tools.lazy`, named with its suffix,
 like `run_command_bcdf245678`, with no `sandbox_id` to give: `run_command` and `read_output`, and on

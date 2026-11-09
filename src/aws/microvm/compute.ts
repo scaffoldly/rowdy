@@ -382,7 +382,7 @@ export class MicrovmCompute extends AwsClientLogger implements SandboxCompute {
             if (isNotFound(error)) return of(undefined);
             throw error;
           }),
-          repeat({ delay: TERMINATE_POLL.delay }),
+          repeat({ delay: this.environment.pollInterval ?? TERMINATE_POLL.delay }),
           first((state) => state === undefined || DEAD.includes(state))
         )
       )
@@ -430,7 +430,7 @@ export class MicrovmCompute extends AwsClientLogger implements SandboxCompute {
       ),
       switchMap((microvmIdentifier) =>
         defer(() => this.microvms.send(new GetMicrovmCommand({ microvmIdentifier }))).pipe(
-          repeat({ delay: POLL.delay }),
+          repeat({ delay: this.environment.pollInterval ?? POLL.delay }),
           first(({ state }) => state !== 'PENDING')
         )
       ),
@@ -616,14 +616,14 @@ export class MicrovmCompute extends AwsClientLogger implements SandboxCompute {
         if (isNotFound(error)) return of(undefined);
         throw error;
       }),
-      repeat({ delay: POLL.delay }),
+      repeat({ delay: this.environment.pollInterval ?? POLL.delay }),
       first((image) => !image?.state?.endsWith('ING'))
     );
   }
 
   private version(imageIdentifier: string, name: string, imageVersion: string): Observable<string> {
     return defer(() => this.microvms.send(new GetMicrovmImageVersionCommand({ imageIdentifier, imageVersion }))).pipe(
-      repeat({ delay: POLL.delay }),
+      repeat({ delay: this.environment.pollInterval ?? POLL.delay }),
       first(({ state }) => state === 'SUCCESSFUL' || state === 'FAILED'),
       map(({ state, stateReason }) => {
         if (state === 'FAILED') {

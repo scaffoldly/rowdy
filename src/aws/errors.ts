@@ -17,6 +17,9 @@ const NEXT = {
   ask: 'Check the AWS credentials and permissions this runs with.',
 };
 
+/** What a Cloudflare Worker throws once a request has sent all the requests it may. */
+export const OUT_OF_REQUESTS = /too many subrequests/i;
+
 /** What a caller outside the account can read of an error from AWS, and what to do about it. */
 export const describeError = (error: unknown): ToolFailure => {
   const failure = error instanceof Error ? error : new Error(`${error}`);
@@ -29,6 +32,10 @@ export const describeError = (error: unknown): ToolFailure => {
 
   if (failure instanceof SandboxError) {
     return { message, remedy: 'none' };
+  }
+  // A Cloudflare Worker caps one request's outgoing requests. Whether calling again is safe depends on the call.
+  if (OUT_OF_REQUESTS.test(failure.message)) {
+    return { message: 'This host ran out of outgoing requests for one call.' };
   }
   if (CREDENTIALS.includes(failure.name) || [401, 403].includes($metadata?.httpStatusCode ?? 0)) {
     return { message, remedy: 'ask' };
