@@ -125,6 +125,29 @@ runs:
     - name: Build and push image
       id: build
       if: ${{ inputs.dockerfile != '' }}
+      # ghcr.io refuses a push now and then, with a 403 or a permission_denied the same token doesn't get a minute later.
+      continue-on-error: true
+      uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+      with:
+        context: ${{ steps.image.outputs.context }}
+        file: ${{ inputs.dockerfile }}
+        # The function is x86_64.
+        platforms: linux/amd64
+        pull: true
+        push: true
+        tags: ${{ steps.image.outputs.name }}:rowdy
+        cache-from: type=gha,scope=rowdy
+        cache-to: type=gha,scope=rowdy,mode=max
+
+    - name: Wait to push again
+      if: ${{ steps.build.outcome == 'failure' }}
+      shell: bash
+      run: sleep 30
+
+    # The build is cached by now, so this only pushes.
+    - name: Build and push image, again
+      id: build-again
+      if: ${{ steps.build.outcome == 'failure' }}
       uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
       with:
         context: ${{ steps.image.outputs.context }}
@@ -154,7 +177,7 @@ runs:
         echo "image=$IMAGE" >> "$GITHUB_OUTPUT"
         npx @scaffoldly/rowdy@beta create ${{ inputs.cloud }} ${{ inputs.compute }} "$IMAGE" ${{ inputs.command }}
       env:
-        IMAGE: ${{ inputs.dockerfile != '' && format('{0}:rowdy@{1}', steps.image.outputs.name, steps.build.outputs.digest) || steps.image.outputs.ref }}
+        IMAGE: ${{ inputs.dockerfile != '' && format('{0}:rowdy@{1}', steps.image.outputs.name, steps.build.outputs.digest || steps.build-again.outputs.digest) || steps.image.outputs.ref }}
         ROWDY_NAME: "${{ inputs.name }}"
         ROWDY_MEMORY: "${{ inputs.memory }}"
         ROWDY_CRI: "${{ inputs.cri }}"
