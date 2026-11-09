@@ -123,6 +123,15 @@ describe('create_sandbox', () => {
       return { sandboxId } as Sandbox;
     };
 
+    it('notifies at once, before anything slow', async () => {
+      PROGRESS.delay = 60000;
+      const { run, notify } = setup(slow);
+
+      await run({}, { progressToken: 'token' });
+
+      expect(notify.mock.calls.map(([{ params }]) => params.message)).toEqual(['Creating the sandbox']);
+    });
+
     it('reports every step', async () => {
       PROGRESS.delay = 60000;
       const { run, notify } = setup(stepping);
@@ -130,6 +139,7 @@ describe('create_sandbox', () => {
       await run({}, { progressToken: 'token' });
 
       expect(notify.mock.calls.map(([{ params }]) => params.message)).toEqual([
+        'Creating the sandbox',
         'GetRole: reading',
         'CreateRole: creating',
         'CreateFunction: failed',
@@ -152,7 +162,10 @@ describe('create_sandbox', () => {
 
       await run({}, { progressToken: 'token' });
 
-      expect(notify.mock.calls.map(([{ params }]) => params.message)).toEqual(['Copying the image: 40%']);
+      expect(notify.mock.calls.map(([{ params }]) => params.message)).toEqual([
+        'Creating the sandbox',
+        'Copying the image: 40%',
+      ]);
     });
 
     it('only ever counts up, across steps and the steady notification', async () => {

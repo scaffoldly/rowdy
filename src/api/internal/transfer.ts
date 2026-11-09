@@ -985,7 +985,9 @@ export class Upload implements ILoggable {
           (retry) =>
             status
               .intercept(
-                this.http.patch(toUrl, download, {
+                // fetch streams a body. A Cloudflare Worker's node:http holds all of it until the request ends.
+                this.http.patch(toUrl, download instanceof Readable ? Readable.toWeb(download) : download, {
+                  adapter: 'fetch',
                   headers: this.transfer.toHeaders.with('Content-Type', 'application/octet-stream').intoAxios(),
                   onUploadProgress: (e) => (this.bytes.sent += e.bytes),
                 })

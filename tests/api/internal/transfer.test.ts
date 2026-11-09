@@ -16,6 +16,8 @@ import { Logger, Rowdy } from '@scaffoldly/rowdy';
 // eslint-disable-next-line @typescript-eslint/no-unused-vars
 import { readFileSync, writeFileSync } from 'fs';
 import { createHash } from 'crypto';
+import { createServer, Server } from 'http';
+import { AddressInfo } from 'net';
 
 describe('upload', () => {
   const timing = { ...RETRY };
@@ -86,6 +88,43 @@ describe('upload', () => {
     await expect(run(upload(http))).rejects.toThrow('failed');
 
     expect(http.get).toHaveBeenCalledTimes(RETRY.retries + 1);
+  });
+
+  it('streams a layer into the registry, without holding all of it', async () => {
+    let received = 0;
+    let arrived: () => void = () => {};
+    const firstArrived = new Promise<void>((resolve) => (arrived = resolve));
+    const server = await new Promise<Server>((resolve) => {
+      const listening = createServer((req, res) => {
+        req.on('data', (chunk: Buffer) => {
+          received += chunk.length;
+          arrived();
+        });
+        req.on('end', () => res.writeHead(202).end());
+      }).listen(0, '127.0.0.1', () => resolve(listening));
+    });
+    const location = `http://127.0.0.1:${(server.address() as AddressInfo).port}/upload`;
+    // The second half comes only once the first is in the registry.
+    const layer = new Readable({ read: () => {} });
+    layer.push(Buffer.alloc(1024, 1));
+    firstArrived.then(() => {
+      layer.push(Buffer.alloc(1024, 2));
+      layer.push(null);
+    });
+
+    const http = mocks();
+    http.post.mockResolvedValue(response(202, { location }));
+    http.get.mockResolvedValue({ ...(response(200) as object), data: layer });
+    const patch = jest.fn((url: string, data: unknown, options: object) => axios.create().patch(url, data, options));
+
+    try {
+      await run(upload({ ...http, patch } as unknown as ReturnType<typeof mocks>));
+    } finally {
+      server.close();
+    }
+
+    expect(received).toBe(2048);
+    expect(patch.mock.calls[0]![2]).toMatchObject({ adapter: 'fetch' });
   });
 
   it('does not retry once the host is out of outgoing requests', async () => {

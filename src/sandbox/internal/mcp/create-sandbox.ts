@@ -9,6 +9,7 @@ import {
   lastValueFrom,
   map,
   merge,
+  startWith,
   takeUntil,
 } from 'rxjs';
 import { z } from 'zod';
@@ -169,8 +170,12 @@ export const createSandbox: Tool<SandboxFactory, typeof inputSchema, typeof outp
             EMPTY,
             merge(
               created.events().pipe(map(({ message }) => message)),
-              // A build can go a while without a change, and a client may time out without progress.
-              interval(PROGRESS.delay).pipe(map(() => 'Creating the sandbox'))
+              // A build can go a while without a change, and a client may time out without progress. The first goes
+              // out at once, before the host has done anything slow.
+              interval(PROGRESS.delay).pipe(
+                startWith(0),
+                map(() => 'Creating the sandbox')
+              )
             )
           ).pipe(
             takeUntil(from(created)),
