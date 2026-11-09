@@ -24,9 +24,10 @@ RUN test -n "$(/work/bin/rowdy --version)" && \
     echo '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"smoke","version":"0"}}}' | \
       /work/bin/rowdy mcp | grep -q serverInfo
 
-# DEVNOTE: Commands rowdy spawns must reach the image's own node, which pkg's child_process patch swaps for rowdy
-# unless patches/ undoes it. PKG_EXECPATH set to its own path runs a script on rowdy's embedded Node.
-RUN printf '%s' "const r = require('child_process').spawnSync('sh', ['-c', 'node -e \"process.stdout.write(process.execPath)\"'], { encoding: 'utf8' }); process.exit(r.stdout === '/usr/local/bin/node' && !process.env.PKG_EXECPATH ? 0 : 1);" > /tmp/spawn.js && \
+# DEVNOTE: Commands rowdy spawns must reach the image's own node. pkg swaps rowdy in for it unless the functions
+# patches/ keeps are put back, as src/proxy/shell.ts does around each spawn. PKG_EXECPATH set to its own path runs a
+# script on rowdy's embedded Node.
+RUN printf '%s' "const cp = require('child_process'); Object.assign(cp, cp[Symbol.for('pkg.child_process')]); const r = cp.spawnSync('sh', ['-c', 'node -e \"process.stdout.write(process.execPath)\"'], { encoding: 'utf8' }); process.exit(r.stdout === '/usr/local/bin/node' && !process.env.PKG_EXECPATH ? 0 : 1);" > /tmp/spawn.js && \
     PKG_EXECPATH=/work/bin/rowdy /work/bin/rowdy /tmp/spawn.js
 
 # DEVNOTE: The final stage is scratch because its layers are appended to every deployed image. The

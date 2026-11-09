@@ -19,8 +19,9 @@ import {
 import { Chunk, FileDescriptors, Pipeline, Proxy, Request, Response } from '../pipeline';
 import { PassThrough } from 'stream';
 import { ILoggable, log as root, Logger, Trace } from '../log';
+import childProcess from 'child_process';
 import { execa } from 'execa';
-import type { ExecaError, Options } from 'execa';
+import type { ExecaChildProcess, ExecaError, Options } from 'execa';
 import { constants } from 'os';
 import { existsSync } from 'fs';
 import { readdir, readFile } from 'fs/promises';
@@ -93,7 +94,18 @@ export class ShellProxy<P extends Pipeline> extends Proxy<P, ShellResponse> {
 
         log.debug(`Executing command`, { bin, args, background: this._background });
 
-        return of(execa(bin, args, options)).pipe(
+        // pkg's child_process swaps rowdy's own binary in for node, and adds PKG_EXECPATH. The functions it wrapped,
+        // which patches/ keeps, don't. execa spawns as it's called, so they're back only for that.
+        const wrapped = { ...childProcess };
+        Object.assign(childProcess, Reflect.get(childProcess, Symbol.for('pkg.child_process')));
+        let subprocess: ExecaChildProcess;
+        try {
+          subprocess = execa(bin, args, options);
+        } finally {
+          Object.assign(childProcess, wrapped);
+        }
+
+        return of(subprocess).pipe(
           switchMap((proc) => {
             log.debug(`${bin} started`, { bin, pid: proc.pid });
             proc.stdout?.pipe(this.request.stdout);
