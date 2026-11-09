@@ -427,7 +427,8 @@ factory.forEach(({ name, run, ...config }) =>
 
 `meta` goes on every sandbox a call creates, and a call only lists, gets or stops sandboxes with it, so a model
 can't reach another's. `layersFrom` goes into every sandbox a call creates, and a model can't change it.
-`limits` cap what a model can ask for. `pollInterval` is for a host with a cap on its requests, as in
+`limits` cap what a model can ask for, and only `limits.runtimes` are listed, so a host that allows only
+`aws.microvm` needs no `lambda:ListFunctions`. `pollInterval` is for a host with a cap on its requests, as in
 [Errors](#errors). A `create_sandbox` that hits the cap tells the model to make the same call again. Any other
 tool only says the host ran out, since a command may already have run.
 

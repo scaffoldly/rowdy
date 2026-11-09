@@ -71,9 +71,10 @@ export const registerTools = async (
 ): Promise<string[]> => {
   const { server, meta, limits, logLevel, pollInterval, signal } = ctx;
   if (!server) return [];
-  const sandboxes = (await factory.list({ meta, signal }))
-    // A runtime the host doesn't allow isn't one a model can use.
-    .filter((sandbox) => !limits?.runtimes || limits.runtimes.includes(sandbox.runtime));
+  // Only the runtimes the host allows are listed, so a host needs no permission to list the others.
+  const sandboxes = (
+    await Promise.all((limits?.runtimes ?? [undefined]).map((runtime) => factory.list({ runtime, meta, signal })))
+  ).flat();
   return sandboxes.flatMap(({ sandboxId }) =>
     registerSandbox(factory.get({ sandboxId, meta, logLevel, pollInterval, signal }), sandboxId, ctx)
   );

@@ -30,9 +30,13 @@ export const listSandboxes: Tool<SandboxFactory, typeof inputSchema, typeof outp
     outputSchema,
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
     async run(factory, { runtime }, { meta, limits, signal }) {
-      const sandboxes = (await factory.list({ runtime, meta, signal }))
-        // A runtime the host doesn't allow isn't one a model can use.
-        .filter((sandbox) => !limits?.runtimes || limits.runtimes.includes(sandbox.runtime));
+      // Only the runtimes the host allows are listed, so a host needs no permission to list the others.
+      const runtimes = (runtime ? [runtime] : (limits?.runtimes ?? [undefined])).filter(
+        (each) => !each || !limits?.runtimes || limits.runtimes.includes(each)
+      );
+      const sandboxes = (
+        await Promise.all(runtimes.map((each) => factory.list({ runtime: each, meta, signal })))
+      ).flat();
 
       return toolResult(outputSchema, {
         sandboxes: sandboxes.map(({ sandboxId, name, runtime: on, running, startedAt, stopsAt }) => ({

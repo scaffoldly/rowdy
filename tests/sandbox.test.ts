@@ -1726,14 +1726,30 @@ describe('sandbox', () => {
           expect(list).toHaveBeenCalledWith({ runtime: 'aws.microvm', meta: { sub: 'github:1' }, signal });
         });
 
-        it('leaves out runtimes the host does not allow', async () => {
-          jest.spyOn(SandboxImpl, 'list').mockResolvedValue(summaries);
+        it('lists only the runtimes the host allows', async () => {
+          const list = jest
+            .spyOn(SandboxImpl, 'list')
+            .mockImplementation(async (options) => summaries.filter(({ runtime }) => runtime === options?.runtime));
 
           const { structuredContent } = await call('list_sandboxes', {}, { limits: { runtimes: ['aws.lambda'] } });
 
           expect(
             (structuredContent as { sandboxes: { runtime: string }[] }).sandboxes.map(({ runtime }) => runtime)
           ).toEqual(['aws.lambda']);
+          expect(list.mock.calls.map(([options]) => options?.runtime)).toEqual(['aws.lambda']);
+        });
+
+        it('lists nothing for a runtime the host does not allow', async () => {
+          const list = jest.spyOn(SandboxImpl, 'list').mockResolvedValue(summaries);
+
+          const { structuredContent } = await call(
+            'list_sandboxes',
+            { runtime: 'aws.microvm' },
+            { limits: { runtimes: ['aws.lambda'] } }
+          );
+
+          expect(structuredContent).toEqual({ sandboxes: [] });
+          expect(list).not.toHaveBeenCalled();
         });
       });
     });

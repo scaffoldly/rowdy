@@ -27,10 +27,12 @@ describe('tools', () => {
 describe('registerTools', () => {
   const tool = { name: 'run_command', title: '', description: '', inputSchema: {} as never, run: jest.fn() };
   const setup = () => {
-    const list = jest.fn(async (_options: unknown) => [
-      { sandboxId: 'arn:aws:lambda:us-east-1:123456789012:microvm-image:a-bcdf2', runtime: 'aws.microvm' },
-      { sandboxId: 'arn:aws:lambda:us-east-1:123456789012:function:b-ghjk4', runtime: 'aws.lambda' },
-    ]);
+    const list = jest.fn(async (options: { runtime?: string }) =>
+      [
+        { sandboxId: 'arn:aws:lambda:us-east-1:123456789012:microvm-image:a-bcdf2', runtime: 'aws.microvm' },
+        { sandboxId: 'arn:aws:lambda:us-east-1:123456789012:function:b-ghjk4', runtime: 'aws.lambda' },
+      ].filter(({ runtime }) => !options.runtime || runtime === options.runtime)
+    );
     const get = jest.fn((_lookup: unknown) => ({ tools: () => [tool] }));
     const registerTool = jest.fn((_name: string, _config: unknown, _run: unknown) => ({ remove: () => {} }));
     const factory = { list, get } as unknown as SandboxFactory;
@@ -49,7 +51,7 @@ describe('registerTools', () => {
     } as unknown as ServerContext);
 
     expect(names).toEqual(['run_command_bcdf2']);
-    expect(list).toHaveBeenCalledWith({ meta, signal: undefined });
+    expect(list.mock.calls).toEqual([[{ runtime: 'aws.microvm', meta, signal: undefined }]]);
     expect(get).toHaveBeenCalledWith({
       sandboxId: 'arn:aws:lambda:us-east-1:123456789012:microvm-image:a-bcdf2',
       meta,
@@ -58,6 +60,15 @@ describe('registerTools', () => {
       signal: undefined,
     });
     expect(registerTool.mock.calls.map(([name]) => name)).toEqual(['run_command_bcdf2']);
+  });
+
+  it('lists every runtime when the host allows any', async () => {
+    const { list, registerTool, factory } = setup();
+
+    const names = await mcp.registerTools(factory, { server: { registerTool } } as unknown as ServerContext);
+
+    expect(list.mock.calls).toEqual([[{ runtime: undefined, meta: undefined, signal: undefined }]]);
+    expect(names).toEqual(['run_command_bcdf2', 'run_command_ghjk4']);
   });
 
   it('lists nothing without a server', async () => {
