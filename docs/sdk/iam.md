@@ -68,6 +68,12 @@ Everything the SDK calls for `aws.microvm`, by what it's for.
       "Resource": "*"
     },
     {
+      "Sid": "AwsNetworkConnectors",
+      "Effect": "Allow",
+      "Action": "lambda:PassNetworkConnector",
+      "Resource": "arn:aws:lambda:*:aws:network-connector:aws-network-connector:*"
+    },
+    {
       "Sid": "SandboxRolesOnlyWithTheBoundary",
       "Effect": "Allow",
       "Action": ["iam:CreateRole", "iam:PutRolePolicy", "iam:UpdateAssumeRolePolicy"],
@@ -162,6 +168,11 @@ Everything the SDK calls for `aws.microvm`, by what it's for.
 
 - **MicroVMs:** these sit under Lambda's `lambda:` prefix. `Resource` is `*` until the ARN forms each
   action takes are confirmed. `lambda:TagResource` is there because images are created with tags.
+- **Network connectors:** each VM starts with two connectors AWS owns, `HTTP_INGRESS` for the endpoint
+  rowdy calls and `INTERNET_EGRESS` for its internet access, like
+  `arn:aws:lambda:us-east-1:aws:network-connector:aws-network-connector:HTTP_INGRESS`. Passing them
+  takes `lambda:PassNetworkConnector`. rowdy uses no VPC connector of your own, so nothing under `ec2:`
+  is needed.
 - **IAM:** the host role can only create, change and pass roles whose names end in `rowdy.run`, which
   is every role rowdy makes, and only with the boundary attached. It can't change the boundary.
 - **S3:** one bucket per account, `rowdy-sandboxes-{random}`, found again by its tag, holds each

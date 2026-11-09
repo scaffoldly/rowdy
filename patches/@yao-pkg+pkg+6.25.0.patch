@@ -1,0 +1,13 @@
+diff --git a/node_modules/@yao-pkg/pkg/prelude/bootstrap-shared.js b/node_modules/@yao-pkg/pkg/prelude/bootstrap-shared.js
+index 5a91a37..37d1b9c 100644
+--- a/node_modules/@yao-pkg/pkg/prelude/bootstrap-shared.js
++++ b/node_modules/@yao-pkg/pkg/prelude/bootstrap-shared.js
+@@ -342,6 +342,8 @@ function patchChildProcess(entrypoint) {
+     exec: childProcess.exec,
+     execSync: childProcess.execSync,
+   };
++  // rowdy puts these back, so its commands spawn as given.
++  childProcess[Symbol.for('pkg.child_process')] = ancestor;
+ 
+   function cloneArgs(args_) {
+     return Array.prototype.slice.call(args_);

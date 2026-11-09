@@ -41,7 +41,8 @@ import type { ExecaError, ExecaReturnValue, Options } from 'execa';
 // execa is ESM-only, so stand in a spawn that settles the way execa does: it resolves on exit code 0
 // and rejects with an ExecaError on a non-zero exit, a signal, or a failed spawn.
 jest.mock('execa', () => {
-  const { spawn } = jest.requireActual<typeof import('child_process')>('child_process');
+  // execa looks spawn up on the module as it's called.
+  const childProcess = jest.requireActual<typeof import('child_process')>('child_process');
 
   type MockExecaChildProcess = ChildProcess & Pick<Promise<ExecaReturnValue>, 'then' | 'catch'>;
 
@@ -71,7 +72,12 @@ jest.mock('execa', () => {
   }
 
   const execa = (file: string, args: readonly string[], options: Options): MockExecaChildProcess => {
-    const proc = spawn(file, args, { stdio: 'pipe', env: options.env, cwd: options.cwd, detached: options.detached });
+    const proc = childProcess.spawn(file, args, {
+      stdio: 'pipe',
+      env: options.env,
+      cwd: options.cwd,
+      detached: options.detached,
+    });
     const command = [file, ...args].join(' ');
     const done = new Promise<ExecaReturnValue>((resolve, reject) => {
       proc.on('error', (error: NodeJS.ErrnoException) =>
@@ -430,6 +436,38 @@ describe('shell', () => {
       await new Promise((r) => setTimeout(r, 50));
       expect(unhandled).not.toHaveBeenCalled();
     });
+  });
+});
+
+describe("pkg's child_process", () => {
+  const childProcess = jest.requireActual<typeof import('child_process')>('child_process');
+  const { spawn } = childProcess;
+  const wrapped = jest.fn(spawn);
+  const kept = { spawn: jest.fn(spawn) };
+
+  beforeEach(() => {
+    childProcess.spawn = wrapped as unknown as typeof spawn;
+    Reflect.set(childProcess, Symbol.for('pkg.child_process'), kept);
+  });
+
+  afterEach(() => {
+    childProcess.spawn = spawn;
+    Reflect.deleteProperty(childProcess, Symbol.for('pkg.child_process'));
+    jest.clearAllMocks();
+  });
+
+  it('spawns with the function pkg wrapped, then puts the wrapper back', async () => {
+    const shell = new ShellPipeline(new Environment(new Logger()));
+    Object.defineProperty(shell.environment, 'Env', { get: () => of({ ...process.env }) });
+    const request = new ShellRequest(shell, [process.execPath, '-e', '']);
+    request.fds.stdin.end();
+
+    const response = await firstValueFrom(new ShellProxy(shell, request).background().invoke().pipe(timeout(2000)));
+    await lastValueFrom(response.pipe(timeout(5000)));
+
+    expect(kept.spawn).toHaveBeenCalledTimes(1);
+    expect(wrapped).not.toHaveBeenCalled();
+    expect(childProcess.spawn).toBe(wrapped);
   });
 });
 
