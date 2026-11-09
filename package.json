@@ -137,7 +137,7 @@
     "@types/whatwg-encoding": "^2.0.3",
     "@typescript-eslint/eslint-plugin": "^8.0.0",
     "@typescript-eslint/parser": "^8.0.0",
-    "@yao-pkg/pkg": "^6.6.0",
+    "@yao-pkg/pkg": "^6.25.0",
     "auth-header": "^1.0.0",
     "axios": "^1.12.2",
     "data-urls": "^6.0.0",
@@ -164,7 +164,6 @@
     "zod": "^4.6.7"
   },
   "pkg": {
-    "bin": "dist/index.js",
     "scripts": "dist/**/*.js",
     "assets": [
       "dist/**/*",
