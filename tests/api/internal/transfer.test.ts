@@ -2,6 +2,7 @@ import axios, { AxiosError, AxiosHeaders, InternalAxiosRequestConfig } from 'axi
 import { lastValueFrom, of, Subject, toArray } from 'rxjs';
 import { Readable } from 'stream';
 import {
+  CHUNK,
   RETRY,
   Transfer,
   TransferEvent,
@@ -90,41 +91,77 @@ describe('upload', () => {
     expect(http.get).toHaveBeenCalledTimes(RETRY.retries + 1);
   });
 
-  it('streams a layer into the registry, without holding all of it', async () => {
-    let received = 0;
-    let arrived: () => void = () => {};
-    const firstArrived = new Promise<void>((resolve) => (arrived = resolve));
-    const server = await new Promise<Server>((resolve) => {
-      const listening = createServer((req, res) => {
-        req.on('data', (chunk: Buffer) => {
-          received += chunk.length;
-          arrived();
-        });
-        req.on('end', () => res.writeHead(202).end());
-      }).listen(0, '127.0.0.1', () => resolve(listening));
+  describe('in chunks', () => {
+    const { size } = CHUNK;
+    beforeEach(() => Object.assign(CHUNK, { size: 1024 }));
+    afterEach(() => Object.assign(CHUNK, { size }));
+
+    it('sends a layer a chunk per request, each where the last one said', async () => {
+      const seen: { url?: string; range?: string; length: number }[] = [];
+      let arrived: () => void = () => {};
+      const firstArrived = new Promise<void>((resolve) => (arrived = resolve));
+      const server = await new Promise<Server>((resolve) => {
+        const listening = createServer((req, res) => {
+          let length = 0;
+          req.on('data', (chunk: Buffer) => (length += chunk.length));
+          req.on('end', () => {
+            seen.push({ url: req.url, range: req.headers['content-range'], length });
+            arrived();
+            res.writeHead(202, { location: `/upload/${seen.length}` }).end();
+          });
+        }).listen(0, '127.0.0.1', () => resolve(listening));
+      });
+      const origin = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+      // The second chunk comes only once the first is in the registry.
+      const layer = new Readable({ read: () => {} });
+      layer.push(Buffer.alloc(1024, 1));
+      firstArrived.then(() => {
+        layer.push(Buffer.alloc(1000, 2));
+        layer.push(null);
+      });
+
+      const http = mocks();
+      http.post.mockResolvedValue(response(202, { location: `${origin}/upload/0` }));
+      http.get.mockResolvedValue({ ...(response(200) as object), data: layer });
+      const patch = jest.fn((url: string, data: unknown, options: object) => axios.create().patch(url, data, options));
+
+      const u = upload({ ...http, patch } as unknown as ReturnType<typeof mocks>);
+      Object.assign(u.ref, { size: 2024 });
+      try {
+        await run(u);
+      } finally {
+        server.close();
+      }
+
+      expect(seen).toEqual([
+        { url: '/upload/0', range: '0-1023', length: 1024 },
+        { url: '/upload/1', range: '1024-2023', length: 1000 },
+      ]);
+      expect(patch.mock.calls.map(([, , options]) => options)).toEqual([
+        expect.objectContaining({ adapter: 'fetch' }),
+        expect.objectContaining({ adapter: 'fetch' }),
+      ]);
+      expect(http.put.mock.calls[0]![0]).toBe(`${origin}/upload/2?digest=sha256:abc`);
     });
-    const location = `http://127.0.0.1:${(server.address() as AddressInfo).port}/upload`;
-    // The second half comes only once the first is in the registry.
-    const layer = new Readable({ read: () => {} });
-    layer.push(Buffer.alloc(1024, 1));
-    firstArrived.then(() => {
-      layer.push(Buffer.alloc(1024, 2));
-      layer.push(null);
+
+    it('retries only the chunk that failed', async () => {
+      const http = mocks();
+      http.get.mockResolvedValue({
+        ...(response(200) as object),
+        data: Readable.from([Buffer.alloc(1024), Buffer.alloc(1024)]),
+      });
+      http.patch.mockRejectedValueOnce(failure(503));
+      const u = upload(http);
+      Object.assign(u.ref, { size: 2048 });
+
+      await run(u);
+
+      expect(http.patch.mock.calls.map(([, , options]) => options.headers.get('Content-Range'))).toEqual([
+        '0-1023',
+        '0-1023',
+        '1024-2047',
+      ]);
     });
-
-    const http = mocks();
-    http.post.mockResolvedValue(response(202, { location }));
-    http.get.mockResolvedValue({ ...(response(200) as object), data: layer });
-    const patch = jest.fn((url: string, data: unknown, options: object) => axios.create().patch(url, data, options));
-
-    try {
-      await run(upload({ ...http, patch } as unknown as ReturnType<typeof mocks>));
-    } finally {
-      server.close();
-    }
-
-    expect(received).toBe(2048);
-    expect(patch.mock.calls[0]![2]).toMatchObject({ adapter: 'fetch' });
   });
 
   it('does not retry once the host is out of outgoing requests', async () => {
@@ -181,13 +218,13 @@ describe('upload', () => {
     expect(http.head).toHaveBeenCalledTimes(1);
   });
 
-  it('does not retry a patch of a consumed stream', async () => {
+  it('retries a patch from the chunk it holds, though the stream is consumed', async () => {
     const http = mocks();
     http.patch.mockRejectedValue(failure(503));
 
     await expect(run(upload(http))).rejects.toThrow('Upload failed');
 
-    expect(http.patch).toHaveBeenCalledTimes(1);
+    expect(http.patch).toHaveBeenCalledTimes(RETRY.retries + 1);
   });
 
   it('retries a put of a buffer', async () => {

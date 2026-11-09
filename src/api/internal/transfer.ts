@@ -98,6 +98,10 @@ export type Source = { from: string; manifest: ImageManifest; configs: Map<strin
 /** What a blob is read with: a layers-from source's anonymously, never with the app image's credentials. */
 // `unref` keeps a backoff from holding the process open once its transfer is torn down.
 export const RETRY = { retries: 6, minTimeout: 1_000, maxTimeout: 15_000, unref: true };
+/** Bytes per request a blob goes up in. ECR takes no chunk under 5 MiB but the last. */
+export const CHUNK = { size: 8 * 1024 * 1024 };
+// Looked up at each request, so a host that wraps fetch sees rowdy's.
+const FETCH = { fetch: (...args: Parameters<typeof fetch>) => globalThis.fetch(...args) };
 const RETRYABLE: ReadonlySet<number | undefined> = new Set([429, 500, 502, 503, 504]);
 
 /**
@@ -981,21 +985,56 @@ export class Upload implements ILoggable {
       }
 
       if (this.type !== 'manifest') {
-        await promiseRetry(
-          (retry) =>
-            status
-              .intercept(
-                // fetch streams a body. A Cloudflare Worker's node:http holds all of it until the request ends.
-                this.http.patch(toUrl, download instanceof Readable ? Readable.toWeb(download) : download, {
-                  adapter: 'fetch',
-                  headers: this.transfer.toHeaders.with('Content-Type', 'application/octet-stream').intoAxios(),
-                  onUploadProgress: (e) => (this.bytes.sent += e.bytes),
-                })
-              )
-              .catch(retryOn(retry, { replayable: Buffer.isBuffer(download) })),
-          RETRY
-        );
-        toUrl = `${toUrl}?digest=${this.digest}`;
+        // A Cloudflare Worker's node:http holds a whole body, and it cuts a long one, so a blob goes up a chunk per
+        // request. One buffer holds each chunk in turn, so memory stays at a chunk.
+        const pieces = (download instanceof Readable ? download : Readable.from([download ?? Buffer.alloc(0)]))[
+          Symbol.asyncIterator
+        ]();
+        const chunk = Buffer.alloc(Math.min(CHUNK.size, this.ref.size || CHUNK.size));
+        let carry = Buffer.alloc(0);
+        let offset = 0;
+        let done = false;
+        while (!done) {
+          let size = 0;
+          while (size < chunk.length) {
+            if (!carry.length) {
+              const piece = await pieces.next();
+              if (piece.done) {
+                done = true;
+                break;
+              }
+              carry = Buffer.from(piece.value);
+            }
+            const taken = carry.copy(chunk, size);
+            size += taken;
+            carry = carry.subarray(taken);
+          }
+          if (!size) break;
+
+          const range = `${offset}-${offset + size - 1}`;
+          const { headers } = await promiseRetry(
+            (retry) =>
+              status
+                .intercept(
+                  this.http.patch(toUrl, chunk.subarray(0, size), {
+                    adapter: 'fetch',
+                    env: FETCH,
+                    headers: this.transfer.toHeaders
+                      .with('Content-Type', 'application/octet-stream')
+                      .with('Content-Range', range)
+                      .intoAxios(),
+                  })
+                )
+                .catch(retryOn(retry)),
+            RETRY
+          );
+          offset += size;
+          this.bytes.sent += size;
+          const next = headers.get('location') as string | undefined;
+          // eslint-disable-next-line no-restricted-globals
+          if (next) toUrl = new URL(next, toUrl).href;
+        }
+        toUrl = `${toUrl}${toUrl.includes('?') ? '&' : '?'}digest=${this.digest}`;
         download = Readable.from('');
       }
 
