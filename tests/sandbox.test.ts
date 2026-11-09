@@ -1261,17 +1261,20 @@ describe('sandbox', () => {
 
     it('keeps order through a slow callback', async () => {
       const seen: string[] = [];
+      let both: () => void = () => {};
+      const handled = new Promise<void>((resolve) => (both = resolve));
       const sandbox = await SandboxImpl.create({
         runtime: 'aws.lambda',
         onEvent: async (emitted) => {
           await new Promise(setImmediate);
           seen.push(emitted.source === 'cdk' ? `${emitted.action}` : '');
+          if (seen.length === 2) both();
         },
       });
 
       lambdaOf(sandbox)['emitted'].next({ ...step, action: 'First' });
       lambdaOf(sandbox)['emitted'].next({ ...step, action: 'Second' });
-      await new Promise((resolve) => setTimeout(resolve, 10));
+      await handled;
 
       expect(seen).toEqual(['First', 'Second']);
     });
