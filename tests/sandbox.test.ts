@@ -114,6 +114,24 @@ describe('sandbox', () => {
       expect(lambdaOf(sandbox).imageService['_layersFrom']).toEqual([ROWDY_LAYERS]);
     });
 
+    it("adds the options' layers after rowdy's", async () => {
+      const sandbox = await SandboxImpl.create({ runtime: 'aws.lambda', layersFrom: ['tunneld/tunneld:latest'] });
+
+      expect(lambdaOf(sandbox).imageService['_layersFrom']).toEqual([ROWDY_LAYERS, 'tunneld/tunneld:latest']);
+    });
+
+    it('gives different layers a different name, and no layers the name it had before', async () => {
+      const name = jest.spyOn(LambdaFunction.prototype, 'withName');
+
+      await SandboxImpl.create({ runtime: 'aws.lambda' });
+      await SandboxImpl.create({ runtime: 'aws.lambda', layersFrom: [] });
+      await SandboxImpl.create({ runtime: 'aws.lambda', layersFrom: ['tunneld/tunneld:latest'] });
+
+      const [none, empty, layered] = name.mock.calls.map(([each]) => each);
+      expect(empty).toBe(none);
+      expect(layered).not.toBe(none);
+    });
+
     it.each([
       ['no options', undefined],
       ['an undefined image', { image: undefined }],
@@ -1588,6 +1606,16 @@ describe('sandbox', () => {
           await call('create_sandbox', { name: 'builds' }, { meta: { sub: 'github:1' } });
 
           expect(created(create)).toMatchObject({ name: 'builds', meta: { sub: 'github:1' } });
+        });
+
+        it("adds the call's layers, which the model can't name", async () => {
+          const create = creating();
+          const tool = hostTool('create_sandbox');
+
+          await call('create_sandbox', {}, { layersFrom: ['tunneld/tunneld:latest'] });
+
+          expect(created(create).layersFrom).toEqual(['tunneld/tunneld:latest']);
+          expect(Object.keys(tool.inputSchema.shape)).not.toContain('layersFrom');
         });
 
         it("passes the host's logLevel, and the call's signal, on", async () => {

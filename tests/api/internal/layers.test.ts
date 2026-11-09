@@ -1,12 +1,6 @@
 import { readFileSync } from 'fs';
 import { join } from 'path';
-import {
-  checkSource,
-  instructionOf,
-  ROWDY_LAYERS,
-  skippedLevel,
-  SourcePlatform,
-} from '../../../src/api/internal/layers';
+import { checkSource, ROWDY_LAYERS, skippedLevel, SourcePlatform } from '../../../src/api/internal/layers';
 import { deploySources, layerSources } from '../../../src/api/internal/sources';
 import { External } from '../../../src/api/internal/transfer';
 import { specList } from '../../../src/util/list';
@@ -22,7 +16,7 @@ const platform = (name: string, { manifest, config }: Fixture): SourcePlatform =
 });
 
 const refusal = (from: string, name: string, rule: string): string =>
-  `layers-from ${from} (${name}): ${rule}; a layers-from image must be one layer, as rowdy's is (FROM scratch, one COPY, ENTRYPOINT)`;
+  `layers-from ${from} (${name}): ${rule}; only its layers go in, so they must match its config and it can't set Env beyond PATH`;
 
 describe('layers-from', () => {
   describe('specList', () => {
@@ -55,19 +49,6 @@ describe('layers-from', () => {
     });
   });
 
-  describe('instructionOf', () => {
-    it.each([
-      ['COPY /work/bin/rowdy /usr/local/bin/rowdy # buildkit', 'COPY'],
-      ['ENTRYPOINT ["/usr/local/bin/rowdy"]', 'ENTRYPOINT'],
-      ['/bin/sh -c #(nop)  ENTRYPOINT ["x"]', 'ENTRYPOINT'],
-      ['/bin/sh -c #(nop) COPY file:abc in /usr/local/bin/x', 'COPY'],
-      ['/bin/sh -c apk add curl', 'RUN'],
-      ['RUN /bin/sh -c apk add curl # buildkit', 'RUN'],
-    ])('reads %p as %p', (createdBy, instruction) => {
-      expect(instructionOf(createdBy)).toBe(instruction);
-    });
-  });
-
   describe('checkSource', () => {
     // Not rowdy's own image, which is exempt: the rules still have to accept its shape.
     const from = 'ghcr.io/example/tool:latest';
@@ -88,19 +69,49 @@ describe('layers-from', () => {
       return f;
     };
 
+    const settingEnv = (f: Fixture): Fixture => {
+      f.config.config = { ...f.config.config, Env: ['PATH=/bin', 'FOO=bar'] };
+      return f;
+    };
+
     it.each<[string, (f: Fixture) => Fixture]>([
-      ['2 layers', twoLayers],
+      ['several layers', twoLayers],
       [
-        'RUN in history',
+        'a RUN layer',
         (f) => {
-          f.config.history = [{ created_by: 'RUN /bin/sh -c apk add curl # buildkit' }, ...f.config.history!];
+          f.manifest.layers = [...f.manifest.layers!, { ...f.manifest.layers![0]!, digest: 'sha256:run' }];
+          f.config.rootfs!.diff_ids = [...f.config.rootfs!.diff_ids!, 'sha256:run'];
+          f.config.history = [...f.config.history!, { created_by: 'RUN /jq --version # buildkit' }];
           return f;
         },
       ],
       [
-        'ENV in history',
+        'steps that add no layer, like ARG and ENV',
         (f) => {
-          f.config.history = [...f.config.history!, { created_by: 'ENV FOO=bar', empty_layer: true }];
+          f.config.history = [
+            { created_by: 'ARG TARGETPLATFORM=linux/amd64', empty_layer: true },
+            ...f.config.history!,
+            { created_by: 'ENV FOO=bar', empty_layer: true },
+          ];
+          return f;
+        },
+      ],
+    ])('passes %s', (_, change) => {
+      expect(() => checkSource(from, [platform(amd64, change(fixture()))])).not.toThrow();
+    });
+
+    it.each<[string, (f: Fixture) => Fixture]>([
+      [
+        'no layers',
+        (f) => {
+          f.manifest.layers = [];
+          return f;
+        },
+      ],
+      [
+        '1 layers but 2 diff_ids',
+        (f) => {
+          f.config.rootfs!.diff_ids = [...f.config.rootfs!.diff_ids!, 'sha256:extra'];
           return f;
         },
       ],
@@ -112,19 +123,13 @@ describe('layers-from', () => {
         },
       ],
       [
-        '2 layer entries in history',
+        '1 layers but 2 layer entries in history',
         (f) => {
           f.config.history = [{ created_by: 'COPY /b /b # buildkit' }, ...f.config.history!];
           return f;
         },
       ],
-      [
-        'Env sets FOO',
-        (f) => {
-          f.config.config = { ...f.config.config, Env: ['PATH=/bin', 'FOO=bar'] };
-          return f;
-        },
-      ],
+      ['Env sets FOO', settingEnv],
     ])('refuses: %s', (rule, change) => {
       expect(() => checkSource(from, [platform(amd64, change(fixture()))])).toThrow(refusal(from, amd64, rule));
     });
@@ -136,13 +141,13 @@ describe('layers-from', () => {
     });
 
     it("exempts rowdy's own image, which this repo builds", () => {
-      expect(() => checkSource(ROWDY_LAYERS, [platform(amd64, twoLayers(fixture()))])).not.toThrow();
+      expect(() => checkSource(ROWDY_LAYERS, [platform(amd64, settingEnv(fixture()))])).not.toThrow();
     });
 
     it('checks every platform, not only the one Lambda runs', () => {
       expect(() =>
-        checkSource(from, [platform(amd64, fixture()), platform('linux/arm64', twoLayers(fixture()))])
-      ).toThrow(refusal(from, 'linux/arm64', '2 layers'));
+        checkSource(from, [platform(amd64, fixture()), platform('linux/arm64', settingEnv(fixture()))])
+      ).toThrow(refusal(from, 'linux/arm64', 'Env sets FOO'));
     });
   });
 

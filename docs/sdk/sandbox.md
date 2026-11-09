@@ -58,24 +58,25 @@ const sandbox = await Sandbox.create({
 });
 ```
 
-| Option     | Default              |                                                                            |
-| ---------- | -------------------- | -------------------------------------------------------------------------- |
-| `runtime`  | `aws.microvm`        | See [Runtime](#runtime).                                                   |
-| `image`    | `scaffoldly/sandbox` | The container image. An image with no registry comes from `mirror.gcr.io`. |
-| `name`     | `sandbox`            | The prefix of the generated name, `{name}-{suffix}`.                       |
-| `timeout`  | 15 minutes           | See [Runtime](#runtime).                                                   |
-| `memory`   | 512                  | See [Runtime](#runtime).                                                   |
-| `env`      |                      | Environment variables for every command.                                   |
-| `meta`     |                      | Kept with the sandbox, for `list` and `get` to match. See [Meta](#meta).   |
-| `logLevel` | `warn`               | See [Logging](../sdk.md#logging).                                          |
-| `signal`   |                      | See [Aborting](#aborting).                                                 |
+| Option       | Default              |                                                                            |
+| ------------ | -------------------- | -------------------------------------------------------------------------- |
+| `runtime`    | `aws.microvm`        | See [Runtime](#runtime).                                                   |
+| `image`      | `scaffoldly/sandbox` | The container image. An image with no registry comes from `mirror.gcr.io`. |
+| `name`       | `sandbox`            | The prefix of the generated name, `{name}-{suffix}`.                       |
+| `timeout`    | 15 minutes           | See [Runtime](#runtime).                                                   |
+| `memory`     | 512                  | See [Runtime](#runtime).                                                   |
+| `env`        |                      | Environment variables for every command.                                   |
+| `meta`       |                      | Kept with the sandbox, for `list` and `get` to match. See [Meta](#meta).   |
+| `layersFrom` |                      | Images whose layer goes into the sandbox's image. See [Layers](#layers).   |
+| `logLevel`   | `warn`               | See [Logging](../sdk.md#logging).                                          |
+| `signal`     |                      | See [Aborting](#aborting).                                                 |
 
 A private image is read with the credentials `docker login` saved for its registry.
 
 On `aws.lambda`, `HOME` defaults to `/tmp`, the only writable path, and the `XDG_*` base directories to
 their usual places under it. `env` can override them.
 
-The suffix is a hash of `runtime`, `image`, `timeout`, `memory`, `env` and `meta`, so the same values under
+The suffix is a hash of `runtime`, `image`, `timeout`, `memory`, `env`, `meta` and `layersFrom`, so the same values under
 the same `name` give you the same sandbox. A second `create` doesn't build anything, and on `aws.microvm` it
 shares the first one's VM. A different `name` or value gives a sandbox of its own.
 
@@ -255,6 +256,26 @@ const again = await Sandbox.get({ sandboxId, meta: { sub: 'github:1' } });
 Different `meta` is a different sandbox, even with the same options. On AWS each entry is a tag,
 `run.rowdy.meta.{key}`, so keys and values are what AWS takes in a tag.
 
+## Layers
+
+`layersFrom` adds the layer of other images to the sandbox's image, after rowdy's own, so a tool is there on
+any image:
+
+```ts
+const sandbox = await Sandbox.create({ image: 'python:3.12-slim', layersFrom: ['ghcr.io/jqlang/jq:latest'] });
+```
+
+Each one must be public and set no `Env` but `PATH`. Only its layers go in, not its config, so jq above is at
+`/jq`, where its image put it. Its layers go in for each of the sandbox image's platforms it's published for,
+and are skipped on the others.
+
+**Use images that add only their own files.** An image built `FROM scratch` with a static binary, like jq's or
+rowdy's own, fits any base. An image that ships a whole root filesystem, like `alpine` or anything built from
+it, overwrites the sandbox image's `/bin`, libraries and C library, and can leave it unable to run. rowdy
+doesn't look at the files a layer adds, so it can't refuse one like that. The layers are part of the
+image the sandbox is built from, so a sandbox started again after a `stop` still has them. Different layers
+are a different sandbox.
+
 ## Aborting
 
 ```ts
@@ -384,7 +405,7 @@ there's something to do: `Retrying may help.` for throttling or a fault on AWS's
 `@scaffoldly/rowdy/mcp` has the tools for a model that manages its own sandboxes, keyed by name. A host adds
 `tools.factory` to its own server: `create_sandbox`, `get_sandbox`, `list_sandboxes` and `stop_sandbox`. Each
 `run` takes the SDK first, then the input, then the call's context with what the host adds: the `server`, its
-`signal`, and optionally `meta`, `limits` and `logLevel`.
+`signal`, and optionally `meta`, `layersFrom`, `limits` and `logLevel`.
 
 ```ts
 import { Sandbox, type SandboxFactory } from '@scaffoldly/rowdy/sandbox';
@@ -399,7 +420,8 @@ factory.forEach(({ name, run, ...config }) =>
 ```
 
 `meta` goes on every sandbox a call creates, and a call only lists, gets or stops sandboxes with it, so a model
-can't reach another's. `limits` cap what a model can ask for.
+can't reach another's. `layersFrom` goes into every sandbox a call creates, and a model can't change it.
+`limits` cap what a model can ask for.
 
 Each sandbox `create_sandbox` makes gets tools of its own on that server, `tools.lazy`, named with its suffix,
 like `run_command_bcdf245678`, with no `sandbox_id` to give: `run_command` and `read_output`, and on

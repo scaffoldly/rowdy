@@ -17,6 +17,11 @@ interface BaseSandboxOptions {
    * sandbox. Keys and values are what AWS takes in a tag.
    */
   meta?: Record<string, string>;
+  /**
+   * Public images whose layers go into the sandbox's image, after rowdy's, for the platforms each is published for.
+   * Only their layers go in, not their config. Different layers are a different sandbox.
+   */
+  layersFrom?: string[];
   /** Applies to the whole process. Defaults to ROWDY_LOG_LEVEL, ROWDY_DEBUG or ROWDY_TRACE, then `warn`. */
   logLevel?: Level;
   /** Aborts the sandbox's work in progress, including its creation, and stops it if it can `stop`. */
@@ -63,7 +68,7 @@ export interface SandboxToolsLimits {
   runtimes?: NonNullable<SandboxOptions['runtime']>[];
 }
 
-export interface SandboxToolsOptions extends Pick<SandboxOptions, 'logLevel' | 'meta'> {
+export interface SandboxToolsOptions extends Pick<SandboxOptions, 'logLevel' | 'meta' | 'layersFrom'> {
   /** What a model can ask for. */
   limits?: SandboxToolsLimits;
 }

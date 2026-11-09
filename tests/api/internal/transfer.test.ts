@@ -529,10 +529,17 @@ describe('transfers', () => {
         expect(source.configs.size).toBeGreaterThanOrEqual(2);
       }, 120000);
 
-      it('refuses a source that is more than one layer', async () => {
+      it('refuses a source that sets its own Env', async () => {
         await expect(
           lastValueFrom(Transfer.source(logger, rowdy.http, 'mirror.gcr.io/library/nginx:alpine'))
-        ).rejects.toThrow(/layers-from mirror.gcr.io\/library\/nginx:alpine \(linux\/[^)]+\): \d+ layers/);
+        ).rejects.toThrow(/layers-from mirror.gcr.io\/library\/nginx:alpine \(linux\/[^)]+\): Env sets /);
+      }, 120000);
+
+      it('takes a source of several layers', async () => {
+        const source = await lastValueFrom(Transfer.source(logger, rowdy.http, 'ghcr.io/jqlang/jq:latest'));
+        const amd64 = source.manifest.images.find((img) => img.manifest.platform?.architecture === 'amd64');
+
+        expect(amd64?.image.layers?.length).toBeGreaterThan(1);
       }, 120000);
 
       describe('collected with two sources', () => {

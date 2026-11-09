@@ -23,6 +23,8 @@ export type ComputeSpec = {
   env: Record<string, string>;
   /** Kept with the sandbox, for `list` and `attach` to match. */
   meta: Record<string, string>;
+  /** Images whose layer goes into the sandbox's, after rowdy's. */
+  layersFrom: string[];
 };
 
 /** Where a sandbox runs. */

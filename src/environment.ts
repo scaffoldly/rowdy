@@ -325,7 +325,7 @@ export class Environment implements ILoggable {
             .option('layers-from', {
               type: 'string',
               description:
-                "An image whose one layer is added to the deployed image, as rowdy's is (public; FROM scratch, one COPY). Repeatable",
+                "An image whose layers are added to the deployed image, as rowdy's are (public; no Env but PATH). Repeatable",
               group: 'Runtime:',
             })
             .option('routes', {

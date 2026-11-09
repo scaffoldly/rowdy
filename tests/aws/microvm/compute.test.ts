@@ -21,6 +21,7 @@ const SPEC: ComputeSpec = {
   memory: 1024,
   env: { A: 'b' },
   meta: {},
+  layersFrom: [],
 };
 
 type Sent = { name: string; input: Record<string, unknown> };
@@ -126,6 +127,16 @@ describe('aws microvm compute', () => {
       expect(dockerfile(sent)).toBe(`FROM ${IMAGE_URI}\nENTRYPOINT ["/usr/local/bin/rowdy"]\n`);
       expect(compute['environment'].images.pullImage).toHaveBeenCalledWith(SPEC.image, {
         layersFrom: ['ghcr.io/scaffoldly/rowdy:beta'],
+      });
+    });
+
+    it("adds the spec's layers after rowdy's", async () => {
+      const { compute } = setup();
+
+      await lastValueFrom(compute.create({ ...SPEC, layersFrom: ['tunneld/tunneld:latest'] }));
+
+      expect(compute['environment'].images.pullImage).toHaveBeenCalledWith(SPEC.image, {
+        layersFrom: ['ghcr.io/scaffoldly/rowdy:beta', 'tunneld/tunneld:latest'],
       });
     });
 
