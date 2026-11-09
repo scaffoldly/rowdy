@@ -24,6 +24,11 @@ RUN test -n "$(/work/bin/rowdy --version)" && \
     echo '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"smoke","version":"0"}}}' | \
       /work/bin/rowdy mcp | grep -q serverInfo
 
+# DEVNOTE: Commands rowdy spawns must reach the image's own node, which pkg's child_process patch swaps for rowdy
+# unless patches/ undoes it. PKG_EXECPATH set to its own path runs a script on rowdy's embedded Node.
+RUN printf '%s' "const r = require('child_process').spawnSync('sh', ['-c', 'node -e \"process.stdout.write(process.execPath)\"'], { encoding: 'utf8' }); process.exit(r.stdout === '/usr/local/bin/node' && !process.env.PKG_EXECPATH ? 0 : 1);" > /tmp/spawn.js && \
+    PKG_EXECPATH=/work/bin/rowdy /work/bin/rowdy /tmp/spawn.js
+
 # DEVNOTE: The final stage is scratch because its layers are appended to every deployed image. The
 # binary must therefore be static: an interpreter would have to come from the user's image.
 RUN apk add --no-cache binutils && \

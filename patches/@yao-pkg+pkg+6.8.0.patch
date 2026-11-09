@@ -1,0 +1,28 @@
+diff --git a/node_modules/@yao-pkg/pkg/prelude/bootstrap.js b/node_modules/@yao-pkg/pkg/prelude/bootstrap.js
+index 5fc3ee6..a5788ba 100644
+--- a/node_modules/@yao-pkg/pkg/prelude/bootstrap.js
++++ b/node_modules/@yao-pkg/pkg/prelude/bootstrap.js
+@@ -2002,6 +2002,7 @@ function payloadFileSync(pointer) {
+   };
+ 
+   function setOptsEnv(args) {
++    return; // rowdy: commands spawn as given
+     let pos = args.length - 1;
+     if (typeof args[pos] === 'function') pos -= 1;
+     if (typeof args[pos] !== 'object' || Array.isArray(args[pos])) {
+@@ -2046,6 +2047,7 @@ function payloadFileSync(pointer) {
+   }
+ 
+   function modifyLong(args, index) {
++    return; // rowdy: commands spawn as given
+     if (!args[index]) return;
+     return (
+       startsWith(args, index, 'node') ||
+@@ -2056,6 +2058,7 @@ function payloadFileSync(pointer) {
+   }
+ 
+   function modifyShort(args) {
++    return; // rowdy: commands spawn as given
+     if (!args[0]) return;
+     if (!Array.isArray(args[1])) {
+       args.splice(1, 0, []);
