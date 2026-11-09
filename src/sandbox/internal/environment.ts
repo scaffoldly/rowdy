@@ -1,4 +1,4 @@
-import axios from 'axios';
+import axios, { AxiosError, AxiosHeaders } from 'axios';
 import { Subject } from 'rxjs';
 import packageJson from '../../../package.json';
 import { ImageApi } from '../../api/image';
@@ -37,6 +37,31 @@ export class SandboxEnvironment implements IApi {
     const auth = authenticator(this.http, this.log);
     this.http.interceptors.request.use(...auth.request);
     this.http.interceptors.response.use(...auth.response);
+
+    // follow-redirects breaks on a Cloudflare Worker's node:http, so redirects are followed here.
+    this.http.defaults.maxRedirects = 0;
+    this.http.interceptors.response.use(undefined, (error: AxiosError) => {
+      const { config, response } = error;
+      const location = response?.headers?.location as string | undefined;
+      const redirects = ((config as { redirects?: number } | undefined)?.redirects ?? 0) + 1;
+      if (!config?.url || !response || !location || ![301, 302, 303, 307, 308].includes(response.status)) throw error;
+      if (redirects > 5) throw error;
+      (response.data as { destroy?: () => void } | undefined)?.destroy?.();
+
+      // eslint-disable-next-line no-restricted-globals
+      const [from, to] = [new URL(config.url), new URL(location, config.url)];
+      const headers = new AxiosHeaders(config.headers);
+      // A registry's token is for the registry, and a blob store refuses a second kind of auth.
+      if (to.origin !== from.origin) headers.delete('Authorization');
+
+      return this.http.request({
+        ...config,
+        url: to.href,
+        headers,
+        redirects,
+        ...(response.status === 303 ? { method: 'get', data: undefined } : {}),
+      } as typeof config);
+    });
   }
 
   /** Where the image API sends its events. */
