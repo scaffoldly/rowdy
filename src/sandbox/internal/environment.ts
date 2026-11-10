@@ -1,11 +1,15 @@
 import axios, { AxiosError, AxiosHeaders } from 'axios';
-import { Subject } from 'rxjs';
+import { defer, firstValueFrom, shareReplay, Subject } from 'rxjs';
 import packageJson from '../../../package.json';
 import { ImageApi } from '../../api/image';
 import type { IApi, IImageApi } from '../../api/types';
 import type { Event } from '../../events';
 import type { Logger } from '../../log';
+import type { AwsSandboxOptions } from '..';
 import { authenticator } from '../../util/axios';
+
+/** How long before credentials expire they're asked for again, in milliseconds. */
+export const REFRESH = { before: 5 * 60 * 1000 };
 
 /**
  * What a sandbox needs of rowdy, without its CLI or runtimes, which a host like a Cloudflare Worker can't load. It
@@ -23,18 +27,35 @@ export class SandboxEnvironment implements IApi {
   readonly registry: string | undefined = undefined;
   /** Milliseconds between checks on AWS, or undefined for each check's own default. */
   readonly pollInterval: number | undefined;
+  /** What its AWS clients act as, or undefined for the AWS SDK's own chain. */
+  readonly credentials: AwsSandboxOptions['credentials'];
 
   constructor(
     public readonly log: Logger,
-    { signal, pollInterval }: { signal?: AbortSignal; pollInterval?: number } = {}
+    {
+      signal,
+      pollInterval,
+      credentials,
+    }: { signal?: AbortSignal; pollInterval?: number; credentials?: AwsSandboxOptions['credentials'] } = {}
   ) {
     this.pollInterval = pollInterval;
+    if (credentials) {
+      // Resolved once, from now, for every client to replay. Asked for again only once they're about to expire.
+      let resolved$ = defer(credentials).pipe(shareReplay(1));
+      firstValueFrom(resolved$).catch(() => undefined);
+      this.credentials = async () => {
+        const resolved = await firstValueFrom(resolved$);
+        if (!resolved.expiration || resolved.expiration.getTime() - Date.now() > REFRESH.before) return resolved;
+        resolved$ = defer(credentials).pipe(shareReplay(1));
+        return firstValueFrom(resolved$);
+      };
+    }
     if (signal?.aborted) {
       this.abort.abort(signal.reason);
     }
     signal?.addEventListener('abort', () => this.abort.abort(signal.reason), { once: true });
 
-    const auth = authenticator(this.http, this.log);
+    const auth = authenticator(this.http, this.log, this.credentials);
     this.http.interceptors.request.use(...auth.request);
     this.http.interceptors.response.use(...auth.response);
 

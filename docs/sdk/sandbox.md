@@ -70,6 +70,7 @@ const sandbox = await Sandbox.create({
 | `layersFrom`   |                      | Images whose layer goes into the sandbox's image. See [Layers](#layers).                                  |
 | `logLevel`     | `warn`               | See [Logging](../sdk.md#logging).                                                                         |
 | `pollInterval` | 5000, 250 to stop    | Milliseconds between checks on a microVM sandbox as it builds, starts or stops. Each is a request to AWS. |
+| `credentials`  | the AWS SDK's chain  | What its AWS clients act as. See [AWS credentials](../sdk.md#aws-credentials).                            |
 | `signal`       |                      | See [Aborting](#aborting).                                                                                |
 
 A private image is read with the credentials `docker login` saved for its registry.
@@ -222,7 +223,7 @@ arn:aws:lambda:us-east-1:123456789012:function:sandbox-bcdf245678
 arn:aws:lambda:us-east-1:123456789012:microvm-image:sandbox-bcdf245678
 ```
 
-`get` rejects with `Not a sandbox` for anything `create` didn't make. It takes a `signal`, a `logLevel` and a `pollInterval`, and logs at
+`get` rejects with `Not a sandbox` for anything `create` didn't make. It takes a `signal`, a `logLevel`, a `pollInterval` and `credentials`, and logs at
 the level described in [Logging](../sdk.md#logging).
 
 ## `Sandbox.list`
@@ -411,14 +412,13 @@ spends fewer requests waiting on the build.
 `@scaffoldly/rowdy/mcp` has the tools for a model that manages its own sandboxes, keyed by name. A host adds
 `tools.factory` to its own server: `create_sandbox`, `get_sandbox`, `list_sandboxes` and `stop_sandbox`. Each
 `run` takes the SDK first, then the input, then the call's context with what the host adds: the `server`, its
-`signal`, and optionally `meta`, `layersFrom`, `limits`, `logLevel` and `pollInterval`.
+`signal`, and optionally `meta`, `layersFrom`, `limits`, `logLevel`, `pollInterval` and `credentials`.
 
 ```ts
-import { Sandbox, type SandboxFactory } from '@scaffoldly/rowdy/sandbox';
-import { tools, type Tool } from '@scaffoldly/rowdy/mcp';
+import { Sandbox } from '@scaffoldly/rowdy/sandbox';
+import { tools } from '@scaffoldly/rowdy/mcp';
 
-const factory: Tool<SandboxFactory>[] = Object.values(tools.factory);
-factory.forEach(({ name, run, ...config }) =>
+Object.values(tools.factory).forEach(({ name, run, ...config }) =>
   server.registerTool(name, config, (input, ctx) =>
     run(Sandbox, input, { ...ctx, server, signal, meta: { sub }, limits: { runtimes: ['aws.microvm'] } })
   )
@@ -427,6 +427,7 @@ factory.forEach(({ name, run, ...config }) =>
 
 `meta` goes on every sandbox a call creates, and a call only lists, gets or stops sandboxes with it, so a model
 can't reach another's. `layersFrom` goes into every sandbox a call creates, and a model can't change it.
+`credentials`, set per call, are what that call's AWS clients act as, such as the caller's own role.
 `limits` cap what a model can ask for, and only `limits.runtimes` are listed, so a host that allows only
 `aws.microvm` needs no `lambda:ListFunctions`. `pollInterval` is for a host with a cap on its requests, as in
 [Errors](#errors). A `create_sandbox` that hits the cap tells the model to make the same call again. Any other

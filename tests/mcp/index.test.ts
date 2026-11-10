@@ -42,21 +42,24 @@ describe('registerTools', () => {
   it("registers every sandbox with the context's meta, on its runtimes", async () => {
     const { list, get, registerTool, factory } = setup();
     const meta = { sub: 'github:1' };
+    const credentials = async () => ({ accessKeyId: 'AKIAEXAMPLE', secretAccessKey: 'secret' });
 
     const names = await mcp.registerTools(factory, {
       server: { registerTool },
       meta,
       pollInterval: 15000,
+      credentials,
       limits: { runtimes: ['aws.microvm'] },
     } as unknown as ServerContext);
 
     expect(names).toEqual(['run_command_bcdf2']);
-    expect(list.mock.calls).toEqual([[{ runtime: 'aws.microvm', meta, signal: undefined }]]);
+    expect(list.mock.calls).toEqual([[{ runtime: 'aws.microvm', meta, credentials, signal: undefined }]]);
     expect(get).toHaveBeenCalledWith({
       sandboxId: 'arn:aws:lambda:us-east-1:123456789012:microvm-image:a-bcdf2',
       meta,
       logLevel: undefined,
       pollInterval: 15000,
+      credentials,
       signal: undefined,
     });
     expect(registerTool.mock.calls.map(([name]) => name)).toEqual(['run_command_bcdf2']);

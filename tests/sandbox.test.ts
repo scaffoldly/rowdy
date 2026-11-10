@@ -34,6 +34,8 @@ import { AwsRegistry } from '../src/aws/registry';
 import type { Event as SandboxEvent } from '../src/events';
 import { LambdaFunction } from '../src/aws/lambda/index';
 import { MicrovmCompute } from '../src/aws/microvm/compute';
+import { LambdaImageService } from '../src/aws/lambda/image';
+import { SandboxEnvironment } from '../src/sandbox/internal/environment';
 import { LambdaMicrovmsClient } from '@aws-sdk/client-lambda-microvms';
 import { Exec, ExecFinished, ExecFrame } from '../src/api/types';
 import { execOf } from '../src/aws/exec';
@@ -1652,14 +1654,15 @@ describe('sandbox', () => {
           expect(Object.keys(tool.inputSchema.shape)).not.toContain('layersFrom');
         });
 
-        it("passes the host's logLevel and pollInterval, and the call's signal, on", async () => {
+        it("passes the host's logLevel, pollInterval and credentials, and the call's signal, on", async () => {
           const create = creating();
           const { signal } = new AbortController();
           const tool = hostTool('create_sandbox');
 
-          await call('create_sandbox', {}, { logLevel: 'error', pollInterval: 15000 }, signal);
+          const credentials = async () => ({ accessKeyId: 'AKIAEXAMPLE', secretAccessKey: 'secret' });
+          await call('create_sandbox', {}, { logLevel: 'error', pollInterval: 15000, credentials }, signal);
 
-          expect(created(create)).toMatchObject({ logLevel: 'error', pollInterval: 15000, signal });
+          expect(created(create)).toMatchObject({ logLevel: 'error', pollInterval: 15000, credentials, signal });
           expect(Object.keys(tool.inputSchema.shape)).not.toContain('pollInterval');
         });
 
@@ -1694,20 +1697,22 @@ describe('sandbox', () => {
 
       describe('a sandbox_id', () => {
         it.each(['stop_sandbox', 'get_sandbox'])(
-          'is looked up by %s with the call meta, logLevel, pollInterval and signal',
+          'is looked up by %s with the call meta, logLevel, pollInterval, credentials and signal',
           async (name) => {
             const get = getting();
             const { signal } = new AbortController();
             const meta = { sub: 'github:1' };
+            const credentials = async () => ({ accessKeyId: 'AKIAEXAMPLE', secretAccessKey: 'secret' });
 
             await expect(
-              call(name, { sandbox_id: IMAGE }, { meta, logLevel: 'error', pollInterval: 15000 }, signal)
+              call(name, { sandbox_id: IMAGE }, { meta, logLevel: 'error', pollInterval: 15000, credentials }, signal)
             ).rejects.toThrow('found it');
             expect(get).toHaveBeenCalledWith({
               sandboxId: IMAGE,
               meta,
               logLevel: 'error',
               pollInterval: 15000,
+              credentials,
               signal,
             });
           }
@@ -2034,9 +2039,8 @@ describe('sandbox', () => {
     });
   });
 
-  it('exposes only create, get, list and withEnv, whose factory has the first three', () => {
-    expect(Object.keys(Sandbox).sort()).toEqual(['create', 'get', 'list', 'withEnv']);
-    expect(Object.keys(Sandbox.withEnv(() => ({}))).sort()).toEqual(['create', 'get', 'list']);
+  it('exposes only create, get and list', () => {
+    expect(Object.keys(Sandbox).sort()).toEqual(['create', 'get', 'list']);
   });
 
   it('feeds its signal to its environment', async () => {
@@ -2123,69 +2127,89 @@ describe('sandbox', () => {
   });
 });
 
-describe('Sandbox.withEnv', () => {
+describe('credentials', () => {
   const IMAGE = 'arn:aws:lambda:us-east-1:123456789012:microvm-image:box-bcdf2';
-  const NAMES = ['AWS_ACCESS_KEY_ID', 'AWS_SECRET_ACCESS_KEY', 'AWS_REGION'];
-  const before = Object.fromEntries(NAMES.map((name) => [name, process.env[name]]));
-  const credentials = { AWS_ACCESS_KEY_ID: 'AKIAEXAMPLE', AWS_SECRET_ACCESS_KEY: 'secret' };
+  const given = { accessKeyId: 'AKIAEXAMPLE', secretAccessKey: 'secret', sessionToken: 'token' };
+  const credentials = jest.fn(async () => given);
 
-  beforeEach(() => NAMES.forEach((name) => delete process.env[name]));
   afterEach(() => {
-    NAMES.forEach((name) =>
-      before[name] === undefined ? delete process.env[name] : (process.env[name] = before[name])
-    );
     jest.restoreAllMocks();
+    credentials.mockClear();
   });
 
-  it('sets what env gives on process.env before create reaches AWS, and not on the sandbox', async () => {
-    const seen: { key?: string; env?: Record<string, string> }[] = [];
-    jest.spyOn(MicrovmCompute.prototype, 'create').mockImplementation(function (this: MicrovmCompute, spec) {
-      seen.push({ key: process.env.AWS_ACCESS_KEY_ID, env: spec.env });
+  it("are what a sandbox's AWS clients act as, resolved once for all of them", async () => {
+    const compute = new MicrovmCompute(new SandboxEnvironment(new Logger(), { credentials }));
+
+    for (const client of ['iam', 'microvms', 's3', 'sts'] as const) {
+      await expect(compute[client].config.credentials()).resolves.toMatchObject(given);
+    }
+    expect(credentials).toHaveBeenCalledTimes(1);
+  });
+
+  it('are asked for again once they are about to expire', async () => {
+    const soon = jest.fn(async () => ({ ...given, expiration: new Date(Date.now() + 60_000) }));
+    const environment = new SandboxEnvironment(new Logger(), { credentials: soon });
+
+    await environment.credentials!();
+    await environment.credentials!();
+
+    expect(soon).toHaveBeenCalledTimes(3);
+  });
+
+  it('are asked for again after they fail', async () => {
+    const flaky = jest.fn().mockRejectedValueOnce(new Error('no token')).mockResolvedValue(given);
+    const environment = new SandboxEnvironment(new Logger(), { credentials: flaky });
+
+    await expect(environment.credentials!()).rejects.toThrow('no token');
+    await expect(environment.credentials!()).resolves.toEqual(given);
+    expect(flaky).toHaveBeenCalledTimes(2);
+  });
+
+  it('reach the image copy and the deploy on aws.lambda', async () => {
+    const environment = new SandboxEnvironment(new Logger(), { credentials });
+    const registry = new AwsRegistry(environment);
+    const deployer = new LambdaFunction(
+      'Sandbox',
+      new LambdaImageService({
+        log: environment.log,
+        signal: environment.signal,
+        name: environment.name,
+        version: environment.version,
+        credentials,
+        rowdy: environment,
+      })
+    );
+
+    await expect(registry['ecr'].config.credentials()).resolves.toMatchObject(given);
+    await expect(deployer['lambda'].config.credentials()).resolves.toMatchObject(given);
+  });
+
+  it('go from create, get and list to the compute', async () => {
+    const seen: unknown[] = [];
+    jest.spyOn(MicrovmCompute.prototype, 'create').mockImplementation(function (this: MicrovmCompute) {
+      seen.push(this['environment'].credentials);
       Object.assign(this, { imageArn: IMAGE });
       return of(this);
     });
-
-    await Sandbox.withEnv(async () => credentials).create({ runtime: 'aws.microvm' });
-
-    expect(seen).toEqual([{ key: 'AKIAEXAMPLE', env: {} }]);
-  });
-
-  it('sets it before get and list reach AWS too', async () => {
-    const seen: (string | undefined)[] = [];
     jest.spyOn(MicrovmCompute.prototype, 'attach').mockImplementation(function (this: MicrovmCompute) {
-      seen.push(process.env.AWS_ACCESS_KEY_ID);
+      seen.push(this['environment'].credentials);
       Object.assign(this, { imageArn: IMAGE });
       return of(this);
     });
-    jest.spyOn(MicrovmCompute, 'list').mockImplementation(() => {
-      seen.push(process.env.AWS_REGION);
-      return EMPTY;
-    });
-    let calls = 0;
-    const factory = Sandbox.withEnv(() => ({ ...credentials, AWS_REGION: `us-east-${++calls}` }));
-
-    await factory.get({ sandboxId: IMAGE });
-    await factory.list({ runtime: 'aws.microvm' });
-
-    expect(seen).toEqual(['AKIAEXAMPLE', 'us-east-2']);
-  });
-
-  it('leaves what env leaves undefined as it was', async () => {
-    process.env.AWS_REGION = 'eu-west-1';
-    jest.spyOn(MicrovmCompute, 'list').mockReturnValue(EMPTY);
-
-    await Sandbox.withEnv(() => ({ ...credentials, AWS_REGION: undefined })).list({ runtime: 'aws.microvm' });
-
-    expect(process.env.AWS_REGION).toBe('eu-west-1');
-    expect(process.env.AWS_ACCESS_KEY_ID).toBe('AKIAEXAMPLE');
-  });
-
-  it('rejects with what env throws, before reaching AWS', async () => {
     const list = jest.spyOn(MicrovmCompute, 'list').mockReturnValue(EMPTY);
 
-    await expect(
-      Sandbox.withEnv(async () => Promise.reject(new Error('no token'))).list({ runtime: 'aws.microvm' })
-    ).rejects.toThrow('no token');
-    expect(list).not.toHaveBeenCalled();
+    await Sandbox.create({ runtime: 'aws.microvm', credentials });
+    await Sandbox.get({ sandboxId: IMAGE, credentials });
+    await Sandbox.list({ runtime: 'aws.microvm', credentials });
+
+    for (const replayed of seen as (() => Promise<unknown>)[]) {
+      await expect(replayed()).resolves.toEqual(given);
+    }
+    expect(seen).toHaveLength(2);
+    expect(list).toHaveBeenCalledWith(credentials);
+  });
+
+  it("stay undefined without them, for the AWS SDK's own chain", () => {
+    expect(new SandboxEnvironment(new Logger()).credentials).toBeUndefined();
   });
 });

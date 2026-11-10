@@ -25,10 +25,10 @@ export const getSandbox: Tool<SandboxFactory, typeof inputSchema, typeof outputS
     outputSchema,
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
     async run(factory, { sandbox_id: sandboxId }, ctx) {
-      const { meta, logLevel, pollInterval, signal } = ctx;
+      const { meta, logLevel, pollInterval, credentials, signal } = ctx;
 
       return lastValueFrom(
-        from(factory.get({ sandboxId, meta, logLevel, pollInterval, signal })).pipe(
+        from(factory.get({ sandboxId, meta, logLevel, pollInterval, credentials, signal })).pipe(
           map((sandbox) => {
             const result = toolResult(outputSchema, { sandbox_id: sandbox.sandboxId });
             const names = registerSandbox(sandbox, sandbox.sandboxId, ctx);

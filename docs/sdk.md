@@ -22,34 +22,23 @@ credentials, and creates what it needs in that account and region.
 For what those credentials need for `aws.microvm`, and a permissions boundary that keeps them from acting
 as an administrator, see [sdk/iam.md](sdk/iam.md).
 
-Credentials the process doesn't have yet, like ones from `AssumeRoleWithWebIdentity`, can come from
-`Sandbox.withEnv`. It returns a `SandboxFactory` that calls your function before each `create`, `get`
-and `list` reaches AWS, and puts what it returns on `process.env`, where the AWS SDK reads it:
+Credentials of your own, like a caller's from `AssumeRoleWithWebIdentity`, go in the `credentials`
+option of `Sandbox.create`, `Sandbox.get` and `Sandbox.list`. It takes the same credential providers
+as the AWS SDK, so `fromWebToken` and its siblings from `@aws-sdk/credential-providers` work as they are:
 
 ```ts
-import { STSClient, AssumeRoleWithWebIdentityCommand } from '@aws-sdk/client-sts';
+import { fromWebToken } from '@aws-sdk/credential-providers';
 import { Sandbox } from '@scaffoldly/rowdy/sandbox';
 
-const factory = Sandbox.withEnv(async () => {
-  const { Credentials } = await new STSClient({}).send(new AssumeRoleWithWebIdentityCommand({ ... }));
-  return {
-    AWS_ACCESS_KEY_ID: Credentials?.AccessKeyId,
-    AWS_SECRET_ACCESS_KEY: Credentials?.SecretAccessKey,
-    AWS_SESSION_TOKEN: Credentials?.SessionToken,
-    AWS_CREDENTIAL_EXPIRATION: Credentials?.Expiration?.toISOString(),
-  };
-});
-
-const sandbox = await factory.create({ image: 'node:24' });
+const credentials = fromWebToken({ roleArn, webIdentityToken: token, roleSessionName: 'caller' });
+const sandbox = await Sandbox.create({ image: 'node:24', credentials });
 ```
 
-The factory works anywhere a `SandboxFactory` does, like the [MCP tools](sdk/sandbox.md#mcp-tools).
-
-- The function runs on every call, so cache in it whatever's costly to get.
-- A variable it leaves undefined keeps its value.
-- What it sets stays on `process.env` for the rest of the process, so every sandbox in it shares the
-  latest values.
-- The values never reach a sandbox: not its `env`, and not a command's.
+- They reach every AWS client that sandbox uses. That covers the image copy, the build, starting the VM,
+  and reading command output, and nothing else in the process.
+- Each client asks for them when it needs them, and again before `expiration`.
+- They never reach the sandbox: not its `env`, and not a command's.
+- Left out, the AWS SDK's own chain applies, as above. Region still comes from that chain either way.
 
 ## Logging
 

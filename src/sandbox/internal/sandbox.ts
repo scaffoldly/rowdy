@@ -1,5 +1,4 @@
 import type {
-  EnvPromise,
   Command,
   CommandFinished,
   DetachedRunCommandParams,
@@ -25,7 +24,6 @@ import { posix } from 'path';
 import {
   catchError,
   asapScheduler,
-  concat,
   concatWith,
   connectable,
   EMPTY,
@@ -87,14 +85,6 @@ const RUNTIMES: Record<NonNullable<SandboxOptions['runtime']>, SandboxComputeCla
   'aws.microvm': MicrovmCompute,
 };
 
-// What a factory's env gives goes on process.env for the SDKs underneath; what it leaves undefined keeps its value.
-const withEnv = (env?: EnvPromise): Observable<never> =>
-  defer(async () => {
-    Object.entries((await env?.()) ?? {}).forEach(([name, value]) => {
-      if (value !== undefined) process.env[name] = value;
-    });
-  }).pipe(ignoreElements());
-
 export class SandboxImpl implements Sandbox {
   private environment: SandboxEnvironment;
   private compute: SandboxCompute;
@@ -103,8 +93,9 @@ export class SandboxImpl implements Sandbox {
     runtime,
     logLevel,
     pollInterval,
+    credentials,
     signal,
-  }: Pick<SandboxOptions, 'runtime' | 'logLevel' | 'pollInterval' | 'signal'>) {
+  }: Pick<SandboxOptions, 'runtime' | 'logLevel' | 'pollInterval' | 'credentials' | 'signal'>) {
     // A host's stdout is its own. Its terminal stays quiet unless logLevel, ROWDY_LOG_LEVEL, ROWDY_DEBUG or ROWDY_TRACE
     // says otherwise.
     const log = new Logger('sandbox').withSink('stderr');
@@ -113,18 +104,18 @@ export class SandboxImpl implements Sandbox {
     } else if (!process.env.ROWDY_LOG_LEVEL && log.level === 'info') {
       log.withLevel('warn');
     }
-    this.environment = new SandboxEnvironment(log, { signal, pollInterval });
+    this.environment = new SandboxEnvironment(log, { signal, pollInterval, credentials });
 
     this.compute = new RUNTIMES[runtime ?? 'aws.microvm'](this.environment);
   }
 
-  /** `env`, a factory's, goes on `process.env` before anything reaches the runtime, as in `get` and `list`. */
-  static create(options?: SandboxOptions, env?: EnvPromise): SandboxPromiseImpl {
+  static create(options?: SandboxOptions): SandboxPromiseImpl {
     const runtime = options?.runtime ?? 'aws.microvm';
     const sandbox = new SandboxImpl({
       runtime,
       logLevel: options?.logLevel,
       pollInterval: options?.pollInterval,
+      credentials: options?.credentials,
       signal: options?.signal,
     });
     const { signal } = sandbox.environment;
@@ -148,48 +139,45 @@ export class SandboxImpl implements Sandbox {
     }
 
     const created = lastValueFrom(
-      concat(
-        withEnv(env),
-        defer(() => {
-          const image = options?.image ?? 'scaffoldly/sandbox';
-          const timeout = options?.timeout ?? DEFAULTS.timeout;
-          const memory = options?.memory ?? DEFAULTS.memory;
-          const sandboxEnv = { ...RUNTIMES[runtime].env, ...options?.env };
+      defer(() => {
+        const image = options?.image ?? 'scaffoldly/sandbox';
+        const timeout = options?.timeout ?? DEFAULTS.timeout;
+        const memory = options?.memory ?? DEFAULTS.memory;
+        const env = { ...RUNTIMES[runtime].env, ...options?.env };
 
-          const meta = options?.meta ?? {};
-          const layersFrom = options?.layersFrom ?? [];
+        const meta = options?.meta ?? {};
+        const layersFrom = options?.layersFrom ?? [];
 
-          RUNTIMES[runtime].assert({ timeout, memory, env: sandboxEnv, meta });
+        RUNTIMES[runtime].assert({ timeout, memory, env, meta });
 
-          // The same options reuse a function, and different ones share no env or config. No meta or layers hash as before.
-          const suffix = computeHash(
-            JSON.stringify({
-              runtime,
-              image,
-              timeout,
-              memory,
-              env: Object.entries(sandboxEnv).sort(),
-              ...(Object.keys(meta).length ? { meta: Object.entries(meta).sort() } : {}),
-              ...(layersFrom.length ? { layersFrom } : {}),
-            })
-          );
+        // The same options reuse a function, and different ones share no env or config. No meta or layers hash as before.
+        const suffix = computeHash(
+          JSON.stringify({
+            runtime,
+            image,
+            timeout,
+            memory,
+            env: Object.entries(env).sort(),
+            ...(Object.keys(meta).length ? { meta: Object.entries(meta).sort() } : {}),
+            ...(layersFrom.length ? { layersFrom } : {}),
+          })
+        );
 
-          // TODO: a generated suffix, once a sandbox can be deleted: a new name is a new function and role on every create.
-          // Kubernetes' generateName suffix: 5 random characters.
-          // const suffix = Array.from({ length: 5 }, () => ALPHANUMS[randomInt(ALPHANUMS.length)]).join('');
+        // TODO: a generated suffix, once a sandbox can be deleted: a new name is a new function and role on every create.
+        // Kubernetes' generateName suffix: 5 random characters.
+        // const suffix = Array.from({ length: 5 }, () => ALPHANUMS[randomInt(ALPHANUMS.length)]).join('');
 
-          const name = `${options?.name || 'sandbox'}-${suffix}`;
+        const name = `${options?.name || 'sandbox'}-${suffix}`;
 
-          return race(
-            iif(() => signal.aborted, of(signal), fromEvent(signal, 'abort')).pipe(
-              switchMap(() => throwError(() => signal.reason))
-            ),
-            defer(() =>
-              sandbox.compute.create({ image, name, timeout, memory, env: sandboxEnv, meta, layersFrom })
-            ).pipe(map(() => sandbox.stoppingOnAbort()))
-          );
-        })
-      ).pipe(
+        return race(
+          iif(() => signal.aborted, of(signal), fromEvent(signal, 'abort')).pipe(
+            switchMap(() => throwError(() => signal.reason))
+          ),
+          defer(() => sandbox.compute.create({ image, name, timeout, memory, env, meta, layersFrom })).pipe(
+            map(() => sandbox.stoppingOnAbort())
+          )
+        );
+      }).pipe(
         // Work starts after this returns, so `.events()` on the result sees the first step.
         subscribeOn(asapScheduler),
         // An AxiosError carries its request headers and sockets into a caller's logs.
@@ -217,12 +205,16 @@ export class SandboxImpl implements Sandbox {
     );
   }
 
-  static get(
-    { sandboxId, logLevel, pollInterval, signal: abort, meta }: SandboxLookup,
-    env?: EnvPromise
-  ): SandboxPromiseImpl {
+  static get({
+    sandboxId,
+    logLevel,
+    pollInterval,
+    credentials,
+    signal: abort,
+    meta,
+  }: SandboxLookup): SandboxPromiseImpl {
     const runtime = sandboxId.includes(':microvm-image:') ? 'aws.microvm' : 'aws.lambda';
-    const sandbox = new SandboxImpl({ runtime, logLevel, pollInterval, signal: abort });
+    const sandbox = new SandboxImpl({ runtime, logLevel, pollInterval, credentials, signal: abort });
     const { signal } = sandbox.environment;
 
     const attached = lastValueFrom(
@@ -230,10 +222,7 @@ export class SandboxImpl implements Sandbox {
         iif(() => signal.aborted, of(signal), fromEvent(signal, 'abort')).pipe(
           switchMap(() => throwError(() => signal.reason))
         ),
-        concat(
-          withEnv(env),
-          defer(() => sandbox.compute.attach(sandboxId, meta))
-        ).pipe(map(() => sandbox.stoppingOnAbort()))
+        defer(() => sandbox.compute.attach(sandboxId, meta)).pipe(map(() => sandbox.stoppingOnAbort()))
       ).pipe(
         // Work starts after this returns, so `.events()` on the result sees the first step.
         subscribeOn(asapScheduler)
@@ -248,7 +237,7 @@ export class SandboxImpl implements Sandbox {
     );
   }
 
-  static list({ runtime, meta = {}, signal }: SandboxListOptions = {}, env?: EnvPromise): Promise<SandboxSummary[]> {
+  static list({ runtime, meta = {}, credentials, signal }: SandboxListOptions = {}): Promise<SandboxSummary[]> {
     // A host's stdout is its own.
     new Logger('sandbox').withSink('stderr');
     const runtimes = runtime ? [runtime] : (Object.keys(RUNTIMES) as (keyof typeof RUNTIMES)[]);
@@ -260,11 +249,11 @@ export class SandboxImpl implements Sandbox {
               switchMap(() => throwError(() => signal.reason))
             )
           : NEVER,
-        concat(
-          withEnv(env),
-          defer(() => merge(...runtimes.map((each) => RUNTIMES[each].list())))
-        ).pipe(
-          filter((found) => Object.entries(meta).every(([key, value]) => found.meta[key] === value)),
+        merge(...runtimes.map((each) => RUNTIMES[each].list(credentials))).pipe(
+          // A value that isn't a string, like an undefined one, matches no sandbox.
+          filter((found) =>
+            Object.entries(meta).every(([key, value]) => typeof value === 'string' && found.meta[key] === value)
+          ),
           toArray()
         )
       )

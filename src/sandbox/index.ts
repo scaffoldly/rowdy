@@ -35,7 +35,24 @@ interface BaseSandboxOptions {
   onEvent?: EventCallback | PromiseLike<EventCallback>;
 }
 
-export interface LambdaSandboxOptions extends BaseSandboxOptions {
+/** AWS credentials, as the AWS SDK's own credential providers give them. */
+export interface AwsCredentials {
+  accessKeyId: string;
+  secretAccessKey: string;
+  sessionToken?: string;
+  /** When they stop working. They're asked for again before then. */
+  expiration?: Date;
+}
+
+export interface AwsSandboxOptions {
+  /**
+   * What the sandbox's AWS clients act as, such as `fromWebToken(...)` from `@aws-sdk/credential-providers`. Asked for
+   * when a client needs them, and again as they expire. Defaults to the AWS SDK's own chain.
+   */
+  credentials?: () => Promise<AwsCredentials>;
+}
+
+export interface LambdaSandboxOptions extends BaseSandboxOptions, AwsSandboxOptions {
   /** Where the sandbox runs. */
   runtime: 'aws.lambda';
   /** Milliseconds until the sandbox stops: whole seconds, 1000 to 900000. */
@@ -49,7 +66,7 @@ export interface LambdaSandboxOptions extends BaseSandboxOptions {
   env?: Record<string, string>;
 }
 
-export interface MicrovmSandboxOptions extends BaseSandboxOptions {
+export interface MicrovmSandboxOptions extends BaseSandboxOptions, AwsSandboxOptions {
   /** Where the sandbox runs. Defaults to `aws.microvm`. */
   runtime?: 'aws.microvm';
   /** Milliseconds until the sandbox stops: whole seconds, 1000 to 28800000. */
@@ -73,7 +90,8 @@ export interface SandboxToolsLimits {
   runtimes?: NonNullable<SandboxOptions['runtime']>[];
 }
 
-export interface SandboxToolsOptions extends Pick<SandboxOptions, 'logLevel' | 'meta' | 'layersFrom' | 'pollInterval'> {
+export interface SandboxToolsOptions
+  extends Pick<SandboxOptions, 'logLevel' | 'meta' | 'layersFrom' | 'pollInterval' | 'credentials'> {
   /** What a model can ask for. */
   limits?: SandboxToolsLimits;
 }
@@ -95,7 +113,7 @@ export interface SandboxSummary {
   meta: Record<string, string>;
 }
 
-export interface SandboxListOptions {
+export interface SandboxListOptions extends AwsSandboxOptions {
   /** Only sandboxes on this runtime. Defaults to every runtime. */
   runtime?: NonNullable<SandboxOptions['runtime']>;
   /** Only sandboxes whose `meta` has every one of these. */
@@ -103,7 +121,7 @@ export interface SandboxListOptions {
   signal?: AbortSignal;
 }
 
-export interface SandboxLookup extends Pick<SandboxOptions, 'logLevel' | 'pollInterval'> {
+export interface SandboxLookup extends Pick<SandboxOptions, 'logLevel' | 'pollInterval' | 'credentials'> {
   sandboxId: string;
   /** Refuses a sandbox whose `meta` doesn't have every one of these. */
   meta?: Record<string, string>;
@@ -221,12 +239,6 @@ export interface Sandbox {
  */
 export interface SandboxPromise extends Promise<Sandbox>, Pick<Sandbox, 'events' | 'tools'> {}
 
-/**
- * Environment variables for the clients rowdy makes to reach a runtime, named as that runtime's SDK reads its own, like
- * `AWS_ACCESS_KEY_ID`. They go on this process's `process.env`, never a sandbox's `env` or a command's.
- */
-export type EnvPromise = () => Record<string, string | undefined> | PromiseLike<Record<string, string | undefined>>;
-
 export interface SandboxFactory {
   /** Starts a new sandbox. */
   create(options?: SandboxOptions): SandboxPromise;
@@ -236,20 +248,8 @@ export interface SandboxFactory {
   list(options?: SandboxListOptions): Promise<SandboxSummary[]>;
 }
 
-export const Sandbox: SandboxFactory & {
-  /**
-   * A factory that sets what `env` gives on `process.env` before each `create`, `get` and `list` reaches its runtime,
-   * so the SDKs underneath read it. It's called each time, so cache in it what's costly to get. A variable it leaves
-   * undefined keeps its value, and what it sets stays for the rest of the process.
-   */
-  withEnv(env: EnvPromise): SandboxFactory;
-} = {
+export const Sandbox: SandboxFactory = {
   create: (options) => SandboxImpl.create(options),
   get: (lookup) => SandboxImpl.get(lookup),
   list: (options) => SandboxImpl.list(options),
-  withEnv: (env) => ({
-    create: (options) => SandboxImpl.create(options, env),
-    get: (lookup) => SandboxImpl.get(lookup, env),
-    list: (options) => SandboxImpl.list(options, env),
-  }),
 };

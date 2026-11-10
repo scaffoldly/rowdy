@@ -34,6 +34,7 @@ import {
 import { Exec, ExecFinished, ExecFrame, ExecOutput, ExecOutputOptions } from '../api/types';
 import { EXEC_LOG, EXEC_STREAM } from '../proxy/frames';
 import type { ShellExit } from '../proxy/shell';
+import type { AwsSandboxOptions } from '../sandbox';
 import { SandboxError } from '../sandbox/internal/compute';
 
 /** The most of each stream a command's handle keeps, in bytes. A command can print for as long as it runs. */
@@ -143,7 +144,8 @@ type ExecLine = { timestamp: number; seq: number; stream: number; data: string; 
 export const execOutput = (
   logGroup: string,
   cmdId: string,
-  { cursor, stream, timeout, signal }: ExecOutputOptions = {}
+  { cursor, stream, timeout, signal }: ExecOutputOptions = {},
+  credentials?: AwsSandboxOptions['credentials']
 ): Observable<ExecOutput> =>
   defer(() => {
     let locator: StartLiveTailCommandInput | undefined;
@@ -164,7 +166,7 @@ export const execOutput = (
 
     const [logStreamNamePrefix] = locator?.logStreamNamePrefixes ?? [];
     const filterPattern = locator?.logEventFilterPattern;
-    const logs = new CloudWatchLogsClient({ region: logGroup.split(':')[3] });
+    const logs = new CloudWatchLogsClient({ region: logGroup.split(':')[3], credentials });
     const abort = new AbortController();
 
     // Pages can be empty before the events arrive, so only a missing token ends this.

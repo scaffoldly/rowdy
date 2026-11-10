@@ -3,7 +3,8 @@
  *
  * `tools.factory` go on the server at the start. Each `run` takes the SDK first, then the input, then the call's
  * context with what the host adds: the `server`, so `create_sandbox` and `get_sandbox` can register a sandbox's own
- * tools on it, the host's `signal`, and optionally `meta`, `layersFrom`, `limits`, `logLevel` and `pollInterval`. `meta` goes on every
+ * tools on it, the host's `signal`, and optionally `meta`, `layersFrom`, `limits`, `logLevel`, `pollInterval` and
+ * `credentials`, which a host can set per call, such as the caller's own. `meta` goes on every
  * sandbox a call creates, and a call only finds sandboxes with it. `layersFrom` goes into every sandbox a call creates. A host wraps `run` with
  * whatever it does around a call.
  *
@@ -36,6 +37,7 @@
  * @module
  */
 import { Logger } from '../log';
+import type { SandboxFactory, SandboxPromise } from '../sandbox';
 import { createSandbox } from '../sandbox/internal/mcp/create-sandbox';
 import { getSandbox } from '../sandbox/internal/mcp/get-sandbox';
 import { listSandboxes } from '../sandbox/internal/mcp/list-sandboxes';
@@ -45,6 +47,7 @@ import { readOutput } from '../sandbox/internal/mcp/read-output';
 import { runCommand } from '../sandbox/internal/mcp/run-command';
 import { stopSandbox } from '../sandbox/internal/mcp/stop-sandbox';
 import { writeFile } from '../sandbox/internal/mcp/write-file';
+import type { Tool } from './internal/types';
 
 export type { ServerContext, Tool } from './internal/types';
 export { registerTools } from '../sandbox/internal/mcp/create-sandbox';
@@ -52,8 +55,14 @@ export { registerTools } from '../sandbox/internal/mcp/create-sandbox';
 // A host's stdout is its own, even for a tool that fails before it reaches a sandbox.
 new Logger('sandbox').withSink('stderr');
 
-/** Every tool, unbound, keyed by its name. Each `run` takes the SDK it acts on, first. */
-export const tools = {
+/**
+ * Every tool, unbound, keyed by its name. Each `run` takes the SDK it acts on, first. They're typed alike, so a host can
+ * register `Object.values(tools.factory)` in one loop.
+ */
+export const tools: {
+  factory: Record<'create_sandbox' | 'get_sandbox' | 'list_sandboxes' | 'stop_sandbox', Tool<SandboxFactory>>;
+  lazy: Record<'run_command' | 'read_output' | 'read_file' | 'write_file' | 'make_directory', Tool<SandboxPromise>>;
+} = {
   /** On the server from the start. */
   factory: {
     create_sandbox: createSandbox,
