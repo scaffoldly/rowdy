@@ -39,7 +39,8 @@ interface BaseSandboxOptions {
 export interface AwsSandboxOptions {
   /**
    * What the sandbox's AWS clients act as, such as `fromWebToken(...)` from `@aws-sdk/credential-providers`. Asked for
-   * once, when the sandbox is made, and shared by all of them. Defaults to the AWS SDK's own chain.
+   * once, when the sandbox is made, shared by all of them, and again halfway to their `expiration`. Defaults to the
+   * AWS SDK's own chain.
    */
   credentials?: () => Promise<AwsCredentials>;
 }

@@ -36,6 +36,7 @@ import { LambdaFunction } from '../src/aws/lambda/index';
 import { MicrovmCompute } from '../src/aws/microvm/compute';
 import { LambdaImageService } from '../src/aws/lambda/image';
 import { SandboxEnvironment } from '../src/sandbox/internal/environment';
+import { CredentialsReplay } from '../src/aws/credentials';
 import { LambdaMicrovmsClient } from '@aws-sdk/client-lambda-microvms';
 import { Exec, ExecFinished, ExecFrame } from '../src/api/types';
 import { execOf } from '../src/aws/exec';
@@ -2156,13 +2157,59 @@ describe('credentials', () => {
     expect(credentials).toHaveBeenCalledTimes(1);
   });
 
-  it('replay a failure to every client, without asking again', async () => {
-    const failing = jest.fn(async () => given).mockRejectedValueOnce(new Error('no token'));
-    const { credentials: replayed } = (await created(failing))['environment'];
+  it('are asked for again once half their life is gone, once for every client asking then', async () => {
+    const soon = jest.fn(async () => ({ ...given, expiration: new Date(Date.now()) }));
+    const { credentials: replayed } = (await created(soon))['environment'];
 
-    await expect(replayed!()).rejects.toThrow('no token');
-    await expect(replayed!()).rejects.toThrow('no token');
-    expect(failing).toHaveBeenCalledTimes(1);
+    await replayed!();
+    await Promise.all([replayed!(), replayed!(), replayed!()]);
+
+    expect(soon).toHaveBeenCalledTimes(3);
+  });
+
+  it("aren't asked for again before half their life is gone", async () => {
+    const later = jest.fn(async () => ({ ...given, expiration: new Date(Date.now() + 3_600_000) }));
+    const { credentials: replayed } = (await created(later))['environment'];
+
+    await replayed!();
+    await replayed!();
+
+    expect(later).toHaveBeenCalledTimes(1);
+  });
+
+  it('fail only the clients waiting on a failed ask, and the next ask tries again', async () => {
+    const flaky = jest.fn(async () => given).mockRejectedValueOnce(new Error('no token'));
+    const replay = new CredentialsReplay(flaky);
+
+    await expect(Promise.all([replay.provider(), replay.provider()])).rejects.toThrow('no token');
+    await expect(replay.provider()).resolves.toEqual(given);
+    expect(flaky).toHaveBeenCalledTimes(2);
+  });
+
+  it('are asked for again at half their life, measured from when they came', async () => {
+    const start = Date.now();
+    const now = jest.spyOn(Date, 'now').mockReturnValue(start);
+    const hour = jest.fn(async () => ({ ...given, expiration: new Date(start + 3_600_000) }));
+    const replay = new CredentialsReplay(hour);
+    await replay.provider();
+
+    now.mockReturnValue(start + 1_799_000);
+    await replay.provider();
+    expect(hour).toHaveBeenCalledTimes(1);
+
+    now.mockReturnValue(start + 1_800_000);
+    await replay.provider();
+    expect(hour).toHaveBeenCalledTimes(2);
+  });
+
+  it('emit each set they get', async () => {
+    const replay = new CredentialsReplay(async () => given);
+    const seen: unknown[] = [];
+    replay.subscribe((each) => seen.push(each));
+
+    await replay.provider();
+
+    expect(seen).toEqual([given]);
   });
 
   it('reach the image copy and the deploy on aws.lambda', async () => {
