@@ -1,5 +1,5 @@
 import axios, { AxiosError, AxiosHeaders } from 'axios';
-import { defer, firstValueFrom, shareReplay, Subject } from 'rxjs';
+import { Subject } from 'rxjs';
 import packageJson from '../../../package.json';
 import { ImageApi } from '../../api/image';
 import type { IApi, IImageApi } from '../../api/types';
@@ -7,9 +7,6 @@ import type { Event } from '../../events';
 import type { Logger } from '../../log';
 import type { AwsSandboxOptions } from '..';
 import { authenticator } from '../../util/axios';
-
-/** How long before credentials expire they're asked for again, in milliseconds. */
-export const REFRESH = { before: 5 * 60 * 1000 };
 
 /**
  * What a sandbox needs of rowdy, without its CLI or runtimes, which a host like a Cloudflare Worker can't load. It
@@ -39,17 +36,7 @@ export class SandboxEnvironment implements IApi {
     }: { signal?: AbortSignal; pollInterval?: number; credentials?: AwsSandboxOptions['credentials'] } = {}
   ) {
     this.pollInterval = pollInterval;
-    if (credentials) {
-      // Resolved once, from now, for every client to replay. Asked for again only once they're about to expire.
-      let resolved$ = defer(credentials).pipe(shareReplay(1));
-      firstValueFrom(resolved$).catch(() => undefined);
-      this.credentials = async () => {
-        const resolved = await firstValueFrom(resolved$);
-        if (!resolved.expiration || resolved.expiration.getTime() - Date.now() > REFRESH.before) return resolved;
-        resolved$ = defer(credentials).pipe(shareReplay(1));
-        return firstValueFrom(resolved$);
-      };
-    }
+    this.credentials = credentials;
     if (signal?.aborted) {
       this.abort.abort(signal.reason);
     }

@@ -36,7 +36,8 @@ const sandbox = await Sandbox.create({ image: 'node:24', credentials });
 
 - They reach every AWS client that sandbox uses. That covers the image copy, the build, starting the VM,
   and reading command output, and nothing else in the process.
-- Each client asks for them when it needs them, and again before `expiration`.
+- They're asked for once, when the sandbox is made, and that sandbox's clients all share the result. A
+  failure fails each of them. A sandbox used past `expiration` needs credentials that last longer.
 - They never reach the sandbox: not its `env`, and not a command's.
 - Left out, the AWS SDK's own chain applies, as above. Region still comes from that chain either way.
 

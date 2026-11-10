@@ -2137,8 +2137,18 @@ describe('credentials', () => {
     credentials.mockClear();
   });
 
-  it("are what a sandbox's AWS clients act as, resolved once for all of them", async () => {
-    const compute = new MicrovmCompute(new SandboxEnvironment(new Logger(), { credentials }));
+  // The compute a create with these credentials makes.
+  const created = async (asked: () => Promise<typeof given>): Promise<MicrovmCompute> => {
+    const create = jest.spyOn(MicrovmCompute.prototype, 'create').mockImplementation(function (this: MicrovmCompute) {
+      Object.assign(this, { imageArn: IMAGE });
+      return of(this);
+    });
+    await Sandbox.create({ runtime: 'aws.microvm', credentials: asked });
+    return create.mock.contexts[0] as MicrovmCompute;
+  };
+
+  it("are what a sandbox's AWS clients act as, asked for once for all of them", async () => {
+    const compute = await created(credentials);
 
     for (const client of ['iam', 'microvms', 's3', 'sts'] as const) {
       await expect(compute[client].config.credentials()).resolves.toMatchObject(given);
@@ -2146,23 +2156,13 @@ describe('credentials', () => {
     expect(credentials).toHaveBeenCalledTimes(1);
   });
 
-  it('are asked for again once they are about to expire', async () => {
-    const soon = jest.fn(async () => ({ ...given, expiration: new Date(Date.now() + 60_000) }));
-    const environment = new SandboxEnvironment(new Logger(), { credentials: soon });
+  it('replay a failure to every client, without asking again', async () => {
+    const failing = jest.fn(async () => given).mockRejectedValueOnce(new Error('no token'));
+    const { credentials: replayed } = (await created(failing))['environment'];
 
-    await environment.credentials!();
-    await environment.credentials!();
-
-    expect(soon).toHaveBeenCalledTimes(3);
-  });
-
-  it('are asked for again after they fail', async () => {
-    const flaky = jest.fn().mockRejectedValueOnce(new Error('no token')).mockResolvedValue(given);
-    const environment = new SandboxEnvironment(new Logger(), { credentials: flaky });
-
-    await expect(environment.credentials!()).rejects.toThrow('no token');
-    await expect(environment.credentials!()).resolves.toEqual(given);
-    expect(flaky).toHaveBeenCalledTimes(2);
+    await expect(replayed!()).rejects.toThrow('no token');
+    await expect(replayed!()).rejects.toThrow('no token');
+    expect(failing).toHaveBeenCalledTimes(1);
   });
 
   it('reach the image copy and the deploy on aws.lambda', async () => {

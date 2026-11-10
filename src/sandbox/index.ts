@@ -5,6 +5,7 @@ import type { Event, EventCallback } from '../events';
 import type { Level } from '../log';
 import type { BoundTool, ServerContext, Tool } from '../mcp/internal/types';
 import type { MICROVM_MEMORY } from './internal/compute';
+import type { AwsCredentials } from '../aws/credentials';
 import { SandboxImpl } from './internal/sandbox';
 
 interface BaseSandboxOptions {
@@ -35,19 +36,10 @@ interface BaseSandboxOptions {
   onEvent?: EventCallback | PromiseLike<EventCallback>;
 }
 
-/** AWS credentials, as the AWS SDK's own credential providers give them. */
-export interface AwsCredentials {
-  accessKeyId: string;
-  secretAccessKey: string;
-  sessionToken?: string;
-  /** When they stop working. They're asked for again before then. */
-  expiration?: Date;
-}
-
 export interface AwsSandboxOptions {
   /**
    * What the sandbox's AWS clients act as, such as `fromWebToken(...)` from `@aws-sdk/credential-providers`. Asked for
-   * when a client needs them, and again as they expire. Defaults to the AWS SDK's own chain.
+   * once, when the sandbox is made, and shared by all of them. Defaults to the AWS SDK's own chain.
    */
   credentials?: () => Promise<AwsCredentials>;
 }
@@ -80,6 +72,7 @@ export interface MicrovmSandboxOptions extends BaseSandboxOptions, AwsSandboxOpt
 export type SandboxOptions = LambdaSandboxOptions | MicrovmSandboxOptions;
 
 export type { Event, EventCallback } from '../events';
+export type { AwsCredentials } from '../aws/credentials';
 
 export interface SandboxToolsLimits {
   /** The most memory a sandbox can have, in megabytes. */
