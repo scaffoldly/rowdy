@@ -224,7 +224,7 @@ describe('run_command', () => {
 
       expect(content[1]).toMatchObject({
         type: 'text',
-        text: expect.stringContaining("Call read_output with this cmd_id"),
+        text: expect.stringContaining('Call read_output with this cmd_id'),
       });
     });
 
