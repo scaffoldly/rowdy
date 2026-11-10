@@ -27,6 +27,8 @@ tool only says the host ran out, since a command may already have run.
 token their request came with:
 
 ```ts
+import { fromWebToken } from '@aws-sdk/credential-providers';
+
 server.registerTool(name, config, (input, ctx) =>
   run(Sandbox, input, {
     ...ctx,
@@ -36,9 +38,6 @@ server.registerTool(name, config, (input, ctx) =>
   })
 );
 ```
-
-`fromWebToken` is from `@aws-sdk/credential-providers`. A call that comes without a token should be refused before
-it gets here.
 
 Each sandbox `create_sandbox` makes gets tools of its own on that server, `tools.lazy`, named with its suffix,
 like `run_command_bcdf245678`, with no `sandbox_id` to give: `run_command` and `read_output`, and on
