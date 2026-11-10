@@ -12,6 +12,7 @@ It needs Node 20 or later.
 | Import                      | What it does                                             | Docs                             |
 | --------------------------- | -------------------------------------------------------- | -------------------------------- |
 | `@scaffoldly/rowdy/sandbox` | Runs commands in a container on AWS, from your own code. | [sdk/sandbox.md](sdk/sandbox.md) |
+| `@scaffoldly/rowdy/mcp`     | The sandbox's tools, for a host's own MCP server.        | [sdk/mcp.md](sdk/mcp.md)         |
 
 ## AWS credentials
 
