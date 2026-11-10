@@ -3,6 +3,7 @@ import { parse } from 'auth-header';
 import { Logger } from '../log';
 import { HttpHeaders } from '../proxy/headers';
 import { headers as awsHeaders } from '../aws/headers';
+import type { AwsSandboxOptions } from '../sandbox';
 
 const headers = async (
   log: Logger,
@@ -10,11 +11,12 @@ const headers = async (
   // eslint-disable-next-line @typescript-eslint/no-restricted-types
   realm: URL,
   service: string,
-  authorization?: string
+  authorization?: string,
+  credentials?: AwsSandboxOptions['credentials']
 ): Promise<HttpHeaders> => {
   // Dealing with AWS www-authenticate not being standard, apparently...
   if (service.endsWith('.amazonaws.com')) {
-    return awsHeaders(log, scheme, realm, service);
+    return awsHeaders(log, scheme, realm, service, credentials);
   }
 
   log.debug(`Requesting ${scheme} token from ${realm.toString()}`, { service, authorization: !!authorization });
@@ -44,7 +46,11 @@ type Authenticator = {
   ];
 };
 
-export function authenticator(axios: AxiosInstance, log: Logger): Authenticator {
+export function authenticator(
+  axios: AxiosInstance,
+  log: Logger,
+  credentials?: AwsSandboxOptions['credentials']
+): Authenticator {
   const preRequest = async (config: AxiosConfig): Promise<AxiosConfig> => {
     return config;
   };
@@ -100,7 +106,7 @@ export function authenticator(axios: AxiosInstance, log: Logger): Authenticator 
       url.searchParams.append('scope', scope);
     }
 
-    const updated = await headers(log, scheme, url, service, authorization);
+    const updated = await headers(log, scheme, url, service, authorization, credentials);
 
     request.headers = new AxiosHeaders(request.headers).concat(updated.intoAxios());
     return axios(request);

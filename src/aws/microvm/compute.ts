@@ -50,7 +50,7 @@ import {
   throwIfEmpty,
   toArray,
 } from 'rxjs';
-import type { FileRange, SandboxSummary } from '../../sandbox';
+import type { AwsSandboxOptions, FileRange, SandboxSummary } from '../../sandbox';
 import { ROWDY_LAYERS } from '../../api/internal/layers';
 import { Transfer } from '../../api/internal/transfer';
 import { Exec, ExecOutput, ExecOutputOptions } from '../../api/types';
@@ -89,8 +89,8 @@ const STARTING = new Map<string, Observable<Vm>>();
 export class MicrovmCompute extends AwsClientLogger implements SandboxCompute {
   static readonly env = {};
 
-  static list(): Observable<SandboxSummary> {
-    const microvms = new LambdaMicrovmsClient({});
+  static list(credentials?: AwsSandboxOptions['credentials']): Observable<SandboxSummary> {
+    const microvms = new LambdaMicrovmsClient({ credentials });
     return forkJoin([
       from(paginateListMicrovms({ client: microvms }, {})).pipe(
         concatMap(({ items = [] }) => items),
@@ -148,7 +148,7 @@ export class MicrovmCompute extends AwsClientLogger implements SandboxCompute {
       throw new RangeError(`env must have at most 50 variables, got ${Object.keys(env).length}`);
     }
     Object.entries(meta).forEach(([key, value]) => {
-      if (!TAG_KEY_REGEX.test(`${META_TAG}${key}`) || !TAG_VALUE_REGEX.test(value)) {
+      if (typeof value !== 'string' || !TAG_KEY_REGEX.test(`${META_TAG}${key}`) || !TAG_VALUE_REGEX.test(value)) {
         throw new RangeError(`meta must be what AWS takes in a tag, got ${key}=${value}`);
       }
     });
@@ -156,10 +156,10 @@ export class MicrovmCompute extends AwsClientLogger implements SandboxCompute {
 
   readonly stoppable = true;
 
-  private iam = this.track(new IAMClient({ logger: this }));
-  private microvms = this.track(new LambdaMicrovmsClient({ logger: this }));
-  private s3 = this.track(new S3Client({ logger: this }));
-  private sts = this.track(new STSClient({ logger: this }));
+  private iam = this.track(new IAMClient({ logger: this, credentials: this.environment.credentials }));
+  private microvms = this.track(new LambdaMicrovmsClient({ logger: this, credentials: this.environment.credentials }));
+  private s3 = this.track(new S3Client({ logger: this, credentials: this.environment.credentials }));
+  private sts = this.track(new STSClient({ logger: this, credentials: this.environment.credentials }));
 
   private imageArn?: string;
   private commands = new Set<AbortController>();
@@ -234,7 +234,10 @@ export class MicrovmCompute extends AwsClientLogger implements SandboxCompute {
   attach(sandboxId: string, meta: Record<string, string> = {}): Observable<this> {
     return defer(() => this.microvms.send(new ListTagsCommand({ Resource: sandboxId }))).pipe(
       map(({ Tags }) => {
-        const matches = Object.entries(meta).every(([key, value]) => Tags?.[`${META_TAG}${key}`] === value);
+        // A value that isn't a string, like an undefined one, matches no sandbox.
+        const matches = Object.entries(meta).every(
+          ([key, value]) => typeof value === 'string' && Tags?.[`${META_TAG}${key}`] === value
+        );
         if (Tags?.[COMPUTE_TAG] !== 'microvm' || !matches) {
           throw new SandboxError(`Not a sandbox: ${sandboxId}`);
         }
@@ -297,7 +300,12 @@ export class MicrovmCompute extends AwsClientLogger implements SandboxCompute {
       switchMap(({ logging }) => {
         const [, , , region, account] = this.sandboxId.split(':');
         const logGroup = logging?.cloudWatch?.logGroup;
-        return execOutput(`arn:aws:logs:${region}:${account}:log-group:${logGroup}`, cmdId, options);
+        return execOutput(
+          `arn:aws:logs:${region}:${account}:log-group:${logGroup}`,
+          cmdId,
+          options,
+          this.environment.credentials
+        );
       })
     );
   }

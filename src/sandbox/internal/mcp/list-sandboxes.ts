@@ -11,7 +11,7 @@ const inputSchema = z.object({
 const outputSchema = z.object({
   sandboxes: z.array(
     z.object({
-      sandbox_id: z.string().describe('Pass to get_sandbox or stop_sandbox.'),
+      sandbox_id: z.string().describe('Pass to the tools that take one.'),
       name: z.string(),
       runtime: z.enum(['aws.microvm', 'aws.lambda']),
       running: z.boolean().optional().describe('Whether its microVM is up. Missing on aws.lambda.'),
@@ -29,13 +29,13 @@ export const listSandboxes: Tool<SandboxFactory, typeof inputSchema, typeof outp
     inputSchema,
     outputSchema,
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
-    async run(factory, { runtime }, { meta, limits, signal }) {
+    async run(factory, { runtime }, { meta, limits, credentials, signal }) {
       // Only the runtimes the host allows are listed, so a host needs no permission to list the others.
       const runtimes = (runtime ? [runtime] : (limits?.runtimes ?? [undefined])).filter(
         (each) => !each || !limits?.runtimes || limits.runtimes.includes(each)
       );
       const sandboxes = (
-        await Promise.all(runtimes.map((each) => factory.list({ runtime: each, meta, signal })))
+        await Promise.all(runtimes.map((each) => factory.list({ runtime: each, meta, credentials, signal })))
       ).flat();
 
       return toolResult(outputSchema, {

@@ -34,6 +34,9 @@ import { AwsRegistry } from '../src/aws/registry';
 import type { Event as SandboxEvent } from '../src/events';
 import { LambdaFunction } from '../src/aws/lambda/index';
 import { MicrovmCompute } from '../src/aws/microvm/compute';
+import { LambdaImageService } from '../src/aws/lambda/image';
+import { SandboxEnvironment } from '../src/sandbox/internal/environment';
+import { Credentials } from '../src/aws/credentials';
 import { LambdaMicrovmsClient } from '@aws-sdk/client-lambda-microvms';
 import { Exec, ExecFinished, ExecFrame } from '../src/api/types';
 import { execOf } from '../src/aws/exec';
@@ -1448,7 +1451,7 @@ describe('sandbox', () => {
     });
 
     // What a host serves first, each run with the SDK's factory.
-    const factoryTools: Tool<SandboxFactory>[] = Object.values(mcp.tools.factory);
+    const factoryTools: Tool<SandboxFactory>[] = Object.values(mcp.tools);
     const hostTool = (name: string) => factoryTools.find((each) => each.name === name)!;
 
     describe('registered on a server as they arrive', () => {
@@ -1652,14 +1655,15 @@ describe('sandbox', () => {
           expect(Object.keys(tool.inputSchema.shape)).not.toContain('layersFrom');
         });
 
-        it("passes the host's logLevel and pollInterval, and the call's signal, on", async () => {
+        it("passes the host's logLevel, pollInterval and credentials, and the call's signal, on", async () => {
           const create = creating();
           const { signal } = new AbortController();
           const tool = hostTool('create_sandbox');
 
-          await call('create_sandbox', {}, { logLevel: 'error', pollInterval: 15000 }, signal);
+          const credentials = async () => ({ accessKeyId: 'AKIAEXAMPLE', secretAccessKey: 'secret' });
+          await call('create_sandbox', {}, { logLevel: 'error', pollInterval: 15000, credentials }, signal);
 
-          expect(created(create)).toMatchObject({ logLevel: 'error', pollInterval: 15000, signal });
+          expect(created(create)).toMatchObject({ logLevel: 'error', pollInterval: 15000, credentials, signal });
           expect(Object.keys(tool.inputSchema.shape)).not.toContain('pollInterval');
         });
 
@@ -1694,20 +1698,22 @@ describe('sandbox', () => {
 
       describe('a sandbox_id', () => {
         it.each(['stop_sandbox', 'get_sandbox'])(
-          'is looked up by %s with the call meta, logLevel, pollInterval and signal',
+          'is looked up by %s with the call meta, logLevel, pollInterval, credentials and signal',
           async (name) => {
             const get = getting();
             const { signal } = new AbortController();
             const meta = { sub: 'github:1' };
+            const credentials = async () => ({ accessKeyId: 'AKIAEXAMPLE', secretAccessKey: 'secret' });
 
             await expect(
-              call(name, { sandbox_id: IMAGE }, { meta, logLevel: 'error', pollInterval: 15000 }, signal)
+              call(name, { sandbox_id: IMAGE }, { meta, logLevel: 'error', pollInterval: 15000, credentials }, signal)
             ).rejects.toThrow('found it');
             expect(get).toHaveBeenCalledWith({
               sandboxId: IMAGE,
               meta,
               logLevel: 'error',
               pollInterval: 15000,
+              credentials,
               signal,
             });
           }
@@ -2119,5 +2125,138 @@ describe('sandbox', () => {
     it('has no extendTimeout', () => {
       expect('extendTimeout' in sandbox).toBe(false);
     });
+  });
+});
+
+describe('credentials', () => {
+  const IMAGE = 'arn:aws:lambda:us-east-1:123456789012:microvm-image:box-bcdf2';
+  const given = { accessKeyId: 'AKIAEXAMPLE', secretAccessKey: 'secret', sessionToken: 'token' };
+  const credentials = jest.fn(async () => given);
+
+  afterEach(() => {
+    jest.restoreAllMocks();
+    credentials.mockClear();
+  });
+
+  // The compute a create with these credentials makes.
+  const created = async (asked: () => Promise<typeof given>): Promise<MicrovmCompute> => {
+    const create = jest.spyOn(MicrovmCompute.prototype, 'create').mockImplementation(function (this: MicrovmCompute) {
+      Object.assign(this, { imageArn: IMAGE });
+      return of(this);
+    });
+    await Sandbox.create({ runtime: 'aws.microvm', credentials: asked });
+    return create.mock.contexts[0] as MicrovmCompute;
+  };
+
+  it("are what a sandbox's AWS clients act as, asked for once for all of them", async () => {
+    const compute = await created(credentials);
+
+    for (const client of ['iam', 'microvms', 's3', 'sts'] as const) {
+      await expect(compute[client].config.credentials()).resolves.toMatchObject(given);
+    }
+    expect(credentials).toHaveBeenCalledTimes(1);
+  });
+
+  it('are asked for again once half their life is gone, once for every client asking then', async () => {
+    const soon = jest.fn(async () => ({ ...given, expiration: new Date(Date.now()) }));
+    const { credentials: replayed } = (await created(soon))['environment'];
+
+    await replayed!();
+    await Promise.all([replayed!(), replayed!(), replayed!()]);
+
+    expect(soon).toHaveBeenCalledTimes(3);
+  });
+
+  it("aren't asked for again before half their life is gone", async () => {
+    const later = jest.fn(async () => ({ ...given, expiration: new Date(Date.now() + 3_600_000) }));
+    const { credentials: replayed } = (await created(later))['environment'];
+
+    await replayed!();
+    await replayed!();
+
+    expect(later).toHaveBeenCalledTimes(1);
+  });
+
+  it('fail only the clients waiting on a failed ask, and the next ask tries again', async () => {
+    const flaky = jest.fn(async () => given).mockRejectedValueOnce(new Error('no token'));
+    const replay = new Credentials(flaky);
+
+    await expect(Promise.all([replay.provider(), replay.provider()])).rejects.toThrow('no token');
+    await expect(replay.provider()).resolves.toEqual(given);
+    expect(flaky).toHaveBeenCalledTimes(2);
+  });
+
+  it('are asked for again at half their life, measured from when they came', async () => {
+    const start = Date.now();
+    const now = jest.spyOn(Date, 'now').mockReturnValue(start);
+    const hour = jest.fn(async () => ({ ...given, expiration: new Date(start + 3_600_000) }));
+    const replay = new Credentials(hour);
+    await replay.provider();
+
+    now.mockReturnValue(start + 1_799_000);
+    await replay.provider();
+    expect(hour).toHaveBeenCalledTimes(1);
+
+    now.mockReturnValue(start + 1_800_000);
+    await replay.provider();
+    expect(hour).toHaveBeenCalledTimes(2);
+  });
+
+  it('emit each set they get', async () => {
+    const replay = new Credentials(async () => given);
+    const seen: unknown[] = [];
+    replay.subscribe((each) => seen.push(each));
+
+    await replay.provider();
+
+    expect(seen).toEqual([given]);
+  });
+
+  it('reach the image copy and the deploy on aws.lambda', async () => {
+    const environment = new SandboxEnvironment(new Logger(), { credentials });
+    const registry = new AwsRegistry(environment);
+    const deployer = new LambdaFunction(
+      'Sandbox',
+      new LambdaImageService({
+        log: environment.log,
+        signal: environment.signal,
+        name: environment.name,
+        version: environment.version,
+        credentials,
+        rowdy: environment,
+      })
+    );
+
+    await expect(registry['ecr'].config.credentials()).resolves.toMatchObject(given);
+    await expect(deployer['lambda'].config.credentials()).resolves.toMatchObject(given);
+  });
+
+  it('go from create, get and list to the compute', async () => {
+    const seen: unknown[] = [];
+    jest.spyOn(MicrovmCompute.prototype, 'create').mockImplementation(function (this: MicrovmCompute) {
+      seen.push(this['environment'].credentials);
+      Object.assign(this, { imageArn: IMAGE });
+      return of(this);
+    });
+    jest.spyOn(MicrovmCompute.prototype, 'attach').mockImplementation(function (this: MicrovmCompute) {
+      seen.push(this['environment'].credentials);
+      Object.assign(this, { imageArn: IMAGE });
+      return of(this);
+    });
+    const list = jest.spyOn(MicrovmCompute, 'list').mockReturnValue(EMPTY);
+
+    await Sandbox.create({ runtime: 'aws.microvm', credentials });
+    await Sandbox.get({ sandboxId: IMAGE, credentials });
+    await Sandbox.list({ runtime: 'aws.microvm', credentials });
+
+    for (const replayed of seen as (() => Promise<unknown>)[]) {
+      await expect(replayed()).resolves.toEqual(given);
+    }
+    expect(seen).toHaveLength(2);
+    expect(list).toHaveBeenCalledWith(credentials);
+  });
+
+  it("stay undefined without them, for the AWS SDK's own chain", () => {
+    expect(new SandboxEnvironment(new Logger()).credentials).toBeUndefined();
   });
 });

@@ -1,6 +1,6 @@
 import type { ServerContext } from '@modelcontextprotocol/server';
 import { describe, expect, it, jest } from '@jest/globals';
-import type { SandboxPromise } from '../../../../src/sandbox';
+import type { SandboxFactory, SandboxPromise } from '../../../../src/sandbox';
 import { writeFile } from '../../../../src/sandbox/internal/mcp/write-file';
 
 const setup = () => {
@@ -9,9 +9,13 @@ const setup = () => {
   const tool = writeFile;
   const { signal } = new AbortController();
   const run = (input: Record<string, unknown> = {}) =>
-    tool.run(sandbox, tool.inputSchema.parse({ path: 'a.sh', content: 'echo hi', ...input }), {
-      mcpReq: { signal },
-    } as unknown as ServerContext);
+    tool.run(
+      { get: () => sandbox } as unknown as SandboxFactory,
+      tool.inputSchema.parse({ sandbox_id: 'sandbox-bcdf245678', path: 'a.sh', content: 'echo hi', ...input }),
+      {
+        mcpReq: { signal },
+      } as unknown as ServerContext
+    );
   return { tool, run, writeFiles, signal };
 };
 

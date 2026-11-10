@@ -5,6 +5,7 @@ import { ImageApi } from '../../api/image';
 import type { IApi, IImageApi } from '../../api/types';
 import type { Event } from '../../events';
 import type { Logger } from '../../log';
+import type { AwsSandboxOptions } from '..';
 import { authenticator } from '../../util/axios';
 
 /**
@@ -23,18 +24,25 @@ export class SandboxEnvironment implements IApi {
   readonly registry: string | undefined = undefined;
   /** Milliseconds between checks on AWS, or undefined for each check's own default. */
   readonly pollInterval: number | undefined;
+  /** What its AWS clients act as, or undefined for the AWS SDK's own chain. */
+  readonly credentials: AwsSandboxOptions['credentials'];
 
   constructor(
     public readonly log: Logger,
-    { signal, pollInterval }: { signal?: AbortSignal; pollInterval?: number } = {}
+    {
+      signal,
+      pollInterval,
+      credentials,
+    }: { signal?: AbortSignal; pollInterval?: number; credentials?: AwsSandboxOptions['credentials'] } = {}
   ) {
     this.pollInterval = pollInterval;
+    this.credentials = credentials;
     if (signal?.aborted) {
       this.abort.abort(signal.reason);
     }
     signal?.addEventListener('abort', () => this.abort.abort(signal.reason), { once: true });
 
-    const auth = authenticator(this.http, this.log);
+    const auth = authenticator(this.http, this.log, this.credentials);
     this.http.interceptors.request.use(...auth.request);
     this.http.interceptors.response.use(...auth.response);
 

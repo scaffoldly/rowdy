@@ -1,6 +1,6 @@
 import type { ServerContext } from '@modelcontextprotocol/server';
 import { describe, expect, it, jest } from '@jest/globals';
-import type { ReadFile, SandboxPromise } from '../../../../src/sandbox';
+import type { ReadFile, SandboxFactory, SandboxPromise } from '../../../../src/sandbox';
 import { readFile } from '../../../../src/sandbox/internal/mcp/read-file';
 
 const setup = (file: Buffer | null = Buffer.from('hello')) => {
@@ -13,9 +13,13 @@ const setup = (file: Buffer | null = Buffer.from('hello')) => {
   const tool = readFile;
   const { signal } = new AbortController();
   const run = (input: Record<string, unknown> = {}) =>
-    tool.run(sandbox, tool.inputSchema.parse({ path: 'a.txt', ...input }), {
-      mcpReq: { signal },
-    } as unknown as ServerContext);
+    tool.run(
+      { get: () => sandbox } as unknown as SandboxFactory,
+      tool.inputSchema.parse({ sandbox_id: 'sandbox-bcdf245678', path: 'a.txt', ...input }),
+      {
+        mcpReq: { signal },
+      } as unknown as ServerContext
+    );
   return { tool, run, readFileToBuffer, signal };
 };
 

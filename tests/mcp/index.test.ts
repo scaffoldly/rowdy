@@ -3,23 +3,24 @@ import type { SandboxFactory, ServerContext } from '@scaffoldly/rowdy/sandbox';
 import * as mcp from '@scaffoldly/rowdy/mcp';
 
 describe('tools', () => {
-  it('has the tools a server starts with', () => {
-    expect(Object.keys(mcp.tools.factory)).toEqual(['create_sandbox', 'get_sandbox', 'list_sandboxes', 'stop_sandbox']);
-  });
-
-  it('has the tools each sandbox gets', () => {
-    expect(Object.keys(mcp.tools.lazy)).toEqual([
+  it('has every tool, keyed by its own name', () => {
+    expect(Object.keys(mcp.tools)).toEqual([
+      'create_sandbox',
+      'get_sandbox',
+      'list_sandboxes',
+      'stop_sandbox',
       'run_command',
       'read_output',
       'read_file',
       'write_file',
       'make_directory',
     ]);
+    Object.entries(mcp.tools).forEach(([key, { name }]) => expect(key).toBe(name));
   });
 
-  it('keys each tool by its own name', () => {
-    [mcp.tools.factory, mcp.tools.lazy].forEach((group) =>
-      Object.entries(group).forEach(([key, { name }]) => expect(key).toBe(name))
+  it('takes the sandbox_id of the sandbox each acts on', () => {
+    (['stop_sandbox', 'run_command', 'read_output', 'read_file', 'write_file', 'make_directory'] as const).forEach(
+      (name) => expect(mcp.tools[name].inputSchema.shape).toHaveProperty('sandbox_id')
     );
   });
 });
@@ -42,21 +43,24 @@ describe('registerTools', () => {
   it("registers every sandbox with the context's meta, on its runtimes", async () => {
     const { list, get, registerTool, factory } = setup();
     const meta = { sub: 'github:1' };
+    const credentials = async () => ({ accessKeyId: 'AKIAEXAMPLE', secretAccessKey: 'secret' });
 
     const names = await mcp.registerTools(factory, {
       server: { registerTool },
       meta,
       pollInterval: 15000,
+      credentials,
       limits: { runtimes: ['aws.microvm'] },
     } as unknown as ServerContext);
 
     expect(names).toEqual(['run_command_bcdf2']);
-    expect(list.mock.calls).toEqual([[{ runtime: 'aws.microvm', meta, signal: undefined }]]);
+    expect(list.mock.calls).toEqual([[{ runtime: 'aws.microvm', meta, credentials, signal: undefined }]]);
     expect(get).toHaveBeenCalledWith({
       sandboxId: 'arn:aws:lambda:us-east-1:123456789012:microvm-image:a-bcdf2',
       meta,
       logLevel: undefined,
       pollInterval: 15000,
+      credentials,
       signal: undefined,
     });
     expect(registerTool.mock.calls.map(([name]) => name)).toEqual(['run_command_bcdf2']);

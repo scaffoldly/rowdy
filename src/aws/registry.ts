@@ -8,16 +8,21 @@ import {
 } from '@aws-sdk/client-ecr';
 import { GetCallerIdentityCommand, STSClient } from '@aws-sdk/client-sts';
 import type { Environment } from '../environment';
+import type { AwsSandboxOptions } from '../sandbox';
 import { log, Logger } from '../log';
 import { AwsClientLogger } from './logger';
 
 const ECR_REGISTRY_REGEX = /\.dkr\.ecr\.[a-z0-9-]+\.amazonaws\.com?$/;
 
 export class AwsRegistry extends AwsClientLogger implements IRegistryApi {
-  private ecr: ECRClient = this.track(new ECRClient({ logger: this }));
-  private sts: STSClient = this.track(new STSClient({ logger: this }));
+  private ecr: ECRClient = this.track(new ECRClient({ logger: this, credentials: this.enviornment?.credentials }));
+  private sts: STSClient = this.track(new STSClient({ logger: this, credentials: this.enviornment?.credentials }));
 
-  constructor(private enviornment?: Pick<Environment, 'log' | 'event$' | 'registry'>) {
+  constructor(
+    private enviornment?: Pick<Environment, 'log' | 'event$' | 'registry'> & {
+      credentials?: AwsSandboxOptions['credentials'];
+    }
+  ) {
     super();
     if (enviornment) {
       this.events().subscribe(enviornment.event$);

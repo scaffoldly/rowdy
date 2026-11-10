@@ -1,10 +1,11 @@
 import { z } from 'zod';
-import type { SandboxPromise } from '../..';
+import type { SandboxFactory } from '../..';
 import { describeError } from '../../../aws/errors';
 import { safeTool, toolResult } from '../../../mcp/internal/tool';
 import type { Tool } from '../../../mcp/internal/types';
 
 const inputSchema = z.object({
+  sandbox_id: z.string().describe('From create_sandbox, get_sandbox or list_sandboxes.'),
   cmd_id: z.string().describe('From run_command.'),
   cursor: z.string().optional().describe('Where the last read stopped. Leave it out to start at the beginning.'),
   stream: z.enum(['stdout', 'stderr']).optional().describe('Return only stdout or stderr. Defaults to both.'),
@@ -23,7 +24,7 @@ const outputSchema = z.object({
   dropped: z.boolean().describe('Whether output was lost because the command printed more than its log keeps.'),
 });
 
-export const readOutput: Tool<SandboxPromise, typeof inputSchema, typeof outputSchema> = safeTool(
+export const readOutput: Tool<SandboxFactory, typeof inputSchema, typeof outputSchema> = safeTool(
   {
     name: 'read_output',
     title: 'Read output',
@@ -34,8 +35,9 @@ export const readOutput: Tool<SandboxPromise, typeof inputSchema, typeof outputS
     inputSchema,
     outputSchema,
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
-    async run(sandbox, { cmd_id: cmdId, cursor, stream, timeout_ms: timeout }, ctx) {
-      const found = await sandbox;
+    async run(factory, { sandbox_id: sandboxId, cmd_id: cmdId, cursor, stream, timeout_ms: timeout }, ctx) {
+      const { meta, logLevel, pollInterval, credentials, signal } = ctx;
+      const found = await factory.get({ sandboxId, meta, logLevel, pollInterval, credentials, signal });
       const {
         text,
         cursor: next,

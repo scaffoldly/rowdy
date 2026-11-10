@@ -17,7 +17,7 @@ import {
 } from 'rxjs';
 import { Writable } from 'stream';
 import { z } from 'zod';
-import type { SandboxPromise } from '../..';
+import type { SandboxFactory } from '../..';
 import { SandboxError } from '../compute';
 import { describeError } from '../../../aws/errors';
 import { safeTool, toolResult } from '../../../mcp/internal/tool';
@@ -31,6 +31,7 @@ export const OUTPUT = { limit: 64 * 1024 };
 export const WAIT = { timeout: 30_000 };
 
 const inputSchema = z.object({
+  sandbox_id: z.string().describe('From create_sandbox, get_sandbox or list_sandboxes.'),
   cmd: z.string().describe('The program. There is no shell: use sh -c for pipes or redirects.'),
   args: z.array(z.string()).optional().describe('Its arguments.'),
   cwd: z.string().optional().describe('The working directory.'),
@@ -53,20 +54,21 @@ const outputSchema = z.object({
   total_bytes: z.number().describe('The output size before any cut.'),
 });
 
-export const runCommand: Tool<SandboxPromise, typeof inputSchema, typeof outputSchema> = safeTool(
+export const runCommand: Tool<SandboxFactory, typeof inputSchema, typeof outputSchema> = safeTool(
   {
     name: 'run_command',
     title: 'Run command',
     description:
-      'Runs a command in this sandbox and returns its exit code and output, stdout and stderr merged unless ' +
-      "stream picks one. Over 64 KiB, text keeps the end and truncated is set: this sandbox's read_output has " +
+      'Runs a command in the sandbox and returns its exit code and output, stdout and stderr merged unless ' +
+      'stream picks one. Over 64 KiB, text keeps the end and truncated is set: read_output has ' +
       'the rest. On aws.microvm, a command still running at timeout_ms keeps running and returns timed_out: ' +
       'follow it with read_output.',
     inputSchema,
     outputSchema,
     annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
-    async run(sandbox, { cmd, args, cwd, env, stream, timeout_ms: timeout }, ctx) {
-      const found = await sandbox;
+    async run(factory, { sandbox_id: sandboxId, cmd, args, cwd, env, stream, timeout_ms: timeout }, ctx) {
+      const { meta, logLevel, pollInterval, credentials, signal } = ctx;
+      const found = await factory.get({ sandboxId, meta, logLevel, pollInterval, credentials, signal });
       // Only a microVM's command can run on without its caller.
       const detachable = found.sandboxId.includes(':microvm-image:');
       if (timeout !== undefined && !detachable) {
@@ -152,7 +154,7 @@ export const runCommand: Tool<SandboxPromise, typeof inputSchema, typeof outputS
       if (result.structuredContent.timed_out) {
         result.content.push({
           type: 'text',
-          text: "Still running. Call this sandbox's read_output with this cmd_id and timeout_ms to follow it from the start.",
+          text: 'Still running. Call read_output with this cmd_id and timeout_ms to follow it from the start.',
         });
       }
 
@@ -160,7 +162,7 @@ export const runCommand: Tool<SandboxPromise, typeof inputSchema, typeof outputS
         const kept = `${OUTPUT.limit / 1024} KiB of ${totalBytes} bytes`;
         result.content.push({
           type: 'text',
-          text: `Output cut: showing the last ${kept}. Call this sandbox's read_output with this cmd_id to read from the start.`,
+          text: `Output cut: showing the last ${kept}. Call read_output with this cmd_id to read from the start.`,
         });
       }
 

@@ -12,6 +12,7 @@ It needs Node 20 or later.
 | Import                      | What it does                                             | Docs                             |
 | --------------------------- | -------------------------------------------------------- | -------------------------------- |
 | `@scaffoldly/rowdy/sandbox` | Runs commands in a container on AWS, from your own code. | [sdk/sandbox.md](sdk/sandbox.md) |
+| `@scaffoldly/rowdy/mcp`     | The sandbox's tools, for a host's own MCP server.        | [sdk/mcp.md](sdk/mcp.md)         |
 
 ## AWS credentials
 
@@ -21,6 +22,26 @@ credentials, and creates what it needs in that account and region.
 
 For what those credentials need for `aws.microvm`, and a permissions boundary that keeps them from acting
 as an administrator, see [sdk/iam.md](sdk/iam.md).
+
+Credentials of your own, like a caller's from `AssumeRoleWithWebIdentity`, go in the `credentials`
+option of `Sandbox.create`, `Sandbox.get` and `Sandbox.list`. It takes the same credential providers
+as the AWS SDK, so `fromWebToken` and its siblings from `@aws-sdk/credential-providers` work as they are:
+
+```ts
+import { fromWebToken } from '@aws-sdk/credential-providers';
+import { Sandbox } from '@scaffoldly/rowdy/sandbox';
+
+const credentials = fromWebToken({ roleArn, webIdentityToken: token, roleSessionName: 'caller' });
+const sandbox = await Sandbox.create({ image: 'node:24', credentials });
+```
+
+- They reach every AWS client that sandbox uses. That covers the image copy, the build, starting the VM,
+  and reading command output, and nothing else in the process.
+- They're asked for once, when the sandbox is made, and that sandbox's clients all share the result.
+  Halfway to their `expiration`, the next client to need them asks again, once for all of them. A failed
+  ask fails only the clients waiting on it, and the next one tries again.
+- They never reach the sandbox: not its `env`, and not a command's.
+- Left out, the AWS SDK's own chain applies, as above. Region still comes from that chain either way.
 
 ## Logging
 

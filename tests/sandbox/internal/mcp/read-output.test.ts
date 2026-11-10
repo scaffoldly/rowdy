@@ -1,6 +1,6 @@
 import type { ServerContext } from '@modelcontextprotocol/server';
 import { describe, expect, it, jest } from '@jest/globals';
-import type { SandboxPromise } from '../../../../src/sandbox';
+import type { SandboxFactory, SandboxPromise } from '../../../../src/sandbox';
 import { readOutput } from '../../../../src/sandbox/internal/mcp/read-output';
 
 const setup = () => {
@@ -14,9 +14,13 @@ const setup = () => {
   const tool = readOutput;
   const { signal } = new AbortController();
   const run = (input: Record<string, unknown> = {}) =>
-    tool.run(sandbox, tool.inputSchema.parse({ cmd_id: 'cmd', ...input }), {
-      mcpReq: { signal },
-    } as unknown as ServerContext);
+    tool.run(
+      { get: () => sandbox } as unknown as SandboxFactory,
+      tool.inputSchema.parse({ sandbox_id: 'sandbox-bcdf245678', cmd_id: 'cmd', ...input }),
+      {
+        mcpReq: { signal },
+      } as unknown as ServerContext
+    );
   return { tool, run, output, signal };
 };
 

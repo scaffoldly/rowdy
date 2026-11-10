@@ -5,6 +5,7 @@ import type { Event, EventCallback } from '../events';
 import type { Level } from '../log';
 import type { BoundTool, ServerContext, Tool } from '../mcp/internal/types';
 import type { MICROVM_MEMORY } from './internal/compute';
+import type { AwsCredentials } from '../aws/credentials';
 import { SandboxImpl } from './internal/sandbox';
 
 interface BaseSandboxOptions {
@@ -35,7 +36,16 @@ interface BaseSandboxOptions {
   onEvent?: EventCallback | PromiseLike<EventCallback>;
 }
 
-export interface LambdaSandboxOptions extends BaseSandboxOptions {
+export interface AwsSandboxOptions {
+  /**
+   * What the sandbox's AWS clients act as, such as `fromWebToken(...)` from `@aws-sdk/credential-providers`. Asked for
+   * once, when the sandbox is made, shared by all of them, and again halfway to their `expiration`. Defaults to the
+   * AWS SDK's own chain.
+   */
+  credentials?: () => Promise<AwsCredentials>;
+}
+
+export interface LambdaSandboxOptions extends BaseSandboxOptions, AwsSandboxOptions {
   /** Where the sandbox runs. */
   runtime: 'aws.lambda';
   /** Milliseconds until the sandbox stops: whole seconds, 1000 to 900000. */
@@ -49,7 +59,7 @@ export interface LambdaSandboxOptions extends BaseSandboxOptions {
   env?: Record<string, string>;
 }
 
-export interface MicrovmSandboxOptions extends BaseSandboxOptions {
+export interface MicrovmSandboxOptions extends BaseSandboxOptions, AwsSandboxOptions {
   /** Where the sandbox runs. Defaults to `aws.microvm`. */
   runtime?: 'aws.microvm';
   /** Milliseconds until the sandbox stops: whole seconds, 1000 to 28800000. */
@@ -63,6 +73,7 @@ export interface MicrovmSandboxOptions extends BaseSandboxOptions {
 export type SandboxOptions = LambdaSandboxOptions | MicrovmSandboxOptions;
 
 export type { Event, EventCallback } from '../events';
+export type { AwsCredentials } from '../aws/credentials';
 
 export interface SandboxToolsLimits {
   /** The most memory a sandbox can have, in megabytes. */
@@ -73,7 +84,8 @@ export interface SandboxToolsLimits {
   runtimes?: NonNullable<SandboxOptions['runtime']>[];
 }
 
-export interface SandboxToolsOptions extends Pick<SandboxOptions, 'logLevel' | 'meta' | 'layersFrom' | 'pollInterval'> {
+export interface SandboxToolsOptions
+  extends Pick<SandboxOptions, 'logLevel' | 'meta' | 'layersFrom' | 'pollInterval' | 'credentials'> {
   /** What a model can ask for. */
   limits?: SandboxToolsLimits;
 }
@@ -95,7 +107,7 @@ export interface SandboxSummary {
   meta: Record<string, string>;
 }
 
-export interface SandboxListOptions {
+export interface SandboxListOptions extends AwsSandboxOptions {
   /** Only sandboxes on this runtime. Defaults to every runtime. */
   runtime?: NonNullable<SandboxOptions['runtime']>;
   /** Only sandboxes whose `meta` has every one of these. */
@@ -103,7 +115,7 @@ export interface SandboxListOptions {
   signal?: AbortSignal;
 }
 
-export interface SandboxLookup extends Pick<SandboxOptions, 'logLevel' | 'pollInterval'> {
+export interface SandboxLookup extends Pick<SandboxOptions, 'logLevel' | 'pollInterval' | 'credentials'> {
   sandboxId: string;
   /** Refuses a sandbox whose `meta` doesn't have every one of these. */
   meta?: Record<string, string>;

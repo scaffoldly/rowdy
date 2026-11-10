@@ -4,6 +4,7 @@ import { Logger } from '../../log';
 import { fromEvent, lastValueFrom, takeUntil } from 'rxjs';
 import type { Rowdy } from '../../api';
 import type { Environment } from '../../environment';
+import type { AwsSandboxOptions } from '../../sandbox';
 import { PullImageOptions, TPulledImage } from '../../api/types';
 
 // eslint-disable-next-line @typescript-eslint/no-empty-object-type
@@ -15,11 +16,19 @@ export class LambdaImageService implements ILambdaImageService {
   private _pulledImages: Map<string, TPulledImage> = new Map();
 
   constructor(
-    private environment: Pick<Environment, 'log' | 'signal' | 'name' | 'version'> & { rowdy: Pick<Rowdy, 'images'> }
+    private environment: Pick<Environment, 'log' | 'signal' | 'name' | 'version'> & {
+      rowdy: Pick<Rowdy, 'images'>;
+      credentials?: AwsSandboxOptions['credentials'];
+    }
   ) {}
 
   get log(): Logger {
     return this.environment.log.child('image');
+  }
+
+  /** What its AWS clients act as, or undefined for the AWS SDK's own chain. */
+  get credentials(): AwsSandboxOptions['credentials'] {
+    return this.environment.credentials;
   }
 
   get signal(): AbortSignal {

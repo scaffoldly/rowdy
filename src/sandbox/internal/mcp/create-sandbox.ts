@@ -30,7 +30,7 @@ export const REGISTERED = new WeakMap<Pick<McpServer, 'registerTool'>, Map<strin
 export const registerSandbox = (
   sandbox: Pick<Sandbox, 'tools'>,
   sandboxId: string,
-  { server, signal, meta, limits, logLevel, pollInterval, changed }: ServerContext
+  { server, signal, meta, limits, logLevel, pollInterval, credentials, changed }: ServerContext
 ): string[] => {
   if (!server) return [];
   // Named with the sandbox's suffix, so two sandboxes' tools don't clash.
@@ -43,7 +43,7 @@ export const registerSandbox = (
 
   const sandboxTools = tools.map(({ name, run, ...config }) =>
     server.registerTool(`${name}_${suffix}`, config, (args, extra) =>
-      run(args, { ...extra, server, signal, meta, limits, logLevel, pollInterval, changed })
+      run(args, { ...extra, server, signal, meta, limits, logLevel, pollInterval, credentials, changed })
     )
   );
   onServer.set(sandboxId, sandboxTools);
@@ -70,14 +70,16 @@ export const registerTools = async (
   factory: Pick<SandboxFactory, 'list' | 'get'>,
   ctx: ServerContext
 ): Promise<string[]> => {
-  const { server, meta, limits, logLevel, pollInterval, signal } = ctx;
+  const { server, meta, limits, logLevel, pollInterval, credentials, signal } = ctx;
   if (!server) return [];
   // Only the runtimes the host allows are listed, so a host needs no permission to list the others.
   const sandboxes = (
-    await Promise.all((limits?.runtimes ?? [undefined]).map((runtime) => factory.list({ runtime, meta, signal })))
+    await Promise.all(
+      (limits?.runtimes ?? [undefined]).map((runtime) => factory.list({ runtime, meta, credentials, signal }))
+    )
   ).flat();
   return sandboxes.flatMap(({ sandboxId }) =>
-    registerSandbox(factory.get({ sandboxId, meta, logLevel, pollInterval, signal }), sandboxId, ctx)
+    registerSandbox(factory.get({ sandboxId, meta, logLevel, pollInterval, credentials, signal }), sandboxId, ctx)
   );
 };
 
@@ -110,7 +112,7 @@ const inputSchema = z.object({
 });
 
 const outputSchema = z.object({
-  sandbox_id: z.string().describe('Pass to get_sandbox or stop_sandbox. Its own tools need none.'),
+  sandbox_id: z.string().describe('Pass to the tools that take one. Its own tools need none.'),
 });
 
 export const createSandbox: Tool<SandboxFactory, typeof inputSchema, typeof outputSchema> = safeTool(
@@ -124,7 +126,7 @@ export const createSandbox: Tool<SandboxFactory, typeof inputSchema, typeof outp
     outputSchema,
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: true },
     async run(factory, input, ctx) {
-      const { meta, layersFrom, limits, logLevel, pollInterval, signal } = ctx;
+      const { meta, layersFrom, limits, logLevel, pollInterval, credentials, signal } = ctx;
       const runtime = input.runtime ?? limits?.runtimes?.[0];
       // An omitted value must not pass a cap below its default.
       const timeout = input.timeout ?? (limits?.timeout && Math.min(limits.timeout, DEFAULTS.timeout));
@@ -149,6 +151,7 @@ export const createSandbox: Tool<SandboxFactory, typeof inputSchema, typeof outp
         layersFrom,
         logLevel,
         pollInterval,
+        credentials,
         signal,
       } as SandboxOptions);
 

@@ -14,7 +14,6 @@ import type {
   SandboxLookup,
   SandboxFactory,
   SandboxOptions,
-  SandboxPromise,
   SandboxSummary,
   Tool,
   Event,
@@ -70,6 +69,7 @@ import { writeFile } from './mcp/write-file';
 import { stopSandbox } from './mcp/stop-sandbox';
 import { DEFAULTS, SandboxCompute, SandboxComputeClass } from './compute';
 import { SandboxPromiseImpl } from './create';
+import { Credentials } from '../../aws/credentials';
 
 // Kubernetes' alphabet for generated names: no vowels, so a name spells no words.
 const ALPHANUMS = 'bcdfghjklmnpqrstvwxz2456789';
@@ -88,13 +88,15 @@ const RUNTIMES: Record<NonNullable<SandboxOptions['runtime']>, SandboxComputeCla
 export class SandboxImpl implements Sandbox {
   private environment: SandboxEnvironment;
   private compute: SandboxCompute;
+  private credential$?: Credentials;
 
   private constructor({
     runtime,
     logLevel,
     pollInterval,
+    credentials,
     signal,
-  }: Pick<SandboxOptions, 'runtime' | 'logLevel' | 'pollInterval' | 'signal'>) {
+  }: Pick<SandboxOptions, 'runtime' | 'logLevel' | 'pollInterval' | 'credentials' | 'signal'>) {
     // A host's stdout is its own. Its terminal stays quiet unless logLevel, ROWDY_LOG_LEVEL, ROWDY_DEBUG or ROWDY_TRACE
     // says otherwise.
     const log = new Logger('sandbox').withSink('stderr');
@@ -103,7 +105,8 @@ export class SandboxImpl implements Sandbox {
     } else if (!process.env.ROWDY_LOG_LEVEL && log.level === 'info') {
       log.withLevel('warn');
     }
-    this.environment = new SandboxEnvironment(log, { signal, pollInterval });
+    this.credential$ = credentials && new Credentials(credentials);
+    this.environment = new SandboxEnvironment(log, { signal, pollInterval, credentials: this.credential$?.provider });
 
     this.compute = new RUNTIMES[runtime ?? 'aws.microvm'](this.environment);
   }
@@ -114,6 +117,7 @@ export class SandboxImpl implements Sandbox {
       runtime,
       logLevel: options?.logLevel,
       pollInterval: options?.pollInterval,
+      credentials: options?.credentials,
       signal: options?.signal,
     });
     const { signal } = sandbox.environment;
@@ -203,9 +207,16 @@ export class SandboxImpl implements Sandbox {
     );
   }
 
-  static get({ sandboxId, logLevel, pollInterval, signal: abort, meta }: SandboxLookup): SandboxPromiseImpl {
+  static get({
+    sandboxId,
+    logLevel,
+    pollInterval,
+    credentials,
+    signal: abort,
+    meta,
+  }: SandboxLookup): SandboxPromiseImpl {
     const runtime = sandboxId.includes(':microvm-image:') ? 'aws.microvm' : 'aws.lambda';
-    const sandbox = new SandboxImpl({ runtime, logLevel, pollInterval, signal: abort });
+    const sandbox = new SandboxImpl({ runtime, logLevel, pollInterval, credentials, signal: abort });
     const { signal } = sandbox.environment;
 
     const attached = lastValueFrom(
@@ -228,7 +239,7 @@ export class SandboxImpl implements Sandbox {
     );
   }
 
-  static list({ runtime, meta = {}, signal }: SandboxListOptions = {}): Promise<SandboxSummary[]> {
+  static list({ runtime, meta = {}, credentials, signal }: SandboxListOptions = {}): Promise<SandboxSummary[]> {
     // A host's stdout is its own.
     new Logger('sandbox').withSink('stderr');
     const runtimes = runtime ? [runtime] : (Object.keys(RUNTIMES) as (keyof typeof RUNTIMES)[]);
@@ -240,8 +251,11 @@ export class SandboxImpl implements Sandbox {
               switchMap(() => throwError(() => signal.reason))
             )
           : NEVER,
-        merge(...runtimes.map((each) => RUNTIMES[each].list())).pipe(
-          filter((found) => Object.entries(meta).every(([key, value]) => found.meta[key] === value)),
+        merge(...runtimes.map((each) => RUNTIMES[each].list(credentials))).pipe(
+          // A value that isn't a string, like an undefined one, matches no sandbox.
+          filter((found) =>
+            Object.entries(meta).every(([key, value]) => typeof value === 'string' && found.meta[key] === value)
+          ),
           toArray()
         )
       )
@@ -257,10 +271,11 @@ export class SandboxImpl implements Sandbox {
   tools(found: SandboxPromiseImpl = new SandboxPromiseImpl(Promise.resolve(this), this)): BoundTool[] {
     // Files are aws.microvm only.
     const microvm = this.compute instanceof MicrovmCompute;
-    const tools: Tool<SandboxPromise>[] = [
+    const tools: Tool<SandboxFactory>[] = [
       runCommand,
       readOutput,
       ...(microvm ? [readFile, writeFile, makeDirectory] : []),
+      ...(this.compute.stoppable ? [stopSandbox] : []),
     ];
     // Every lookup is this sandbox, and the sandbox_id is this one's, so a model can't name another.
     const sandboxes: SandboxFactory = {
@@ -268,26 +283,22 @@ export class SandboxImpl implements Sandbox {
       get: () => found,
       list: (options) => SandboxImpl.list(options),
     };
-    const stops: Tool<SandboxFactory>[] = this.compute.stoppable ? [stopSandbox] : [];
 
-    return [
-      ...tools.map(({ run, ...tool }): BoundTool => ({ ...tool, run: (input, ctx) => run(found, input, ctx) })),
-      // Waiting for the sandbox_id is the wait for the sandbox, and a failed build is this call's error.
-      ...stops.map((tool): BoundTool => {
-        const { run } = safeTool(
-          {
-            ...tool,
-            run: async (sdk, input, ctx) => tool.run(sdk, { ...input, sandbox_id: (await found).sandboxId }, ctx),
-          } satisfies Tool<SandboxFactory>,
-          describeError
-        );
-        return {
+    // Waiting for the sandbox_id is the wait for the sandbox, and a failed build is this call's error.
+    return tools.map((tool): BoundTool => {
+      const { run } = safeTool(
+        {
           ...tool,
-          inputSchema: tool.inputSchema.omit({ sandbox_id: true }),
-          run: (input, ctx) => run(sandboxes, input, ctx),
-        };
-      }),
-    ];
+          run: async (sdk, input, ctx) => tool.run(sdk, { ...input, sandbox_id: (await found).sandboxId }, ctx),
+        } satisfies Tool<SandboxFactory>,
+        describeError
+      );
+      return {
+        ...tool,
+        inputSchema: tool.inputSchema.omit({ sandbox_id: true }),
+        run: (input, ctx) => run(sandboxes, input, ctx),
+      };
+    });
   }
 
   runCommand(cmd: string, args?: string[], options?: RunCommandOptions): Promise<CommandFinished>;

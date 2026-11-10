@@ -17,7 +17,7 @@ import {
 import { ROWDY_LAYERS } from '../../api/internal/layers';
 import { Exec, ExecOutput, ExecOutputOptions } from '../../api/types';
 import type { Event } from '../../events';
-import type { SandboxSummary } from '../../sandbox';
+import type { AwsSandboxOptions, SandboxSummary } from '../../sandbox';
 import type { ExecSchema } from '../../routes';
 import { ComputeSpec, SandboxCompute, SandboxError } from '../../sandbox/internal/compute';
 import { META_TAG, TAG_KEY_REGEX, TAG_VALUE_REGEX } from '../tags';
@@ -45,14 +45,14 @@ export class LambdaCompute implements SandboxCompute {
       throw new RangeError(`memory must be whole MB from 128 to 10240, got ${memory}`);
     }
     Object.entries(meta).forEach(([key, value]) => {
-      if (!TAG_KEY_REGEX.test(`${META_TAG}${key}`) || !TAG_VALUE_REGEX.test(value)) {
+      if (typeof value !== 'string' || !TAG_KEY_REGEX.test(`${META_TAG}${key}`) || !TAG_VALUE_REGEX.test(value)) {
         throw new RangeError(`meta must be what AWS takes in a tag, got ${key}=${value}`);
       }
     });
   }
 
-  static list(): Observable<SandboxSummary> {
-    const lambda = new LambdaClient({});
+  static list(credentials?: AwsSandboxOptions['credentials']): Observable<SandboxSummary> {
+    const lambda = new LambdaClient({ credentials });
     return from(paginateListFunctions({ client: lambda }, {})).pipe(
       concatMap(({ Functions = [] }) => Functions),
       // Only a function deployed as a sandbox runs commands.
@@ -85,14 +85,19 @@ export class LambdaCompute implements SandboxCompute {
   private lambda$: Observable<LambdaFunction>;
   private lambda?: LambdaFunction;
 
+  private credentials: AwsSandboxOptions['credentials'];
+
   constructor(environment: SandboxEnvironment) {
-    const { log, signal, name, version } = environment;
+    const { log, signal, name, version, credentials } = environment;
+    this.credentials = credentials;
     this.lambda$ = defer(() => Promise.all([import('./index'), import('./image')])).pipe(
       map(
         ([{ LambdaFunction }, { LambdaImageService }]) =>
           new LambdaFunction(
             'Sandbox',
-            new LambdaImageService({ log, signal, name, version, rowdy: environment }).withLayersFrom([ROWDY_LAYERS])
+            new LambdaImageService({ log, signal, name, version, credentials, rowdy: environment }).withLayersFrom([
+              ROWDY_LAYERS,
+            ])
           )
       ),
       tap((lambda) => (this.lambda = lambda)),
@@ -133,7 +138,10 @@ export class LambdaCompute implements SandboxCompute {
       switchMap((lambda) => lambda.withArn(sandboxId)),
       map((lambda) => {
         const { Configuration, Tags } = lambda.Status;
-        const matches = Object.entries(meta).every(([key, value]) => Tags?.[`${META_TAG}${key}`] === value);
+        // A value that isn't a string, like an undefined one, matches no sandbox.
+        const matches = Object.entries(meta).every(
+          ([key, value]) => typeof value === 'string' && Tags?.[`${META_TAG}${key}`] === value
+        );
         // Exec is refused on any other function, so a handle to one could never run a command.
         if (Configuration?.Environment?.Variables?.ROWDY_SANDBOX !== 'true' || !matches) {
           throw new SandboxError(`Not a sandbox: ${sandboxId}`);
@@ -155,7 +163,7 @@ export class LambdaCompute implements SandboxCompute {
       switchMap((lambda) => {
         const [, , , region, account] = this.sandboxId.split(':');
         const logGroup = lambda.Status.Configuration?.LoggingConfig?.LogGroup;
-        return execOutput(`arn:aws:logs:${region}:${account}:log-group:${logGroup}`, cmdId, options);
+        return execOutput(`arn:aws:logs:${region}:${account}:log-group:${logGroup}`, cmdId, options, this.credentials);
       })
     );
   }
