@@ -14,7 +14,7 @@ export interface AwsCredentials {
  * from when they came to their `expiration`. Then the next client's ask gets new ones, which replay in turn. One ask
  * runs at a time, and a failed one reaches only the clients waiting on it: the next ask tries again.
  */
-export class CredentialsReplay extends ReplaySubject<AwsCredentials> {
+export class Credentials extends ReplaySubject<AwsCredentials> {
   private last?: AwsCredentials;
   // When `last` is half spent: halfway from when it came to its expiration.
   private halfLife = Infinity;

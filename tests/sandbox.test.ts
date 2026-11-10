@@ -36,7 +36,7 @@ import { LambdaFunction } from '../src/aws/lambda/index';
 import { MicrovmCompute } from '../src/aws/microvm/compute';
 import { LambdaImageService } from '../src/aws/lambda/image';
 import { SandboxEnvironment } from '../src/sandbox/internal/environment';
-import { CredentialsReplay } from '../src/aws/credentials';
+import { Credentials } from '../src/aws/credentials';
 import { LambdaMicrovmsClient } from '@aws-sdk/client-lambda-microvms';
 import { Exec, ExecFinished, ExecFrame } from '../src/api/types';
 import { execOf } from '../src/aws/exec';
@@ -2179,7 +2179,7 @@ describe('credentials', () => {
 
   it('fail only the clients waiting on a failed ask, and the next ask tries again', async () => {
     const flaky = jest.fn(async () => given).mockRejectedValueOnce(new Error('no token'));
-    const replay = new CredentialsReplay(flaky);
+    const replay = new Credentials(flaky);
 
     await expect(Promise.all([replay.provider(), replay.provider()])).rejects.toThrow('no token');
     await expect(replay.provider()).resolves.toEqual(given);
@@ -2190,7 +2190,7 @@ describe('credentials', () => {
     const start = Date.now();
     const now = jest.spyOn(Date, 'now').mockReturnValue(start);
     const hour = jest.fn(async () => ({ ...given, expiration: new Date(start + 3_600_000) }));
-    const replay = new CredentialsReplay(hour);
+    const replay = new Credentials(hour);
     await replay.provider();
 
     now.mockReturnValue(start + 1_799_000);
@@ -2203,7 +2203,7 @@ describe('credentials', () => {
   });
 
   it('emit each set they get', async () => {
-    const replay = new CredentialsReplay(async () => given);
+    const replay = new Credentials(async () => given);
     const seen: unknown[] = [];
     replay.subscribe((each) => seen.push(each));
 

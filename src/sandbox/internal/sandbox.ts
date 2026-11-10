@@ -70,7 +70,7 @@ import { writeFile } from './mcp/write-file';
 import { stopSandbox } from './mcp/stop-sandbox';
 import { DEFAULTS, SandboxCompute, SandboxComputeClass } from './compute';
 import { SandboxPromiseImpl } from './create';
-import { CredentialsReplay } from '../../aws/credentials';
+import { Credentials } from '../../aws/credentials';
 
 // Kubernetes' alphabet for generated names: no vowels, so a name spells no words.
 const ALPHANUMS = 'bcdfghjklmnpqrstvwxz2456789';
@@ -89,7 +89,7 @@ const RUNTIMES: Record<NonNullable<SandboxOptions['runtime']>, SandboxComputeCla
 export class SandboxImpl implements Sandbox {
   private environment: SandboxEnvironment;
   private compute: SandboxCompute;
-  private credential$?: CredentialsReplay;
+  private credential$?: Credentials;
 
   private constructor({
     runtime,
@@ -106,7 +106,7 @@ export class SandboxImpl implements Sandbox {
     } else if (!process.env.ROWDY_LOG_LEVEL && log.level === 'info') {
       log.withLevel('warn');
     }
-    this.credential$ = credentials && new CredentialsReplay(credentials);
+    this.credential$ = credentials && new Credentials(credentials);
     this.environment = new SandboxEnvironment(log, { signal, pollInterval, credentials: this.credential$?.provider });
 
     this.compute = new RUNTIMES[runtime ?? 'aws.microvm'](this.environment);
