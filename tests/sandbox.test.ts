@@ -1451,7 +1451,7 @@ describe('sandbox', () => {
     });
 
     // What a host serves first, each run with the SDK's factory.
-    const factoryTools: Tool<SandboxFactory>[] = Object.values(mcp.tools.factory);
+    const factoryTools: Tool<SandboxFactory>[] = Object.values(mcp.tools);
     const hostTool = (name: string) => factoryTools.find((each) => each.name === name)!;
 
     describe('registered on a server as they arrive', () => {

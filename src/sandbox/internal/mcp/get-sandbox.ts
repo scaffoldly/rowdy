@@ -11,7 +11,7 @@ const inputSchema = z.object({
 });
 
 const outputSchema = z.object({
-  sandbox_id: z.string().describe('Pass to stop_sandbox. Its own tools need none.'),
+  sandbox_id: z.string().describe('Pass to the tools that take one. Its own tools need none.'),
 });
 
 export const getSandbox: Tool<SandboxFactory, typeof inputSchema, typeof outputSchema> = safeTool(

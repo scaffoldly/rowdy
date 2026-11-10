@@ -3,23 +3,24 @@ import type { SandboxFactory, ServerContext } from '@scaffoldly/rowdy/sandbox';
 import * as mcp from '@scaffoldly/rowdy/mcp';
 
 describe('tools', () => {
-  it('has the tools a server starts with', () => {
-    expect(Object.keys(mcp.tools.factory)).toEqual(['create_sandbox', 'get_sandbox', 'list_sandboxes', 'stop_sandbox']);
-  });
-
-  it('has the tools each sandbox gets', () => {
-    expect(Object.keys(mcp.tools.lazy)).toEqual([
+  it('has every tool, keyed by its own name', () => {
+    expect(Object.keys(mcp.tools)).toEqual([
+      'create_sandbox',
+      'get_sandbox',
+      'list_sandboxes',
+      'stop_sandbox',
       'run_command',
       'read_output',
       'read_file',
       'write_file',
       'make_directory',
     ]);
+    Object.entries(mcp.tools).forEach(([key, { name }]) => expect(key).toBe(name));
   });
 
-  it('keys each tool by its own name', () => {
-    [mcp.tools.factory, mcp.tools.lazy].forEach((group) =>
-      Object.entries(group).forEach(([key, { name }]) => expect(key).toBe(name))
+  it('takes the sandbox_id of the sandbox each acts on', () => {
+    (['stop_sandbox', 'run_command', 'read_output', 'read_file', 'write_file', 'make_directory'] as const).forEach(
+      (name) => expect(mcp.tools[name].inputSchema.shape).toHaveProperty('sandbox_id')
     );
   });
 });

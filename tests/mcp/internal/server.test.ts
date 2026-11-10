@@ -28,6 +28,11 @@ describe('serve', () => {
       'get_sandbox',
       'list_sandboxes',
       'stop_sandbox',
+      'run_command',
+      'read_output',
+      'read_file',
+      'write_file',
+      'make_directory',
     ]);
     expect(connect).toHaveBeenCalledTimes(1);
   });
@@ -41,9 +46,7 @@ describe('serve', () => {
   });
 
   it('names no tool, so tools can change without it', () => {
-    [...Object.values(tools.factory), ...Object.values(tools.lazy)].forEach(({ name }) =>
-      expect(INSTRUCTIONS).not.toContain(name)
-    );
+    Object.values(tools).forEach(({ name }) => expect(INSTRUCTIONS).not.toContain(name));
   });
 
   it('aborts when the client hangs up', async () => {

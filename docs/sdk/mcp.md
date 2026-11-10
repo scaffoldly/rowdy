@@ -1,15 +1,15 @@
 # MCP tools
 
-`@scaffoldly/rowdy/mcp` has the tools for a model that manages its own sandboxes, keyed by name. A host adds
-`tools.factory` to its own server: `create_sandbox`, `get_sandbox`, `list_sandboxes` and `stop_sandbox`. Each
-`run` takes the SDK first, then the input, then the call's context with what the host adds: the `server`, its
-`signal`, and optionally `meta`, `layersFrom`, `limits`, `logLevel`, `pollInterval` and `credentials`.
+`@scaffoldly/rowdy/mcp` has the tools for a model that manages its own sandboxes, keyed by name: `create_sandbox`,
+`get_sandbox`, `list_sandboxes`, `stop_sandbox`, `run_command`, `read_output`, `read_file`, `write_file` and
+`make_directory`. A host adds them to its own server, all of them or some by name. Each `run` takes the SDK first,
+then the input, then the call's context with what the host adds: the `server`, its `signal`, and optionally `meta`, `layersFrom`, `limits`, `logLevel`, `pollInterval` and `credentials`.
 
 ```ts
 import { Sandbox } from '@scaffoldly/rowdy/sandbox';
 import { tools } from '@scaffoldly/rowdy/mcp';
 
-Object.values(tools.factory).forEach(({ name, run, ...config }) =>
+Object.values(tools).forEach(({ name, run, ...config }) =>
   server.registerTool(name, config, (input, ctx) =>
     run(Sandbox, input, { ...ctx, server, signal, meta: { sub }, limits: { runtimes: ['aws.microvm'] } })
   )
@@ -39,12 +39,14 @@ server.registerTool(name, config, (input, ctx) =>
 );
 ```
 
-Each sandbox `create_sandbox` makes gets tools of its own on that server, `tools.lazy`, named with its suffix,
-like `run_command_bcdf245678`, with no `sandbox_id` to give: `run_command` and `read_output`, and on
-`aws.microvm` `read_file`, `write_file`, `make_directory` and `stop_sandbox`. `get_sandbox` gives a sandbox
-that's already there, like one from `list_sandboxes`, its tools again. Without a `server`, a model can create
-a sandbox but not work in it. The `signal` is the host's, for as long as what the call starts may run. The
-tools come off that server when the sandbox is stopped there, or the `signal` aborts.
+`stop_sandbox`, `run_command`, `read_output` and the file tools take the `sandbox_id` of the sandbox they act on,
+so a model can use a sandbox in the same turn it creates it. Each sandbox `create_sandbox` makes also gets tools of
+its own on that server, named with its suffix, like `run_command_bcdf245678`, with no `sandbox_id` to give:
+`run_command` and `read_output`, and on `aws.microvm` `read_file`, `write_file`, `make_directory` and
+`stop_sandbox`. `get_sandbox` gives a sandbox that's already there, like one from `list_sandboxes`, its tools
+again. Without a `server`, a sandbox gets no tools of its own, and a model works in it by its `sandbox_id`. The
+`signal` is the host's, for as long as what the call starts may run. The tools come off that server when the
+sandbox is stopped there, or the `signal` aborts.
 
 A server that lasts the session announces those changes to its client itself. A host that builds a server per
 request passes `changed` too, and rowdy calls it whenever a sandbox's tools go on or come off, so the host can

@@ -1,6 +1,6 @@
 import type { ServerContext } from '@modelcontextprotocol/server';
 import { afterEach, describe, expect, it, jest } from '@jest/globals';
-import type { RunCommandParams, SandboxPromise } from '../../../../src/sandbox';
+import type { RunCommandParams, SandboxFactory } from '../../../../src/sandbox';
 import { PROGRESS } from '../../../../src/sandbox/internal/mcp/create-sandbox';
 import { OUTPUT, runCommand, WAIT } from '../../../../src/sandbox/internal/mcp/run-command';
 
@@ -32,8 +32,8 @@ const setup = (
   // A sandbox_id picks the sandbox the tool is given.
   const run = ({ sandbox_id: id = sandboxId, ...input }: Record<string, unknown> = {}, progressToken?: string) =>
     tool.run(
-      Promise.resolve({ sandboxId: id, runCommand: command }) as unknown as SandboxPromise,
-      tool.inputSchema.parse({ cmd: 'ls', ...input }),
+      { get: () => Promise.resolve({ sandboxId: id, runCommand: command }) } as unknown as SandboxFactory,
+      tool.inputSchema.parse({ sandbox_id: id, cmd: 'ls', ...input }),
       {
         mcpReq: { signal, notify, _meta: progressToken ? { progressToken } : undefined },
       } as unknown as ServerContext
@@ -224,7 +224,7 @@ describe('run_command', () => {
 
       expect(content[1]).toMatchObject({
         type: 'text',
-        text: expect.stringContaining("Call this sandbox's read_output"),
+        text: expect.stringContaining("Call read_output with this cmd_id"),
       });
     });
 

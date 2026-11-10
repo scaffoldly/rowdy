@@ -14,7 +14,6 @@ import type {
   SandboxLookup,
   SandboxFactory,
   SandboxOptions,
-  SandboxPromise,
   SandboxSummary,
   Tool,
   Event,
@@ -272,10 +271,11 @@ export class SandboxImpl implements Sandbox {
   tools(found: SandboxPromiseImpl = new SandboxPromiseImpl(Promise.resolve(this), this)): BoundTool[] {
     // Files are aws.microvm only.
     const microvm = this.compute instanceof MicrovmCompute;
-    const tools: Tool<SandboxPromise>[] = [
+    const tools: Tool<SandboxFactory>[] = [
       runCommand,
       readOutput,
       ...(microvm ? [readFile, writeFile, makeDirectory] : []),
+      ...(this.compute.stoppable ? [stopSandbox] : []),
     ];
     // Every lookup is this sandbox, and the sandbox_id is this one's, so a model can't name another.
     const sandboxes: SandboxFactory = {
@@ -283,26 +283,22 @@ export class SandboxImpl implements Sandbox {
       get: () => found,
       list: (options) => SandboxImpl.list(options),
     };
-    const stops: Tool<SandboxFactory>[] = this.compute.stoppable ? [stopSandbox] : [];
 
-    return [
-      ...tools.map(({ run, ...tool }): BoundTool => ({ ...tool, run: (input, ctx) => run(found, input, ctx) })),
-      // Waiting for the sandbox_id is the wait for the sandbox, and a failed build is this call's error.
-      ...stops.map((tool): BoundTool => {
-        const { run } = safeTool(
-          {
-            ...tool,
-            run: async (sdk, input, ctx) => tool.run(sdk, { ...input, sandbox_id: (await found).sandboxId }, ctx),
-          } satisfies Tool<SandboxFactory>,
-          describeError
-        );
-        return {
+    // Waiting for the sandbox_id is the wait for the sandbox, and a failed build is this call's error.
+    return tools.map((tool): BoundTool => {
+      const { run } = safeTool(
+        {
           ...tool,
-          inputSchema: tool.inputSchema.omit({ sandbox_id: true }),
-          run: (input, ctx) => run(sandboxes, input, ctx),
-        };
-      }),
-    ];
+          run: async (sdk, input, ctx) => tool.run(sdk, { ...input, sandbox_id: (await found).sandboxId }, ctx),
+        } satisfies Tool<SandboxFactory>,
+        describeError
+      );
+      return {
+        ...tool,
+        inputSchema: tool.inputSchema.omit({ sandbox_id: true }),
+        run: (input, ctx) => run(sandboxes, input, ctx),
+      };
+    });
   }
 
   runCommand(cmd: string, args?: string[], options?: RunCommandOptions): Promise<CommandFinished>;

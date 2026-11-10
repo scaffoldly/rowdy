@@ -11,7 +11,7 @@ const inputSchema = z.object({
 const outputSchema = z.object({
   sandboxes: z.array(
     z.object({
-      sandbox_id: z.string().describe('Pass to get_sandbox or stop_sandbox.'),
+      sandbox_id: z.string().describe('Pass to the tools that take one.'),
       name: z.string(),
       runtime: z.enum(['aws.microvm', 'aws.lambda']),
       running: z.boolean().optional().describe('Whether its microVM is up. Missing on aws.lambda.'),
