@@ -2034,8 +2034,9 @@ describe('sandbox', () => {
     });
   });
 
-  it('exposes only create, get and list', () => {
-    expect(Object.keys(Sandbox).sort()).toEqual(['create', 'get', 'list']);
+  it('exposes only create, get, list and withEnv, whose factory has the first three', () => {
+    expect(Object.keys(Sandbox).sort()).toEqual(['create', 'get', 'list', 'withEnv']);
+    expect(Object.keys(Sandbox.withEnv(() => ({}))).sort()).toEqual(['create', 'get', 'list']);
   });
 
   it('feeds its signal to its environment', async () => {
@@ -2119,5 +2120,72 @@ describe('sandbox', () => {
     it('has no extendTimeout', () => {
       expect('extendTimeout' in sandbox).toBe(false);
     });
+  });
+});
+
+describe('Sandbox.withEnv', () => {
+  const IMAGE = 'arn:aws:lambda:us-east-1:123456789012:microvm-image:box-bcdf2';
+  const NAMES = ['AWS_ACCESS_KEY_ID', 'AWS_SECRET_ACCESS_KEY', 'AWS_REGION'];
+  const before = Object.fromEntries(NAMES.map((name) => [name, process.env[name]]));
+  const credentials = { AWS_ACCESS_KEY_ID: 'AKIAEXAMPLE', AWS_SECRET_ACCESS_KEY: 'secret' };
+
+  beforeEach(() => NAMES.forEach((name) => delete process.env[name]));
+  afterEach(() => {
+    NAMES.forEach((name) =>
+      before[name] === undefined ? delete process.env[name] : (process.env[name] = before[name])
+    );
+    jest.restoreAllMocks();
+  });
+
+  it('sets what env gives on process.env before create reaches AWS, and not on the sandbox', async () => {
+    const seen: { key?: string; env?: Record<string, string> }[] = [];
+    jest.spyOn(MicrovmCompute.prototype, 'create').mockImplementation(function (this: MicrovmCompute, spec) {
+      seen.push({ key: process.env.AWS_ACCESS_KEY_ID, env: spec.env });
+      Object.assign(this, { imageArn: IMAGE });
+      return of(this);
+    });
+
+    await Sandbox.withEnv(async () => credentials).create({ runtime: 'aws.microvm' });
+
+    expect(seen).toEqual([{ key: 'AKIAEXAMPLE', env: {} }]);
+  });
+
+  it('sets it before get and list reach AWS too', async () => {
+    const seen: (string | undefined)[] = [];
+    jest.spyOn(MicrovmCompute.prototype, 'attach').mockImplementation(function (this: MicrovmCompute) {
+      seen.push(process.env.AWS_ACCESS_KEY_ID);
+      Object.assign(this, { imageArn: IMAGE });
+      return of(this);
+    });
+    jest.spyOn(MicrovmCompute, 'list').mockImplementation(() => {
+      seen.push(process.env.AWS_REGION);
+      return EMPTY;
+    });
+    let calls = 0;
+    const factory = Sandbox.withEnv(() => ({ ...credentials, AWS_REGION: `us-east-${++calls}` }));
+
+    await factory.get({ sandboxId: IMAGE });
+    await factory.list({ runtime: 'aws.microvm' });
+
+    expect(seen).toEqual(['AKIAEXAMPLE', 'us-east-2']);
+  });
+
+  it('leaves what env leaves undefined as it was', async () => {
+    process.env.AWS_REGION = 'eu-west-1';
+    jest.spyOn(MicrovmCompute, 'list').mockReturnValue(EMPTY);
+
+    await Sandbox.withEnv(() => ({ ...credentials, AWS_REGION: undefined })).list({ runtime: 'aws.microvm' });
+
+    expect(process.env.AWS_REGION).toBe('eu-west-1');
+    expect(process.env.AWS_ACCESS_KEY_ID).toBe('AKIAEXAMPLE');
+  });
+
+  it('rejects with what env throws, before reaching AWS', async () => {
+    const list = jest.spyOn(MicrovmCompute, 'list').mockReturnValue(EMPTY);
+
+    await expect(
+      Sandbox.withEnv(async () => Promise.reject(new Error('no token'))).list({ runtime: 'aws.microvm' })
+    ).rejects.toThrow('no token');
+    expect(list).not.toHaveBeenCalled();
   });
 });

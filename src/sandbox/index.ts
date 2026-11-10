@@ -221,6 +221,12 @@ export interface Sandbox {
  */
 export interface SandboxPromise extends Promise<Sandbox>, Pick<Sandbox, 'events' | 'tools'> {}
 
+/**
+ * Environment variables for the clients rowdy makes to reach a runtime, named as that runtime's SDK reads its own, like
+ * `AWS_ACCESS_KEY_ID`. They go on this process's `process.env`, never a sandbox's `env` or a command's.
+ */
+export type EnvPromise = () => Record<string, string | undefined> | PromiseLike<Record<string, string | undefined>>;
+
 export interface SandboxFactory {
   /** Starts a new sandbox. */
   create(options?: SandboxOptions): SandboxPromise;
@@ -230,8 +236,20 @@ export interface SandboxFactory {
   list(options?: SandboxListOptions): Promise<SandboxSummary[]>;
 }
 
-export const Sandbox: SandboxFactory = {
+export const Sandbox: SandboxFactory & {
+  /**
+   * A factory that sets what `env` gives on `process.env` before each `create`, `get` and `list` reaches its runtime,
+   * so the SDKs underneath read it. It's called each time, so cache in it what's costly to get. A variable it leaves
+   * undefined keeps its value, and what it sets stays for the rest of the process.
+   */
+  withEnv(env: EnvPromise): SandboxFactory;
+} = {
   create: (options) => SandboxImpl.create(options),
   get: (lookup) => SandboxImpl.get(lookup),
   list: (options) => SandboxImpl.list(options),
+  withEnv: (env) => ({
+    create: (options) => SandboxImpl.create(options, env),
+    get: (lookup) => SandboxImpl.get(lookup, env),
+    list: (options) => SandboxImpl.list(options, env),
+  }),
 };
