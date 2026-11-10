@@ -18,11 +18,27 @@ Object.values(tools.factory).forEach(({ name, run, ...config }) =>
 
 `meta` goes on every sandbox a call creates, and a call only lists, gets or stops sandboxes with it, so a model
 can't reach another's. `layersFrom` goes into every sandbox a call creates, and a model can't change it.
-`credentials`, set per call, are what that call's AWS clients act as, such as the caller's own role.
 `limits` cap what a model can ask for, and only `limits.runtimes` are listed, so a host that allows only
 `aws.microvm` needs no `lambda:ListFunctions`. `pollInterval` is for a host with a cap on its requests, as in
 [Errors](sandbox.md#errors). A `create_sandbox` that hits the cap tells the model to make the same call again. Any other
 tool only says the host ran out, since a command may already have run.
+
+`credentials`, set per call, are what that call's AWS clients act as, such as the caller's own role from the
+token their request came with:
+
+```ts
+server.registerTool(name, config, (input, ctx) =>
+  run(Sandbox, input, {
+    ...ctx,
+    server,
+    signal,
+    credentials: fromWebToken({ roleArn, webIdentityToken: ctx.http!.authInfo!.token, roleSessionName: 'caller' }),
+  })
+);
+```
+
+`fromWebToken` is from `@aws-sdk/credential-providers`. A call that comes without a token should be refused before
+it gets here.
 
 Each sandbox `create_sandbox` makes gets tools of its own on that server, `tools.lazy`, named with its suffix,
 like `run_command_bcdf245678`, with no `sandbox_id` to give: `run_command` and `read_output`, and on
