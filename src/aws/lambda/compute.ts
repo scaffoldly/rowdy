@@ -133,8 +133,8 @@ export class LambdaCompute implements SandboxCompute {
         return defer(() => lambda.observe());
       }),
       last(),
-      map((lambda) => {
-        this.functionArn = lambda.State.FunctionArn;
+      map(() => {
+        this.functionArn = this.lambda?.State.FunctionArn;
         return this;
       })
     );
