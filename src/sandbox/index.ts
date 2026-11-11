@@ -76,6 +76,11 @@ export type { Event, EventCallback } from '../events';
 export type { AwsCredentials } from '../aws/credentials';
 
 export interface SandboxToolsLimits {
+  /**
+   * The most sandboxes a call's `meta` can have at once, on `runtimes`. `create_sandbox` refuses another until one is
+   * deleted.
+   */
+  sandboxes?: number;
   /** The most memory a sandbox can have, in megabytes. */
   memory?: number;
   /** The longest timeout a sandbox can have, in milliseconds. */
@@ -218,11 +223,17 @@ export interface Sandbox {
    * started. Safe to call more than once. The next command starts it again. `runtime: 'aws.lambda'` rejects for now.
    */
   stop(): Promise<void>;
+  /**
+   * Stops it, then removes it and what rowdy made for it: on `aws.microvm` its image, role, zip and log group, and on
+   * `aws.lambda` its function, role and log group. Its command output goes with its log group. The images it was
+   * copied from stay, for other sandboxes. Safe to call more than once.
+   */
+  delete(): Promise<void>;
   /** Each event from now on. */
   events(): Observable<Event>;
   /**
-   * The MCP tools for this sandbox alone, with no `sandbox_id` input: `run_command`, `read_output`, and `stop_sandbox`
-   * where it can stop.
+   * The MCP tools for this sandbox alone, with no `sandbox_id` input: `run_command`, `read_output`, `delete_sandbox`,
+   * and on `aws.microvm` the file tools and `stop_sandbox`.
    */
   tools(): BoundTool[];
 }
@@ -240,10 +251,13 @@ export interface SandboxFactory {
   get(lookup: SandboxLookup): SandboxPromise;
   /** The sandboxes in this account and region. */
   list(options?: SandboxListOptions): Promise<SandboxSummary[]>;
+  /** Deletes a sandbox, as its own `delete` does. Refuses one whose `meta` doesn't have every entry given. */
+  delete(lookup: SandboxLookup): Promise<void>;
 }
 
 export const Sandbox: SandboxFactory = {
   create: (options) => SandboxImpl.create(options),
   get: (lookup) => SandboxImpl.get(lookup),
   list: (options) => SandboxImpl.list(options),
+  delete: (lookup) => SandboxImpl.delete(lookup),
 };

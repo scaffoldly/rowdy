@@ -1,11 +1,14 @@
 import {
   CloudWatchLogsClient,
   CreateLogGroupCommand,
+  DeleteLogGroupCommand,
   StartLiveTailCommandInput,
 } from '@aws-sdk/client-cloudwatch-logs';
-import { HeadObjectCommand, PutObjectCommand, S3Client } from '@aws-sdk/client-s3';
+import { DeleteObjectCommand, HeadObjectCommand, PutObjectCommand, S3Client } from '@aws-sdk/client-s3';
 import {
   CreateRoleCommand,
+  DeleteRoleCommand,
+  DeleteRolePolicyCommand,
   GetRoleCommand,
   IAMClient,
   PutRolePolicyCommand,
@@ -15,6 +18,7 @@ import {
   CreateMicrovmAuthTokenCommand,
   CreateMicrovmImageCommand,
   CreateMicrovmImageCommandInput,
+  DeleteMicrovmImageCommand,
   GetMicrovmCommand,
   GetMicrovmImageCommand,
   GetMicrovmImageCommandOutput,
@@ -36,8 +40,10 @@ import { zipSync } from 'fflate';
 import promiseRetry from 'promise-retry';
 import {
   catchError,
+  concat,
   concatMap,
   defer,
+  EMPTY,
   filter,
   first,
   forkJoin,
@@ -51,6 +57,7 @@ import {
   shareReplay,
   switchMap,
   take,
+  throwError,
   throwIfEmpty,
   toArray,
 } from 'rxjs';
@@ -94,7 +101,8 @@ export class MicrovmCompute extends AwsClientLogger implements SandboxCompute {
   static readonly env = {};
 
   static list(credentials?: AwsSandboxOptions['credentials']): Observable<SandboxSummary> {
-    const microvms = new LambdaMicrovmsClient({ credentials });
+    // One ListTags per image, so a busy host is throttled: adaptive retries slow down until AWS lets them through.
+    const microvms = new LambdaMicrovmsClient({ credentials, retryMode: 'adaptive', maxAttempts: 8 });
     return forkJoin([
       from(paginateListMicrovms({ client: microvms }, {})).pipe(
         concatMap(({ items = [] }) => items),
@@ -107,6 +115,8 @@ export class MicrovmCompute extends AwsClientLogger implements SandboxCompute {
     ]).pipe(
       switchMap(([vms, images]) =>
         from(images).pipe(
+          // A deleted sandbox's image lingers for a while.
+          filter(({ state }) => state !== 'DELETING' && state !== 'DELETED'),
           mergeMap(
             ({ imageArn, name }) =>
               from(microvms.send(new ListTagsCommand({ Resource: imageArn }))).pipe(
@@ -384,6 +394,52 @@ export class MicrovmCompute extends AwsClientLogger implements SandboxCompute {
         this.commands.forEach((controller) => controller.abort(new Error('Sandbox stopped')));
         return live.length ? forkJoin(live.map((microvmIdentifier) => this.terminate(microvmIdentifier))) : of([]);
       }),
+      map(() => this)
+    );
+  }
+
+  delete(): Observable<this> {
+    const imageIdentifier = this.sandboxId;
+    const name = imageIdentifier.split(':').pop();
+    return this.stop().pipe(
+      switchMap(() =>
+        defer(() => this.microvms.send(new GetMicrovmImageCommand({ imageIdentifier }))).pipe(
+          // Deleted already, or AWS is deleting it.
+          catchError((error) => (isNotFound(error) ? EMPTY : throwError(() => error))),
+          filter(({ state }) => state !== 'DELETING' && state !== 'DELETED')
+        )
+      ),
+      switchMap(({ latestActiveImageVersion, latestFailedImageVersion }) => {
+        const imageVersion = latestActiveImageVersion ?? latestFailedImageVersion;
+        return imageVersion
+          ? from(this.microvms.send(new GetMicrovmImageVersionCommand({ imageIdentifier, imageVersion })))
+          : of(undefined);
+      }),
+      switchMap((version) => {
+        const RoleName = version?.buildRoleArn?.split('/').pop();
+        const [, , Bucket, ...key] = (version?.codeArtifact?.uri ?? '').split('/');
+        const logGroupName = version?.logging?.cloudWatch?.logGroup ?? `/aws/lambda-microvms/${name}`;
+        const gone = (error: unknown): Observable<never> => (isNotFound(error) ? EMPTY : throwError(() => error));
+        // Only what rowdy made for this one sandbox, and the image last, so a failed delete can be repeated.
+        return concat(
+          RoleName?.endsWith('.rowdy.run')
+            ? concat(
+                defer(() => this.iam.send(new DeleteRolePolicyCommand({ RoleName, PolicyName: 'RowdyPolicy' }))).pipe(
+                  catchError(gone)
+                ),
+                defer(() => this.iam.send(new DeleteRoleCommand({ RoleName }))).pipe(catchError(gone))
+              )
+            : EMPTY,
+          Bucket?.startsWith(BUCKET_PREFIX) && key.length
+            ? defer(() => this.s3.send(new DeleteObjectCommand({ Bucket, Key: key.join('/') })))
+            : EMPTY,
+          logGroupName.startsWith('/aws/lambda-microvms/')
+            ? defer(() => this.logs.send(new DeleteLogGroupCommand({ logGroupName }))).pipe(catchError(gone))
+            : EMPTY,
+          defer(() => this.microvms.send(new DeleteMicrovmImageCommand({ imageIdentifier }))).pipe(catchError(gone))
+        );
+      }),
+      toArray(),
       map(() => this)
     );
   }

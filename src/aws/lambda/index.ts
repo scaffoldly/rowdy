@@ -2,6 +2,7 @@ import { MetadataBearer } from '@smithy/types';
 import {
   CloudWatchLogsClient,
   CreateLogGroupCommand,
+  DeleteLogGroupCommand,
   StartLiveTailCommandInput,
 } from '@aws-sdk/client-cloudwatch-logs';
 import {
@@ -85,6 +86,7 @@ import {
   ReplaySubject,
   switchMap,
   take,
+  throwError,
   takeUntil,
   tap,
   toArray,
@@ -944,7 +946,8 @@ export class LambdaFunction extends AwsClientLogger {
     return new Observable<this>((subscriber) => {
       this.deleting = true;
       const { deletes } = this.prepare();
-      const subscription = combineLatest(deletes)
+      // In order: a role's policy goes before the role.
+      const subscription = concat(...deletes)
         .pipe(
           takeUntil(fromEvent(this.signal, 'abort')),
           tap(() => subscriber.next(this)),
@@ -1120,7 +1123,20 @@ export class LambdaFunction extends AwsClientLogger {
 
     const deletes = this.isSandbox()
       ? [
-          // Full delete for sandboxes
+          // Full delete for sandboxes, starting with the log group rowdy made for it
+          this.FunctionArn.pipe(
+            take(1),
+            switchMap((FunctionArn) =>
+              FunctionArn
+                ? from(
+                    this.logs.send(
+                      new DeleteLogGroupCommand({ logGroupName: `/aws/lambda/${FunctionArn.split(':')[6]}` })
+                    )
+                  )
+                : EMPTY
+            ),
+            catchError((error) => (isNotFound(error) ? EMPTY : throwError(() => error)))
+          ),
           this.FunctionArn.pipe(take(1)).pipe(
             switchMap((FunctionName) =>
               this.lambda.send(new GetFunctionConfigurationCommand({ FunctionName })).then((Configuration) => {

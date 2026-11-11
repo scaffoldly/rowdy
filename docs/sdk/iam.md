@@ -62,6 +62,7 @@ Everything the SDK calls for `aws.microvm`, by what it's for.
         "lambda:GetMicrovm",
         "lambda:ListMicrovms",
         "lambda:TerminateMicrovm",
+        "lambda:DeleteMicrovmImage",
         "lambda:CreateMicrovmAuthToken",
         "lambda:ListTags",
         "lambda:TagResource"
@@ -86,9 +87,9 @@ Everything the SDK calls for `aws.microvm`, by what it's for.
       }
     },
     {
-      "Sid": "ReadSandboxRoles",
+      "Sid": "ReadAndDeleteSandboxRoles",
       "Effect": "Allow",
-      "Action": "iam:GetRole",
+      "Action": ["iam:GetRole", "iam:DeleteRolePolicy", "iam:DeleteRole"],
       "Resource": "arn:aws:iam::123456789012:role/*rowdy.run"
     },
     {
@@ -133,7 +134,7 @@ Everything the SDK calls for `aws.microvm`, by what it's for.
     {
       "Sid": "SandboxZips",
       "Effect": "Allow",
-      "Action": ["s3:GetObject", "s3:PutObject"],
+      "Action": ["s3:GetObject", "s3:PutObject", "s3:DeleteObject"],
       "Resource": "arn:aws:s3:::rowdy-sandboxes-*/*",
       "Condition": { "StringEquals": { "aws:ResourceAccount": "123456789012" } }
     },
@@ -162,7 +163,7 @@ Everything the SDK calls for `aws.microvm`, by what it's for.
     {
       "Sid": "SandboxLogs",
       "Effect": "Allow",
-      "Action": ["logs:CreateLogGroup", "logs:FilterLogEvents", "logs:StartLiveTail"],
+      "Action": ["logs:CreateLogGroup", "logs:DeleteLogGroup", "logs:FilterLogEvents", "logs:StartLiveTail"],
       "Resource": "arn:aws:logs:us-east-1:123456789012:log-group:/aws/lambda-microvms/*"
     }
   ]
@@ -177,8 +178,9 @@ Everything the SDK calls for `aws.microvm`, by what it's for.
   takes `lambda:PassNetworkConnector`. They're owned by AWS, not your account, so the ARN keeps `*` for
   the region. rowdy uses no VPC connector of your own, so nothing under `ec2:`
   is needed.
-- **IAM:** the host role can only create, change and pass roles whose names end in `rowdy.run`, which
-  is every role rowdy makes, and only with the boundary attached. It can't change the boundary.
+- **IAM:** the host role can only create, change, pass and delete roles whose names end in `rowdy.run`,
+  which is every role rowdy makes, and only create them with the boundary attached. It can't change the
+  boundary. `iam:DeleteRolePolicy` and `iam:DeleteRole` are for `delete()` and `delete_sandbox`.
 - **S3:** one bucket per account, `rowdy-sandboxes-{random}`, found again by its tag, holds each
   sandbox's zip. An S3 ARN names no account, so `aws:ResourceAccount` keeps `rowdy-sandboxes-*` to
   buckets in yours. `s3:PutBucketTagging` and `s3:TagResource` cover a bucket created with tags, whichever
@@ -186,8 +188,8 @@ Everything the SDK calls for `aws.microvm`, by what it's for.
 - **ECR:** an image is copied into a repository named after it, like `library/alpine`, so the
   repository ARN can't be narrower than the account.
 - **CloudWatch Logs:** rowdy makes each sandbox's log group, `/aws/lambda-microvms/{name}`, before it
-  builds, so the sandbox's role can only write to that one. The other two are `read_output` and
-  `sandbox.output()`, and `logs:StartLiveTail` is only used with a `timeout`.
+  builds, so the sandbox's role can only write to that one, and deletes it with the sandbox. The rest are
+  for `read_output` and `sandbox.output()`, and `logs:StartLiveTail` is only used with a `timeout`.
 
 ## The permissions boundary
 

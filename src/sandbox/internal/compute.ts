@@ -43,6 +43,8 @@ export interface SandboxCompute {
   output(cmdId: string, options?: ExecOutputOptions): Observable<ExecOutput>;
   /** Emits once, when nothing is left running. Safe to call more than once. */
   stop(): Observable<this>;
+  /** Emits once, when the sandbox and what rowdy made for it are gone. Safe to call more than once. */
+  delete(): Observable<this>;
   /** Emits once, when the file is written. */
   writeFile(path: string, content: Uint8Array, mode: number | undefined, signal: AbortSignal): Observable<void>;
   /** Emits the file's bytes once, or null when it isn't there. */

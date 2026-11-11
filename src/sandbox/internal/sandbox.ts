@@ -67,9 +67,11 @@ import { readFile } from './mcp/read-file';
 import { readOutput } from './mcp/read-output';
 import { writeFile } from './mcp/write-file';
 import { stopSandbox } from './mcp/stop-sandbox';
+import { deleteSandbox } from './mcp/delete-sandbox';
 import { DEFAULTS, SandboxCompute, SandboxComputeClass } from './compute';
 import { SandboxPromiseImpl } from './create';
 import { Credentials } from '../../aws/credentials';
+import { isNotFound } from '../../aws/lambda/shared';
 
 // Kubernetes' alphabet for generated names: no vowels, so a name spells no words.
 const ALPHANUMS = 'bcdfghjklmnpqrstvwxz2456789';
@@ -276,12 +278,14 @@ export class SandboxImpl implements Sandbox {
       readOutput,
       ...(microvm ? [readFile, writeFile, makeDirectory] : []),
       ...(this.compute.stoppable ? [stopSandbox] : []),
+      deleteSandbox,
     ];
     // Every lookup is this sandbox, and the sandbox_id is this one's, so a model can't name another.
     const sandboxes: SandboxFactory = {
       create: (options) => SandboxImpl.create(options),
       get: () => found,
       list: (options) => SandboxImpl.list(options),
+      delete: async () => (await found).delete(),
     };
 
     // Waiting for the sandbox_id is the wait for the sandbox, and a failed build is this call's error.
@@ -428,6 +432,21 @@ export class SandboxImpl implements Sandbox {
 
   async stop(): Promise<void> {
     await lastValueFrom(this.compute.stop()).catch((error) => {
+      throw humanize(error);
+    });
+  }
+
+  static async delete(lookup: SandboxLookup): Promise<void> {
+    const sandbox = await SandboxImpl.get(lookup).catch((error) => {
+      // Deleted already. A sandbox the lookup refuses still rejects.
+      if (isNotFound(error)) return undefined;
+      throw error;
+    });
+    await sandbox?.delete();
+  }
+
+  async delete(): Promise<void> {
+    await lastValueFrom(this.compute.delete()).catch((error) => {
       throw humanize(error);
     });
   }

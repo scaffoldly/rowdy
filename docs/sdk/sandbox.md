@@ -37,6 +37,7 @@ before anything reaches AWS.
 | `env`                   | No limit from rowdy                | At most 50 variables                 |
 | Between commands        | Each command is its own invocation | Commands share one VM, and its files |
 | `stop()`                | Rejects, for now                   | Ends the VM                          |
+| `delete()`              | Removes the function               | Removes the image                    |
 | A command's `signal`    | Only the waiting stops             | Kills the command                    |
 | Ctrl+C during a command | Node's default                     | Stops the sandbox, then exits        |
 
@@ -205,6 +206,13 @@ more than once.
 The sandbox itself stays. The next command starts a new VM from the image, without the old one's files.
 
 On `aws.lambda`, `stop()` rejects for now.
+
+## `delete`
+
+`delete()` stops the sandbox, then removes it and what rowdy made for it: on `aws.microvm` its image, role,
+zip and log group, and on `aws.lambda` its function, role and log group. Its command output goes with the log
+group, and `Sandbox.list` no longer finds it. The ECR repository stays, since every sandbox from the same
+image shares it. It's safe to call more than once, and a delete that fails partway can be called again.
 
 ## `Sandbox.get`
 
@@ -393,8 +401,8 @@ Each sandbox gets its own resources, in the account and region of your credentia
 `aws.microvm` also keeps a zip per sandbox in one S3 bucket per account, `rowdy-sandboxes-{random}`,
 found again by its `rowdy:owner` tag.
 
-The credentials you run with need to be able to create all of these. Nothing deletes them yet, since
-`stop()` only ends what's running.
+The credentials you run with need to be able to create all of these. `stop()` only ends what's running, and
+`delete()` removes everything but the ECR repository.
 
 ## Errors
 
