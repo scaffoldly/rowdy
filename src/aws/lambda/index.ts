@@ -115,7 +115,7 @@ import {
   roleName,
   ROWDY_BIN,
   SANDBOX_ROLE_PATH,
-} from './shared';
+} from '../shared';
 import { TAG_KEY_REGEX, TAG_VALUE_REGEX } from '../tags';
 
 export { _create, CONFLICT, fit, isNotFound, isPropagating, isTransient, PROPAGATION, ROWDY_BIN };

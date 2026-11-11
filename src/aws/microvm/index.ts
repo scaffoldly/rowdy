@@ -67,7 +67,7 @@ import {
   roleName,
   ROWDY_BIN,
   SANDBOX_ROLE_PATH,
-} from '../lambda/shared';
+} from '../shared';
 import { ownedBucket } from '../s3';
 import { HOOKS_PORT } from './hooks';
 

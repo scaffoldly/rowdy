@@ -1,6 +1,6 @@
 import { createHash } from 'crypto';
 import { defer, Observable, retry, tap, timer } from 'rxjs';
-import type { Image } from '../../api/internal/transfer';
+import type { Image } from '../api/internal/transfer';
 
 // DEVNOTE: Where the Dockerfile puts the binary in the layers appended to every deployed image.
 // Absolute, so the entrypoint does not depend on the image's PATH.

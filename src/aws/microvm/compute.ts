@@ -39,7 +39,7 @@ import { Logger } from '../../log';
 import { ExecSchema } from '../../routes';
 import { ComputeSpec, MICROVM_MEMORY, SandboxCompute, SandboxError } from '../../sandbox/internal/compute';
 import { META_TAG, TAG_KEY_REGEX, TAG_VALUE_REGEX } from '../tags';
-import { isNotFound } from '../lambda/shared';
+import { isNotFound } from '../shared';
 import { AwsClientLogger } from '../logger';
 import { EXEC_LOG } from '../../proxy/frames';
 import { execOf, execOutput, framesOf } from '../exec';
