@@ -340,6 +340,7 @@ describe('aws microvm compute', () => {
       const {
         Statement: [trust],
       } = JSON.parse(`${input(sent, 'CreateRoleCommand').AssumeRolePolicyDocument}`);
+      expect(input(sent, 'CreateRoleCommand').Path).toBe('/rowdy/sandbox/');
       expect(trust).toMatchObject({
         Principal: { Service: 'lambda.amazonaws.com' },
         Action: ['sts:AssumeRole', 'sts:TagSession'],

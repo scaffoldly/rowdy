@@ -79,7 +79,7 @@ Everything the SDK calls for `aws.microvm`, by what it's for.
       "Sid": "SandboxRolesOnlyWithTheBoundary",
       "Effect": "Allow",
       "Action": ["iam:CreateRole", "iam:PutRolePolicy", "iam:UpdateAssumeRolePolicy"],
-      "Resource": "arn:aws:iam::123456789012:role/*rowdy.run",
+      "Resource": "arn:aws:iam::123456789012:role/rowdy/sandbox/*",
       "Condition": {
         "StringEquals": {
           "iam:PermissionsBoundary": "arn:aws:iam::123456789012:policy/RowdySandboxBoundary"
@@ -90,13 +90,19 @@ Everything the SDK calls for `aws.microvm`, by what it's for.
       "Sid": "ReadAndDeleteSandboxRoles",
       "Effect": "Allow",
       "Action": ["iam:GetRole", "iam:DeleteRolePolicy", "iam:DeleteRole"],
-      "Resource": "arn:aws:iam::123456789012:role/*rowdy.run"
+      "Resource": "arn:aws:iam::123456789012:role/rowdy/sandbox/*"
+    },
+    {
+      "Sid": "FindSandboxRoles",
+      "Effect": "Allow",
+      "Action": "iam:ListRoles",
+      "Resource": "*"
     },
     {
       "Sid": "PassSandboxRolesToLambdaOnly",
       "Effect": "Allow",
       "Action": "iam:PassRole",
-      "Resource": "arn:aws:iam::123456789012:role/*rowdy.run",
+      "Resource": "arn:aws:iam::123456789012:role/rowdy/sandbox/*",
       "Condition": { "StringEquals": { "iam:PassedToService": "lambda.amazonaws.com" } }
     },
     {
@@ -178,9 +184,12 @@ Everything the SDK calls for `aws.microvm`, by what it's for.
   takes `lambda:PassNetworkConnector`. They're owned by AWS, not your account, so the ARN keeps `*` for
   the region. rowdy uses no VPC connector of your own, so nothing under `ec2:`
   is needed.
-- **IAM:** the host role can only create, change, pass and delete roles whose names end in `rowdy.run`,
-  which is every role rowdy makes, and only create them with the boundary attached. It can't change the
-  boundary. `iam:DeleteRolePolicy` and `iam:DeleteRole` are for `delete()` and `delete_sandbox`.
+- **IAM:** the host role can only create, change, pass and delete roles under the path `/rowdy/sandbox/`,
+  where rowdy puts every sandbox's role, and only create them with the boundary attached. It can't change
+  the boundary. The roles of apps rowdy deploys sit at the root path, `/`, so it can't touch them, whatever
+  they're named. `iam:DeleteRolePolicy` and `iam:DeleteRole` are for `delete()` and `delete_sandbox`.
+  `iam:ListRoles`, which can't be scoped to a path, finds the role a create left when it failed before
+  the sandbox had an image.
 - **S3:** one bucket per account, `rowdy-sandboxes-{random}`, found again by its tag, holds each
   sandbox's zip. An S3 ARN names no account, so `aws:ResourceAccount` keeps `rowdy-sandboxes-*` to
   buckets in yours. `s3:PutBucketTagging` and `s3:TagResource` cover a bucket created with tags, whichever
@@ -237,8 +246,9 @@ zips, writes microVM logs and pulls images in the account, and nothing more.
 
 ## The roles rowdy creates
 
-For reference, each microVM sandbox gets a role named `{namespace}+{image}@{name}.rowdy.run`, like
-`library+alpine@sandbox-d99dbbd84.rowdy.run`, which the boundary above caps.
+For reference, each sandbox gets a role under `/rowdy/sandbox/` named `{namespace}+{image}@{name}.rowdy.run`,
+like `arn:aws:iam::123456789012:role/rowdy/sandbox/library+alpine@sandbox-d99dbbd84.rowdy.run`, which the
+boundary above caps.
 
 - **Trust:** `lambda.amazonaws.com`, with `sts:AssumeRole` and `sts:TagSession`. It builds the image
   and runs the VM.
@@ -250,8 +260,9 @@ For reference, each microVM sandbox gets a role named `{namespace}+{image}@{name
 - **Attach the boundary.** rowdy creates sandbox roles with no `PermissionsBoundary`, so
   `SandboxRolesOnlyWithTheBoundary` refuses them until it sets one.
 - **Roles that exist already.** A sandbox role made before the boundary has none, so updating its policy
-  is refused too. Add the boundary to it once with an administrator's credentials, or delete it and let
-  rowdy make it again.
+  is refused too. One made before sandbox roles had their path sits at `/`, out of the host role's reach,
+  and a role's path can't change. Delete either once with an administrator's credentials, or `delete()` the
+  sandbox with them, and let rowdy make the role again.
 - **Checked against AWS.** We haven't confirmed that microVMs check `iam:PassedToService` against
   `lambda.amazonaws.com`, which tagging permission S3 wants for a tagged bucket, or that
   `aws:ResourceAccount` matches on `s3:CreateBucket`, whose bucket doesn't exist yet.

@@ -113,6 +113,7 @@ import {
   PROPAGATION,
   roleName,
   ROWDY_BIN,
+  SANDBOX_ROLE_PATH,
 } from './shared';
 import { TAG_KEY_REGEX, TAG_VALUE_REGEX } from '../tags';
 
@@ -1014,6 +1015,7 @@ export class LambdaFunction extends AwsClientLogger {
               this.iam.send(
                 new CreateRoleCommand({
                   RoleName,
+                  ...(this.isSandbox() ? { Path: SANDBOX_ROLE_PATH } : {}),
                   Description,
                   AssumeRolePolicyDocument: JSON.stringify(this.AssumeRolePolicyDocument),
                 })

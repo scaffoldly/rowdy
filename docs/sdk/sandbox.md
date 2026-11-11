@@ -223,6 +223,8 @@ On `aws.lambda`, `stop()` rejects for now.
 zip and log group, and on `aws.lambda` its function, role and log group. Its command output goes with the log
 group, and `Sandbox.list` no longer finds it. The ECR repository stays, since every sandbox from the same
 image shares it. It's safe to call more than once, and a delete that fails partway can be called again.
+`Sandbox.delete(lookup)` on a sandbox whose create failed before it had an image or function deletes the
+role that create left.
 
 ## `Sandbox.get`
 
