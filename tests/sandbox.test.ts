@@ -83,6 +83,10 @@ describe('sandbox', () => {
 
   beforeEach(() => {
     observe = jest.spyOn(LambdaFunction.prototype, 'observe').mockImplementation(deployed);
+    // Where a build is, as AWS would say for one that's done.
+    [MicrovmCompute, LambdaCompute].forEach((compute) =>
+      jest.spyOn(compute.prototype, 'status').mockReturnValue(of({ state: 'ready' as const }))
+    );
   });
 
   afterEach(() => jest.restoreAllMocks());
@@ -874,7 +878,7 @@ describe('sandbox', () => {
           case 'ListMicrovmImagesCommand':
             return Promise.resolve({
               items: [
-                { imageArn: IMAGE, name: 'box-bcdf2' },
+                { imageArn: IMAGE, name: 'box-bcdf2', state: 'CREATED', latestActiveImageVersion: '1' },
                 { imageArn: OTHER, name: 'not-rowdy' },
                 { imageArn: DELETED, name: 'box-deleted', state: 'DELETING' },
               ],
@@ -919,12 +923,14 @@ describe('sandbox', () => {
             startedAt: STARTED,
             stopsAt: new Date(STARTED.getTime() + 600_000),
             meta: { sub: 'github:1' },
+            state: 'ready',
           },
           {
             sandboxId: 'arn:aws:lambda:us-east-1:123456789012:function:sandbox-ghjk4',
             name: 'sandbox-ghjk4',
             runtime: 'aws.lambda',
             meta: {},
+            state: 'ready',
           },
         ])
       );
@@ -1618,9 +1624,11 @@ describe('sandbox', () => {
         return tool.run(Sandbox, tool.inputSchema.parse(input), { ...ctx(), ...options, signal });
       };
       const creating = () =>
-        jest
-          .spyOn(SandboxImpl, 'create')
-          .mockReturnValue(Object.assign(Promise.resolve({ sandboxId: IMAGE }), { events: () => EMPTY }) as never);
+        jest.spyOn(SandboxImpl, 'create').mockReturnValue(
+          Object.assign(Promise.resolve({ sandboxId: IMAGE, status: async () => ({ state: 'ready' }) }), {
+            events: () => EMPTY,
+          }) as never
+        );
       const created = (create: ReturnType<typeof creating>) => create.mock.calls[0]![0] as SandboxOptions;
       const getting = () =>
         jest.spyOn(SandboxImpl, 'get').mockImplementation(() => Promise.reject(new SandboxError('found it')) as never);
@@ -1756,8 +1764,14 @@ describe('sandbox', () => {
 
       describe('list_sandboxes', () => {
         const summaries: SandboxSummary[] = [
-          { sandboxId: IMAGE, name: 'a-bcdf2', runtime: 'aws.microvm', meta: { sub: 'github:1' } },
-          { sandboxId: FUNCTION_ARN, name: 'b-ghjk4', runtime: 'aws.lambda', meta: { sub: 'github:1' } },
+          { sandboxId: IMAGE, name: 'a-bcdf2', runtime: 'aws.microvm', meta: { sub: 'github:1' }, state: 'ready' },
+          {
+            sandboxId: FUNCTION_ARN,
+            name: 'b-ghjk4',
+            runtime: 'aws.lambda',
+            meta: { sub: 'github:1' },
+            state: 'ready',
+          },
         ];
 
         it("lists the call's meta, with its signal", async () => {

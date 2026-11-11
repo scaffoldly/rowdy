@@ -13,12 +13,14 @@ const found: SandboxSummary[] = [
     startedAt: STARTED,
     stopsAt: new Date(STARTED.getTime() + 900_000),
     meta: {},
+    state: 'ready',
   },
   {
     sandboxId: 'arn:aws:lambda:us-east-1:123456789012:function:b-ghjk4',
     name: 'b-ghjk4',
     runtime: 'aws.lambda',
     meta: {},
+    state: 'building',
   },
 ];
 
@@ -44,8 +46,9 @@ describe('list_sandboxes', () => {
           running: true,
           started_at: '2026-11-07T21:00:00.000Z',
           stops_at: '2026-11-07T21:15:00.000Z',
+          state: 'ready',
         },
-        { sandbox_id: found[1]!.sandboxId, name: 'b-ghjk4', runtime: 'aws.lambda' },
+        { sandbox_id: found[1]!.sandboxId, name: 'b-ghjk4', runtime: 'aws.lambda', state: 'building' },
       ],
     });
   });

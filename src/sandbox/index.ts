@@ -32,6 +32,12 @@ interface BaseSandboxOptions {
   pollInterval?: number;
   /** Aborts the sandbox's work in progress, including its creation, and stops it if it can `stop`. */
   signal?: AbortSignal;
+  /**
+   * Whether `create` resolves only once the sandbox can run a command. Defaults to true. With false, an `aws.microvm`
+   * sandbox resolves as soon as AWS is building its image: `status()` says when it's ready, and a command before then
+   * rejects. `aws.lambda` always waits.
+   */
+  wait?: boolean;
   /** Receives every event from the start of `create`, for as long as the sandbox is in use. */
   onEvent?: EventCallback | PromiseLike<EventCallback>;
 }
@@ -97,6 +103,14 @@ export interface SandboxToolsOptions
 
 export type { BoundTool, ServerContext, Tool };
 
+/** Where a sandbox's build is. */
+export interface SandboxStatus {
+  /** `building` until it can run a command, then `ready`, or `failed` if its build failed. */
+  state: 'building' | 'ready' | 'failed';
+  /** Why the build failed, as AWS says. */
+  reason?: string;
+}
+
 /** A sandbox as `Sandbox.list` finds it. */
 export interface SandboxSummary {
   sandboxId: string;
@@ -110,6 +124,8 @@ export interface SandboxSummary {
   stopsAt?: Date;
   /** What `create` was given as `meta`. */
   meta: Record<string, string>;
+  /** Where its build is. */
+  state: SandboxStatus['state'];
 }
 
 export interface SandboxListOptions extends AwsSandboxOptions {
@@ -229,6 +245,8 @@ export interface Sandbox {
    * copied from stay, for other sandboxes. Safe to call more than once.
    */
   delete(): Promise<void>;
+  /** Where its build is, as AWS says now. */
+  status(): Promise<SandboxStatus>;
   /** Each event from now on. */
   events(): Observable<Event>;
   /**

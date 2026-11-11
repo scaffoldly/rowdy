@@ -4,13 +4,18 @@ import { getSandbox } from '../../../../src/sandbox/internal/mcp/get-sandbox';
 
 const sandboxId = 'arn:aws:lambda:us-east-1:123456789012:microvm-image:builds-bcdf245678';
 
-const setup = () => {
+const setup = (status: { state: string; reason?: string } = { state: 'ready' }) => {
   const own = jest.fn(async (_args: unknown, _ctx: unknown) => ({ content: [] }));
   const tools = (): BoundTool[] => [
     { name: 'run_command', title: '', description: '', inputSchema: {} as never, run: own },
   ];
   const get = jest.fn(
-    (_lookup: unknown) => Promise.resolve({ sandboxId, tools } as unknown as Sandbox) as unknown as SandboxPromise
+    (_lookup: unknown) =>
+      Promise.resolve({
+        sandboxId,
+        tools,
+        status: async () => status,
+      } as unknown as Sandbox) as unknown as SandboxPromise
   );
   const sandboxes = { get } as unknown as SandboxFactory;
   const removed: string[] = [];
@@ -26,8 +31,26 @@ describe('get_sandbox', () => {
   it('looks the sandbox up and answers with it', async () => {
     const { run, get } = setup();
 
-    expect((await run()).structuredContent).toEqual({ sandbox_id: sandboxId });
+    expect((await run()).structuredContent).toEqual({ sandbox_id: sandboxId, state: 'ready' });
     expect(get).toHaveBeenCalledWith({ sandboxId });
+  });
+
+  it('says a sandbox is still building, and when to look again', async () => {
+    const { run } = setup({ state: 'building' });
+
+    const { structuredContent, content } = await run();
+
+    expect(structuredContent).toEqual({ sandbox_id: sandboxId, state: 'building' });
+    expect(content[1]).toEqual({ type: 'text', text: expect.stringContaining('call get_sandbox with its sandbox_id') });
+  });
+
+  it("says why a sandbox's build failed", async () => {
+    const { run } = setup({ state: 'failed', reason: 'ready hook timed out' });
+
+    const { structuredContent, content } = await run();
+
+    expect(structuredContent).toEqual({ sandbox_id: sandboxId, state: 'failed', reason: 'ready hook timed out' });
+    expect(content[1]).toEqual({ type: 'text', text: expect.stringContaining('builds it again') });
   });
 
   it("registers the sandbox's own tools on the call's server, once", async () => {
