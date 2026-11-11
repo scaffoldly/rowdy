@@ -71,10 +71,11 @@ describe('aws microvm compute', () => {
       if (!handler) throw new Error(`unexpected ${name}`);
       return handler(command.input);
     };
-    [compute['iam'], compute['logs'], compute['microvms'], compute['s3'], compute['sts']].forEach((client) => {
+    const { image } = compute as unknown as { image: Record<'iam' | 'logs' | 'microvms' | 's3' | 'sts', Client> };
+    [image.iam, image.logs, image.microvms, image.s3, image.sts, compute['microvms']].forEach((client) => {
       (client as unknown as Client).send = send;
     });
-    jest.spyOn(compute['s3'].config, 'region').mockResolvedValue('us-east-1');
+    jest.spyOn(compute['image']['s3'].config, 'region').mockResolvedValue('us-east-1');
     jest
       .spyOn(compute['environment'].images, 'pullImage')
       .mockReturnValue(of({ Image: 'alpine', ImageUri: IMAGE_URI }));
@@ -581,7 +582,7 @@ describe('aws microvm compute', () => {
         CreateMicrovmAuthTokenCommand: () => ({ authToken: { 'X-aws-proxy-auth': 'token' } }),
         ...handlers,
       });
-      built.compute['imageArn'] = IMAGE_ARN;
+      built.compute['image'].withArn(IMAGE_ARN);
       return { ...built, fetch };
     };
 

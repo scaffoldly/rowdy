@@ -61,7 +61,7 @@ import {
 import { S3Client } from '@aws-sdk/client-s3';
 import { PolicyDocument, Statement } from 'aws-lambda';
 import { createHash, randomUUID } from 'crypto';
-import { AwsClientLogger } from '../logger';
+import { AwsResource } from '../resource';
 import { ensureBucket } from '../s3';
 import { LambdaImageService } from './image';
 import { Image, Transfer } from '../../api/internal/transfer';
@@ -194,7 +194,7 @@ const pullImage = (
     );
 };
 
-export class LambdaFunction extends AwsClientLogger {
+export class LambdaFunction extends AwsResource {
   static functionName(roleId: string, name?: string): string {
     return fit((name || roleId).replace(/[^a-zA-Z0-9_-]/g, '_'));
   }
@@ -217,7 +217,6 @@ export class LambdaFunction extends AwsClientLogger {
   private logs = this.track(new CloudWatchLogsClient({ logger: this, credentials: this.imageService.credentials }));
 
   private type: 'Sandbox' | 'Container';
-  private deleting: boolean = false;
 
   // Reactive Properties
   private Name: BehaviorSubject<string | undefined> = new BehaviorSubject<string | undefined>(undefined);
@@ -311,10 +310,6 @@ export class LambdaFunction extends AwsClientLogger {
 
   isSandbox(): boolean {
     return this.type === 'Sandbox';
-  }
-
-  isDeleting(): boolean {
-    return this.deleting;
   }
 
   get userAgent(): string {
@@ -862,29 +857,6 @@ export class LambdaFunction extends AwsClientLogger {
     );
   }
 
-  observe(): Observable<this> {
-    return new Observable<this>((subscriber) => {
-      this.deleting = false;
-      const { creates, updates, tags } = this.prepare();
-      const subscription = combineLatest(creates)
-        .pipe(
-          takeUntil(fromEvent(this.signal, 'abort')),
-          tap(() => subscriber.next(this)),
-          switchMap(() =>
-            concat(...updates, ...tags).pipe(
-              tap(() => subscriber.next(this)),
-              toArray()
-            )
-          )
-        )
-        .pipe(map(() => this))
-        .subscribe(subscriber);
-      return () => {
-        subscription.unsubscribe();
-      };
-    });
-  }
-
   /**
    * Runs a command in this sandbox, emitting its handle once and completing with the command. Unsubscribing
    * stops waiting and fails the handle; the command runs on until it exits or times out.
@@ -944,27 +916,7 @@ export class LambdaFunction extends AwsClientLogger {
     });
   }
 
-  delete(): Observable<this> {
-    return new Observable<this>((subscriber) => {
-      this.deleting = true;
-      const { deletes } = this.prepare();
-      // In order: a role's policy goes before the role.
-      const subscription = concat(...deletes)
-        .pipe(
-          takeUntil(fromEvent(this.signal, 'abort')),
-          tap(() => subscriber.next(this)),
-          toArray()
-        )
-        .pipe(map(() => this))
-        .subscribe(subscriber);
-
-      return () => {
-        subscription.unsubscribe();
-      };
-    });
-  }
-
-  private prepare(): {
+  protected prepare(): {
     creates: Observable<MetadataBearer>[];
     updates: Observable<MetadataBearer>[];
     tags: Observable<MetadataBearer>[];

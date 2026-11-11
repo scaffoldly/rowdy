@@ -1380,7 +1380,7 @@ describe('sandbox', () => {
     // A microVM sandbox whose commands exit at once, and whose `create` waits for `ready` when given.
     const microvm = (ready?: Promise<void>, failure?: Error) => {
       const imageArn = function (this: MicrovmCompute): Observable<MicrovmCompute> {
-        this['imageArn'] = IMAGE;
+        this['image'].withArn(IMAGE);
         return of(this);
       };
       jest.spyOn(MicrovmCompute.prototype, 'create').mockImplementation(function (this: MicrovmCompute) {
@@ -2257,8 +2257,9 @@ describe('credentials', () => {
     const compute = await created(credentials);
 
     for (const client of ['iam', 'microvms', 's3', 'sts'] as const) {
-      await expect(compute[client].config.credentials()).resolves.toMatchObject(given);
+      await expect(compute['image'][client].config.credentials()).resolves.toMatchObject(given);
     }
+    await expect(compute['microvms'].config.credentials()).resolves.toMatchObject(given);
     expect(credentials).toHaveBeenCalledTimes(1);
   });
 
