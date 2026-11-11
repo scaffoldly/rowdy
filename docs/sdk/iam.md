@@ -160,9 +160,9 @@ Everything the SDK calls for `aws.microvm`, by what it's for.
       "Resource": "arn:aws:ecr:us-east-1:123456789012:repository/*"
     },
     {
-      "Sid": "ReadCommandOutput",
+      "Sid": "SandboxLogs",
       "Effect": "Allow",
-      "Action": ["logs:FilterLogEvents", "logs:StartLiveTail"],
+      "Action": ["logs:CreateLogGroup", "logs:FilterLogEvents", "logs:StartLiveTail"],
       "Resource": "arn:aws:logs:us-east-1:123456789012:log-group:/aws/lambda-microvms/*"
     }
   ]
@@ -185,8 +185,9 @@ Everything the SDK calls for `aws.microvm`, by what it's for.
   AWS checks.
 - **ECR:** an image is copied into a repository named after it, like `library/alpine`, so the
   repository ARN can't be narrower than the account.
-- **CloudWatch Logs:** `read_output` and `sandbox.output()`. `logs:StartLiveTail` is only used with a
-  `timeout`.
+- **CloudWatch Logs:** rowdy makes each sandbox's log group, `/aws/lambda-microvms/{name}`, before it
+  builds, so the sandbox's role can only write to that one. The other two are `read_output` and
+  `sandbox.output()`, and `logs:StartLiveTail` is only used with a `timeout`.
 
 ## The permissions boundary
 
@@ -210,7 +211,7 @@ sandbox's role today.
     {
       "Sid": "WriteSandboxLogs",
       "Effect": "Allow",
-      "Action": ["logs:CreateLogGroup", "logs:CreateLogStream", "logs:PutLogEvents"],
+      "Action": ["logs:CreateLogStream", "logs:PutLogEvents"],
       "Resource": "arn:aws:logs:us-east-1:123456789012:log-group:/aws/lambda-microvms/*"
     },
     {
@@ -239,8 +240,8 @@ For reference, each microVM sandbox gets a role named `{namespace}+{image}@{name
 
 - **Trust:** `lambda.amazonaws.com`, with `sts:AssumeRole` and `sts:TagSession`. It builds the image
   and runs the VM.
-- **`RowdyPolicy`:** `s3:GetObject` on that sandbox's own zip, writing CloudWatch logs, and pulling from
-  that sandbox's own ECR repository.
+- **`RowdyPolicy`:** `s3:GetObject` on that sandbox's own zip, writing to that sandbox's own log group,
+  and pulling from that sandbox's own ECR repository.
 
 ## What rowdy doesn't do yet
 

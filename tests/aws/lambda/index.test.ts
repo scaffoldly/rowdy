@@ -329,6 +329,54 @@ describe('aws lambda schedules', () => {
         Resource: [FUNCTION_ARN, ALIAS_ARN],
       });
     });
+
+    it('writes logs only to its own log group, and makes none', () => {
+      const fn = withCrontab();
+      fn.State.FunctionArn = FUNCTION_ARN;
+      const document = statements(fn['RolePolicyDocument']);
+
+      expect(document.flatMap((s) => s.Action)).not.toContain('logs:CreateLogGroup');
+      expect(document.find((s) => `${s.Action}`.includes('logs:PutLogEvents'))).toEqual({
+        Effect: 'Allow',
+        Action: ['logs:CreateLogStream', 'logs:PutLogEvents'],
+        Resource: ['arn:aws:logs:us-east-1:123456789012:log-group:/aws/lambda/AROAEXAMPLEEXAMPLE12:*'],
+      });
+    });
+  });
+
+  describe('log group', () => {
+    type Sent = { name: string; input: Record<string, unknown> };
+    const make = async (respond: () => Promise<unknown> = () => Promise.resolve({})): Promise<Sent[]> => {
+      const fn = withCrontab();
+      fn['FunctionArn'].next(FUNCTION_ARN);
+      const sent: Sent[] = [];
+      (fn['logs'] as unknown as { send: (command: Sent & { constructor: { name: string } }) => unknown }).send = (
+        command
+      ) => {
+        sent.push({ name: command.constructor.name, input: command.input });
+        return respond();
+      };
+      await lastValueFrom(fn['prepare']().updates[1]!, { defaultValue: undefined });
+      return sent;
+    };
+
+    it("makes the function's log group before its code", async () => {
+      expect(await make()).toEqual([
+        { name: 'CreateLogGroupCommand', input: { logGroupName: '/aws/lambda/AROAEXAMPLEEXAMPLE12' } },
+      ]);
+    });
+
+    it('is fine with one that is there', async () => {
+      await expect(
+        make(() => Promise.reject(Object.assign(new Error('exists'), { name: 'ResourceAlreadyExistsException' })))
+      ).resolves.toHaveLength(1);
+    });
+
+    it("fails the deploy when it can't make one", async () => {
+      await expect(
+        make(() => Promise.reject(Object.assign(new Error('denied'), { name: 'AccessDeniedException' })))
+      ).rejects.toThrow('denied');
+    });
   });
 
   describe('validation', () => {
@@ -807,7 +855,7 @@ describe('aws lambda working directory', () => {
     };
     (fn['lambda'] as unknown as { send: typeof send }).send = send;
 
-    await lastValueFrom(fn['prepare']().updates[1]!);
+    await lastValueFrom(fn['prepare']().updates[2]!);
     return sent.find(({ name }) => name === 'UpdateFunctionConfigurationCommand')!.input;
   };
 
@@ -897,7 +945,7 @@ describe('aws lambda sandbox', () => {
   it('configures a sandbox without an alias, url or schedules', () => {
     const fn = new LambdaFunction('Sandbox', imageService);
 
-    expect(fn['prepare']().updates).toHaveLength(2);
+    expect(fn['prepare']().updates).toHaveLength(3);
   });
 
   it('applies its configuration at $LATEST without publishing', async () => {
@@ -925,7 +973,7 @@ describe('aws lambda sandbox', () => {
     };
     (fn['lambda'] as unknown as { send: typeof send }).send = send;
 
-    await lastValueFrom(fn['prepare']().updates[1]!);
+    await lastValueFrom(fn['prepare']().updates[2]!);
 
     const update = sent.find(({ name }) => name === 'UpdateFunctionConfigurationCommand')!.input;
     expect(update).toMatchObject({ MemorySize: 512, Timeout: 60, ImageConfig: { Command: [] } });
@@ -997,7 +1045,7 @@ describe('aws lambda timeout', () => {
     };
     (fn['lambda'] as unknown as { send: Send }).send = send;
 
-    await lastValueFrom(fn['prepare']().updates[1]!);
+    await lastValueFrom(fn['prepare']().updates[2]!);
     return sent.find(({ name }) => name === 'UpdateFunctionConfigurationCommand')!.input;
   };
 
@@ -1069,7 +1117,7 @@ describe('aws lambda update conflict', () => {
     };
     (fn['lambda'] as unknown as { send: Send }).send = send;
 
-    await lastValueFrom(fn['prepare']().updates[1]!);
+    await lastValueFrom(fn['prepare']().updates[2]!);
     return sent;
   };
 
@@ -1163,7 +1211,7 @@ describe('aws lambda function url', () => {
     };
     (fn['lambda'] as unknown as { send: typeof send }).send = send;
 
-    await lastValueFrom(fn['prepare']().updates[3]!);
+    await lastValueFrom(fn['prepare']().updates[4]!);
     return sent;
   };
 

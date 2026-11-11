@@ -1,4 +1,8 @@
-import type { StartLiveTailCommandInput } from '@aws-sdk/client-cloudwatch-logs';
+import {
+  CloudWatchLogsClient,
+  CreateLogGroupCommand,
+  StartLiveTailCommandInput,
+} from '@aws-sdk/client-cloudwatch-logs';
 import { HeadObjectCommand, PutObjectCommand, S3Client } from '@aws-sdk/client-s3';
 import {
   CreateRoleCommand,
@@ -157,6 +161,7 @@ export class MicrovmCompute extends AwsClientLogger implements SandboxCompute {
   readonly stoppable = true;
 
   private iam = this.track(new IAMClient({ logger: this, credentials: this.environment.credentials }));
+  private logs = this.track(new CloudWatchLogsClient({ logger: this, credentials: this.environment.credentials }));
   private microvms = this.track(new LambdaMicrovmsClient({ logger: this, credentials: this.environment.credentials }));
   private s3 = this.track(new S3Client({ logger: this, credentials: this.environment.credentials }));
   private sts = this.track(new STSClient({ logger: this, credentials: this.environment.credentials }));
@@ -186,13 +191,21 @@ export class MicrovmCompute extends AwsClientLogger implements SandboxCompute {
       baseImageArn: this.baseImage(),
       Region: from(this.s3.config.region()),
       Identity: from(this.sts.send(new GetCallerIdentityCommand({}))),
+      // AWS's own log group for an image of this name. It's made here, so the sandbox's role can't make others.
+      LogGroup: from(this.logs.send(new CreateLogGroupCommand({ logGroupName: `/aws/lambda-microvms/${name}` }))).pipe(
+        catchError((error) => {
+          if (error?.name === 'ResourceAlreadyExistsException') return of(undefined);
+          throw error;
+        })
+      ),
     }).pipe(
       switchMap(({ ImageUri, Bucket, baseImageArn, Region, Identity }) => {
         const RoleName = roleName(Transfer.normalizeImage(image), name);
         const imageIdentifier = `arn:aws:lambda:${Region}:${Identity.Account}:microvm-image:${name}`;
         const Key = `${name}/${ImageUri}.zip`;
+        const LogGroupArn = `arn:aws:logs:${Region}:${Identity.Account}:log-group:/aws/lambda-microvms/${name}`;
 
-        return this.role(RoleName, Bucket, Key, ImageUri).pipe(
+        return this.role(RoleName, Bucket, Key, ImageUri, LogGroupArn).pipe(
           switchMap((buildRoleArn) =>
             this.build(imageIdentifier, Bucket, Key, ImageUri, {
               name,
@@ -513,8 +526,17 @@ export class MicrovmCompute extends AwsClientLogger implements SandboxCompute {
     );
   }
 
-  /** Builds and runs the sandbox, so code in it has this role too: it reads its one zip and pulls its one repository. */
-  private role(RoleName: string, Bucket: string, Key: string, ImageUri: string): Observable<string> {
+  /**
+   * Builds and runs the sandbox, so code in it has this role too: it reads its one zip, writes its one log group and
+   * pulls its one repository.
+   */
+  private role(
+    RoleName: string,
+    Bucket: string,
+    Key: string,
+    ImageUri: string,
+    LogGroupArn: string
+  ): Observable<string> {
     const AssumeRolePolicyDocument = JSON.stringify({
       Version: '2012-10-17',
       Statement: [
@@ -554,8 +576,8 @@ export class MicrovmCompute extends AwsClientLogger implements SandboxCompute {
                   { Effect: 'Allow', Action: ['s3:GetObject'], Resource: `arn:aws:s3:::${Bucket}/${Key}` },
                   {
                     Effect: 'Allow',
-                    Action: ['logs:CreateLogGroup', 'logs:CreateLogStream', 'logs:PutLogEvents'],
-                    Resource: '*',
+                    Action: ['logs:CreateLogStream', 'logs:PutLogEvents'],
+                    Resource: `${LogGroupArn}:*`,
                   },
                   { Effect: 'Allow', Action: ['ecr:GetAuthorizationToken'], Resource: '*' },
                   {
