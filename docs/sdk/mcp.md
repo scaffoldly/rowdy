@@ -31,9 +31,9 @@ tool only says the host ran out, since a command may already have run.
 import { instructions, toolsFor } from '@scaffoldly/rowdy/mcp';
 
 const limits = { runtimes: ['aws.microvm' as const], timeout: 60 * 60 * 1000, sandboxes: 3 };
-const server = new McpServer({ name, version }, { instructions: instructions({ limits, meta: { sub } }) });
+const server = new McpServer({ name, version }, { instructions: instructions({ limits, shared: true }) });
 
-Object.values(toolsFor({ limits, meta: { sub } })).forEach(({ name, run, ...config }) =>
+Object.values(toolsFor({ limits, shared: true })).forEach(({ name, run, ...config }) =>
   server.registerTool(name, config, (input, ctx) =>
     run(Sandbox, input, { ...ctx, server, signal, meta: { sub }, limits })
   )
@@ -42,7 +42,9 @@ Object.values(toolsFor({ limits, meta: { sub } })).forEach(({ name, run, ...conf
 
 With one runtime, `create_sandbox` and `list_sandboxes` take no `runtime`. Ranges and the lifetime a sandbox has
 are said within `limits.timeout` and `limits.memory`. Text about a runtime the host doesn't allow goes, and without
-`aws.microvm`, so do the tools only it has. With a `meta`, the text says "your sandboxes". The same `limits` still
+`aws.microvm`, so do the tools only it has. `shared: true` is for a host whose callers each have their own
+sandboxes, by `meta`, in an account that isn't theirs: the text says "your sandboxes", and the instructions leave
+out what a sandbox costs. The same `limits` still
 have to go on each call, since that's what's checked: `toolsFor` only changes what a model reads.
 
 `create_sandbox` answers once the sandbox is building, with its `state`, so the host's request takes seconds rather

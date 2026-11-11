@@ -3,7 +3,7 @@ import type { z } from 'zod';
 import { instructions, tools, toolsFor } from '../../../src/mcp';
 
 const shape = (schema: unknown): Record<string, z.ZodType> => (schema as z.ZodObject).shape;
-const hosted = { limits: { runtimes: ['aws.microvm' as const], timeout: 3_600_000 }, meta: { sub: 'github:1' } };
+const hosted = { limits: { runtimes: ['aws.microvm' as const], timeout: 3_600_000 }, shared: true };
 
 describe('toolsFor', () => {
   it('is the tools as they are with no host to say them for', () => {
@@ -46,7 +46,7 @@ describe('toolsFor', () => {
     expect(create.memory?.description).toBe('Megabytes: 512, 1024 or 2048.');
   });
 
-  it("says a caller's sandboxes are theirs when meta keeps them apart", () => {
+  it("says a caller's sandboxes are theirs on a shared host", () => {
     const narrowed = toolsFor(hosted);
 
     expect(narrowed.list_sandboxes!.description).toMatch(/^Lists your sandboxes/);
@@ -86,10 +86,19 @@ describe('instructions', () => {
     );
   });
 
-  it("says it's the person's own account, unless meta keeps callers apart", () => {
+  it("says it's the person's own account, and what it costs them, unless the host is shared", () => {
     expect(instructions()).toContain("in the person's own AWS account");
+    expect(instructions()).toContain("A running sandbox costs money until it's stopped");
     expect(instructions(hosted)).not.toContain("person's own");
+    expect(instructions(hosted)).not.toContain('costs money');
+    expect(instructions(hosted)).toContain("Stop a sandbox when you're done with it.");
     expect(instructions(hosted)).toContain('Only your own sandboxes can be seen or used.');
+  });
+
+  it('says what the default image has, on create_sandbox', () => {
+    expect(shape(tools.create_sandbox.inputSchema).image?.description).toContain(
+      'Defaults to scaffoldly/sandbox: Debian with Python, Node'
+    );
   });
 
   it("says how long a sandbox lasts, within the host's cap", () => {
