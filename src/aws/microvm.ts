@@ -5,7 +5,7 @@ import { dirname, resolve } from 'path';
 import { catchError, defer, from, map, NEVER, Observable, of } from 'rxjs';
 import { buffer, text } from 'stream/consumers';
 import { CRI } from '@scaffoldly/rowdy-grpc';
-import { Environment } from '../environment';
+import type { Environment } from '../environment';
 import { log as root, Trace } from '../log';
 import { Chunk, Pipeline, Proxy, Request, Response, Result } from '../pipeline';
 import { EXEC_CONTENT_TYPE, EXEC_STREAM, execFrame, ShellProxy, ShellRequest, ShellResponse } from '../proxy/shell';

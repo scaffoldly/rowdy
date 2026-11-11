@@ -55,6 +55,7 @@ describe('aws microvm compute', () => {
       PutObjectCommand: () => ({}),
       GetCallerIdentityCommand: () => ({ Account: '123456789012' }),
       CreateLogGroupCommand: () => ({}),
+      CreateRoleCommand: () => Promise.reject(missing('EntityAlreadyExistsException')),
       UpdateAssumeRolePolicyCommand: () => ({}),
       GetRoleCommand: () => ({ Role: { Arn: ROLE_ARN } }),
       PutRolePolicyCommand: () => ({}),
@@ -70,10 +71,11 @@ describe('aws microvm compute', () => {
       if (!handler) throw new Error(`unexpected ${name}`);
       return handler(command.input);
     };
-    [compute['iam'], compute['logs'], compute['microvms'], compute['s3'], compute['sts']].forEach((client) => {
+    const { image } = compute as unknown as { image: Record<'iam' | 'logs' | 'microvms' | 's3' | 'sts', Client> };
+    [image.iam, image.logs, image.microvms, image.s3, image.sts, compute['microvms']].forEach((client) => {
       (client as unknown as Client).send = send;
     });
-    jest.spyOn(compute['s3'].config, 'region').mockResolvedValue('us-east-1');
+    jest.spyOn(compute['image']['s3'].config, 'region').mockResolvedValue('us-east-1');
     jest
       .spyOn(compute['environment'].images, 'pullImage')
       .mockReturnValue(of({ Image: 'alpine', ImageUri: IMAGE_URI }));
@@ -304,6 +306,23 @@ describe('aws microvm compute', () => {
 
       await expect(create(compute)).rejects.toThrow(
         'Sandbox sandbox-box failed to build: The container image build failed.'
+      );
+    });
+
+    it('makes its role first, so a host allowed only the sandbox path can make one', async () => {
+      let created = false;
+      // As IAM does for such a host: a role that isn't there is refused, not missing.
+      const { compute, sent } = setup({
+        CreateRoleCommand: () => {
+          created = true;
+          return {};
+        },
+        UpdateAssumeRolePolicyCommand: () => (created ? {} : Promise.reject(missing('AccessDenied'))),
+      });
+
+      await expect(create(compute)).resolves.toBe(compute);
+      expect(names(sent).indexOf('CreateRoleCommand')).toBeLessThan(
+        names(sent).indexOf('UpdateAssumeRolePolicyCommand')
       );
     });
 
@@ -563,7 +582,7 @@ describe('aws microvm compute', () => {
         CreateMicrovmAuthTokenCommand: () => ({ authToken: { 'X-aws-proxy-auth': 'token' } }),
         ...handlers,
       });
-      built.compute['imageArn'] = IMAGE_ARN;
+      built.compute['image'].withArn(IMAGE_ARN);
       return { ...built, fetch };
     };
 
@@ -911,6 +930,33 @@ describe('aws microvm compute', () => {
         });
         expect(input(sent, 'DeleteLogGroupCommand')).toEqual({ logGroupName: '/aws/lambda-microvms/sandbox-box' });
         expect(input(sent, 'DeleteMicrovmImageCommand')).toEqual({ imageIdentifier: IMAGE_ARN });
+      });
+
+      it('waits for its VMs to finish terminating before the image goes', async () => {
+        const refusals = [
+          Object.assign(new Error('Cannot delete microvm image with running microvms.'), {
+            name: 'ValidationException',
+          }),
+        ];
+        const { compute, sent } = deleting({
+          DeleteMicrovmImageCommand: () => (refusals.length ? Promise.reject(refusals.shift()) : {}),
+        });
+
+        await expect(remove(compute)).resolves.toBe(compute);
+        expect(names(sent).filter((name) => name === 'DeleteMicrovmImageCommand')).toHaveLength(2);
+      });
+
+      it('asks AWS for nothing a create does', async () => {
+        const { compute, sent } = deleting();
+
+        await remove(compute);
+
+        [
+          'CreateLogGroupCommand',
+          'GetCallerIdentityCommand',
+          'CreateRoleCommand',
+          'ListManagedMicrovmImagesCommand',
+        ].forEach((name) => expect(names(sent)).not.toContain(name));
       });
 
       it("leaves a role, bucket or log group rowdy didn't make", async () => {

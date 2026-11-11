@@ -22,7 +22,8 @@ import { Agent as HttpAgent } from 'http';
 import { URI } from '../routes';
 import type { ShellExit } from './shell';
 import { HttpHeaders } from './headers';
-import { Rowdy } from '../api';
+import type { Rowdy } from '../api';
+import { RowdyNames } from '../api/names';
 
 export { HttpHeaders };
 
@@ -265,13 +266,13 @@ class RowdyHttpResponse extends HttpResponse {
       uri: Logger.asPrimitive(proxy.uri),
     });
 
-    if (proxy.uri.host === Rowdy.ERROR) {
+    if (proxy.uri.host === RowdyNames.ERROR) {
       const reason = proxy.uri.error || 'Unknown error';
       const status = Number(proxy.uri.port) || 500;
       return of(this.withStatus(status).withHeader('x-reason', reason));
     }
 
-    if (proxy.uri.host === Rowdy.ROUTES) {
+    if (proxy.uri.host === RowdyNames.ROUTES) {
       const { routes } = proxy.pipeline;
       return of(
         this.withStatus(200)
@@ -280,11 +281,11 @@ class RowdyHttpResponse extends HttpResponse {
       );
     }
 
-    if (proxy.uri.host === Rowdy.PING) {
+    if (proxy.uri.host === RowdyNames.PING) {
       return of(this.withStatus(200).withData(Readable.from('pong')));
     }
 
-    if (proxy.uri.host === Rowdy.HEALTH) {
+    if (proxy.uri.host === RowdyNames.HEALTH) {
       return from(proxy.pipeline.routes.health()).pipe(
         map((backends) => {
           const health = {
@@ -299,7 +300,7 @@ class RowdyHttpResponse extends HttpResponse {
       );
     }
 
-    if (proxy.uri.host === Rowdy.VERSION) {
+    if (proxy.uri.host === RowdyNames.VERSION) {
       return this.rowdy.version(proxy).pipe(
         map(({ version, status }) => {
           return this.withStatus(status)
@@ -309,7 +310,7 @@ class RowdyHttpResponse extends HttpResponse {
       );
     }
 
-    if (proxy.uri.host === Rowdy.CRI) {
+    if (proxy.uri.host === RowdyNames.CRI) {
       return this.rowdy.cri(proxy).pipe(
         map(({ status, body, header }) => {
           return this.withStatus(status)
@@ -321,7 +322,7 @@ class RowdyHttpResponse extends HttpResponse {
 
     if (
       proxy.method === 'GET' &&
-      proxy.uri.hostname === Rowdy.HTTP &&
+      proxy.uri.hostname === RowdyNames.HTTP &&
       proxy.uri.port === '307' &&
       proxy.uri.searchParams.has('location')
     ) {
@@ -353,7 +354,7 @@ class RowdyHttpResponse extends HttpResponse {
       );
     }
 
-    if (proxy.uri.hostname === Rowdy.HTTP && Number.isInteger(proxy.uri.port)) {
+    if (proxy.uri.hostname === RowdyNames.HTTP && Number.isInteger(proxy.uri.port)) {
       return of(this.withHeader('x-error', proxy.uri.error).withStatus(Number(proxy.uri.port)));
     }
 

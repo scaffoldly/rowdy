@@ -61,7 +61,7 @@ import {
 import { S3Client } from '@aws-sdk/client-s3';
 import { PolicyDocument, Statement } from 'aws-lambda';
 import { createHash, randomUUID } from 'crypto';
-import { AwsClientLogger } from '../logger';
+import { AwsResource } from '../resource';
 import { ensureBucket } from '../s3';
 import { LambdaImageService } from './image';
 import { Image, Transfer } from '../../api/internal/transfer';
@@ -76,6 +76,7 @@ import {
   filter,
   forkJoin,
   from,
+  iif,
   fromEvent,
   map,
   merge,
@@ -93,7 +94,7 @@ import {
   finalize,
 } from 'rxjs';
 import promiseRetry from 'promise-retry';
-import { Environment } from '../../environment';
+import { concurrency } from '../../concurrency';
 import { Routes } from '../../routes';
 import { Crontab, ExecSchema, Volume } from '../../routes';
 import { Exec } from '../../api/types';
@@ -114,7 +115,7 @@ import {
   roleName,
   ROWDY_BIN,
   SANDBOX_ROLE_PATH,
-} from './shared';
+} from '../shared';
 import { TAG_KEY_REGEX, TAG_VALUE_REGEX } from '../tags';
 
 export { _create, CONFLICT, fit, isNotFound, isPropagating, isTransient, PROPAGATION, ROWDY_BIN };
@@ -193,7 +194,7 @@ const pullImage = (
     );
 };
 
-export class LambdaFunction extends AwsClientLogger {
+export class LambdaFunction extends AwsResource {
   static functionName(roleId: string, name?: string): string {
     return fit((name || roleId).replace(/[^a-zA-Z0-9_-]/g, '_'));
   }
@@ -216,7 +217,6 @@ export class LambdaFunction extends AwsClientLogger {
   private logs = this.track(new CloudWatchLogsClient({ logger: this, credentials: this.imageService.credentials }));
 
   private type: 'Sandbox' | 'Container';
-  private deleting: boolean = false;
 
   // Reactive Properties
   private Name: BehaviorSubject<string | undefined> = new BehaviorSubject<string | undefined>(undefined);
@@ -312,10 +312,6 @@ export class LambdaFunction extends AwsClientLogger {
     return this.type === 'Sandbox';
   }
 
-  isDeleting(): boolean {
-    return this.deleting;
-  }
-
   get userAgent(): string {
     return this.imageService.userAgent;
   }
@@ -343,7 +339,7 @@ export class LambdaFunction extends AwsClientLogger {
         expand((page) =>
           page.NextMarker ? from(lambda.send(new ListFunctionsCommand({ ...input, Marker: page.NextMarker }))) : EMPTY
         ),
-        mergeMap((page) => page.Functions ?? [], Environment.CONCURRENCY) // emits Role objects individually
+        mergeMap((page) => page.Functions ?? [], concurrency()) // emits Role objects individually
       );
 
     const aliases$ =
@@ -353,7 +349,7 @@ export class LambdaFunction extends AwsClientLogger {
           expand((page) =>
             page.NextMarker ? from(lambda.send(new ListAliasesCommand({ ...input, Marker: page.NextMarker }))) : EMPTY
           ),
-          mergeMap((page) => page.Aliases ?? [], Environment.CONCURRENCY) // emits Alias objects individually
+          mergeMap((page) => page.Aliases ?? [], concurrency()) // emits Alias objects individually
         );
 
     return functions$().pipe(
@@ -363,7 +359,7 @@ export class LambdaFunction extends AwsClientLogger {
           from(lambda.send(new ListTagsCommand({ Resource: Function.FunctionArn }))).pipe(
             map(({ Tags }) => ({ Function, Tags }))
           ),
-        Environment.CONCURRENCY
+        concurrency()
       ),
       filter(({ Tags }) => isSubset(tags, Tags || {})),
       mergeMap(({ Function }) => {
@@ -371,12 +367,9 @@ export class LambdaFunction extends AwsClientLogger {
           return new LambdaFunction('Sandbox', imageService).withArn(Function.FunctionArn!);
         }
         return aliases$(Function.FunctionName!)().pipe(
-          mergeMap(
-            (Alias) => new LambdaFunction('Container', imageService).withArn(Alias.AliasArn!),
-            Environment.CONCURRENCY
-          )
+          mergeMap((Alias) => new LambdaFunction('Container', imageService).withArn(Alias.AliasArn!), concurrency())
         );
-      }, Environment.CONCURRENCY)
+      }, concurrency())
     );
   }
 
@@ -781,7 +774,7 @@ export class LambdaFunction extends AwsClientLogger {
           ? from(this.scheduler.send(new ListSchedulesCommand({ ...input, NextToken: page.NextToken })))
           : EMPTY
       ),
-      mergeMap((page) => page.Schedules ?? [], Environment.CONCURRENCY)
+      mergeMap((page) => page.Schedules ?? [], concurrency())
     );
   }
 
@@ -861,29 +854,6 @@ export class LambdaFunction extends AwsClientLogger {
     );
   }
 
-  observe(): Observable<this> {
-    return new Observable<this>((subscriber) => {
-      this.deleting = false;
-      const { creates, updates, tags } = this.prepare();
-      const subscription = combineLatest(creates)
-        .pipe(
-          takeUntil(fromEvent(this.signal, 'abort')),
-          tap(() => subscriber.next(this)),
-          switchMap(() =>
-            concat(...updates, ...tags).pipe(
-              tap(() => subscriber.next(this)),
-              toArray()
-            )
-          )
-        )
-        .pipe(map(() => this))
-        .subscribe(subscriber);
-      return () => {
-        subscription.unsubscribe();
-      };
-    });
-  }
-
   /**
    * Runs a command in this sandbox, emitting its handle once and completing with the command. Unsubscribing
    * stops waiting and fails the handle; the command runs on until it exits or times out.
@@ -943,27 +913,7 @@ export class LambdaFunction extends AwsClientLogger {
     });
   }
 
-  delete(): Observable<this> {
-    return new Observable<this>((subscriber) => {
-      this.deleting = true;
-      const { deletes } = this.prepare();
-      // In order: a role's policy goes before the role.
-      const subscription = concat(...deletes)
-        .pipe(
-          takeUntil(fromEvent(this.signal, 'abort')),
-          tap(() => subscriber.next(this)),
-          toArray()
-        )
-        .pipe(map(() => this))
-        .subscribe(subscriber);
-
-      return () => {
-        subscription.unsubscribe();
-      };
-    });
-  }
-
-  private prepare(): {
+  protected prepare(): {
     creates: Observable<MetadataBearer>[];
     updates: Observable<MetadataBearer>[];
     tags: Observable<MetadataBearer>[];
@@ -997,37 +947,49 @@ export class LambdaFunction extends AwsClientLogger {
           Description: `Execution role to run ${Image.namespace}/${Image.name} in AWS Lambda`,
           Qualifier: _qualifier(Image),
         })),
-        switchMap(({ RoleName, Description, Qualifier }) =>
-          _create(
-            () =>
-              this.iam
-                .send(new UpdateRoleCommand({ RoleName, Description }))
-                .then(() =>
-                  this.iam.send(
-                    new UpdateAssumeRolePolicyCommand({
-                      RoleName,
-                      PolicyDocument: JSON.stringify(this.AssumeRolePolicyDocument),
-                    })
-                  )
-                )
-                .then(() => this.iam.send(new GetRoleCommand({ RoleName }))),
-            () =>
-              this.iam.send(
+        switchMap(({ RoleName, Description, Qualifier }) => {
+          const create = (): Promise<unknown> =>
+            this.iam
+              .send(
                 new CreateRoleCommand({
                   RoleName,
                   ...(this.isSandbox() ? { Path: SANDBOX_ROLE_PATH } : {}),
                   Description,
                   AssumeRolePolicyDocument: JSON.stringify(this.AssumeRolePolicyDocument),
                 })
-              ),
-            (role) => {
-              this.RoleName.next(RoleName);
-              this.RoleArn.next(role.Role!.Arn!);
-              this.RoleId.next(role.Role!.RoleId!);
-              this.Qualifier.next(Qualifier);
-            }
-          )
-        )
+              )
+              .catch((error) => {
+                if (error?.name === 'EntityAlreadyExistsException') return undefined;
+                throw error;
+              });
+          // A sandbox's role is made first: IAM checks a change to a role that isn't there yet against the name with no
+          // path, which a host allowed only the sandbox path can't touch.
+          return iif(() => this.isSandbox(), defer(create), of(undefined)).pipe(
+            switchMap(() =>
+              _create(
+                () =>
+                  this.iam
+                    .send(new UpdateRoleCommand({ RoleName, Description }))
+                    .then(() =>
+                      this.iam.send(
+                        new UpdateAssumeRolePolicyCommand({
+                          RoleName,
+                          PolicyDocument: JSON.stringify(this.AssumeRolePolicyDocument),
+                        })
+                      )
+                    )
+                    .then(() => this.iam.send(new GetRoleCommand({ RoleName }))),
+                create,
+                (role) => {
+                  this.RoleName.next(RoleName);
+                  this.RoleArn.next(role.Role!.Arn!);
+                  this.RoleId.next(role.Role!.RoleId!);
+                  this.Qualifier.next(Qualifier);
+                }
+              )
+            )
+          );
+        })
       ),
       combineLatest({
         Name: this.Name.pipe(take(1)),
@@ -1501,7 +1463,7 @@ export class LambdaFunction extends AwsClientLogger {
               .then(() => this.log.info('Alias Pruned', { alias: Name }))
               .catch((error) => this.log.warn('Alias Prune Failed', { alias: Name, error }))
           ),
-        Environment.CONCURRENCY
+        concurrency()
       ),
       catchError((error) => {
         this.log.warn('Alias Prune Skipped', { error });

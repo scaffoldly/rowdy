@@ -1380,7 +1380,7 @@ describe('sandbox', () => {
     // A microVM sandbox whose commands exit at once, and whose `create` waits for `ready` when given.
     const microvm = (ready?: Promise<void>, failure?: Error) => {
       const imageArn = function (this: MicrovmCompute): Observable<MicrovmCompute> {
-        this['imageArn'] = IMAGE;
+        this['image'].withArn(IMAGE);
         return of(this);
       };
       jest.spyOn(MicrovmCompute.prototype, 'create').mockImplementation(function (this: MicrovmCompute) {
@@ -2093,6 +2093,23 @@ describe('sandbox', () => {
     expect(Object.keys(Sandbox).sort()).toEqual(['create', 'delete', 'get', 'list']);
   });
 
+  it("keeps a Lambda sandbox's id after it is deleted, as a microVM's", async () => {
+    const FUNCTION = 'arn:aws:lambda:us-east-1:123456789012:function:sandbox-bcdf2';
+    observe.mockImplementation(function (this: LambdaFunction) {
+      this.State.FunctionArn = FUNCTION;
+      return of(this);
+    });
+    jest.spyOn(LambdaFunction.prototype, 'delete').mockImplementation(function (this: LambdaFunction) {
+      this.State.FunctionArn = undefined;
+      return of(this);
+    });
+
+    const sandbox = await Sandbox.create({ runtime: 'aws.lambda' });
+    await sandbox.delete();
+
+    expect(sandbox.sandboxId).toBe(FUNCTION);
+  });
+
   it('deletes by lookup, refusing a sandbox the lookup is refused', async () => {
     const remove = jest.fn(async () => {});
     const get = jest.spyOn(SandboxImpl, 'get').mockReturnValue(Promise.resolve({ delete: remove }) as never);
@@ -2257,8 +2274,9 @@ describe('credentials', () => {
     const compute = await created(credentials);
 
     for (const client of ['iam', 'microvms', 's3', 'sts'] as const) {
-      await expect(compute[client].config.credentials()).resolves.toMatchObject(given);
+      await expect(compute['image'][client].config.credentials()).resolves.toMatchObject(given);
     }
+    await expect(compute['microvms'].config.credentials()).resolves.toMatchObject(given);
     expect(credentials).toHaveBeenCalledTimes(1);
   });
 

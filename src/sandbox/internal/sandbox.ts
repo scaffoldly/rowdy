@@ -74,7 +74,7 @@ import { DEFAULTS, SandboxCompute, SandboxComputeClass } from './compute';
 import { SandboxPromiseImpl } from './create';
 import { Credentials } from '../../aws/credentials';
 import { DeleteRoleCommand, DeleteRolePolicyCommand, IAMClient, paginateListRoles } from '@aws-sdk/client-iam';
-import { isNotFound, SANDBOX_ROLE_PATH } from '../../aws/lambda/shared';
+import { isNotFound, SANDBOX_ROLE_PATH } from '../../aws/shared';
 
 // Kubernetes' alphabet for generated names: no vowels, so a name spells no words.
 const ALPHANUMS = 'bcdfghjklmnpqrstvwxz2456789';

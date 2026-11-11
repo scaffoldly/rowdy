@@ -88,6 +88,7 @@ export class LambdaCompute implements SandboxCompute {
   private lambda?: LambdaFunction;
 
   private credentials: AwsSandboxOptions['credentials'];
+  private functionArn?: string;
 
   constructor(environment: SandboxEnvironment) {
     const { log, signal, name, version, credentials } = environment;
@@ -108,7 +109,8 @@ export class LambdaCompute implements SandboxCompute {
   }
 
   get sandboxId(): string {
-    const FunctionArn = this.lambda?.State.FunctionArn;
+    // A deleted sandbox keeps its id, as one on aws.microvm does.
+    const FunctionArn = this.lambda?.State.FunctionArn ?? this.functionArn;
     if (!FunctionArn) {
       throw new Error('Sandbox has no function');
     }
@@ -131,7 +133,10 @@ export class LambdaCompute implements SandboxCompute {
         return defer(() => lambda.observe());
       }),
       last(),
-      map(() => this)
+      map(() => {
+        this.functionArn = this.lambda?.State.FunctionArn;
+        return this;
+      })
     );
   }
 
@@ -148,6 +153,7 @@ export class LambdaCompute implements SandboxCompute {
         if (Configuration?.Environment?.Variables?.ROWDY_SANDBOX !== 'true' || !matches) {
           throw new SandboxError(`Not a sandbox: ${sandboxId}`);
         }
+        this.functionArn = sandboxId;
         return this;
       })
     );

@@ -92,3 +92,14 @@ export class CloudFrontStore extends CdnStore {
     );
   }
 }
+
+/** The store a host target names. Only CloudFront KeyValueStores so far. */
+export const cdnStore = (target: string): CdnStore => {
+  const store = CloudFrontStore.from(target);
+  if (!store) {
+    throw new Error(
+      `Invalid host target '${target}', expected a CloudFront KeyValueStore ARN such as arn:aws:cloudfront::123456789012:key-value-store/<id>`
+    );
+  }
+  return store;
+};

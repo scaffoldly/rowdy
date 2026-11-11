@@ -1,6 +1,6 @@
 import { AsyncSubject, defer, EMPTY, map, NEVER, Observable, of, race, switchMap, tap } from 'rxjs';
 import { Proxy, Pipeline, Request, Response, Result, Chunk } from '../pipeline';
-import { Environment } from '../environment';
+import type { Environment } from '../environment';
 import axios from 'axios';
 import { log as root, Logger, maskHeaders, maskQuery, maskUrl, Trace } from '../log';
 import { APIGatewayProxyEventV2 } from 'aws-lambda';

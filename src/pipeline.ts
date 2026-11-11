@@ -1,6 +1,6 @@
 import { defer, Observable, ReplaySubject } from 'rxjs';
 import { ILoggable, Logger } from './log';
-import { Environment } from './environment';
+import type { Environment } from './environment';
 import { Routes } from './routes';
 import { PassThrough, Readable, Writable } from 'stream';
 import { CRI, GrpcRouter } from '@scaffoldly/rowdy-grpc';

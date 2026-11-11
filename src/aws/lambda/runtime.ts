@@ -1,15 +1,18 @@
 import { ServiceImpl } from '@connectrpc/connect';
 import { CRI } from '@scaffoldly/rowdy-grpc';
-import { Environment } from '../../environment';
+import type { Environment } from '../../environment';
+import { concurrency } from '../../concurrency';
 import { LambdaImageService } from './image';
 import { Logger } from '../../log';
 import { LambdaFunction, tagify } from '.';
 import { catchError, from, lastValueFrom, map, mergeAll, Observable, throwError, toArray } from 'rxjs';
-import { Annotations } from './metadata';
 import { ROWDY_LAYERS } from '../../api/internal/layers';
 
 // eslint-disable-next-line @typescript-eslint/no-empty-object-type
 interface ILambdaRuntimeService extends Partial<ServiceImpl<typeof CRI.RuntimeService>> {}
+
+/** A pod's image annotation with the registry auth for its image. */
+const IMAGE_AUTH_ANNOTATION = 'run.rowdy.image.auth';
 
 export class LambdaRuntimeService implements ILambdaRuntimeService {
   constructor(
@@ -34,7 +37,7 @@ export class LambdaRuntimeService implements ILambdaRuntimeService {
       'Container',
       this.imageService
         .withLayersFrom([ROWDY_LAYERS])
-        .withAuthorization(req.config?.image?.annotations?.[Annotations.Images.ImageAuth])
+        .withAuthorization(req.config?.image?.annotations?.[IMAGE_AUTH_ANNOTATION])
     );
     const name = req.config?.metadata?.name;
     const image = req.config?.image?.image;
@@ -81,7 +84,7 @@ export class LambdaRuntimeService implements ILambdaRuntimeService {
 
     const containers: CRI.Container[] = await lastValueFrom(
       from(functions).pipe(
-        mergeAll(Environment.CONCURRENCY),
+        mergeAll(concurrency()),
         catchError((err) => {
           if (err.name === 'ResourceNotFoundException') {
             return [];

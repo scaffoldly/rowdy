@@ -1,5 +1,5 @@
 import { NEVER, Observable } from 'rxjs';
-import { Environment } from '../environment';
+import type { Environment } from '../environment';
 import { Pipeline, Request } from '../pipeline';
 import { CRI } from '@scaffoldly/rowdy-grpc';
 

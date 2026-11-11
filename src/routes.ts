@@ -23,11 +23,11 @@ import {
   timer,
 } from 'rxjs';
 import { ABORT } from './abort';
-import { Rowdy } from './api';
+import { RowdyNames } from './api/names';
 import { ApiVersion, ApiSchema } from './api/types';
 import { join } from 'path';
 import { Cors, CorsPaths } from './cors';
-import { cdnStore } from './cdn';
+import { cdnStore } from './cdn/cloudfront/store';
 import { specList } from './util/list';
 
 export type RoutePaths = { [key: string]: string | undefined };
@@ -173,7 +173,7 @@ export class URI extends URL implements ILoggable {
   }
 
   static fromError(error: Error, code?: number): URI {
-    return URI.from(`rowdy://${Rowdy.ERROR}${code ? `:${code}` : ''}/`).withSearch(URI.ERROR, error.message);
+    return URI.from(`rowdy://${RowdyNames.ERROR}${code ? `:${code}` : ''}/`).withSearch(URI.ERROR, error.message);
   }
 
   async health(timeoutMs?: number): Promise<URIHealth> {
@@ -585,20 +585,20 @@ export class Routes implements IRoutes, ILoggable {
 
   static empty(): Routes {
     return new Routes()
-      .withPath(`${Rowdy.PATHS.VERSION}`, `rowdy://${Rowdy.VERSION}/`)
-      .withPath(`${Rowdy.PATHS.HEALTH}`, `rowdy://${Rowdy.HEALTH}/`)
-      .withPath(`${Rowdy.PATHS.PING}`, `rowdy://${Rowdy.PING}/`);
+      .withPath(`${RowdyNames.PATHS.VERSION}`, `rowdy://${RowdyNames.VERSION}/`)
+      .withPath(`${RowdyNames.PATHS.HEALTH}`, `rowdy://${RowdyNames.HEALTH}/`)
+      .withPath(`${RowdyNames.PATHS.PING}`, `rowdy://${RowdyNames.PING}/`);
   }
 
   static default(): Routes {
     return Routes.empty()
-      .withPath(`/${Rowdy.SLUG}/200`, `rowdy://${Rowdy.HTTP}:200/`)
-      .withPath(`/${Rowdy.SLUG}/204`, `rowdy://${Rowdy.HTTP}:204/`)
-      .withPath(`/${Rowdy.SLUG}/400`, `rowdy://${Rowdy.HTTP}:400/`)
-      .withPath(`/${Rowdy.SLUG}/404`, `rowdy://${Rowdy.HTTP}:401/`)
-      .withPath(`/${Rowdy.SLUG}/500`, `rowdy://${Rowdy.HTTP}:500/`)
-      .withPath(Rowdy.PATHS.CRI, Rowdy.TARGETS.CRI)
-      .withPath(`/${Rowdy.SLUG}/${Rowdy.ROUTES}`, `rowdy://${Rowdy.ROUTES}/`)
+      .withPath(`/${RowdyNames.SLUG}/200`, `rowdy://${RowdyNames.HTTP}:200/`)
+      .withPath(`/${RowdyNames.SLUG}/204`, `rowdy://${RowdyNames.HTTP}:204/`)
+      .withPath(`/${RowdyNames.SLUG}/400`, `rowdy://${RowdyNames.HTTP}:400/`)
+      .withPath(`/${RowdyNames.SLUG}/404`, `rowdy://${RowdyNames.HTTP}:401/`)
+      .withPath(`/${RowdyNames.SLUG}/500`, `rowdy://${RowdyNames.HTTP}:500/`)
+      .withPath(RowdyNames.PATHS.CRI, RowdyNames.TARGETS.CRI)
+      .withPath(`/${RowdyNames.SLUG}/${RowdyNames.ROUTES}`, `rowdy://${RowdyNames.ROUTES}/`)
       .withDefault('rowdy://http:404/');
   }
 
