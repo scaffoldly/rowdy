@@ -24,6 +24,27 @@ have: past it, `create_sandbox` refuses, and tells the model to use one it has o
 [Errors](sandbox.md#errors). A `create_sandbox` that hits the cap tells the model to make the same call again. Any other
 tool only says the host ran out, since a command may already have run.
 
+`tools` say both runtimes and their full ranges, which is right for `rowdy mcp`. A host with `limits` registers
+`toolsFor` instead, said for those limits, and gives its server `instructions` for the same:
+
+```ts
+import { instructions, toolsFor } from '@scaffoldly/rowdy/mcp';
+
+const limits = { runtimes: ['aws.microvm' as const], timeout: 60 * 60 * 1000, sandboxes: 3 };
+const server = new McpServer({ name, version }, { instructions: instructions({ limits, meta: { sub } }) });
+
+Object.values(toolsFor({ limits, meta: { sub } })).forEach(({ name, run, ...config }) =>
+  server.registerTool(name, config, (input, ctx) =>
+    run(Sandbox, input, { ...ctx, server, signal, meta: { sub }, limits })
+  )
+);
+```
+
+With one runtime, `create_sandbox` and `list_sandboxes` take no `runtime`. Ranges and the lifetime a sandbox has
+are said within `limits.timeout` and `limits.memory`. Text about a runtime the host doesn't allow goes, and without
+`aws.microvm`, so do the tools only it has. With a `meta`, the text says "your sandboxes". The same `limits` still
+have to go on each call, since that's what's checked: `toolsFor` only changes what a model reads.
+
 `create_sandbox` answers once the sandbox is building, with its `state`, so the host's request takes seconds rather
 than the build's two minutes. `get_sandbox` says whether it's `building`, `ready` or `failed`, with AWS's `reason`
 for a failed build, and `list_sandboxes` gives each one's `state`. A command before the sandbox is ready fails at

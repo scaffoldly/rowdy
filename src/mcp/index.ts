@@ -39,49 +39,19 @@
  */
 import { Logger } from '../log';
 import type { SandboxFactory } from '../sandbox';
-import { createSandbox } from '../sandbox/internal/mcp/create-sandbox';
-import { deleteSandbox } from '../sandbox/internal/mcp/delete-sandbox';
-import { getSandbox } from '../sandbox/internal/mcp/get-sandbox';
-import { listSandboxes } from '../sandbox/internal/mcp/list-sandboxes';
-import { makeDirectory } from '../sandbox/internal/mcp/make-directory';
-import { readFile } from '../sandbox/internal/mcp/read-file';
-import { readOutput } from '../sandbox/internal/mcp/read-output';
-import { runCommand } from '../sandbox/internal/mcp/run-command';
-import { stopSandbox } from '../sandbox/internal/mcp/stop-sandbox';
-import { writeFile } from '../sandbox/internal/mcp/write-file';
+import { toolsFor, type ToolName } from './internal/tools-for';
 import type { Tool } from './internal/types';
 
 export type { ServerContext, Tool } from './internal/types';
 export { registerTools } from '../sandbox/internal/mcp/create-sandbox';
+export { instructions, toolsFor } from './internal/tools-for';
+export type { ToolName, ToolsForOptions } from './internal/tools-for';
 
 // A host's stdout is its own, even for a tool that fails before it reaches a sandbox.
 new Logger('sandbox').withSink('stderr');
 
 /**
  * Every tool, unbound, keyed by its name. Each `run` takes the SDK it acts on, first. They're typed alike, so a host can
- * register `Object.values(tools)` in one loop, or pick some by name.
+ * register `Object.values(tools)` in one loop, or pick some by name. `toolsFor` says them for one host's limits.
  */
-export const tools: Record<
-  | 'create_sandbox'
-  | 'get_sandbox'
-  | 'list_sandboxes'
-  | 'stop_sandbox'
-  | 'delete_sandbox'
-  | 'run_command'
-  | 'read_output'
-  | 'read_file'
-  | 'write_file'
-  | 'make_directory',
-  Tool<SandboxFactory>
-> = {
-  create_sandbox: createSandbox,
-  get_sandbox: getSandbox,
-  list_sandboxes: listSandboxes,
-  stop_sandbox: stopSandbox,
-  delete_sandbox: deleteSandbox,
-  run_command: runCommand,
-  read_output: readOutput,
-  read_file: readFile,
-  write_file: writeFile,
-  make_directory: makeDirectory,
-};
+export const tools = toolsFor() as Record<ToolName, Tool<SandboxFactory>>;
