@@ -17,6 +17,7 @@ const outputSchema = z.object({
       running: z.boolean().optional().describe('Whether its microVM is up. Missing on aws.lambda.'),
       started_at: z.string().optional().describe('When the microVM started.'),
       stops_at: z.string().optional().describe("When the microVM's timeout stops it."),
+      state: z.enum(['building', 'ready', 'failed']).describe('Whether it can run a command yet.'),
     })
   ),
 });
@@ -39,13 +40,14 @@ export const listSandboxes: Tool<SandboxFactory, typeof inputSchema, typeof outp
       ).flat();
 
       return toolResult(outputSchema, {
-        sandboxes: sandboxes.map(({ sandboxId, name, runtime: on, running, startedAt, stopsAt }) => ({
+        sandboxes: sandboxes.map(({ sandboxId, name, runtime: on, running, startedAt, stopsAt, state }) => ({
           sandbox_id: sandboxId,
           name,
           runtime: on,
           running,
           started_at: startedAt?.toISOString(),
           stops_at: stopsAt?.toISOString(),
+          state,
         })),
       });
     },

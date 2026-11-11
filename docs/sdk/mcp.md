@@ -24,6 +24,11 @@ have: past it, `create_sandbox` refuses, and tells the model to use one it has o
 [Errors](sandbox.md#errors). A `create_sandbox` that hits the cap tells the model to make the same call again. Any other
 tool only says the host ran out, since a command may already have run.
 
+`create_sandbox` answers once the sandbox is building, with its `state`, so the host's request takes seconds rather
+than the build's two minutes. `get_sandbox` says whether it's `building`, `ready` or `failed`, with AWS's `reason`
+for a failed build, and `list_sandboxes` gives each one's `state`. A command before the sandbox is ready fails at
+once, saying so. Progress notifications still cover what `create_sandbox` does itself, such as copying the image.
+
 `credentials`, set per call, are what that call's AWS clients act as, such as the caller's own role from the
 token their request came with:
 

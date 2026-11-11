@@ -18,7 +18,7 @@ import {
 import { ROWDY_LAYERS } from '../../api/internal/layers';
 import { Exec, ExecOutput, ExecOutputOptions } from '../../api/types';
 import type { Event } from '../../events';
-import type { AwsSandboxOptions, SandboxSummary } from '../../sandbox';
+import type { AwsSandboxOptions, SandboxStatus, SandboxSummary } from '../../sandbox';
 import type { ExecSchema } from '../../routes';
 import { ComputeSpec, SandboxCompute, SandboxError } from '../../sandbox/internal/compute';
 import { META_TAG, TAG_KEY_REGEX, TAG_VALUE_REGEX } from '../tags';
@@ -59,13 +59,14 @@ export class LambdaCompute implements SandboxCompute {
       // Only a function deployed as a sandbox runs commands.
       filter(({ Environment: env }) => env?.Variables?.ROWDY_SANDBOX === 'true'),
       mergeMap(
-        ({ FunctionArn, FunctionName }) =>
+        ({ FunctionArn, FunctionName, State }) =>
           from(lambda.send(new ListTagsCommand({ Resource: FunctionArn }))).pipe(
             map(
               ({ Tags }): SandboxSummary => ({
                 sandboxId: FunctionArn!,
                 name: FunctionName!,
                 runtime: 'aws.lambda',
+                state: State === 'Failed' ? 'failed' : State === 'Pending' ? 'building' : 'ready',
                 meta: Object.fromEntries(
                   Object.entries(Tags ?? {})
                     .filter(([key]) => key.startsWith(META_TAG))
@@ -175,6 +176,16 @@ export class LambdaCompute implements SandboxCompute {
 
   stop(): Observable<this> {
     return throwError(() => new SandboxError('stop is not implemented on runtime aws.lambda'));
+  }
+
+  status(): Observable<SandboxStatus> {
+    return this.lambda$.pipe(
+      map((lambda): SandboxStatus => {
+        const { State, StateReason } = lambda.Status.Configuration ?? {};
+        if (State === 'Failed') return { state: 'failed', reason: StateReason };
+        return { state: State === 'Pending' ? 'building' : 'ready' };
+      })
+    );
   }
 
   delete(): Observable<this> {

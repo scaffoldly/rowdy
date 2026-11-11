@@ -10,6 +10,7 @@ import {
   map,
   merge,
   startWith,
+  switchMap,
   takeUntil,
 } from 'rxjs';
 import { z } from 'zod';
@@ -108,15 +109,25 @@ const inputSchema = z.object({
 
 const outputSchema = z.object({
   sandbox_id: z.string().describe('Pass to the tools that take one. Its own tools need none.'),
+  state: z
+    .enum(['building', 'ready', 'failed'])
+    .describe('building until it can run a command, then ready, or failed if its build failed.'),
 });
+
+/** What a model does about a sandbox that isn't ready. */
+export const NOT_READY = {
+  building: "It's building: call get_sandbox with its sandbox_id until it's ready, about two minutes the first time.",
+  failed: 'Its build failed: create_sandbox with the same options builds it again.',
+};
 
 export const createSandbox: Tool<SandboxFactory, typeof inputSchema, typeof outputSchema> = safeTool(
   {
     name: 'create_sandbox',
     title: 'Create sandbox',
     description:
-      'Creates a sandbox to run commands in. The same options return the same sandbox, so give a ' +
-      'new name for a separate one. The first sandbox for an image can take about two minutes.',
+      'Creates a sandbox to run commands in, and answers once it is building. get_sandbox says when it is ' +
+      'ready, about two minutes the first time for an image. The same options return the same sandbox, so ' +
+      'give a new name for a separate one.',
     inputSchema,
     outputSchema,
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: true },
@@ -162,6 +173,8 @@ export const createSandbox: Tool<SandboxFactory, typeof inputSchema, typeof outp
         pollInterval,
         credentials,
         signal,
+        // Answered while it builds, so a host's request doesn't wait out the build.
+        wait: false,
       } as SandboxOptions);
 
       const progressToken = ctx.mcpReq._meta?.progressToken;
@@ -169,13 +182,18 @@ export const createSandbox: Tool<SandboxFactory, typeof inputSchema, typeof outp
       return lastValueFrom(
         merge(
           from(created).pipe(
-            map((sandbox) => {
-              const result = toolResult(outputSchema, { sandbox_id: sandbox.sandboxId });
-              const names = registerSandbox(sandbox, sandbox.sandboxId, ctx);
-              // A client can list the new tools late, or not at all, until it hears they changed.
-              if (names.length) result.content.push({ type: 'text', text: `Its tools: ${names.join(', ')}.` });
-              return result;
-            })
+            switchMap((sandbox) =>
+              from(sandbox.status()).pipe(
+                map(({ state }) => {
+                  const result = toolResult(outputSchema, { sandbox_id: sandbox.sandboxId, state });
+                  if (state !== 'ready') result.content.push({ type: 'text', text: NOT_READY[state] });
+                  const names = registerSandbox(sandbox, sandbox.sandboxId, ctx);
+                  // A client can list the new tools late, or not at all, until it hears they changed.
+                  if (names.length) result.content.push({ type: 'text', text: `Its tools: ${names.join(', ')}.` });
+                  return result;
+                })
+              )
+            )
           ),
           iif(
             () => progressToken === undefined,

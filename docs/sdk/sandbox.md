@@ -73,6 +73,7 @@ const sandbox = await Sandbox.create({
 | `pollInterval` | 5000, 250 to stop    | Milliseconds between checks on a microVM sandbox as it builds, starts or stops. Each is a request to AWS. |
 | `credentials`  | the AWS SDK's chain  | What its AWS clients act as. See [AWS credentials](../sdk.md#aws-credentials).                            |
 | `signal`       |                      | See [Aborting](#aborting).                                                                                |
+| `wait`         | `true`               | Whether `create` waits for the build. See below.                                                          |
 
 A private image is read with the credentials `docker login` saved for its registry.
 
@@ -86,6 +87,15 @@ shares the first one's VM. A different `name` or value gives a sandbox of its ow
 `create` resolves when the sandbox is ready for a command, with nothing running yet. On `aws.microvm` the
 first build takes about two minutes, and a repeat takes seconds. A new rowdy release counts as a new
 image, so the next `create` builds again.
+
+With `wait: false`, an `aws.microvm` sandbox resolves as soon as AWS is building its image, which suits a host
+that can't hold a request open for two minutes. `status()` says where the build is: `building`, `ready`, or
+`failed` with AWS's `reason`. A command before it's ready rejects. `aws.lambda` always waits.
+
+```ts
+const sandbox = await Sandbox.create({ image: 'node:24', wait: false });
+while ((await sandbox.status()).state === 'building') await new Promise((r) => setTimeout(r, 10_000));
+```
 
 ## `runCommand`
 
@@ -248,7 +258,7 @@ const running = (await Sandbox.list({ runtime: 'aws.microvm' })).filter(({ runni
 | `meta`    | Only sandboxes whose `meta` has every one of these entries. |
 | `signal`  | Rejects the listing.                                        |
 
-Each has its `sandboxId`, `name`, `runtime` and `meta`. A microVM sandbox also says whether it's `running`, and if it is, `startedAt` and `stopsAt`, when its `timeout` ends it. A Lambda sandbox is billed only while a command runs, so it has neither.
+Each has its `sandboxId`, `name`, `runtime`, `meta` and `state`, as `status()` says it but without a `reason`. A microVM sandbox also says whether it's `running`, and if it is, `startedAt` and `stopsAt`, when its `timeout` ends it. A Lambda sandbox is billed only while a command runs, so it has neither.
 
 ## Meta
 

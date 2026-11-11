@@ -22,6 +22,7 @@ const SPEC: ComputeSpec = {
   env: { A: 'b' },
   meta: {},
   layersFrom: [],
+  wait: true,
 };
 
 type Sent = { name: string; input: Record<string, unknown> };
@@ -270,6 +271,30 @@ describe('aws microvm compute', () => {
       await create(compute);
 
       expect(names(sent).filter((name) => name === 'GetMicrovmImageVersionCommand')).toHaveLength(3);
+    });
+
+    describe('without waiting', () => {
+      const start = (compute: MicrovmCompute): Promise<MicrovmCompute> =>
+        lastValueFrom(compute.create({ ...SPEC, wait: false }));
+
+      it('resolves once the build has started, with the sandbox', async () => {
+        const { compute, sent } = setup({ GetMicrovmImageVersionCommand: () => ({ state: 'IN_PROGRESS' }) });
+
+        await expect(start(compute)).resolves.toBe(compute);
+        expect(compute.sandboxId).toBe(IMAGE_ARN);
+        expect(names(sent)).toContain('CreateMicrovmImageCommand');
+        expect(names(sent)).not.toContain('GetMicrovmImageVersionCommand');
+      });
+
+      it('leaves a build already running to finish', async () => {
+        const { compute, sent } = setup({ GetMicrovmImageCommand: () => ({ state: 'CREATING' }) });
+
+        await start(compute);
+
+        expect(names(sent).filter((name) => name === 'GetMicrovmImageCommand')).toHaveLength(1);
+        expect(names(sent)).not.toContain('CreateMicrovmImageCommand');
+        expect(names(sent)).not.toContain('UpdateMicrovmImageCommand');
+      });
     });
 
     it('rejects with why a build failed', async () => {
@@ -796,6 +821,46 @@ describe('aws microvm compute', () => {
 
     it('needs a sandbox', async () => {
       await expect(lastValueFrom(setup().compute.exec(EVENT))).rejects.toThrow('Sandbox has no image');
+    });
+
+    describe('status', () => {
+      const status = (compute: MicrovmCompute) => lastValueFrom(compute.status());
+
+      it.each([
+        [{ state: 'CREATING' }, { state: 'building' }],
+        [{ state: 'UPDATING', latestActiveImageVersion: '1.0' }, { state: 'building' }],
+        [{ state: 'CREATED', latestActiveImageVersion: '1.0' }, { state: 'ready' }],
+        [{ state: 'UPDATED', latestActiveImageVersion: '2.0' }, { state: 'ready' }],
+      ])('makes an image %j into %j', async (image, expected) => {
+        const { compute } = running({ GetMicrovmImageCommand: () => image });
+
+        expect(await status(compute)).toEqual(expected);
+      });
+
+      it('says why a build failed', async () => {
+        const { compute, sent } = running({
+          GetMicrovmImageCommand: () => ({ state: 'CREATE_FAILED', latestFailedImageVersion: '1.0' }),
+          GetMicrovmImageVersionCommand: () => ({ state: 'FAILED', stateReason: 'ready hook timed out' }),
+        });
+
+        expect(await status(compute)).toEqual({ state: 'failed', reason: 'ready hook timed out' });
+        expect(input(sent, 'GetMicrovmImageVersionCommand')).toEqual({
+          imageIdentifier: IMAGE_ARN,
+          imageVersion: '1.0',
+        });
+      });
+    });
+
+    describe('before its build is done', () => {
+      it.each([
+        ['CREATING', 'still building'],
+        ['CREATE_FAILED', 'failed to build'],
+      ])('refuses a command on an image that is %s', async (state, message) => {
+        const { compute, sent } = running({ GetMicrovmImageCommand: () => ({ state }) });
+
+        await expect(lastValueFrom(compute.exec(EVENT))).rejects.toThrow(message);
+        expect(names(sent)).not.toContain('RunMicrovmCommand');
+      });
     });
 
     describe('delete', () => {

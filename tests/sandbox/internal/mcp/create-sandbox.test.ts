@@ -7,7 +7,10 @@ import { PROGRESS, createSandbox } from '../../../../src/sandbox/internal/mcp/cr
 
 const sandboxId = 'arn:aws:lambda:us-east-1:123456789012:microvm-image:sandbox-bcdf245678';
 
-const setup = (create: (event$: Subject<Event>) => Promise<Sandbox> = async () => ({ sandboxId }) as Sandbox) => {
+const setup = (
+  create: (event$: Subject<Event>) => Promise<Sandbox> = async () =>
+    ({ sandboxId, status: async () => ({ state: 'ready' }) }) as unknown as Sandbox
+) => {
   const event$ = new Subject<Event>();
   const spy = jest.fn((() =>
     Object.assign(create(event$), { events: () => event$ })) as unknown as SandboxFactory['create']);
@@ -38,9 +41,19 @@ describe('create_sandbox', () => {
     const { run } = setup();
 
     expect(await run()).toEqual({
-      content: [{ type: 'text', text: JSON.stringify({ sandbox_id: sandboxId }) }],
-      structuredContent: { sandbox_id: sandboxId },
+      content: [{ type: 'text', text: JSON.stringify({ sandbox_id: sandboxId, state: 'ready' }) }],
+      structuredContent: { sandbox_id: sandboxId, state: 'ready' },
     });
+  });
+
+  it("answers while it builds, and says what to do until it's ready", async () => {
+    const { run, passed } = setup(async () => ({ sandboxId, status: async () => ({ state: 'building' }) }) as never);
+
+    const { structuredContent, content } = await run();
+
+    expect(passed()).toMatchObject({ wait: false });
+    expect(structuredContent).toEqual({ sandbox_id: sandboxId, state: 'building' });
+    expect(content[1]).toEqual({ type: 'text', text: expect.stringContaining('call get_sandbox') });
   });
 
   it('passes its input on', async () => {
@@ -62,7 +75,7 @@ describe('create_sandbox', () => {
 
     await run();
 
-    expect(passed()).toEqual({});
+    expect(passed()).toEqual({ wait: false });
   });
 
   it('rejects when the SDK rejects', async () => {
@@ -86,13 +99,15 @@ describe('create_sandbox', () => {
 
     const slow = async (): Promise<Sandbox> => {
       await new Promise((resolve) => setTimeout(resolve, 20));
-      return { sandboxId } as Sandbox;
+      return { sandboxId, status: async () => ({ state: 'ready' }) } as unknown as Sandbox;
     };
 
     it('notifies a client that asked, while it builds', async () => {
       let built: (sandbox: Sandbox) => void = () => {};
       const { run, notify } = setup(() => new Promise((resolve) => (built = resolve)));
-      notify.mockImplementation(async () => built({ sandboxId } as Sandbox));
+      notify.mockImplementation(async () =>
+        built({ sandboxId, status: async () => ({ state: 'ready' }) } as unknown as Sandbox)
+      );
 
       await run({}, { progressToken: 'token' });
 
@@ -120,7 +135,7 @@ describe('create_sandbox', () => {
       event$.next(step);
       event$.next({ ...step, lifecycle: 'failed', message: 'CreateFunction: failed' });
       await new Promise((resolve) => setTimeout(resolve, 5));
-      return { sandboxId } as Sandbox;
+      return { sandboxId, status: async () => ({ state: 'ready' }) } as unknown as Sandbox;
     };
 
     it('notifies at once, before anything slow', async () => {
@@ -157,7 +172,7 @@ describe('create_sandbox', () => {
           summary: '40%',
         });
         await new Promise((resolve) => setTimeout(resolve, 5));
-        return { sandboxId } as Sandbox;
+        return { sandboxId, status: async () => ({ state: 'ready' }) } as unknown as Sandbox;
       });
 
       await run({}, { progressToken: 'token' });

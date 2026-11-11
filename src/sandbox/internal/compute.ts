@@ -2,7 +2,7 @@ import type { Observable } from 'rxjs';
 import type { Exec, ExecOutput, ExecOutputOptions } from '../../api/types';
 import type { SandboxEnvironment } from './environment';
 import type { Event } from '../../events';
-import type { AwsSandboxOptions, FileRange, SandboxSummary } from '..';
+import type { AwsSandboxOptions, FileRange, SandboxStatus, SandboxSummary } from '..';
 import type { ExecSchema } from '../../routes';
 
 /** A sandbox can't do this, and trying again won't change that. */
@@ -25,6 +25,8 @@ export type ComputeSpec = {
   meta: Record<string, string>;
   /** Images whose layer goes into the sandbox's, after rowdy's. */
   layersFrom: string[];
+  /** Whether `create` waits until a command can run, or only until the build has started. */
+  wait: boolean;
 };
 
 /** Where a sandbox runs. */
@@ -45,6 +47,8 @@ export interface SandboxCompute {
   stop(): Observable<this>;
   /** Emits once, when the sandbox and what rowdy made for it are gone. Safe to call more than once. */
   delete(): Observable<this>;
+  /** Emits once, with where its build is. */
+  status(): Observable<SandboxStatus>;
   /** Emits once, when the file is written. */
   writeFile(path: string, content: Uint8Array, mode: number | undefined, signal: AbortSignal): Observable<void>;
   /** Emits the file's bytes once, or null when it isn't there. */

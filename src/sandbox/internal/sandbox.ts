@@ -14,6 +14,7 @@ import type {
   SandboxLookup,
   SandboxFactory,
   SandboxOptions,
+  SandboxStatus,
   SandboxSummary,
   Tool,
   Event,
@@ -177,9 +178,9 @@ export class SandboxImpl implements Sandbox {
           iif(() => signal.aborted, of(signal), fromEvent(signal, 'abort')).pipe(
             switchMap(() => throwError(() => signal.reason))
           ),
-          defer(() => sandbox.compute.create({ image, name, timeout, memory, env, meta, layersFrom })).pipe(
-            map(() => sandbox.stoppingOnAbort())
-          )
+          defer(() =>
+            sandbox.compute.create({ image, name, timeout, memory, env, meta, layersFrom, wait: options?.wait ?? true })
+          ).pipe(map(() => sandbox.stoppingOnAbort()))
         );
       }).pipe(
         // Work starts after this returns, so `.events()` on the result sees the first step.
@@ -432,6 +433,12 @@ export class SandboxImpl implements Sandbox {
 
   async stop(): Promise<void> {
     await lastValueFrom(this.compute.stop()).catch((error) => {
+      throw humanize(error);
+    });
+  }
+
+  async status(): Promise<SandboxStatus> {
+    return lastValueFrom(this.compute.status()).catch((error) => {
       throw humanize(error);
     });
   }

@@ -61,7 +61,7 @@ import {
   throwIfEmpty,
   toArray,
 } from 'rxjs';
-import type { AwsSandboxOptions, FileRange, SandboxSummary } from '../../sandbox';
+import type { AwsSandboxOptions, FileRange, SandboxStatus, SandboxSummary } from '../../sandbox';
 import { ROWDY_LAYERS } from '../../api/internal/layers';
 import { Transfer } from '../../api/internal/transfer';
 import { Exec, ExecOutput, ExecOutputOptions } from '../../api/types';
@@ -118,7 +118,7 @@ export class MicrovmCompute extends AwsClientLogger implements SandboxCompute {
           // A deleted sandbox's image lingers for a while.
           filter(({ state }) => state !== 'DELETING' && state !== 'DELETED'),
           mergeMap(
-            ({ imageArn, name }) =>
+            ({ imageArn, name, state, latestActiveImageVersion }) =>
               from(microvms.send(new ListTagsCommand({ Resource: imageArn }))).pipe(
                 // An image of the account's own, not a sandbox, has no compute tag.
                 filter(({ Tags }) => Tags?.[COMPUTE_TAG] === 'microvm'),
@@ -140,6 +140,11 @@ export class MicrovmCompute extends AwsClientLogger implements SandboxCompute {
                         .filter(([key]) => key.startsWith(META_TAG))
                         .map(([key, value]) => [key.slice(META_TAG.length), value])
                     ),
+                    state: state?.endsWith('FAILED')
+                      ? 'failed'
+                      : latestActiveImageVersion && !state?.endsWith('ING')
+                        ? 'ready'
+                        : 'building',
                   };
                 })
               ),
@@ -194,7 +199,7 @@ export class MicrovmCompute extends AwsClientLogger implements SandboxCompute {
     return this.imageArn;
   }
 
-  create({ image, name, timeout, memory, env, meta, layersFrom }: ComputeSpec): Observable<this> {
+  create({ image, name, timeout, memory, env, meta, layersFrom, wait }: ComputeSpec): Observable<this> {
     return forkJoin({
       ImageUri: this.pull(image, layersFrom),
       Bucket: ownedBucket(this.s3, this.log, BUCKET_PREFIX, BUCKET_OWNER),
@@ -217,7 +222,7 @@ export class MicrovmCompute extends AwsClientLogger implements SandboxCompute {
 
         return this.role(RoleName, Bucket, Key, ImageUri, LogGroupArn).pipe(
           switchMap((buildRoleArn) =>
-            this.build(imageIdentifier, Bucket, Key, ImageUri, {
+            this.build(imageIdentifier, Bucket, Key, ImageUri, wait, {
               name,
               baseImageArn,
               buildRoleArn,
@@ -398,6 +403,22 @@ export class MicrovmCompute extends AwsClientLogger implements SandboxCompute {
     );
   }
 
+  status(): Observable<SandboxStatus> {
+    const imageIdentifier = this.sandboxId;
+    return defer(() => this.microvms.send(new GetMicrovmImageCommand({ imageIdentifier }))).pipe(
+      switchMap(({ state, latestActiveImageVersion, latestFailedImageVersion: imageVersion }) => {
+        if ((state === 'CREATE_FAILED' || state === 'UPDATE_FAILED') && imageVersion) {
+          return from(this.microvms.send(new GetMicrovmImageVersionCommand({ imageIdentifier, imageVersion }))).pipe(
+            map(({ stateReason }): SandboxStatus => ({ state: 'failed', reason: stateReason }))
+          );
+        }
+        return of<SandboxStatus>({
+          state: latestActiveImageVersion && !state?.endsWith('ING') ? 'ready' : 'building',
+        });
+      })
+    );
+  }
+
   delete(): Observable<this> {
     const imageIdentifier = this.sandboxId;
     const name = imageIdentifier.split(':').pop();
@@ -472,6 +493,14 @@ export class MicrovmCompute extends AwsClientLogger implements SandboxCompute {
     const region = imageIdentifier.split(':')[3];
 
     const start$ = defer(() => this.microvms.send(new GetMicrovmImageCommand({ imageIdentifier }))).pipe(
+      map((image) => {
+        if (image.latestActiveImageVersion) return image;
+        throw new SandboxError(
+          image.state?.endsWith('FAILED')
+            ? 'This sandbox failed to build: create it again to retry.'
+            : "This sandbox is still building, so it can't run a command yet. Try again in a minute."
+        );
+      }),
       switchMap(({ latestActiveImageVersion: imageVersion, tags }) =>
         from(this.microvms.send(new ListMicrovmsCommand({ imageIdentifier }))).pipe(
           switchMap(({ items = [] }) => {
@@ -656,6 +685,7 @@ export class MicrovmCompute extends AwsClientLogger implements SandboxCompute {
     Bucket: string,
     Key: string,
     ImageUri: string,
+    wait: boolean,
     spec: CreateMicrovmImageCommandInput
   ): Observable<string> {
     const Body = zipSync({
@@ -664,10 +694,16 @@ export class MicrovmCompute extends AwsClientLogger implements SandboxCompute {
     const etag = `"${createHash('md5').update(Body).digest('hex')}"`;
 
     return forkJoin({
-      image: this.settled(imageIdentifier),
+      // Without waiting, one that's building already is left to finish.
+      image: wait
+        ? this.settled(imageIdentifier)
+        : defer(() => this.microvms.send(new GetMicrovmImageCommand({ imageIdentifier }))).pipe(
+            catchError((error) => (isNotFound(error) ? of(undefined) : throwError(() => error)))
+          ),
       head: from(this.s3.send(new HeadObjectCommand({ Bucket, Key }))).pipe(catchError(() => of(undefined))),
     }).pipe(
       switchMap(({ image, head }) => {
+        if (!wait && image?.state?.endsWith('ING')) return of(image.latestActiveImageVersion ?? '');
         const built = image?.state === 'CREATED' || image?.state === 'UPDATED';
         if (built && head?.ETag === etag && image.latestActiveImageVersion) {
           this.log.debug('Sandbox Image Reused', { version: image.latestActiveImageVersion });
@@ -689,7 +725,9 @@ export class MicrovmCompute extends AwsClientLogger implements SandboxCompute {
               PROPAGATION
             )
           ),
-          switchMap(({ imageVersion }) => this.version(imageIdentifier, spec.name!, imageVersion!))
+          switchMap(({ imageVersion }) =>
+            wait ? this.version(imageIdentifier, spec.name!, imageVersion!) : of(imageVersion!)
+          )
         );
       })
     );
