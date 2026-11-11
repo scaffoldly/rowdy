@@ -64,6 +64,9 @@ export const _create = <T>(
     .pipe(tap((res) => cb?.(res)));
 };
 
+/** Where a sandbox's role is, so a host's permissions can cover sandbox roles without the roles of deployed apps. */
+export const SANDBOX_ROLE_PATH = '/rowdy/sandbox/';
+
 /** The execution role's name for an image, and for a name a sandbox or deploy gives it. */
 export const roleName = (image: Image, name?: string): string =>
   name

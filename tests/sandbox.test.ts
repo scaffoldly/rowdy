@@ -29,6 +29,7 @@ import type { ServerContext } from '@modelcontextprotocol/server';
 import { PassThrough } from 'stream';
 import { ROWDY_LAYERS } from '../src/api/internal/layers';
 import { CreateRepositoryCommand } from '@aws-sdk/client-ecr';
+import { IAMClient } from '@aws-sdk/client-iam';
 import { LambdaCompute } from '../src/aws/lambda/compute';
 import { AwsRegistry } from '../src/aws/registry';
 import type { Event as SandboxEvent } from '../src/events';
@@ -2108,7 +2109,44 @@ describe('sandbox', () => {
     get.mockReturnValue(
       Promise.reject(Object.assign(new Error('gone'), { name: 'ResourceNotFoundException' })) as never
     );
+    jest.spyOn(IAMClient.prototype, 'send').mockResolvedValue({ Roles: [] } as never);
     await expect(Sandbox.delete(lookup)).resolves.toBeUndefined();
+  });
+
+  it("deletes the role of a sandbox whose create failed before it had an image, and only that one's", async () => {
+    jest
+      .spyOn(SandboxImpl, 'get')
+      .mockReturnValue(
+        Promise.reject(Object.assign(new Error('gone'), { name: 'ResourceNotFoundException' })) as never
+      );
+    const sent: { name: string; input: Record<string, unknown> }[] = [];
+    jest.spyOn(IAMClient.prototype, 'send').mockImplementation(((command: {
+      constructor: { name: string };
+      input: Record<string, unknown>;
+    }) => {
+      sent.push({ name: command.constructor.name, input: command.input });
+      return Promise.resolve(
+        command.constructor.name === 'ListRolesCommand'
+          ? {
+              Roles: [
+                { RoleName: 'library+alpine@box-bcdf2.rowdy.run' },
+                { RoleName: 'library+alpine@other-ghjk4.rowdy.run' },
+              ],
+            }
+          : {}
+      );
+    }) as never);
+
+    await Sandbox.delete({ sandboxId: 'arn:aws:lambda:us-east-1:123456789012:microvm-image:box-bcdf2' });
+
+    expect(sent).toEqual([
+      { name: 'ListRolesCommand', input: { PathPrefix: '/rowdy/sandbox/' } },
+      {
+        name: 'DeleteRolePolicyCommand',
+        input: { RoleName: 'library+alpine@box-bcdf2.rowdy.run', PolicyName: 'RowdyPolicy' },
+      },
+      { name: 'DeleteRoleCommand', input: { RoleName: 'library+alpine@box-bcdf2.rowdy.run' } },
+    ]);
   });
 
   it('feeds its signal to its environment', async () => {

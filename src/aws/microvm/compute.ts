@@ -70,7 +70,16 @@ import { Logger } from '../../log';
 import { ExecSchema } from '../../routes';
 import { ComputeSpec, MICROVM_MEMORY, SandboxCompute, SandboxError } from '../../sandbox/internal/compute';
 import { META_TAG, TAG_KEY_REGEX, TAG_VALUE_REGEX } from '../tags';
-import { _create, isNotFound, isPropagating, isTransient, PROPAGATION, roleName, ROWDY_BIN } from '../lambda/shared';
+import {
+  _create,
+  isNotFound,
+  isPropagating,
+  isTransient,
+  PROPAGATION,
+  roleName,
+  ROWDY_BIN,
+  SANDBOX_ROLE_PATH,
+} from '../lambda/shared';
 import { AwsClientLogger } from '../logger';
 import { EXEC_LOG } from '../../proxy/frames';
 import { execOf, execOutput, framesOf } from '../exec';
@@ -644,6 +653,7 @@ export class MicrovmCompute extends AwsClientLogger implements SandboxCompute {
         this.iam.send(
           new CreateRoleCommand({
             RoleName,
+            Path: SANDBOX_ROLE_PATH,
             Description: 'Builds and runs a rowdy sandbox',
             AssumeRolePolicyDocument,
           })
