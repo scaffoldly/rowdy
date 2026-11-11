@@ -12,11 +12,9 @@ import type {
   Sandbox,
   SandboxListOptions,
   SandboxLookup,
-  SandboxFactory,
   SandboxOptions,
   SandboxStatus,
   SandboxSummary,
-  Tool,
   Event,
 } from '..';
 import { isAxiosError } from 'axios';
@@ -57,19 +55,10 @@ import {
 import type { Exec, ExecFrame } from '../../api/types';
 import { SandboxEnvironment } from './environment';
 import { Logger, maskUrl } from '../../log';
-import { describeError, humanize } from '../../aws/errors';
+import { humanize } from '../../aws/errors';
 import { LambdaCompute } from '../../aws/lambda/compute';
 import { MicrovmCompute } from '../../aws/microvm/compute';
-import { safeTool } from '../../mcp/internal/tool';
-import type { BoundTool } from '../../mcp/internal/types';
 import { EXEC_STREAM } from '../../proxy/frames';
-import { runCommand } from './mcp/run-command';
-import { makeDirectory } from './mcp/make-directory';
-import { readFile } from './mcp/read-file';
-import { readOutput } from './mcp/read-output';
-import { writeFile } from './mcp/write-file';
-import { stopSandbox } from './mcp/stop-sandbox';
-import { deleteSandbox } from './mcp/delete-sandbox';
 import { DEFAULTS, SandboxCompute, SandboxComputeClass } from './compute';
 import { SandboxPromiseImpl } from './create';
 import { Credentials } from '../../aws/credentials';
@@ -271,41 +260,6 @@ export class SandboxImpl implements Sandbox {
 
   get sandboxId(): string {
     return this.compute.sandboxId;
-  }
-
-  tools(found: SandboxPromiseImpl = new SandboxPromiseImpl(Promise.resolve(this), this)): BoundTool[] {
-    // Files are aws.microvm only.
-    const microvm = this.compute instanceof MicrovmCompute;
-    const tools: Tool<SandboxFactory>[] = [
-      runCommand,
-      readOutput,
-      ...(microvm ? [readFile, writeFile, makeDirectory] : []),
-      ...(this.compute.stoppable ? [stopSandbox] : []),
-      deleteSandbox,
-    ];
-    // Every lookup is this sandbox, and the sandbox_id is this one's, so a model can't name another.
-    const sandboxes: SandboxFactory = {
-      create: (options) => SandboxImpl.create(options),
-      get: () => found,
-      list: (options) => SandboxImpl.list(options),
-      delete: async () => (await found).delete(),
-    };
-
-    // Waiting for the sandbox_id is the wait for the sandbox, and a failed build is this call's error.
-    return tools.map((tool): BoundTool => {
-      const { run } = safeTool(
-        {
-          ...tool,
-          run: async (sdk, input, ctx) => tool.run(sdk, { ...input, sandbox_id: (await found).sandboxId }, ctx),
-        } satisfies Tool<SandboxFactory>,
-        describeError
-      );
-      return {
-        ...tool,
-        inputSchema: tool.inputSchema.omit({ sandbox_id: true }),
-        run: (input, ctx) => run(sandboxes, input, ctx),
-      };
-    });
   }
 
   runCommand(cmd: string, args?: string[], options?: RunCommandOptions): Promise<CommandFinished>;

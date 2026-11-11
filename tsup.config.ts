@@ -4,16 +4,16 @@ const shared: Options = {
   sourcemap: 'inline',
   target: 'esnext',
   shims: true,
-  // `rowdy mcp` loads its server on demand: everything else, a cold start included, shouldn't parse it.
+  // A sandbox loads Lambda's deployer on demand: everything else, a cold start included, shouldn't parse it.
   splitting: true,
-  // tsup leaves peers external by default. These are optional, so requiring one at load would crash without it.
-  noExternal: ['zod', '@modelcontextprotocol/server', 'rxjs'],
+  // tsup leaves peers external by default. rxjs is optional, so requiring it at load would crash without it.
+  noExternal: ['rxjs'],
 };
 
 export default defineConfig([
   {
     ...shared,
-    entry: ['src/index.ts', 'src/sandbox/index.ts', 'src/mcp/index.ts'],
+    entry: ['src/index.ts', 'src/sandbox/index.ts', 'src/sandbox/core.ts'],
     dts: { resolve: [/^@scaffoldly\/rowdy-cdk/] },
     format: ['cjs'],
     cjsInterop: true,
@@ -21,7 +21,7 @@ export default defineConfig([
   // An ESM host, like a Cloudflare Worker, has no `__filename` or `require` for the CommonJS build to use.
   {
     ...shared,
-    entry: { 'sandbox/index': 'src/sandbox/index.ts', 'mcp/index': 'src/mcp/index.ts' },
+    entry: { 'sandbox/index': 'src/sandbox/index.ts', 'sandbox/core': 'src/sandbox/core.ts' },
     outDir: 'dist/esm',
     format: ['esm'],
     // A Worker has no `import.meta.url` either, so a shim for `__dirname` would crash at load.

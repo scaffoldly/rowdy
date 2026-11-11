@@ -1,5 +1,4 @@
 import { isServerError, isThrottlingError, isTransientError } from '@smithy/core/retry';
-import type { ToolFailure } from '../mcp/internal/types';
 import { SandboxError } from '../sandbox/internal/compute';
 
 // The ones that arrive without a 401 or 403.
@@ -20,8 +19,11 @@ const NEXT = {
 /** What a Cloudflare Worker throws once a request has sent all the requests it may. */
 export const OUT_OF_REQUESTS = /too many subrequests/i;
 
+/** What an error says once it's safe to show, and what to do about it, if anything. */
+export type ErrorDescription = { message: string; remedy?: 'retry' | 'ask' | 'none' };
+
 /** What a caller outside the account can read of an error from AWS, and what to do about it. */
-export const describeError = (error: unknown): ToolFailure => {
+export const describeError = (error: unknown): ErrorDescription => {
   const failure = error instanceof Error ? error : new Error(`${error}`);
   // AWS's messages carry account IDs and role names. What a person was told to do is for a person.
   const message = Object.values(NEXT)

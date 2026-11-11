@@ -97,6 +97,15 @@ const sandbox = await Sandbox.create({ image: 'node:24', wait: false });
 while ((await sandbox.status()).state === 'building') await new Promise((r) => setTimeout(r, 10_000));
 ```
 
+What `create` returns has the sandbox's methods before it resolves. Each waits for the sandbox, then calls it,
+and a failed `create` is each call's rejection. Until then, a failed `create` isn't an unhandled rejection.
+
+```ts
+const sandbox = Sandbox.create({ image: 'node:24' });
+const result = await sandbox.runCommand('node', ['--version']);
+await sandbox.stop();
+```
+
 ## `runCommand`
 
 ```ts
@@ -427,9 +436,19 @@ A `create` that hits the cap partway keeps what finished in AWS: the image layer
 build. The same `create` again goes on from there, so a big image can take a few calls. A larger `pollInterval`
 spends fewer requests waiting on the build.
 
-## MCP tools
+`@scaffoldly/rowdy/sandbox/core` has what a host needs without the AWS clients, about 6 KB gzipped, for a
+Cloudflare Worker that only describes sandboxes or their errors:
 
-The tools for a model that manages its own sandboxes are in `@scaffoldly/rowdy/mcp`: see [mcp.md](mcp.md).
+| Export            |                                                                                                       |
+| ----------------- | ----------------------------------------------------------------------------------------------------- |
+| `describeError`   | `{ message, remedy }`, with ARNs and account IDs masked. `remedy` is `retry`, `ask`, `none` or unset. |
+| `humanize`        | The same error, its message saying what to do next, as `create` and the rest reject with.             |
+| `SandboxError`    | What rowdy rejects with when calling again won't help. `describeError` gives it `remedy: none`.       |
+| `OUT_OF_REQUESTS` | Matches the error a host's cap on outgoing requests gives.                                            |
+| `DEFAULTS`        | `timeout` and `memory` when the options don't set them.                                               |
+| `MICROVM_MEMORY`  | The `memory` sizes `aws.microvm` takes.                                                               |
+
+`@scaffoldly/rowdy/sandbox` exports these too.
 
 ## Not there yet
 

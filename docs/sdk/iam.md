@@ -187,7 +187,7 @@ Everything the SDK calls for `aws.microvm`, by what it's for.
 - **IAM:** the host role can only create, change, pass and delete roles under the path `/rowdy/sandbox/`,
   where rowdy puts every sandbox's role, and only create them with the boundary attached. It can't change
   the boundary. The roles of apps rowdy deploys sit at the root path, `/`, so it can't touch them, whatever
-  they're named. `iam:DeleteRolePolicy` and `iam:DeleteRole` are for `delete()` and `delete_sandbox`.
+  they're named. `iam:DeleteRolePolicy` and `iam:DeleteRole` are for `delete()`.
   `iam:ListRoles`, which can't be scoped to a path, finds the role a create left when it failed before
   the sandbox had an image.
 - **S3:** one bucket per account, `rowdy-sandboxes-{random}`, found again by its tag, holds each
@@ -198,7 +198,7 @@ Everything the SDK calls for `aws.microvm`, by what it's for.
   repository ARN can't be narrower than the account.
 - **CloudWatch Logs:** rowdy makes each sandbox's log group, `/aws/lambda-microvms/{name}`, before it
   builds, so the sandbox's role can only write to that one, and deletes it with the sandbox. The rest are
-  for `read_output` and `sandbox.output()`, and `logs:StartLiveTail` is only used with a `timeout`.
+  for `sandbox.output()`, and `logs:StartLiveTail` is only used with a `timeout`.
 
 ## The permissions boundary
 
