@@ -53,6 +53,7 @@ describe('aws microvm compute', () => {
       HeadObjectCommand: () => Promise.reject(missing('NotFound')),
       PutObjectCommand: () => ({}),
       GetCallerIdentityCommand: () => ({ Account: '123456789012' }),
+      CreateLogGroupCommand: () => ({}),
       UpdateAssumeRolePolicyCommand: () => ({}),
       GetRoleCommand: () => ({ Role: { Arn: ROLE_ARN } }),
       PutRolePolicyCommand: () => ({}),
@@ -68,7 +69,7 @@ describe('aws microvm compute', () => {
       if (!handler) throw new Error(`unexpected ${name}`);
       return handler(command.input);
     };
-    [compute['iam'], compute['microvms'], compute['s3'], compute['sts']].forEach((client) => {
+    [compute['iam'], compute['logs'], compute['microvms'], compute['s3'], compute['sts']].forEach((client) => {
       (client as unknown as Client).send = send;
     });
     jest.spyOn(compute['s3'].config, 'region').mockResolvedValue('us-east-1');
@@ -325,6 +326,39 @@ describe('aws microvm compute', () => {
         Action: ['ecr:BatchCheckLayerAvailability', 'ecr:GetDownloadUrlForLayer', 'ecr:BatchGetImage'],
         Resource: 'arn:aws:ecr:us-east-1:123456789012:repository/scaffoldly/sandbox',
       });
+    });
+
+    it('makes the log group, and the role writes only to it', async () => {
+      const { compute, sent } = setup();
+
+      await create(compute);
+
+      expect(input(sent, 'CreateLogGroupCommand')).toEqual({ logGroupName: '/aws/lambda-microvms/sandbox-box' });
+      expect(names(sent).indexOf('CreateLogGroupCommand')).toBeLessThan(
+        names(sent).indexOf('CreateMicrovmImageCommand')
+      );
+      const { Statement } = JSON.parse(`${input(sent, 'PutRolePolicyCommand').PolicyDocument}`);
+      expect(Statement[1]).toEqual({
+        Effect: 'Allow',
+        Action: ['logs:CreateLogStream', 'logs:PutLogEvents'],
+        Resource: 'arn:aws:logs:us-east-1:123456789012:log-group:/aws/lambda-microvms/sandbox-box:*',
+      });
+    });
+
+    it('is fine with a log group that is there', async () => {
+      const { compute, sent } = setup({
+        CreateLogGroupCommand: () => Promise.reject(missing('ResourceAlreadyExistsException')),
+      });
+
+      await create(compute);
+
+      expect(names(sent)).toContain('CreateMicrovmImageCommand');
+    });
+
+    it("rejects when it can't make the log group", async () => {
+      const { compute } = setup({ CreateLogGroupCommand: () => Promise.reject(missing('AccessDeniedException')) });
+
+      await expect(create(compute)).rejects.toMatchObject({ name: 'AccessDeniedException' });
     });
   });
 

@@ -1,5 +1,9 @@
 import { MetadataBearer } from '@smithy/types';
-import type { StartLiveTailCommandInput } from '@aws-sdk/client-cloudwatch-logs';
+import {
+  CloudWatchLogsClient,
+  CreateLogGroupCommand,
+  StartLiveTailCommandInput,
+} from '@aws-sdk/client-cloudwatch-logs';
 import {
   CreateRoleCommand,
   GetRoleCommand,
@@ -206,6 +210,7 @@ export class LambdaFunction extends AwsClientLogger {
   private invoker = new LambdaClient({ maxAttempts: 1, credentials: this.imageService.credentials });
   private scheduler = this.track(new SchedulerClient({ logger: this, credentials: this.imageService.credentials }));
   private s3 = this.track(new S3Client({ logger: this, credentials: this.imageService.credentials }));
+  private logs = this.track(new CloudWatchLogsClient({ logger: this, credentials: this.imageService.credentials }));
 
   private type: 'Sandbox' | 'Container';
   private deleting: boolean = false;
@@ -1215,6 +1220,21 @@ export class LambdaFunction extends AwsClientLogger {
           )
         )
       ),
+      // Log Group: made here, so the function's role can't make others.
+      this.FunctionArn.pipe(
+        take(1),
+        switchMap((FunctionArn) =>
+          FunctionArn
+            ? from(
+                this.logs.send(new CreateLogGroupCommand({ logGroupName: `/aws/lambda/${FunctionArn.split(':')[6]}` }))
+              )
+            : EMPTY
+        ),
+        catchError((error) => {
+          if (error?.name === 'ResourceAlreadyExistsException') return EMPTY;
+          throw error;
+        })
+      ),
       // Function Configuration & Code
       combineLatest({
         FunctionArn: this.FunctionArn.pipe(take(1)),
@@ -1509,10 +1529,6 @@ export class LambdaFunction extends AwsClientLogger {
         {
           Action: [
             // Standard Execution Actions
-            'logs:CreateLogStream',
-            'logs:CreateLogGroup',
-            'logs:TagResource',
-            'logs:PutLogEvents',
             'xray:PutTraceSegments',
             'xray:PutTelemetryRecords',
             'ec2:CreateNetworkInterface',
@@ -1529,6 +1545,16 @@ export class LambdaFunction extends AwsClientLogger {
     };
 
     const { FunctionArn, Qualifier } = this.State;
+
+    if (FunctionArn) {
+      // The function's own log group, which rowdy makes before it runs.
+      const [, , , region, account, , name] = FunctionArn.split(':');
+      document.Statement.push({
+        Effect: 'Allow',
+        Action: ['logs:CreateLogStream', 'logs:PutLogEvents'],
+        Resource: [`arn:aws:logs:${region}:${account}:log-group:/aws/lambda/${name}:*`],
+      });
+    }
 
     if (this.Crontab.length && FunctionArn) {
       // DEVNOTE: What a schedule's Target.RoleArn uses to invoke this function.
