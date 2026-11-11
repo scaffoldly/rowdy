@@ -45,7 +45,7 @@ import { EXEC_LOG } from '../../proxy/frames';
 import { execOf, execOutput, framesOf } from '../exec';
 import { EXEC_ID_HEADER, EXEC_PATH, FILES_PATH, HOOKS_PORT } from './hooks';
 import { concurrency } from '../../concurrency';
-import { COMPUTE_TAG, MicrovmImage, POLL, TIMEOUT_TAG } from './image';
+import { COMPUTE_TAG, MicrovmImage, POLL, TIMEOUT_TAG } from './index';
 
 const DEAD: ReadonlyArray<string> = ['TERMINATING', 'TERMINATED'];
 
