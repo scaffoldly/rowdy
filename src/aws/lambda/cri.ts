@@ -1,7 +1,7 @@
 import { CriCollection } from '@scaffoldly/rowdy-grpc';
 import { LambdaImageService } from './image';
 import { LambdaRuntimeService } from './runtime';
-import { Environment } from '../../environment';
+import type { Environment } from '../../environment';
 
 export class LambdaCri extends CriCollection {
   private readonly image: LambdaImageService = new LambdaImageService(this.environment);

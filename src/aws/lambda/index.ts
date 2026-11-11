@@ -94,7 +94,7 @@ import {
   finalize,
 } from 'rxjs';
 import promiseRetry from 'promise-retry';
-import { Environment } from '../../environment';
+import { concurrency } from '../../concurrency';
 import { Routes } from '../../routes';
 import { Crontab, ExecSchema, Volume } from '../../routes';
 import { Exec } from '../../api/types';
@@ -339,7 +339,7 @@ export class LambdaFunction extends AwsResource {
         expand((page) =>
           page.NextMarker ? from(lambda.send(new ListFunctionsCommand({ ...input, Marker: page.NextMarker }))) : EMPTY
         ),
-        mergeMap((page) => page.Functions ?? [], Environment.CONCURRENCY) // emits Role objects individually
+        mergeMap((page) => page.Functions ?? [], concurrency()) // emits Role objects individually
       );
 
     const aliases$ =
@@ -349,7 +349,7 @@ export class LambdaFunction extends AwsResource {
           expand((page) =>
             page.NextMarker ? from(lambda.send(new ListAliasesCommand({ ...input, Marker: page.NextMarker }))) : EMPTY
           ),
-          mergeMap((page) => page.Aliases ?? [], Environment.CONCURRENCY) // emits Alias objects individually
+          mergeMap((page) => page.Aliases ?? [], concurrency()) // emits Alias objects individually
         );
 
     return functions$().pipe(
@@ -359,7 +359,7 @@ export class LambdaFunction extends AwsResource {
           from(lambda.send(new ListTagsCommand({ Resource: Function.FunctionArn }))).pipe(
             map(({ Tags }) => ({ Function, Tags }))
           ),
-        Environment.CONCURRENCY
+        concurrency()
       ),
       filter(({ Tags }) => isSubset(tags, Tags || {})),
       mergeMap(({ Function }) => {
@@ -367,12 +367,9 @@ export class LambdaFunction extends AwsResource {
           return new LambdaFunction('Sandbox', imageService).withArn(Function.FunctionArn!);
         }
         return aliases$(Function.FunctionName!)().pipe(
-          mergeMap(
-            (Alias) => new LambdaFunction('Container', imageService).withArn(Alias.AliasArn!),
-            Environment.CONCURRENCY
-          )
+          mergeMap((Alias) => new LambdaFunction('Container', imageService).withArn(Alias.AliasArn!), concurrency())
         );
-      }, Environment.CONCURRENCY)
+      }, concurrency())
     );
   }
 
@@ -777,7 +774,7 @@ export class LambdaFunction extends AwsResource {
           ? from(this.scheduler.send(new ListSchedulesCommand({ ...input, NextToken: page.NextToken })))
           : EMPTY
       ),
-      mergeMap((page) => page.Schedules ?? [], Environment.CONCURRENCY)
+      mergeMap((page) => page.Schedules ?? [], concurrency())
     );
   }
 
@@ -1466,7 +1463,7 @@ export class LambdaFunction extends AwsResource {
               .then(() => this.log.info('Alias Pruned', { alias: Name }))
               .catch((error) => this.log.warn('Alias Prune Failed', { alias: Name, error }))
           ),
-        Environment.CONCURRENCY
+        concurrency()
       ),
       catchError((error) => {
         this.log.warn('Alias Prune Skipped', { error });

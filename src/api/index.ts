@@ -2,48 +2,17 @@ import { defer, map, Observable, switchMap } from 'rxjs';
 import { Pipeline } from '../pipeline';
 import { HttpProxy } from '../proxy/http';
 import { Logger } from '../log';
+import { RowdyNames } from './names';
 import axios, { AxiosInstance } from 'axios';
 import { authenticator } from '../util/axios';
 import { ImageApi } from './image';
 import { IApi, IImageApi, TRegistry } from './types';
-import { Environment } from '../environment';
+import type { Environment } from '../environment';
 // import { RoutePaths } from '../routes';
 import { CRI, GrpcResponse } from '@scaffoldly/rowdy-grpc';
 import { Readable } from 'stream';
 
-export class Rowdy implements IApi {
-  static readonly SLUG = '@rowdy';
-  static readonly ERROR = 'error';
-  static readonly HTTP = 'http';
-  static readonly CRI = 'cri';
-  static readonly HEALTH = 'health';
-  static readonly PING = 'ping';
-  static readonly ROUTES = 'routes';
-  static readonly VERSION = 'version';
-
-  static readonly CRON = 'cron';
-
-  static readonly HEADERS = {
-    // DEVNOTE: A trusted signal. Rowdy strips any inbound value, so its presence proves the
-    // request originated from one of this deployment's own schedules.
-    CRON: 'x-rowdy-cron',
-  };
-
-  static readonly PREFIXES = {
-    CRI: `/${Rowdy.SLUG}/${Rowdy.CRI}`,
-  };
-
-  static readonly PATHS = {
-    CRI: `${Rowdy.PREFIXES.CRI}{/*path}`,
-    VERSION: `/${Rowdy.SLUG}/${Rowdy.VERSION}`,
-    HEALTH: `/${Rowdy.SLUG}/${Rowdy.HEALTH}`,
-    PING: `/${Rowdy.SLUG}/${Rowdy.PING}`,
-  };
-
-  static readonly TARGETS = {
-    CRI: `rowdy://${Rowdy.CRI}/*path`,
-  };
-
+export class Rowdy extends RowdyNames implements IApi {
   public readonly http: AxiosInstance = axios.create();
 
   private _images: IImageApi = new ImageApi(this);
@@ -53,6 +22,7 @@ export class Rowdy implements IApi {
     public readonly log: Logger,
     public readonly signal: AbortSignal
   ) {
+    super();
     const auth = authenticator(this.http, this.log);
     this.http.interceptors.request.use(...auth.request);
     this.http.interceptors.response.use(...auth.response);
