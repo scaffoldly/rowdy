@@ -83,11 +83,6 @@ export const registerTools = async (
   );
 };
 
-/** What a sandbox comes with, for the tools that register its own. */
-export const OWN_TOOLS =
-  'It gets tools of its own, named with the end of its sandbox_id, like run_command_bcdf245678: run_command ' +
-  'and read_output, and on aws.microvm read_file, write_file, make_directory and stop_sandbox.';
-
 /** How often a client hears that a build is still going, with or without events, in milliseconds. */
 export const PROGRESS = { delay: 15000 };
 
@@ -120,7 +115,7 @@ export const createSandbox: Tool<SandboxFactory, typeof inputSchema, typeof outp
     name: 'create_sandbox',
     title: 'Create sandbox',
     description:
-      `Creates a sandbox to run commands in. ${OWN_TOOLS} The same options return the same sandbox, so give a ` +
+      'Creates a sandbox to run commands in. The same options return the same sandbox, so give a ' +
       'new name for a separate one. The first sandbox for an image can take about two minutes.',
     inputSchema,
     outputSchema,

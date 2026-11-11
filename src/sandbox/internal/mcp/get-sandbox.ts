@@ -4,7 +4,7 @@ import type { SandboxFactory } from '../..';
 import { describeError } from '../../../aws/errors';
 import { safeTool, toolResult } from '../../../mcp/internal/tool';
 import type { Tool } from '../../../mcp/internal/types';
-import { OWN_TOOLS, registerSandbox } from './create-sandbox';
+import { registerSandbox } from './create-sandbox';
 
 const inputSchema = z.object({
   sandbox_id: z.string().describe('From create_sandbox or list_sandboxes.'),
@@ -19,8 +19,8 @@ export const getSandbox: Tool<SandboxFactory, typeof inputSchema, typeof outputS
     name: 'get_sandbox',
     title: 'Get sandbox',
     description:
-      "Gives a sandbox that already exists, like one from list_sandboxes, its tools again when you don't have " +
-      `them. ${OWN_TOOLS} Doesn't start it.`,
+      'Finds a sandbox that already exists, like one from list_sandboxes, and gives it back any tools of its ' +
+      "own that this server adds. Doesn't start it.",
     inputSchema,
     outputSchema,
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },

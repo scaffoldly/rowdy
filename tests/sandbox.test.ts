@@ -43,8 +43,6 @@ import { execOf } from '../src/aws/exec';
 import { SandboxError } from '../src/sandbox/internal/compute';
 import { EXEC_STREAM, execFrame } from '../src/proxy/shell';
 import { computeHash, SandboxImpl } from '../src/sandbox/internal/sandbox';
-import { createSandbox, OWN_TOOLS } from '../src/sandbox/internal/mcp/create-sandbox';
-import { getSandbox } from '../src/sandbox/internal/mcp/get-sandbox';
 
 const FUNCTION_ARN = 'arn:aws:lambda:us-east-1:123456789012:function:sandbox-box';
 
@@ -1403,13 +1401,10 @@ describe('sandbox', () => {
         expect(exec).toHaveBeenCalledTimes(1);
       });
 
-      it('are each named where create_sandbox and get_sandbox say what a sandbox comes with', async () => {
-        microvm();
-        const names = (await Sandbox.create()).tools().map(({ name }) => name);
-
-        names.forEach((name) => expect(OWN_TOOLS).toContain(name));
-        expect(createSandbox.description).toContain(OWN_TOOLS);
-        expect(getSandbox.description).toContain(OWN_TOOLS);
+      it("aren't promised by any description, since a host may not register them", () => {
+        Object.values(mcp.tools).forEach(({ description }) =>
+          expect(description).not.toMatch(/_[0-9a-z]*[0-9][0-9a-z]*\b/)
+        );
       });
 
       it('leaves out files and stop_sandbox where the sandbox has neither', async () => {
