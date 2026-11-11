@@ -44,12 +44,14 @@ import {
   of,
   repeat,
   ReplaySubject,
+  retry,
   switchMap,
   take,
   takeUntil,
   tap,
   throwError,
   throwIfEmpty,
+  timer,
 } from 'rxjs';
 import { ROWDY_LAYERS } from '../../api/internal/layers';
 import { Transfer } from '../../api/internal/transfer';
@@ -205,8 +207,8 @@ export class MicrovmImage extends AwsResource {
     const creates: Observable<unknown>[] = [
       // The account and region name its image and its log group.
       forkJoin({
-        Region: from(this.s3.config.region()),
-        Identity: from(this.sts.send(new GetCallerIdentityCommand({}))),
+        Region: defer(() => this.s3.config.region()),
+        Identity: defer(() => this.sts.send(new GetCallerIdentityCommand({}))),
       }).pipe(
         tap(({ Region, Identity: { Account } }) => {
           this.ImageArn.next(`arn:aws:lambda:${Region}:${Account}:microvm-image:${Name}`);
@@ -227,7 +229,7 @@ export class MicrovmImage extends AwsResource {
       ownedBucket(this.s3, this.log, BUCKET_PREFIX, BUCKET_OWNER).pipe(tap((Bucket) => this.Bucket.next(Bucket))),
       this.baseImage().pipe(tap((arn) => this.BaseImageArn.next(arn))),
       // AWS's own log group for an image of this name. It's made here, so its role can't make others.
-      from(this.logs.send(new CreateLogGroupCommand({ logGroupName: `/aws/lambda-microvms/${Name}` }))).pipe(
+      defer(() => this.logs.send(new CreateLogGroupCommand({ logGroupName: `/aws/lambda-microvms/${Name}` }))).pipe(
         catchError((error) =>
           error?.name === 'ResourceAlreadyExistsException' ? of(undefined) : throwError(() => error)
         ),
@@ -362,7 +364,17 @@ export class MicrovmImage extends AwsResource {
         take(1),
         filter(() => !deleted),
         concatMap((imageIdentifier) =>
-          defer(() => this.microvms.send(new DeleteMicrovmImageCommand({ imageIdentifier }))).pipe(catchError(gone))
+          defer(() => this.microvms.send(new DeleteMicrovmImageCommand({ imageIdentifier }))).pipe(
+            // A stopped sandbox's VMs can still be terminating, and AWS keeps an image with VMs on it.
+            retry({
+              count: 60,
+              delay: (error) =>
+                /running microvms/i.test(`${error?.message}`)
+                  ? timer(this.environment.pollInterval ?? POLL.delay)
+                  : throwError(() => error),
+            }),
+            catchError(gone)
+          )
         )
       ),
     ];

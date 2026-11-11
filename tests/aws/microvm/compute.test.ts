@@ -932,6 +932,33 @@ describe('aws microvm compute', () => {
         expect(input(sent, 'DeleteMicrovmImageCommand')).toEqual({ imageIdentifier: IMAGE_ARN });
       });
 
+      it('waits for its VMs to finish terminating before the image goes', async () => {
+        const refusals = [
+          Object.assign(new Error('Cannot delete microvm image with running microvms.'), {
+            name: 'ValidationException',
+          }),
+        ];
+        const { compute, sent } = deleting({
+          DeleteMicrovmImageCommand: () => (refusals.length ? Promise.reject(refusals.shift()) : {}),
+        });
+
+        await expect(remove(compute)).resolves.toBe(compute);
+        expect(names(sent).filter((name) => name === 'DeleteMicrovmImageCommand')).toHaveLength(2);
+      });
+
+      it('asks AWS for nothing a create does', async () => {
+        const { compute, sent } = deleting();
+
+        await remove(compute);
+
+        [
+          'CreateLogGroupCommand',
+          'GetCallerIdentityCommand',
+          'CreateRoleCommand',
+          'ListManagedMicrovmImagesCommand',
+        ].forEach((name) => expect(names(sent)).not.toContain(name));
+      });
+
       it("leaves a role, bucket or log group rowdy didn't make", async () => {
         const { compute, sent } = deleting({
           GetMicrovmImageVersionCommand: () => ({
