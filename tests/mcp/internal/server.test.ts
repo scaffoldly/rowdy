@@ -1,8 +1,8 @@
 import { McpServer } from '@modelcontextprotocol/server';
 import { afterEach, describe, expect, it, jest } from '@jest/globals';
 import type { Environment } from '../../../src/environment';
-import { serve } from '../../../src/mcp/internal/server';
-import { instructions, tools } from '../../../src/mcp';
+import { INSTRUCTIONS, serve } from '../../../src/mcp/internal/server';
+import { tools } from '../../../src/mcp';
 
 const environment = (): Environment =>
   ({
@@ -43,11 +43,11 @@ describe('serve', () => {
 
     await serve(environment());
 
-    expect((connect.mock.contexts[0] as McpServer).server['_instructions']).toBe(instructions());
+    expect((connect.mock.contexts[0] as McpServer).server['_instructions']).toBe(INSTRUCTIONS);
   });
 
   it('names no tool, so tools can change without it', () => {
-    Object.values(tools).forEach(({ name }) => expect(instructions()).not.toContain(name));
+    Object.values(tools()).forEach(({ name }) => expect(INSTRUCTIONS).not.toContain(name));
   });
 
   it('aborts when the client hangs up', async () => {

@@ -1423,7 +1423,7 @@ describe('sandbox', () => {
       });
 
       it("aren't promised by any description, since a host may not register them", () => {
-        Object.values(mcp.tools).forEach(({ description }) =>
+        Object.values(mcp.tools()).forEach(({ description }) =>
           expect(description).not.toMatch(/_[0-9a-z]*[0-9][0-9a-z]*\b/)
         );
       });
@@ -1467,7 +1467,7 @@ describe('sandbox', () => {
     });
 
     // What a host serves first, each run with the SDK's factory.
-    const factoryTools: Tool<SandboxFactory>[] = Object.values(mcp.tools);
+    const factoryTools: Tool<SandboxFactory>[] = Object.values(mcp.tools());
     const hostTool = (name: string) => factoryTools.find((each) => each.name === name)!;
 
     describe('registered on a server as they arrive', () => {

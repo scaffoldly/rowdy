@@ -4,7 +4,7 @@ import * as mcp from '@scaffoldly/rowdy/mcp';
 
 describe('tools', () => {
   it('has every tool, keyed by its own name', () => {
-    expect(Object.keys(mcp.tools)).toEqual([
+    expect(Object.keys(mcp.tools())).toEqual([
       'create_sandbox',
       'get_sandbox',
       'list_sandboxes',
@@ -16,7 +16,7 @@ describe('tools', () => {
       'write_file',
       'make_directory',
     ]);
-    Object.entries(mcp.tools).forEach(([key, { name }]) => expect(key).toBe(name));
+    Object.entries(mcp.tools()).forEach(([key, { name }]) => expect(key).toBe(name));
   });
 
   it('takes the sandbox_id of the sandbox each acts on', () => {
@@ -30,7 +30,7 @@ describe('tools', () => {
         'write_file',
         'make_directory',
       ] as const
-    ).forEach((name) => expect(mcp.tools[name].inputSchema.shape).toHaveProperty('sandbox_id'));
+    ).forEach((name) => expect(mcp.tools()[name]!.inputSchema.shape).toHaveProperty('sandbox_id'));
   });
 });
 

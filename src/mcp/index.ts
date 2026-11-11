@@ -16,11 +16,15 @@
  * const server = new McpServer({ name: 'my-host', version: '1.0.0' });
  * const { signal } = new AbortController();
  *
- * const { name, run, ...config } = tools.create_sandbox;
+ * const limits = { runtimes: ['aws.microvm' as const] };
+ * const { name, run, ...config } = tools({ limits }).create_sandbox!;
  * server.registerTool(name, config, (input, ctx) =>
- *   run(Sandbox, input, { ...ctx, server, signal, meta: { sub: 'github:1' }, limits: { runtimes: ['aws.microvm'] } })
+ *   run(Sandbox, input, { ...ctx, server, signal, meta: { sub: 'github:1' }, limits })
  * );
  * ```
+ *
+ * `tools({ limits })` says each tool's text and inputs for those limits, so pass the same `limits` on each call: they're
+ * what's checked.
  *
  * `run_command`, `read_output`, `read_file`, `write_file`, `make_directory`, `stop_sandbox` and `delete_sandbox` take
  * the `sandbox_id` of the sandbox they act on. Each sandbox `create_sandbox` or `get_sandbox` gives also gets its own
@@ -38,20 +42,11 @@
  * @module
  */
 import { Logger } from '../log';
-import type { SandboxFactory } from '../sandbox';
-import { toolsFor, type ToolName } from './internal/tools-for';
-import type { Tool } from './internal/types';
 
 export type { ServerContext, Tool } from './internal/types';
 export { registerTools } from '../sandbox/internal/mcp/create-sandbox';
-export { instructions, toolsFor } from './internal/tools-for';
-export type { ToolName, ToolsForOptions } from './internal/tools-for';
+export { tools } from './internal/tools';
+export type { ToolName, ToolsOptions } from './internal/tools';
 
 // A host's stdout is its own, even for a tool that fails before it reaches a sandbox.
 new Logger('sandbox').withSink('stderr');
-
-/**
- * Every tool, unbound, keyed by its name. Each `run` takes the SDK it acts on, first. They're typed alike, so a host can
- * register `Object.values(tools)` in one loop, or pick some by name. `toolsFor` says them for one host's limits.
- */
-export const tools = toolsFor() as Record<ToolName, Tool<SandboxFactory>>;

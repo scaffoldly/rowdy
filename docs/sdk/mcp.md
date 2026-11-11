@@ -9,12 +9,20 @@ then the input, then the call's context with what the host adds: the `server`, i
 import { Sandbox } from '@scaffoldly/rowdy/sandbox';
 import { tools } from '@scaffoldly/rowdy/mcp';
 
-Object.values(tools).forEach(({ name, run, ...config }) =>
+const limits = { runtimes: ['aws.microvm' as const], timeout: 60 * 60 * 1000, sandboxes: 3 };
+
+Object.values(tools({ limits })).forEach(({ name, run, ...config }) =>
   server.registerTool(name, config, (input, ctx) =>
-    run(Sandbox, input, { ...ctx, server, signal, meta: { sub }, limits: { runtimes: ['aws.microvm'] } })
+    run(Sandbox, input, { ...ctx, server, signal, meta: { sub }, limits })
   )
 );
 ```
+
+`tools({ limits })` says each tool's text and inputs for those limits. With one runtime, `create_sandbox` and
+`list_sandboxes` take no `runtime`, ranges and how long a sandbox lasts are said within `limits.timeout` and
+`limits.memory`, and text about a runtime the limits leave out goes, as do the tools only `aws.microvm` has when it's
+left out. `tools()` says both runtimes and their full ranges, as `rowdy mcp` serves them. The same `limits` go on each
+call, since those are what's checked: `tools` only changes what a model reads.
 
 `meta` goes on every sandbox a call creates, and a call only lists, gets, stops or deletes sandboxes with it, so
 a model can't reach another's. `layersFrom` goes into every sandbox a call creates, and a model can't change it.
@@ -23,29 +31,6 @@ a model can't reach another's. `layersFrom` goes into every sandbox a call creat
 have: past it, `create_sandbox` refuses, and tells the model to use one it has or delete one first. `pollInterval` is for a host with a cap on its requests, as in
 [Errors](sandbox.md#errors). A `create_sandbox` that hits the cap tells the model to make the same call again. Any other
 tool only says the host ran out, since a command may already have run.
-
-`tools` say both runtimes and their full ranges, which is right for `rowdy mcp`. A host with `limits` registers
-`toolsFor` instead, said for those limits, and gives its server `instructions` for the same:
-
-```ts
-import { instructions, toolsFor } from '@scaffoldly/rowdy/mcp';
-
-const limits = { runtimes: ['aws.microvm' as const], timeout: 60 * 60 * 1000, sandboxes: 3 };
-const server = new McpServer({ name, version }, { instructions: instructions({ limits, shared: true }) });
-
-Object.values(toolsFor({ limits, shared: true })).forEach(({ name, run, ...config }) =>
-  server.registerTool(name, config, (input, ctx) =>
-    run(Sandbox, input, { ...ctx, server, signal, meta: { sub }, limits })
-  )
-);
-```
-
-With one runtime, `create_sandbox` and `list_sandboxes` take no `runtime`. Ranges and the lifetime a sandbox has
-are said within `limits.timeout` and `limits.memory`. Text about a runtime the host doesn't allow goes, and without
-`aws.microvm`, so do the tools only it has. `shared: true` is for a host whose callers each have their own
-sandboxes, by `meta`, in an account that isn't theirs: the text says "your sandboxes", and the instructions leave
-out what a sandbox costs. The same `limits` still
-have to go on each call, since that's what's checked: `toolsFor` only changes what a model reads.
 
 `create_sandbox` answers once the sandbox is building, with its `state`, so the host's request takes seconds rather
 than the build's two minutes. `get_sandbox` says whether it's `building`, `ready` or `failed`, with AWS's `reason`
