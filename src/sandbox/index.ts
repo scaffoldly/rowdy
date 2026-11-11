@@ -3,7 +3,6 @@ import type { Writable } from 'stream';
 import type { Exec, ExecFinished, ExecOutput, ExecOutputOptions } from '../api/types';
 import type { Event, EventCallback } from '../events';
 import type { Level } from '../log';
-import type { BoundTool, ServerContext, Tool } from '../mcp/internal/types';
 import type { MICROVM_MEMORY } from './internal/compute';
 import type { AwsCredentials } from '../aws/credentials';
 import { SandboxImpl } from './internal/sandbox';
@@ -80,28 +79,7 @@ export type SandboxOptions = LambdaSandboxOptions | MicrovmSandboxOptions;
 
 export type { Event, EventCallback } from '../events';
 export type { AwsCredentials } from '../aws/credentials';
-
-export interface SandboxToolsLimits {
-  /**
-   * The most sandboxes a call's `meta` can have at once, on `runtimes`. `create_sandbox` refuses another until one is
-   * deleted.
-   */
-  sandboxes?: number;
-  /** The most memory a sandbox can have, in megabytes. */
-  memory?: number;
-  /** The longest timeout a sandbox can have, in milliseconds. */
-  timeout?: number;
-  /** The runtimes a sandbox can use. The first is the default. */
-  runtimes?: NonNullable<SandboxOptions['runtime']>[];
-}
-
-export interface SandboxToolsOptions
-  extends Pick<SandboxOptions, 'logLevel' | 'meta' | 'layersFrom' | 'pollInterval' | 'credentials'> {
-  /** What a model can ask for. */
-  limits?: SandboxToolsLimits;
-}
-
-export type { BoundTool, ServerContext, Tool };
+export * from './core';
 
 /** Where a sandbox's build is. */
 export interface SandboxStatus {
@@ -249,18 +227,18 @@ export interface Sandbox {
   status(): Promise<SandboxStatus>;
   /** Each event from now on. */
   events(): Observable<Event>;
-  /**
-   * The MCP tools for this sandbox alone, with no `sandbox_id` input: `run_command`, `read_output`, `delete_sandbox`,
-   * and on `aws.microvm` the file tools and `stop_sandbox`.
-   */
-  tools(): BoundTool[];
 }
 
 /**
- * A sandbox on its way. Await it for the sandbox, and call `events` before that to see what it takes. Its `tools` are
- * ready at once, and a call waits for the sandbox.
+ * A sandbox on its way. Await it for the sandbox, or call its methods now: each waits for the sandbox, and a failed
+ * create is each call's error. Call `events` before that to see what it takes.
  */
-export interface SandboxPromise extends Promise<Sandbox>, Pick<Sandbox, 'events' | 'tools'> {}
+export interface SandboxPromise
+  extends Promise<Sandbox>,
+    Pick<
+      Sandbox,
+      'events' | 'runCommand' | 'output' | 'writeFiles' | 'readFileToBuffer' | 'mkDir' | 'status' | 'stop' | 'delete'
+    > {}
 
 export interface SandboxFactory {
   /** Starts a new sandbox. */

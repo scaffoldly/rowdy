@@ -12,7 +12,7 @@
     "paths": {
       "@scaffoldly/rowdy": ["src/index"],
       "@scaffoldly/rowdy/sandbox": ["src/sandbox/index"],
-      "@scaffoldly/rowdy/mcp": ["src/mcp/index"]
+      "@scaffoldly/rowdy/sandbox/core": ["src/sandbox/core"]
     }
   },
   "include": ["**/*.ts", "../src/**/*.ts"]

@@ -9,10 +9,10 @@ npm install @scaffoldly/rowdy@beta
 
 It needs Node 20 or later.
 
-| Import                      | What it does                                             | Docs                             |
-| --------------------------- | -------------------------------------------------------- | -------------------------------- |
-| `@scaffoldly/rowdy/sandbox` | Runs commands in a container on AWS, from your own code. | [sdk/sandbox.md](sdk/sandbox.md) |
-| `@scaffoldly/rowdy/mcp`     | The sandbox's tools, for a host's own MCP server.        | [sdk/mcp.md](sdk/mcp.md)         |
+| Import                           | What it does                                             | Docs                                    |
+| -------------------------------- | -------------------------------------------------------- | --------------------------------------- |
+| `@scaffoldly/rowdy/sandbox`      | Runs commands in a container on AWS, from your own code. | [sdk/sandbox.md](sdk/sandbox.md)        |
+| `@scaffoldly/rowdy/sandbox/core` | A sandbox's defaults and errors, with no AWS clients.    | [sdk/sandbox.md](sdk/sandbox.md#errors) |
 
 ## AWS credentials
 

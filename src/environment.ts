@@ -5,7 +5,6 @@ import {
   catchError,
   defer,
   EMPTY,
-  from,
   fromEvent,
   map,
   merge,
@@ -278,25 +277,6 @@ export class Environment implements ILoggable {
               .usage('$0 serve [options] -- <command> [args...]')
           ),
         handler: (argv: Partial<Args>) => this.setup(argv),
-      })
-      .command({
-        command: 'mcp',
-        describe: 'Start a stdio MCP server',
-        handler: () => {
-          // Stdout is the protocol.
-          this.log.withSink('stderr');
-          this._subscriptions.push(
-            from(import('./mcp/internal/server'))
-              .pipe(switchMap(({ serve }) => serve(this)))
-              .subscribe({
-                error: (error: Error) => {
-                  this.log.error('MCP Server Failed', { error: error.message });
-                  process.exitCode = 1;
-                  this.abort.abort('MCP server failed');
-                },
-              })
-          );
-        },
       })
       // TODO: Re-add 'install' command
       .command({

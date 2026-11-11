@@ -199,7 +199,7 @@ The layer, the function's image configuration, the command's lifecycle and the v
 ## SDK
 
 `@scaffoldly/rowdy/sandbox` runs commands in a container on AWS, from your own code:
-[docs/sdk.md](docs/sdk.md), [docs/sdk/sandbox.md](docs/sdk/sandbox.md), [docs/sdk/mcp.md](docs/sdk/mcp.md).
+[docs/sdk.md](docs/sdk.md), [docs/sdk/sandbox.md](docs/sdk/sandbox.md).
 
 ## Logging
 

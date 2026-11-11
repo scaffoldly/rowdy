@@ -1,5 +1,5 @@
 import type { Observable } from 'rxjs';
-import type { BoundTool, Event, SandboxPromise } from '..';
+import type { Event, Sandbox, SandboxPromise } from '..';
 import type { SandboxImpl } from './sandbox';
 
 export class SandboxPromiseImpl implements SandboxPromise, Promise<SandboxImpl> {
@@ -8,17 +8,29 @@ export class SandboxPromiseImpl implements SandboxPromise, Promise<SandboxImpl> 
   constructor(
     private created: Promise<SandboxImpl>,
     private sandbox: SandboxImpl
-  ) {}
+  ) {
+    // Its methods can be called later, so a failed create isn't an unhandled rejection meanwhile. Awaiting it, or a
+    // call, still rejects.
+    this.created.catch(() => {});
+  }
 
   events(): Observable<Event> {
     return this.sandbox.events();
   }
 
-  tools(): BoundTool[] {
-    // A host may register these and never await, so a failed build is each call's error, not an unhandled rejection.
-    this.created.catch(() => {});
-    return this.sandbox.tools(this);
-  }
+  // The sandbox's own methods, each once it's there. A failed create is each call's error.
+  readonly runCommand = ((...args: unknown[]) =>
+    this.created.then((sandbox) =>
+      (sandbox.runCommand as (...args: unknown[]) => ReturnType<Sandbox['runCommand']>)(...args)
+    )) as Sandbox['runCommand'];
+  readonly output: Sandbox['output'] = (...args) => this.created.then((sandbox) => sandbox.output(...args));
+  readonly writeFiles: Sandbox['writeFiles'] = (...args) => this.created.then((sandbox) => sandbox.writeFiles(...args));
+  readonly readFileToBuffer: Sandbox['readFileToBuffer'] = (...args) =>
+    this.created.then((sandbox) => sandbox.readFileToBuffer(...args));
+  readonly mkDir: Sandbox['mkDir'] = (...args) => this.created.then((sandbox) => sandbox.mkDir(...args));
+  readonly status: Sandbox['status'] = () => this.created.then((sandbox) => sandbox.status());
+  readonly stop: Sandbox['stop'] = () => this.created.then((sandbox) => sandbox.stop());
+  readonly delete: Sandbox['delete'] = () => this.created.then((sandbox) => sandbox.delete());
 
   then<Fulfilled = SandboxImpl, Rejected = never>(
     onfulfilled?: ((value: SandboxImpl) => Fulfilled | PromiseLike<Fulfilled>) | null,
