@@ -687,6 +687,31 @@ describe('aws lambda names', () => {
   const image = { namespace: 'acme', name: 'score' } as Parameters<typeof LambdaFunction.roleName>[0];
   const LONG = 'acme-org/a-very-long-repository-name-for-the-secure-development-ctf';
 
+  it("puts a sandbox's role under the sandbox path, and an app's at the root", async () => {
+    const created = async (kind: 'Sandbox' | 'Container'): Promise<Record<string, unknown>> => {
+      let input: Record<string, unknown> = {};
+      const fn = new LambdaFunction(kind, new LambdaImageService(new Environment(new Logger())))
+        .withImage('acme/score')
+        .withName('sandbox-bcdf2');
+      (
+        fn['iam'] as unknown as {
+          send: (command: { constructor: { name: string }; input: Record<string, unknown> }) => Promise<unknown>;
+        }
+      ).send = (command) => {
+        if (command.constructor.name === 'CreateRoleCommand') input = command.input;
+        return Promise.reject(Object.assign(new Error('missing'), { name: 'NoSuchEntityException' }));
+      };
+      await lastValueFrom(fn['prepare']().creates[0]!).catch(() => undefined);
+      return input;
+    };
+
+    expect(await created('Sandbox')).toMatchObject({
+      RoleName: 'acme+score@sandbox-bcdf2.rowdy.run',
+      Path: '/rowdy/sandbox/',
+    });
+    expect(await created('Container')).not.toHaveProperty('Path');
+  });
+
   it('keeps names that fit unchanged', () => {
     expect(LambdaFunction.roleName(image)).toBe('acme+score@rowdy.run');
     expect(LambdaFunction.roleName(image, 'acme/app')).toBe('acme+score@acme.app.rowdy.run');
