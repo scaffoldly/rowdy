@@ -89,7 +89,12 @@ export const PROGRESS = { delay: 15000 };
 
 const inputSchema = z.object({
   runtime: z.enum(['aws.microvm', 'aws.lambda']).optional().describe('Where it runs. Defaults to aws.microvm.'),
-  image: z.string().optional().describe('A container image. Defaults to scaffoldly/sandbox.'),
+  image: z
+    .string()
+    .optional()
+    .describe(
+      'A container image. Defaults to scaffoldly/sandbox: Debian with Python, Node, git, curl, jq and common shell tools.'
+    ),
   name: z.string().optional().describe("The start of the sandbox's name. Defaults to sandbox."),
   timeout: z
     .number()
