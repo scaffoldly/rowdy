@@ -26,6 +26,56 @@ describe('aws lambda', () => {
   // const runtimeService = new LambdaRuntimeService(environment, imageService);
 
   describe('lambda function', () => {
+    describe('sandbox delete', () => {
+      const FUNCTION = 'arn:aws:lambda:us-east-1:123456789012:function:sandbox-bcdf2';
+      const deleting = (respond: Record<string, () => Promise<unknown>> = {}) => {
+        const fn = new LambdaFunction('Sandbox', imageService);
+        fn['FunctionArn'].next(FUNCTION);
+        const sent: string[] = [];
+        const send = (command: { constructor: { name: string } }): Promise<unknown> => {
+          const { name } = command.constructor;
+          sent.push(name);
+          if (respond[name]) return respond[name]!();
+          if (name === 'GetFunctionConfigurationCommand') {
+            return Promise.resolve({
+              FunctionName: FUNCTION,
+              Role: 'arn:aws:iam::123456789012:role/sandbox.rowdy.run',
+            });
+          }
+          return Promise.resolve({});
+        };
+        (['lambda', 'iam', 'logs'] as const).forEach((client) => {
+          (fn[client] as unknown as { send: typeof send }).send = send;
+        });
+        return { fn, sent };
+      };
+
+      it('removes its log group, function, role policy and role, in that order', async () => {
+        const { fn, sent } = deleting();
+
+        await lastValueFrom(fn.delete());
+
+        expect(sent).toEqual([
+          'DeleteLogGroupCommand',
+          'GetFunctionConfigurationCommand',
+          'DeleteFunctionCommand',
+          'DeleteRolePolicyCommand',
+          'DeleteRoleCommand',
+        ]);
+      });
+
+      it('goes on past a log group that is gone', async () => {
+        const { fn, sent } = deleting({
+          DeleteLogGroupCommand: () =>
+            Promise.reject(Object.assign(new Error('gone'), { name: 'ResourceNotFoundException' })),
+        });
+
+        await lastValueFrom(fn.delete());
+
+        expect(sent).toContain('DeleteRoleCommand');
+      });
+    });
+
     // TODO: scaffoldly/scratch:latest for default image
     describe('sandbox lifecycle', () => {
       aws(

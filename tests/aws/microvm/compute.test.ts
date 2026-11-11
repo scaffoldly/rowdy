@@ -798,6 +798,109 @@ describe('aws microvm compute', () => {
       await expect(lastValueFrom(setup().compute.exec(EVENT))).rejects.toThrow('Sandbox has no image');
     });
 
+    describe('delete', () => {
+      const ZIP = `s3://rowdy-sandboxes-abc/sandbox-box/${IMAGE_URI}.zip`;
+      const ROWDY_ROLE = 'arn:aws:iam::123456789012:role/scaffoldly+sandbox@sandbox-box.rowdy.run';
+      const deleting = (handlers: Record<string, Handler> = {}): ReturnType<typeof running> =>
+        running({
+          ListMicrovmsCommand: () => ({ items: [{ microvmId: 'a', state: 'RUNNING' }] }),
+          TerminateMicrovmCommand: () => ({}),
+          GetMicrovmCommand: () => ({ state: 'TERMINATED' }),
+          GetMicrovmImageVersionCommand: () => ({
+            buildRoleArn: ROWDY_ROLE,
+            codeArtifact: { uri: ZIP },
+            logging: { cloudWatch: { logGroup: '/aws/lambda-microvms/sandbox-box' } },
+          }),
+          DeleteRolePolicyCommand: () => ({}),
+          DeleteRoleCommand: () => ({}),
+          DeleteObjectCommand: () => ({}),
+          DeleteLogGroupCommand: () => ({}),
+          DeleteMicrovmImageCommand: () => ({}),
+          ...handlers,
+        });
+      const remove = (compute: MicrovmCompute): Promise<MicrovmCompute> => lastValueFrom(compute.delete());
+      const deletes = (sent: Sent[]): string[] =>
+        names(sent).filter((name) => name.startsWith('Delete') || name === 'TerminateMicrovmCommand');
+
+      it('stops it, then removes its role, zip and log group, and its image last', async () => {
+        const { compute, sent } = deleting();
+
+        await expect(remove(compute)).resolves.toBe(compute);
+
+        expect(deletes(sent)).toEqual([
+          'TerminateMicrovmCommand',
+          'DeleteRolePolicyCommand',
+          'DeleteRoleCommand',
+          'DeleteObjectCommand',
+          'DeleteLogGroupCommand',
+          'DeleteMicrovmImageCommand',
+        ]);
+        expect(input(sent, 'DeleteRolePolicyCommand')).toEqual({
+          RoleName: 'scaffoldly+sandbox@sandbox-box.rowdy.run',
+          PolicyName: 'RowdyPolicy',
+        });
+        expect(input(sent, 'DeleteObjectCommand')).toEqual({
+          Bucket: 'rowdy-sandboxes-abc',
+          Key: `sandbox-box/${IMAGE_URI}.zip`,
+        });
+        expect(input(sent, 'DeleteLogGroupCommand')).toEqual({ logGroupName: '/aws/lambda-microvms/sandbox-box' });
+        expect(input(sent, 'DeleteMicrovmImageCommand')).toEqual({ imageIdentifier: IMAGE_ARN });
+      });
+
+      it("leaves a role, bucket or log group rowdy didn't make", async () => {
+        const { compute, sent } = deleting({
+          GetMicrovmImageVersionCommand: () => ({
+            buildRoleArn: 'arn:aws:iam::123456789012:role/admin',
+            codeArtifact: { uri: 's3://someone-elses/key.zip' },
+            logging: { cloudWatch: { logGroup: '/aws/lambda/app' } },
+          }),
+        });
+
+        await remove(compute);
+
+        expect(deletes(sent)).toEqual(['TerminateMicrovmCommand', 'DeleteMicrovmImageCommand']);
+      });
+
+      it('goes on past parts that are gone already', async () => {
+        const { compute, sent } = deleting({
+          DeleteRolePolicyCommand: () => Promise.reject(missing('NoSuchEntityException')),
+          DeleteRoleCommand: () => Promise.reject(missing('NoSuchEntityException')),
+          DeleteLogGroupCommand: () => Promise.reject(missing('ResourceNotFoundException')),
+        });
+
+        await remove(compute);
+
+        expect(deletes(sent)).toContain('DeleteMicrovmImageCommand');
+      });
+
+      it('does nothing more for an image that is gone', async () => {
+        const { compute, sent } = deleting({
+          ListMicrovmsCommand: () => ({ items: [] }),
+          GetMicrovmImageCommand: () => Promise.reject(missing('ResourceNotFoundException')),
+        });
+
+        await expect(remove(compute)).resolves.toBe(compute);
+        expect(deletes(sent)).toEqual([]);
+      });
+
+      it.each(['DELETING', 'DELETED'])('does nothing more for an image AWS has %s', async (state) => {
+        const { compute, sent } = deleting({
+          ListMicrovmsCommand: () => ({ items: [] }),
+          GetMicrovmImageCommand: () => ({ state, latestActiveImageVersion: '1.0' }),
+        });
+
+        await expect(remove(compute)).resolves.toBe(compute);
+        expect(deletes(sent)).toEqual([]);
+      });
+
+      it('keeps the image when a part fails, so the delete can be repeated', async () => {
+        const { compute, sent } = deleting({ DeleteRoleCommand: () => Promise.reject(missing('AccessDenied')) });
+
+        await expect(remove(compute)).rejects.toMatchObject({ name: 'AccessDenied' });
+        expect(deletes(sent)).not.toContain('DeleteMicrovmImageCommand');
+      });
+    });
+
     describe('stop', () => {
       const stop = (compute: MicrovmCompute): Promise<MicrovmCompute> => lastValueFrom(compute.stop());
       const stopped = (sent: Sent[]): unknown[] =>

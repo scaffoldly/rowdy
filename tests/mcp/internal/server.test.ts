@@ -28,6 +28,7 @@ describe('serve', () => {
       'get_sandbox',
       'list_sandboxes',
       'stop_sandbox',
+      'delete_sandbox',
       'run_command',
       'read_output',
       'read_file',

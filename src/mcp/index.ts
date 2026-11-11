@@ -22,10 +22,10 @@
  * );
  * ```
  *
- * `run_command`, `read_output`, `read_file`, `write_file` and `make_directory` take the `sandbox_id` of the sandbox
- * they act on. Each sandbox `create_sandbox` or `get_sandbox` gives also gets its own of each, named with its suffix and
- * with no `sandbox_id`, on the `server` a call gives. To wrap their `run` too, give a `server` whose `registerTool`
- * wraps the callback it's handed.
+ * `run_command`, `read_output`, `read_file`, `write_file`, `make_directory`, `stop_sandbox` and `delete_sandbox` take
+ * the `sandbox_id` of the sandbox they act on. Each sandbox `create_sandbox` or `get_sandbox` gives also gets its own
+ * of each, named with its suffix and with no `sandbox_id`, on the `server` a call gives. To wrap their `run` too, give a
+ * `server` whose `registerTool` wraps the callback it's handed.
  *
  * A host that builds a server per request also passes `changed`, called whenever a sandbox's tools go on or come off
  * `server`, to tell its clients to list tools again. Its new server starts with none of them, so before each request
@@ -40,6 +40,7 @@
 import { Logger } from '../log';
 import type { SandboxFactory } from '../sandbox';
 import { createSandbox } from '../sandbox/internal/mcp/create-sandbox';
+import { deleteSandbox } from '../sandbox/internal/mcp/delete-sandbox';
 import { getSandbox } from '../sandbox/internal/mcp/get-sandbox';
 import { listSandboxes } from '../sandbox/internal/mcp/list-sandboxes';
 import { makeDirectory } from '../sandbox/internal/mcp/make-directory';
@@ -65,6 +66,7 @@ export const tools: Record<
   | 'get_sandbox'
   | 'list_sandboxes'
   | 'stop_sandbox'
+  | 'delete_sandbox'
   | 'run_command'
   | 'read_output'
   | 'read_file'
@@ -76,6 +78,7 @@ export const tools: Record<
   get_sandbox: getSandbox,
   list_sandboxes: listSandboxes,
   stop_sandbox: stopSandbox,
+  delete_sandbox: deleteSandbox,
   run_command: runCommand,
   read_output: readOutput,
   read_file: readFile,

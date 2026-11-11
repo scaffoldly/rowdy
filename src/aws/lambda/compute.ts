@@ -9,6 +9,7 @@ import {
   map,
   mergeMap,
   Observable,
+  of,
   shareReplay,
   switchMap,
   tap,
@@ -174,6 +175,15 @@ export class LambdaCompute implements SandboxCompute {
 
   stop(): Observable<this> {
     return throwError(() => new SandboxError('stop is not implemented on runtime aws.lambda'));
+  }
+
+  delete(): Observable<this> {
+    return this.lambda$.pipe(
+      // Deleted already, by this handle.
+      switchMap((lambda) => (lambda.State.FunctionArn ? lambda.delete() : of(lambda))),
+      last(),
+      map(() => this)
+    );
   }
 
   writeFile(): Observable<void> {

@@ -830,6 +830,7 @@ describe('sandbox', () => {
   describe('list', () => {
     const IMAGE = 'arn:aws:lambda:us-east-1:123456789012:microvm-image:box-bcdf2';
     const OTHER = 'arn:aws:lambda:us-east-1:123456789012:microvm-image:not-rowdy';
+    const DELETED = 'arn:aws:lambda:us-east-1:123456789012:microvm-image:box-deleted';
     const STARTED = new Date('2026-11-07T21:00:00.000Z');
 
     const functions = (): jest.SpyInstance =>
@@ -875,6 +876,7 @@ describe('sandbox', () => {
               items: [
                 { imageArn: IMAGE, name: 'box-bcdf2' },
                 { imageArn: OTHER, name: 'not-rowdy' },
+                { imageArn: DELETED, name: 'box-deleted', state: 'DELETING' },
               ],
             });
           case 'ListTagsCommand':
@@ -888,6 +890,17 @@ describe('sandbox', () => {
             return Promise.reject(new Error(`unexpected ${command.constructor.name}`));
         }
       }) as never);
+
+    it("skips an image that's being deleted, without asking for its tags", async () => {
+      functions();
+      const send = microvms();
+
+      await Sandbox.list({ runtime: 'aws.microvm' });
+
+      const tagged = send.mock.calls.map(([command]) => (command as { input: { Resource?: string } }).input.Resource);
+      expect(tagged).not.toContain(DELETED);
+      expect(tagged).toContain(IMAGE);
+    });
 
     it('finds sandboxes on every runtime, and only sandboxes', async () => {
       functions();
@@ -1395,6 +1408,7 @@ describe('sandbox', () => {
           'write_file',
           'make_directory',
           'stop_sandbox',
+          'delete_sandbox',
         ]);
         tools.forEach(({ inputSchema }) => expect(Object.keys(inputSchema.shape)).not.toContain('sandbox_id'));
         expect(result.structuredContent).toMatchObject({ exit_code: 0, timed_out: false });
@@ -1410,7 +1424,7 @@ describe('sandbox', () => {
       it('leaves out files and stop_sandbox where the sandbox has neither', async () => {
         const sandbox = await Sandbox.create({ runtime: 'aws.lambda' });
 
-        expect(sandbox.tools().map(({ name }) => name)).toEqual(['run_command', 'read_output']);
+        expect(sandbox.tools().map(({ name }) => name)).toEqual(['run_command', 'read_output', 'delete_sandbox']);
       });
 
       it('are there before the sandbox is, and a call waits for it', async () => {
@@ -1484,6 +1498,7 @@ describe('sandbox', () => {
           'write_file_bcdf2',
           'make_directory_bcdf2',
           'stop_sandbox_bcdf2',
+          'delete_sandbox_bcdf2',
         ]);
       });
 
@@ -1493,7 +1508,7 @@ describe('sandbox', () => {
         await call('create_sandbox');
         await call('create_sandbox');
 
-        expect(registered()).toHaveLength(6);
+        expect(registered()).toHaveLength(7);
       });
 
       it('takes them off when stop_sandbox stops it, and adds them again after', async () => {
@@ -1510,8 +1525,9 @@ describe('sandbox', () => {
           'write_file_bcdf2',
           'make_directory_bcdf2',
           'stop_sandbox_bcdf2',
+          'delete_sandbox_bcdf2',
         ]);
-        expect(registered()).toHaveLength(12);
+        expect(registered()).toHaveLength(14);
       });
 
       it("takes them off when the sandbox's own stop_sandbox stops it", async () => {
@@ -1522,7 +1538,7 @@ describe('sandbox', () => {
         await (own as (args: unknown, extra: unknown) => Promise<unknown>)({}, ctx());
 
         expect(stop).toHaveBeenCalled();
-        expect(removed).toHaveLength(6);
+        expect(removed).toHaveLength(7);
       });
 
       it("takes them all off when the host's signal aborts", async () => {
@@ -1531,7 +1547,7 @@ describe('sandbox', () => {
         await call('create_sandbox');
         host.abort();
 
-        expect(removed).toHaveLength(6);
+        expect(removed).toHaveLength(7);
       });
 
       it('says the tools changed when they go on and when a stop takes them off, once each', async () => {
@@ -1575,9 +1591,9 @@ describe('sandbox', () => {
         await call('create_sandbox', {}, other);
         await call('stop_sandbox', { sandbox_id: IMAGE }, other);
 
-        expect(registered()).toHaveLength(6);
-        expect(other.registerTool).toHaveBeenCalledTimes(6);
-        expect(removed).toHaveLength(6);
+        expect(registered()).toHaveLength(7);
+        expect(other.registerTool).toHaveBeenCalledTimes(7);
+        expect(removed).toHaveLength(7);
         expect(removed.every((name) => name.startsWith('other:'))).toBe(true);
       });
 
@@ -1671,6 +1687,29 @@ describe('sandbox', () => {
 
           await expect(call('create_sandbox', input, { limits })).rejects.toThrow(message);
           expect(create).not.toHaveBeenCalled();
+        });
+
+        it("refuses a sandbox past the limit for the call's meta, on its runtimes", async () => {
+          const create = creating();
+          const list = jest
+            .spyOn(SandboxImpl, 'list')
+            .mockResolvedValue([{ sandboxId: IMAGE }, { sandboxId: `${IMAGE}2` }] as never);
+          const meta = { sub: 'github:1' };
+
+          await expect(
+            call('create_sandbox', {}, { meta, limits: { sandboxes: 2, runtimes: ['aws.microvm'] } })
+          ).rejects.toThrow('There are 2 sandboxes, the most allowed.');
+          expect(create).not.toHaveBeenCalled();
+          expect(list).toHaveBeenCalledWith(expect.objectContaining({ runtime: 'aws.microvm', meta }));
+        });
+
+        it('creates one under the limit', async () => {
+          const create = creating();
+          jest.spyOn(SandboxImpl, 'list').mockResolvedValue([{ sandboxId: IMAGE }] as never);
+
+          await call('create_sandbox', {}, { limits: { sandboxes: 2 } });
+
+          expect(create).toHaveBeenCalled();
         });
 
         it.each([
@@ -2035,8 +2074,27 @@ describe('sandbox', () => {
     });
   });
 
-  it('exposes only create, get and list', () => {
-    expect(Object.keys(Sandbox).sort()).toEqual(['create', 'get', 'list']);
+  it('exposes only create, get, list and delete', () => {
+    expect(Object.keys(Sandbox).sort()).toEqual(['create', 'delete', 'get', 'list']);
+  });
+
+  it('deletes by lookup, refusing a sandbox the lookup is refused', async () => {
+    const remove = jest.fn(async () => {});
+    const get = jest.spyOn(SandboxImpl, 'get').mockReturnValue(Promise.resolve({ delete: remove }) as never);
+    const lookup = { sandboxId: 'arn:aws:lambda:us-east-1:123456789012:microvm-image:box', meta: { sub: 'github:1' } };
+
+    await Sandbox.delete(lookup);
+
+    expect(get).toHaveBeenCalledWith(lookup);
+    expect(remove).toHaveBeenCalledTimes(1);
+
+    get.mockReturnValue(Promise.reject(new Error('Not a sandbox')) as never);
+    await expect(Sandbox.delete(lookup)).rejects.toThrow('Not a sandbox');
+
+    get.mockReturnValue(
+      Promise.reject(Object.assign(new Error('gone'), { name: 'ResourceNotFoundException' })) as never
+    );
+    await expect(Sandbox.delete(lookup)).resolves.toBeUndefined();
   });
 
   it('feeds its signal to its environment', async () => {

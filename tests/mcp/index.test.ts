@@ -9,6 +9,7 @@ describe('tools', () => {
       'get_sandbox',
       'list_sandboxes',
       'stop_sandbox',
+      'delete_sandbox',
       'run_command',
       'read_output',
       'read_file',
@@ -19,9 +20,17 @@ describe('tools', () => {
   });
 
   it('takes the sandbox_id of the sandbox each acts on', () => {
-    (['stop_sandbox', 'run_command', 'read_output', 'read_file', 'write_file', 'make_directory'] as const).forEach(
-      (name) => expect(mcp.tools[name].inputSchema.shape).toHaveProperty('sandbox_id')
-    );
+    (
+      [
+        'stop_sandbox',
+        'delete_sandbox',
+        'run_command',
+        'read_output',
+        'read_file',
+        'write_file',
+        'make_directory',
+      ] as const
+    ).forEach((name) => expect(mcp.tools[name].inputSchema.shape).toHaveProperty('sandbox_id'));
   });
 });
 

@@ -136,6 +136,20 @@ export const createSandbox: Tool<SandboxFactory, typeof inputSchema, typeof outp
       if (memory && limits?.memory && memory > limits.memory) {
         throw new RangeError(`memory must be at most ${limits.memory} MB, got ${memory}`);
       }
+      if (limits?.sandboxes !== undefined) {
+        // Every sandbox this meta has, on the runtimes the host allows, including one these options would reuse.
+        const sandboxes = (
+          await Promise.all(
+            (limits.runtimes ?? [undefined]).map((each) => factory.list({ runtime: each, meta, credentials, signal }))
+          )
+        ).flat();
+        if (sandboxes.length >= limits.sandboxes) {
+          throw new RangeError(
+            `There are ${sandboxes.length} sandboxes, the most allowed. Use one from list_sandboxes, or delete one ` +
+              'with delete_sandbox first.'
+          );
+        }
+      }
 
       const created = factory.create({
         ...input,
