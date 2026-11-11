@@ -24,6 +24,7 @@ import { posix } from 'path';
 import {
   catchError,
   asapScheduler,
+  concat,
   concatWith,
   connectable,
   EMPTY,
@@ -72,7 +73,8 @@ import { deleteSandbox } from './mcp/delete-sandbox';
 import { DEFAULTS, SandboxCompute, SandboxComputeClass } from './compute';
 import { SandboxPromiseImpl } from './create';
 import { Credentials } from '../../aws/credentials';
-import { isNotFound } from '../../aws/lambda/shared';
+import { DeleteRoleCommand, DeleteRolePolicyCommand, IAMClient, paginateListRoles } from '@aws-sdk/client-iam';
+import { isNotFound, SANDBOX_ROLE_PATH } from '../../aws/lambda/shared';
 
 // Kubernetes' alphabet for generated names: no vowels, so a name spells no words.
 const ALPHANUMS = 'bcdfghjklmnpqrstvwxz2456789';
@@ -445,11 +447,34 @@ export class SandboxImpl implements Sandbox {
 
   static async delete(lookup: SandboxLookup): Promise<void> {
     const sandbox = await SandboxImpl.get(lookup).catch((error) => {
-      // Deleted already. A sandbox the lookup refuses still rejects.
+      // Deleted already, or never made. A sandbox the lookup refuses still rejects.
       if (isNotFound(error)) return undefined;
       throw error;
     });
-    await sandbox?.delete();
+    if (sandbox) return sandbox.delete();
+
+    // A create that failed before its image or function existed leaves its role, which names it at the end.
+    const name = lookup.sandboxId.split(':').pop();
+    const iam = new IAMClient({ credentials: lookup.credentials });
+    const gone = (error: unknown): Observable<never> => (isNotFound(error) ? EMPTY : throwError(() => error));
+    await lastValueFrom(
+      from(paginateListRoles({ client: iam }, { PathPrefix: SANDBOX_ROLE_PATH })).pipe(
+        concatMap(({ Roles = [] }) => Roles),
+        filter(({ RoleName }) => !!name && !!RoleName?.endsWith(`@${name}.rowdy.run`)),
+        concatMap(({ RoleName }) =>
+          concat(
+            defer(() => iam.send(new DeleteRolePolicyCommand({ RoleName, PolicyName: 'RowdyPolicy' }))).pipe(
+              catchError(gone)
+            ),
+            defer(() => iam.send(new DeleteRoleCommand({ RoleName }))).pipe(catchError(gone))
+          )
+        ),
+        toArray(),
+        finalize(() => iam.destroy())
+      )
+    ).catch((error) => {
+      throw humanize(error);
+    });
   }
 
   async delete(): Promise<void> {

@@ -93,6 +93,12 @@ Everything the SDK calls for `aws.microvm`, by what it's for.
       "Resource": "arn:aws:iam::123456789012:role/rowdy/sandbox/*"
     },
     {
+      "Sid": "FindSandboxRoles",
+      "Effect": "Allow",
+      "Action": "iam:ListRoles",
+      "Resource": "*"
+    },
+    {
       "Sid": "PassSandboxRolesToLambdaOnly",
       "Effect": "Allow",
       "Action": "iam:PassRole",
@@ -182,6 +188,8 @@ Everything the SDK calls for `aws.microvm`, by what it's for.
   where rowdy puts every sandbox's role, and only create them with the boundary attached. It can't change
   the boundary. The roles of apps rowdy deploys sit at the root path, `/`, so it can't touch them, whatever
   they're named. `iam:DeleteRolePolicy` and `iam:DeleteRole` are for `delete()` and `delete_sandbox`.
+  `iam:ListRoles`, which can't be scoped to a path, finds the role a create left when it failed before
+  the sandbox had an image.
 - **S3:** one bucket per account, `rowdy-sandboxes-{random}`, found again by its tag, holds each
   sandbox's zip. An S3 ARN names no account, so `aws:ResourceAccount` keeps `rowdy-sandboxes-*` to
   buckets in yours. `s3:PutBucketTagging` and `s3:TagResource` cover a bucket created with tags, whichever
