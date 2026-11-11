@@ -19,9 +19,9 @@ export const stopSandbox: Tool<SandboxFactory, typeof inputSchema, typeof output
     name: 'stop_sandbox',
     title: 'Stop sandbox',
     description:
-      "Stops a sandbox and everything running in it. Call when you're done with it. Its files are lost and " +
-      'its tools are removed: get_sandbox brings them back, and its next command starts it fresh from its ' +
-      "image. Safe to repeat. aws.lambda sandboxes can't be stopped.",
+      "Stops a sandbox and everything running in it. Call when you're done with it. Its files are lost, any " +
+      'tools of its own are removed, and its next command starts it fresh from its image. Safe to repeat. ' +
+      "aws.lambda sandboxes can't be stopped.",
     inputSchema,
     outputSchema,
     annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: true },
