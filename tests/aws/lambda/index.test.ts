@@ -712,6 +712,33 @@ describe('aws lambda names', () => {
     expect(await created('Container')).not.toHaveProperty('Path');
   });
 
+  it("makes a sandbox's role before it changes it, and an app's only when it's missing", async () => {
+    const order = async (kind: 'Sandbox' | 'Container'): Promise<string[]> => {
+      const sent: string[] = [];
+      const fn = new LambdaFunction(kind, new LambdaImageService(new Environment(new Logger())))
+        .withImage('acme/score')
+        .withName('sandbox-bcdf2');
+      (fn['iam'] as unknown as { send: (command: { constructor: { name: string } }) => Promise<unknown> }).send = (
+        command
+      ) => {
+        sent.push(command.constructor.name);
+        return command.constructor.name === 'GetRoleCommand'
+          ? Promise.resolve({ Role: { Arn: 'arn:aws:iam::123456789012:role/x', RoleId: 'AROAEXAMPLE' } })
+          : Promise.resolve({});
+      };
+      await lastValueFrom(fn['prepare']().creates[0]!);
+      return sent;
+    };
+
+    expect(await order('Sandbox')).toEqual([
+      'CreateRoleCommand',
+      'UpdateRoleCommand',
+      'UpdateAssumeRolePolicyCommand',
+      'GetRoleCommand',
+    ]);
+    expect(await order('Container')).toEqual(['UpdateRoleCommand', 'UpdateAssumeRolePolicyCommand', 'GetRoleCommand']);
+  });
+
   it('keeps names that fit unchanged', () => {
     expect(LambdaFunction.roleName(image)).toBe('acme+score@rowdy.run');
     expect(LambdaFunction.roleName(image, 'acme/app')).toBe('acme+score@acme.app.rowdy.run');

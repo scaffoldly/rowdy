@@ -55,6 +55,7 @@ describe('aws microvm compute', () => {
       PutObjectCommand: () => ({}),
       GetCallerIdentityCommand: () => ({ Account: '123456789012' }),
       CreateLogGroupCommand: () => ({}),
+      CreateRoleCommand: () => Promise.reject(missing('EntityAlreadyExistsException')),
       UpdateAssumeRolePolicyCommand: () => ({}),
       GetRoleCommand: () => ({ Role: { Arn: ROLE_ARN } }),
       PutRolePolicyCommand: () => ({}),
@@ -304,6 +305,23 @@ describe('aws microvm compute', () => {
 
       await expect(create(compute)).rejects.toThrow(
         'Sandbox sandbox-box failed to build: The container image build failed.'
+      );
+    });
+
+    it('makes its role first, so a host allowed only the sandbox path can make one', async () => {
+      let created = false;
+      // As IAM does for such a host: a role that isn't there is refused, not missing.
+      const { compute, sent } = setup({
+        CreateRoleCommand: () => {
+          created = true;
+          return {};
+        },
+        UpdateAssumeRolePolicyCommand: () => (created ? {} : Promise.reject(missing('AccessDenied'))),
+      });
+
+      await expect(create(compute)).resolves.toBe(compute);
+      expect(names(sent).indexOf('CreateRoleCommand')).toBeLessThan(
+        names(sent).indexOf('UpdateAssumeRolePolicyCommand')
       );
     });
 

@@ -76,6 +76,7 @@ import {
   filter,
   forkJoin,
   from,
+  iif,
   fromEvent,
   map,
   merge,
@@ -997,37 +998,49 @@ export class LambdaFunction extends AwsClientLogger {
           Description: `Execution role to run ${Image.namespace}/${Image.name} in AWS Lambda`,
           Qualifier: _qualifier(Image),
         })),
-        switchMap(({ RoleName, Description, Qualifier }) =>
-          _create(
-            () =>
-              this.iam
-                .send(new UpdateRoleCommand({ RoleName, Description }))
-                .then(() =>
-                  this.iam.send(
-                    new UpdateAssumeRolePolicyCommand({
-                      RoleName,
-                      PolicyDocument: JSON.stringify(this.AssumeRolePolicyDocument),
-                    })
-                  )
-                )
-                .then(() => this.iam.send(new GetRoleCommand({ RoleName }))),
-            () =>
-              this.iam.send(
+        switchMap(({ RoleName, Description, Qualifier }) => {
+          const create = (): Promise<unknown> =>
+            this.iam
+              .send(
                 new CreateRoleCommand({
                   RoleName,
                   ...(this.isSandbox() ? { Path: SANDBOX_ROLE_PATH } : {}),
                   Description,
                   AssumeRolePolicyDocument: JSON.stringify(this.AssumeRolePolicyDocument),
                 })
-              ),
-            (role) => {
-              this.RoleName.next(RoleName);
-              this.RoleArn.next(role.Role!.Arn!);
-              this.RoleId.next(role.Role!.RoleId!);
-              this.Qualifier.next(Qualifier);
-            }
-          )
-        )
+              )
+              .catch((error) => {
+                if (error?.name === 'EntityAlreadyExistsException') return undefined;
+                throw error;
+              });
+          // A sandbox's role is made first: IAM checks a change to a role that isn't there yet against the name with no
+          // path, which a host allowed only the sandbox path can't touch.
+          return iif(() => this.isSandbox(), defer(create), of(undefined)).pipe(
+            switchMap(() =>
+              _create(
+                () =>
+                  this.iam
+                    .send(new UpdateRoleCommand({ RoleName, Description }))
+                    .then(() =>
+                      this.iam.send(
+                        new UpdateAssumeRolePolicyCommand({
+                          RoleName,
+                          PolicyDocument: JSON.stringify(this.AssumeRolePolicyDocument),
+                        })
+                      )
+                    )
+                    .then(() => this.iam.send(new GetRoleCommand({ RoleName }))),
+                create,
+                (role) => {
+                  this.RoleName.next(RoleName);
+                  this.RoleArn.next(role.Role!.Arn!);
+                  this.RoleId.next(role.Role!.RoleId!);
+                  this.Qualifier.next(Qualifier);
+                }
+              )
+            )
+          );
+        })
       ),
       combineLatest({
         Name: this.Name.pipe(take(1)),

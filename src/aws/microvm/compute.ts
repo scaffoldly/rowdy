@@ -644,13 +644,9 @@ export class MicrovmCompute extends AwsClientLogger implements SandboxCompute {
     const [registry = '', ...repository] = (ImageUri.split('@')[0] ?? '').split('/');
     const [account, , , region] = registry.split('.');
 
-    return _create(
-      () =>
-        this.iam
-          .send(new UpdateAssumeRolePolicyCommand({ RoleName, PolicyDocument: AssumeRolePolicyDocument }))
-          .then(() => this.iam.send(new GetRoleCommand({ RoleName }))),
-      () =>
-        this.iam.send(
+    const create = (): Promise<unknown> =>
+      this.iam
+        .send(
           new CreateRoleCommand({
             RoleName,
             Path: SANDBOX_ROLE_PATH,
@@ -658,7 +654,23 @@ export class MicrovmCompute extends AwsClientLogger implements SandboxCompute {
             AssumeRolePolicyDocument,
           })
         )
-    ).pipe(
+        .catch((error) => {
+          if (error?.name === 'EntityAlreadyExistsException') return undefined;
+          throw error;
+        });
+
+    // Made first: IAM checks a change to a role that isn't there yet against the name with no path, which a host
+    // allowed only the sandbox path can't touch.
+    return defer(create).pipe(
+      switchMap(() =>
+        _create(
+          () =>
+            this.iam
+              .send(new UpdateAssumeRolePolicyCommand({ RoleName, PolicyDocument: AssumeRolePolicyDocument }))
+              .then(() => this.iam.send(new GetRoleCommand({ RoleName }))),
+          create
+        )
+      ),
       switchMap(({ Role }) =>
         from(
           this.iam.send(
