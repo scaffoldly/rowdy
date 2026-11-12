@@ -3,7 +3,6 @@ import { lastValueFrom, of, Subject, toArray } from 'rxjs';
 import { Readable } from 'stream';
 import {
   CHUNK,
-  RETRY,
   Transfer,
   TransferEvent,
   External,
@@ -21,10 +20,6 @@ import { createServer, Server } from 'http';
 import { AddressInfo } from 'net';
 
 describe('upload', () => {
-  const timing = { ...RETRY };
-  beforeAll(() => Object.assign(RETRY, { minTimeout: 1, maxTimeout: 1 }));
-  afterAll(() => Object.assign(RETRY, timing));
-
   const config = (): InternalAxiosRequestConfig => ({ headers: new AxiosHeaders(), method: 'get', url: 'https://x/' });
   const response = (status: number, headers: Record<string, string> = {}): unknown => ({
     status,
@@ -72,23 +67,34 @@ describe('upload', () => {
 
   const run = (u: Upload): Promise<unknown> => lastValueFrom(Upload.observe([u]));
 
-  it.each([404, 429, 503, undefined])('retries a source download that fails with %s', async (status) => {
+  // Retrying is the http instance's, by its interceptor: what an upload asks of it is in its requests' options.
+  it("asks for a source download's 404 to be retried, as a mirror can 404 a blob until it's cached", async () => {
     const http = mocks();
-    http.get.mockRejectedValueOnce(failure(status)).mockRejectedValueOnce(failure(status));
 
     await run(upload(http));
 
-    expect(http.get).toHaveBeenCalledTimes(3);
-    expect(http.patch).toHaveBeenCalledTimes(1);
+    expect(http.get.mock.calls[0]![1]).toMatchObject({ alsoRetry: [404] });
   });
 
-  it('gives up on a source download that keeps failing', async () => {
+  it.each(['head', 'post', 'patch', 'put'] as const)(
+    'asks for nothing more of a %s to the registry',
+    async (method) => {
+      const http = mocks();
+
+      await run(upload(http));
+
+      const options = http[method].mock.calls[0]!.at(-1) as Record<string, unknown>;
+      expect(options.alsoRetry).toBeUndefined();
+    }
+  );
+
+  it('gives up with what the registry said', async () => {
     const http = mocks();
     http.get.mockRejectedValue(failure(404));
 
     await expect(run(upload(http))).rejects.toThrow('failed');
 
-    expect(http.get).toHaveBeenCalledTimes(RETRY.retries + 1);
+    expect(http.get).toHaveBeenCalledTimes(1);
   });
 
   describe('in chunks', () => {
@@ -144,121 +150,33 @@ describe('upload', () => {
       expect(http.put.mock.calls[0]![0]).toBe(`${origin}/upload/2?digest=sha256:abc`);
     });
 
-    it('retries only the chunk that failed', async () => {
+    it('sends each chunk as a buffer, so a retry of its request sends it again', async () => {
       const http = mocks();
       http.get.mockResolvedValue({
         ...(response(200) as object),
         data: Readable.from([Buffer.alloc(1024), Buffer.alloc(1024)]),
       });
-      http.patch.mockRejectedValueOnce(failure(503));
       const u = upload(http);
       Object.assign(u.ref, { size: 2048 });
 
       await run(u);
 
-      expect(http.patch.mock.calls.map(([, , options]) => options.headers.get('Content-Range'))).toEqual([
-        '0-1023',
-        '0-1023',
-        '1024-2047',
-      ]);
+      expect(http.patch.mock.calls.map(([, data]) => Buffer.isBuffer(data))).toEqual([true, true]);
     });
-  });
-
-  it('does not retry once the host is out of outgoing requests', async () => {
-    const http = mocks();
-    http.get.mockRejectedValue(new AxiosError('Too many subrequests.', 'ERR_NETWORK', config()));
-
-    await expect(run(upload(http))).rejects.toThrow('Too many subrequests.');
-
-    expect(http.get).toHaveBeenCalledTimes(1);
-  });
-
-  it('does not retry a source download the registry refuses', async () => {
-    const http = mocks();
-    http.get.mockRejectedValue(failure(403));
-
-    await expect(run(upload(http))).rejects.toThrow('failed');
-
-    expect(http.get).toHaveBeenCalledTimes(1);
-  });
-
-  it.each(['head', 'post'] as const)('retries a %s the registry fails', async (method) => {
-    const http = mocks();
-    http[method].mockRejectedValueOnce(failure(503));
-
-    await run(upload(http));
-
-    expect(http[method]).toHaveBeenCalledTimes(2);
-  });
-
-  it('retries a post that loses its connection', async () => {
-    const http = mocks();
-    http.post.mockRejectedValueOnce(failure());
-
-    await run(upload(http));
-
-    expect(http.post).toHaveBeenCalledTimes(2);
-  });
-
-  it.each(['head', 'post'] as const)('does not retry a %s that 403s', async (method) => {
-    const http = mocks();
-    http[method].mockRejectedValue(failure(403));
-
-    await expect(run(upload(http))).rejects.toThrow('Upload failed');
-
-    expect(http[method]).toHaveBeenCalledTimes(1);
-  });
-
-  it('does not retry an error without a status', async () => {
-    const http = mocks();
-    http.head.mockRejectedValue(new TypeError('boom'));
-
-    await expect(run(upload(http))).rejects.toThrow('boom');
-
-    expect(http.head).toHaveBeenCalledTimes(1);
-  });
-
-  it('retries a patch from the chunk it holds, though the stream is consumed', async () => {
-    const http = mocks();
-    http.patch.mockRejectedValue(failure(503));
-
-    await expect(run(upload(http))).rejects.toThrow('Upload failed');
-
-    expect(http.patch).toHaveBeenCalledTimes(RETRY.retries + 1);
-  });
-
-  it('retries a put of a buffer', async () => {
-    const http = mocks();
-    http.put.mockRejectedValueOnce(failure(503));
-
-    await run(upload(http, 'manifest', Buffer.from('{}')));
-
-    expect(http.put).toHaveBeenCalledTimes(2);
   });
 
   describe('image manifest', () => {
     const collect = (http: ReturnType<typeof mocks>): Promise<unknown> =>
       lastValueFrom(of('acme/app').pipe(Transfer.normalize(), Transfer.collect(new Logger(), http as never)));
 
-    it.each([404, 429, 503, undefined])('retries a manifest that fails with %s', async (status) => {
+    it("asks for a manifest's 404 to be retried, as a mirror can 404 an image until it's cached", async () => {
       const http = mocks();
-      http.get
-        .mockRejectedValueOnce(failure(status))
-        .mockRejectedValueOnce(failure(status))
-        .mockRejectedValue(failure(403));
+      http.get.mockRejectedValue(failure(403));
 
       await expect(collect(http)).rejects.toThrow('failed');
 
-      expect(http.get).toHaveBeenCalledTimes(3);
-    });
-
-    it('gives up on a manifest that keeps failing', async () => {
-      const http = mocks();
-      http.get.mockRejectedValue(failure(404));
-
-      await expect(collect(http)).rejects.toThrow('failed');
-
-      expect(http.get).toHaveBeenCalledTimes(RETRY.retries + 1);
+      expect(http.get).toHaveBeenCalledTimes(1);
+      expect(http.get.mock.calls[0]![1]).toMatchObject({ alsoRetry: [404] });
     });
   });
 
@@ -589,7 +507,7 @@ describe('transfers', () => {
       });
 
       const busybox = 'mirror.gcr.io/library/busybox:latest';
-      const TUNNELD = 'ghcr.io/tunnel-pizza/tunneld:latest';
+      const TUNNELD = 'ghcr.io/tunneld-it/tunneld:latest';
       const platformOf = (img: ImageManifest['images'][number]): string =>
         `${img.manifest.platform?.os}/${img.manifest.platform?.architecture}`;
 
@@ -661,7 +579,7 @@ describe('transfers', () => {
             const config = JSON.parse(img.config!.toString('utf-8')) as External['Config'];
             expect(layers.length).toBe(appLayers(img.manifest.digest) + 2);
             const [tunneld, rowdyLayer] = layers.slice(-2);
-            expect(tunneld!.annotations?.['run.rowdy.index.url']).toContain('tunnel-pizza/tunneld');
+            expect(tunneld!.annotations?.['run.rowdy.index.url']).toContain('tunneld-it/tunneld');
             expect(rowdyLayer!.annotations?.['run.rowdy.index.url']).toContain('scaffoldly/rowdy');
             expect(config.rootfs!.diff_ids!.length).toBe(layers.length);
             expect(config.history!.filter((h) => h.empty_layer !== true).length).toBe(layers.length);
