@@ -20,12 +20,11 @@ import {
 import { HttpHeaders } from '../../proxy/headers';
 import { createHash } from 'crypto';
 import { ILoggable, Logger } from '../../log';
-import { AxiosError, AxiosInstance, AxiosResponse, isAxiosError } from 'axios';
+import { AxiosInstance, AxiosResponse, isAxiosError } from 'axios';
 import { PullImageOptions, TRegistry } from '../types';
 import { checkSource, skippedLevel } from './layers';
 import { homedir } from 'os';
 import { Readable } from 'stream';
-import promiseRetry from 'promise-retry';
 import { readFileSync } from 'fs';
 import { join } from 'path';
 import { concurrency } from '../../concurrency';
@@ -96,27 +95,10 @@ export type ImageManifest = Image & {
 export type Source = { from: string; manifest: ImageManifest; configs: Map<string, External['Config']> };
 
 /** What a blob is read with: a layers-from source's anonymously, never with the app image's credentials. */
-// `unref` keeps a backoff from holding the process open once its transfer is torn down.
-export const RETRY = { retries: 6, minTimeout: 1_000, maxTimeout: 15_000, unref: true };
 /** Bytes per request a blob goes up in. ECR takes no chunk under 5 MiB but the last. */
 export const CHUNK = { size: 8 * 1024 * 1024 };
 // Looked up at each request, so a host that wraps fetch sees rowdy's.
 const FETCH = { fetch: (...args: Parameters<typeof fetch>) => globalThis.fetch(...args) };
-const RETRYABLE: ReadonlySet<number | undefined> = new Set([429, 500, 502, 503, 504]);
-
-/**
- * A `.catch` for a promiseRetry attempt: retries a retryable status, or `also`. A connection lost before any
- * response counts as a 500. `replayable` is false when the request body is a stream, consumed by its first attempt.
- */
-const retryOn =
-  (retry: (error: unknown) => never, { also, replayable = true }: { also?: number; replayable?: boolean } = {}) =>
-  (error: AxiosError | (Error & { status?: number })): never => {
-    // A Cloudflare Worker's cap on outgoing requests holds for the rest of the request.
-    if (/too many subrequests/i.test(error.message)) throw error;
-    const status = isAxiosError(error) ? (error.response?.status ?? 500) : error.status;
-    if (replayable && status && (status === also || RETRYABLE.has(status))) return retry(error);
-    throw error;
-  };
 
 export const sourceHeaders = (app: HttpHeaders, ref: External['Ref']): HttpHeaders =>
   ref.annotations?.['run.rowdy.index.url'] ? HttpHeaders.from({}) : app;
@@ -248,14 +230,19 @@ export class Transfer implements ILoggable {
   }
 
   /**
-   * A layers-from image, collected and checked: every platform but attestations, with its config. Errors for an
-   * image whose layers can't go in as they are, before anything is uploaded.
+   * A layers-from image, collected and checked: `platform`'s image, with its config. Errors for an image with none
+   * for `platform`, or whose layers can't go in as they are, before anything is uploaded.
    */
-  static source(log: Logger, http: AxiosInstance, ref: string): Observable<Source> {
+  static source(
+    log: Logger,
+    http: AxiosInstance,
+    ref: string,
+    platform: PullImageOptions['platform'] = 'linux/amd64'
+  ): Observable<Source> {
     return of(ref).pipe(
       // DEVNOTE: no auth for layersFrom, it must be a public image
       Transfer.normalize(null),
-      Transfer.collect(log, http),
+      Transfer.collect(log, http, [], platform),
       switchMap((manifest) =>
         from(manifest.images.filter((img) => img.manifest.platform?.architecture !== 'unknown')).pipe(
           mergeMap(async (img) => {
@@ -264,10 +251,7 @@ export class Transfer implements ILoggable {
             }
             const url = `${manifest.url.split('/').slice(0, -2).join('/')}/blobs/${img.image.config.digest}`;
             const accept = manifest.headers.with('accept', img.image.config.mediaType).intoAxios();
-            const { data } = await promiseRetry(
-              (retry) => http.get<External['Config']>(url, { headers: accept }).catch(retryOn(retry, { also: 404 })),
-              RETRY
-            );
+            const { data } = await http.get<External['Config']>(url, { headers: accept, alsoRetry: [404] });
             return { img, config: data };
           }, concurrency()),
           toArray(),
@@ -289,7 +273,12 @@ export class Transfer implements ILoggable {
     );
   }
 
-  static collect(log: Logger, http: AxiosInstance, layersFrom: string[] = []): OperatorFunction<Image, ImageManifest> {
+  static collect(
+    log: Logger,
+    http: AxiosInstance,
+    layersFrom: string[] = [],
+    platform: PullImageOptions['platform'] = 'linux/amd64'
+  ): OperatorFunction<Image, ImageManifest> {
     return (source) => {
       const headers: HttpHeaders = HttpHeaders.from({
         Accept: [
@@ -303,7 +292,7 @@ export class Transfer implements ILoggable {
         tap((image) => log.info(`${image.image}: Pulling from ${image.slug}`)),
         switchMap((image) =>
           from(layersFrom).pipe(
-            concatMap((ref) => Transfer.source(log, http, ref)),
+            concatMap((ref) => Transfer.source(log, http, ref, platform)),
             toArray(),
             map((sources) => ({ image, sources }))
           )
@@ -312,22 +301,19 @@ export class Transfer implements ILoggable {
           // TODO: Fetch tags from Registry and infer tags[]
           // Ref: https://distribution.github.io/distribution/spec/api/
           return from(
-            promiseRetry(
-              (retry) =>
-                http
-                  .get<External['Index']>(image.url, {
-                    headers: headers.override('authorization', image.authorization).intoAxios(),
-                  })
-                  // A mirror can 404 an image until it is cached.
-                  .catch(retryOn(retry, { also: 404 })),
-              RETRY
-            ).then((response) => {
-              headers.override(
-                'authorization',
-                response.config?.headers?.get('authorization') || headers.get('authorization')
-              );
-              return response;
-            })
+            http
+              .get<External['Index']>(image.url, {
+                headers: headers.override('authorization', image.authorization).intoAxios(),
+                // A mirror can 404 an image until it is cached.
+                alsoRetry: [404],
+              })
+              .then((response) => {
+                headers.override(
+                  'authorization',
+                  response.config?.headers?.get('authorization') || headers.get('authorization')
+                );
+                return response;
+              })
           ).pipe(
             switchMap(async (response) => {
               const responseHeaders = response.headers;
@@ -372,9 +358,14 @@ export class Transfer implements ILoggable {
                 throw new Error(`Unsupported mediaType on index: ${data.mediaType}`);
               }
 
-              if (sources.length) {
-                // Drop attestation manifests, since we're fundamentally altering the image with new layers
-                index.manifests = index.manifests?.filter((m) => m.platform?.architecture !== 'unknown');
+              // Only the platform that runs is copied: every other one, attestations included, is pulls from a
+              // registry that rate-limits for nothing.
+              const [os, architecture] = platform.split('/');
+              index.manifests = index.manifests?.filter(
+                (m) => m.platform?.os === os && m.platform?.architecture === architecture
+              );
+              if (!index.manifests?.length) {
+                throw new Error(`${image.image} has no ${platform} image`);
               }
 
               return {
@@ -395,15 +386,7 @@ export class Transfer implements ILoggable {
                   tap(({ url }) => log.debug(`Fetching manifest from URL: ${url}`)),
                   mergeMap(
                     ({ manifest, url }) =>
-                      from(
-                        promiseRetry(
-                          (retry) =>
-                            http
-                              .get<External['Image']>(url, { headers: headers.intoAxios() })
-                              .catch(retryOn(retry, { also: 404 })),
-                          RETRY
-                        )
-                      ).pipe(
+                      from(http.get<External['Image']>(url, { headers: headers.intoAxios(), alsoRetry: [404] })).pipe(
                         switchMap(async ({ data }) => {
                           if (data.schemaVersion !== 2) {
                             throw new Error(`Unsupported schemaVersion on manifest: ${data.schemaVersion}`);
@@ -452,13 +435,9 @@ export class Transfer implements ILoggable {
 
                           const appCfgUrl = `${image.url.split('/').slice(0, -2).join('/')}/blobs/${data.config.digest}`;
                           const accept = headers.with('accept', data.config.mediaType).intoAxios();
-                          const appCfg = await promiseRetry(
-                            (retry) =>
-                              http
-                                .get<External['Config']>(appCfgUrl, { headers: accept })
-                                .catch(retryOn(retry, { also: 404 })),
-                            RETRY
-                          ).then((r) => r.data);
+                          const appCfg = await http
+                            .get<External['Config']>(appCfgUrl, { headers: accept, alsoRetry: [404] })
+                            .then((r) => r.data);
 
                           data.layers = data.layers || [];
                           appCfg.rootfs = appCfg.rootfs || { type: 'layers', diff_ids: [] };
@@ -527,10 +506,7 @@ export class Transfer implements ILoggable {
     }
     const configUrl = `${manifestUrl.split('/').slice(0, -2).join('/')}/blobs/${image.config.digest}`;
     const accept = headers.with('accept', image.config.mediaType).intoAxios();
-    const { data } = await promiseRetry(
-      (retry) => http.get<External['Config']>(configUrl, { headers: accept }).catch(retryOn(retry, { also: 404 })),
-      RETRY
-    );
+    const { data } = await http.get<External['Config']>(configUrl, { headers: accept, alsoRetry: [404] });
     if (!data.architecture || !data.os) {
       throw new Error(`Bare image config is missing architecture/os`);
     }
@@ -900,23 +876,19 @@ export class Upload implements ILoggable {
 
       if (this.type !== 'manifest') {
         if (
-          await promiseRetry(
-            (retry) =>
-              status
-                .intercept(
-                  this.http.head(this.verifyUrl, {
-                    validateStatus: (status) => [200, 404].includes(status),
-                    headers: this.transfer.toHeaders.intoAxios(),
-                  })
-                )
-                .catch(retryOn(retry)),
-            RETRY
-          ).then(
-            (res) =>
-              res.status === 200 &&
-              res.headers.get('content-length') == this.ref.size &&
-              res.headers.get('docker-content-digest') === this.digest
-          )
+          await status
+            .intercept(
+              this.http.head(this.verifyUrl, {
+                validateStatus: (status) => [200, 404].includes(status),
+                headers: this.transfer.toHeaders.intoAxios(),
+              })
+            )
+            .then(
+              (res) =>
+                res.status === 200 &&
+                res.headers.get('content-length') == this.ref.size &&
+                res.headers.get('docker-content-digest') === this.digest
+            )
         ) {
           if (this.type === 'blob') {
             this.log.debug(`${this.digest}: Layer exists, skipping upload`);
@@ -926,18 +898,13 @@ export class Upload implements ILoggable {
           }
         }
 
-        const location = await promiseRetry(
-          (retry) =>
-            status
-              .intercept(
-                this.http.post(toUrl, null, {
-                  headers: this.transfer.toHeaders.with('Content-Type', this.mediaType).intoAxios(),
-                })
-              )
-              .then((res) => res.headers.get('location') as string | undefined)
-              .catch(retryOn(retry)),
-          RETRY
-        );
+        const location = await status
+          .intercept(
+            this.http.post(toUrl, null, {
+              headers: this.transfer.toHeaders.with('Content-Type', this.mediaType).intoAxios(),
+            })
+          )
+          .then((res) => res.headers.get('location') as string | undefined);
 
         if (!location) {
           throw new Error(`No location header received`);
@@ -956,22 +923,15 @@ export class Upload implements ILoggable {
         download = this.content;
       } else if (this.type !== 'manifest') {
         download = (
-          await promiseRetry(
-            (retry) =>
-              this.http
-                .get<Readable>(fromUrl, {
-                  responseType: 'stream',
-                  maxBodyLength: Infinity,
-                  maxContentLength: Infinity,
-                  headers: sourceHeaders(this.transfer.fromHeaders, this.ref)
-                    .with('accept', this.mediaType)
-                    .intoAxios(),
-                  onDownloadProgress: (e) => (this.bytes.received += e.bytes),
-                })
-                // A mirror can 404 a blob its manifest lists until the blob is cached.
-                .catch(retryOn(retry, { also: 404 })),
-            RETRY
-          )
+          await this.http.get<Readable>(fromUrl, {
+            responseType: 'stream',
+            maxBodyLength: Infinity,
+            maxContentLength: Infinity,
+            headers: sourceHeaders(this.transfer.fromHeaders, this.ref).with('accept', this.mediaType).intoAxios(),
+            onDownloadProgress: (e) => (this.bytes.received += e.bytes),
+            // A mirror can 404 a blob its manifest lists until the blob is cached.
+            alsoRetry: [404],
+          })
         ).data;
 
         if (this.type === 'config' && download instanceof Readable) {
@@ -1012,21 +972,15 @@ export class Upload implements ILoggable {
           if (!size) break;
 
           const range = `${offset}-${offset + size - 1}`;
-          const { headers } = await promiseRetry(
-            (retry) =>
-              status
-                .intercept(
-                  this.http.patch(toUrl, chunk.subarray(0, size), {
-                    adapter: 'fetch',
-                    env: FETCH,
-                    headers: this.transfer.toHeaders
-                      .with('Content-Type', 'application/octet-stream')
-                      .with('Content-Range', range)
-                      .intoAxios(),
-                  })
-                )
-                .catch(retryOn(retry)),
-            RETRY
+          const { headers } = await status.intercept(
+            this.http.patch(toUrl, chunk.subarray(0, size), {
+              adapter: 'fetch',
+              env: FETCH,
+              headers: this.transfer.toHeaders
+                .with('Content-Type', 'application/octet-stream')
+                .with('Content-Range', range)
+                .intoAxios(),
+            })
           );
           offset += size;
           this.bytes.sent += size;
@@ -1038,19 +992,13 @@ export class Upload implements ILoggable {
         download = Readable.from('');
       }
 
-      await promiseRetry(
-        (retry) =>
-          status
-            .intercept(
-              this.http.put(toUrl, download, {
-                maxBodyLength: Infinity,
-                maxContentLength: Infinity,
-                headers: this.transfer.toHeaders.with('Content-Type', this.mediaType).intoAxios(),
-                onUploadProgress: (e) => (this.bytes.sent += e.bytes),
-              })
-            )
-            .catch(retryOn(retry, { replayable: Buffer.isBuffer(download) })),
-        RETRY
+      await status.intercept(
+        this.http.put(toUrl, download, {
+          maxBodyLength: Infinity,
+          maxContentLength: Infinity,
+          headers: this.transfer.toHeaders.with('Content-Type', this.mediaType).intoAxios(),
+          onUploadProgress: (e) => (this.bytes.sent += e.bytes),
+        })
       );
 
       this._complete = true;

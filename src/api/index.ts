@@ -3,8 +3,8 @@ import { Pipeline } from '../pipeline';
 import { HttpProxy } from '../proxy/http';
 import { Logger } from '../log';
 import { RowdyNames } from './names';
-import axios, { AxiosInstance } from 'axios';
-import { authenticator } from '../util/axios';
+import axios from 'axios';
+import { authenticator, RowdyHttp } from '../util/axios';
 import { ImageApi } from './image';
 import { IApi, IImageApi, TRegistry } from './types';
 import type { Environment } from '../environment';
@@ -13,7 +13,7 @@ import { CRI, GrpcResponse } from '@scaffoldly/rowdy-grpc';
 import { Readable } from 'stream';
 
 export class Rowdy extends RowdyNames implements IApi {
-  public readonly http: AxiosInstance = axios.create();
+  public readonly http: RowdyHttp;
 
   private _images: IImageApi = new ImageApi(this);
   private _proxy?: HttpProxy<Pipeline>;
@@ -23,9 +23,13 @@ export class Rowdy extends RowdyNames implements IApi {
     public readonly signal: AbortSignal
   ) {
     super();
+    this.http = RowdyHttp.from(axios.create(), signal);
     const auth = authenticator(this.http, this.log);
     this.http.interceptors.request.use(...auth.request);
     this.http.interceptors.response.use(...auth.response);
+    this.http
+      .events()
+      .subscribe((event) => this.environment?.event$.next({ source: 'http', message: event.summary, ...event }));
   }
 
   get images(): IImageApi {
