@@ -45,6 +45,8 @@ export class SandboxEnvironment implements IApi {
     const auth = authenticator(this.http, this.log, this.credentials);
     this.http.interceptors.request.use(...auth.request);
     this.http.interceptors.response.use(...auth.response);
+    // What its requests run into, like a registry's rate limit, is the sandbox's to say.
+    this.http.events().subscribe((event) => this.event$.next({ source: 'http', message: event.summary, ...event }));
 
     // follow-redirects breaks on a Cloudflare Worker's node:http, so redirects are followed here.
     this.http.defaults.maxRedirects = 0;

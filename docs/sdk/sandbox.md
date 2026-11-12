@@ -387,6 +387,19 @@ Copying an image into ECR reports its progress with `source: 'transfer'`, whenev
 
 `lifecycle` is `copying`, `copied` or `failed`.
 
+A registry that rate-limits a request says so with `source: 'http'`. The request waits as long as its `Retry-After`
+says, or its own backoff without one, then tries again. Requests in parallel can be limited at once, so a host that
+passes these on may want to debounce them.
+
+```ts
+{
+  source: 'http',
+  message: 'Rate limited by mirror.gcr.io pulling library/alpine, trying again in 30 seconds',
+  lifecycle: 'rate-limited',
+  summary: 'Rate limited by mirror.gcr.io pulling library/alpine, trying again in 30 seconds',
+}
+```
+
 Pass `onEvent` to `Sandbox.create` or `runCommand`. It can be a callback or a promise of one. Callbacks run one at a
 time, in order, and an error from one is logged and doesn't affect the sandbox.
 

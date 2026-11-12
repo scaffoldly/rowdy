@@ -1,12 +1,7 @@
-import axios, {
-  AxiosInstance,
-  AxiosError,
-  AxiosResponse,
-  InternalAxiosRequestConfig,
-  AxiosHeaders,
-  isCancel,
-} from 'axios';
+import axios, { AxiosInstance, AxiosError, AxiosResponse, InternalAxiosRequestConfig, AxiosHeaders } from 'axios';
 import { Readable } from 'stream';
+import ms from 'ms';
+import { Observable, Subject } from 'rxjs';
 import { parse } from 'auth-header';
 import { Logger } from '../log';
 import { HttpHeaders } from '../proxy/headers';
@@ -140,7 +135,14 @@ export const RETRY = { retries: 6, minTimeout: 1_000, maxTimeout: 15_000 };
 export const RETRYABLE: ReadonlySet<number> = new Set([429, 500, 502, 503, 504]);
 
 /** An axios instance that retries a retryable status, or one of the request's `alsoRetry`, waiting longer each time. */
-export type RowdyHttp = AxiosInstance;
+/** What an http instance says of its requests: `summary` is for reading. */
+export type HttpEvents = {
+  lifecycle: 'rate-limited';
+  summary: string;
+};
+
+/** An axios instance that retries what it can, saying so in `events()` when a registry rate-limits it. */
+export type RowdyHttp = AxiosInstance & { events(): Observable<HttpEvents> };
 
 export const RowdyHttp = {
   /**
@@ -148,12 +150,13 @@ export const RowdyHttp = {
    * interceptors after it, and a retry goes through them all again.
    */
   from(http: AxiosInstance): RowdyHttp {
+    const event$ = new Subject<HttpEvents>();
     http.interceptors.response.use(undefined, async (error: AxiosError) => {
       const config = error.config as
         | (InternalAxiosRequestConfig & { attempt?: number; _isRetry?: boolean })
         | undefined;
       // A Cloudflare Worker's cap on outgoing requests holds for the rest of the request.
-      if (!config || isCancel(error) || /too many subrequests/i.test(error.message)) throw error;
+      if (!config || error.code === AxiosError.ERR_CANCELED || /too many subrequests/i.test(error.message)) throw error;
       // A connection lost before any response counts as a 500.
       const status = error.response?.status ?? 500;
       const attempt = config.attempt ?? 0;
@@ -162,12 +165,26 @@ export const RowdyHttp = {
       if (!RETRYABLE.has(status) && !config.alsoRetry?.includes(status)) throw error;
 
       (error.response?.data as { destroy?: () => void } | undefined)?.destroy?.();
-      const wait = Math.min(RETRY.minTimeout * 2 ** attempt, RETRY.maxTimeout);
-      // Unref'd, so a backoff doesn't hold the process open once its request is given up on.
+      // A 429 says how long to wait in Retry-After, as seconds or an HTTP date.
+      const header = status === 429 ? `${error.response?.headers?.['retry-after'] ?? ''}` : '';
+      const after = /^\d+$/.test(header) ? Number(header) * 1000 : Date.parse(header) - Date.now();
+      const wait = Number.isFinite(after)
+        ? Math.max(0, after)
+        : Math.min(RETRY.minTimeout * 2 ** attempt, RETRY.maxTimeout);
+      if (status === 429) {
+        const [, host = 'the registry', path = ''] = /^https?:\/\/([^/]+)([^?]*)/.exec(config.url ?? '') ?? [];
+        const slug = path.replace(/^\/v2\//, '').replace(/\/(manifests|blobs)\/.*$/, '');
+        const verb = ['get', 'head'].includes(config.method ?? 'get') ? 'pulling' : 'pushing';
+        event$.next({
+          lifecycle: 'rate-limited',
+          summary: `Rate limited by ${host} ${verb} ${slug}, trying again in ${ms(wait, { long: true })}`,
+        });
+      }
+      // Unref'd, so a wait doesn't hold the process open once its request is given up on.
       await new Promise((resolve) => setTimeout(resolve, wait).unref?.());
       // A new attempt can be challenged for auth again.
       return http.request({ ...config, attempt: attempt + 1, _isRetry: false } as InternalAxiosRequestConfig);
     });
-    return http;
+    return Object.assign(http, { events: () => event$.asObservable() });
   },
 };

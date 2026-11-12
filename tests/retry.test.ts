@@ -1,7 +1,8 @@
 import { AxiosAdapter, AxiosError, AxiosResponse, CanceledError, InternalAxiosRequestConfig } from 'axios';
 import { Readable } from 'stream';
 import axios from 'axios';
-import { RETRY, RowdyHttp } from '../src/util/axios';
+import { lastValueFrom, take } from 'rxjs';
+import { HttpEvents, RETRY, RowdyHttp } from '../src/util/axios';
 import { Rowdy } from '../src/api';
 import { Logger } from '../src/log';
 import { SandboxEnvironment } from '../src/sandbox/internal/environment';
@@ -16,7 +17,7 @@ describe.each([
   beforeAll(() => Object.assign(RETRY, { minTimeout: 1, maxTimeout: 1 }));
   afterAll(() => Object.assign(RETRY, timing));
 
-  type Answer = number | 'lost' | Error;
+  type Answer = number | 'lost' | Error | { status: number; headers: Record<string, string> };
 
   // An instance whose requests are answered in turn by `answers`, the last one for every request after.
   const instance = (...answers: Answer[]) => {
@@ -26,8 +27,9 @@ describe.each([
       const answer = answers[Math.min(seen.length - 1, answers.length - 1)]!;
       if (answer instanceof Error) throw answer;
       if (answer === 'lost') throw new AxiosError('socket hang up', 'ECONNRESET', config);
-      const response: AxiosResponse = { status: answer, statusText: '', data: '', headers: {}, config };
-      if (answer >= 400) throw new AxiosError('failed', 'ERR_BAD_RESPONSE', config, null, response);
+      const { status, headers } = typeof answer === 'number' ? { status: answer, headers: {} } : answer;
+      const response: AxiosResponse = { status, statusText: '', data: '', headers, config };
+      if (status >= 400) throw new AxiosError('failed', 'ERR_BAD_RESPONSE', config, null, response);
       return response;
     };
     const http = made();
@@ -113,5 +115,96 @@ describe.each([
     await http.get('https://registry.example/v2/', { _isRetry: true } as object);
 
     expect(seen[1]).toMatchObject({ _isRetry: false, attempt: 1 });
+  });
+
+  describe('rate limited', () => {
+    const said = (http: RowdyHttp) => {
+      const events: HttpEvents[] = [];
+      http.events().subscribe((event) => events.push(event));
+      return events;
+    };
+
+    it('waits as long as Retry-After says, rather than its own backoff', async () => {
+      const { http, seen } = instance({ status: 429, headers: { 'retry-after': '1' } }, 200);
+      const started = Date.now();
+
+      await http.get('https://mirror.gcr.io/v2/library/alpine/manifests/latest');
+
+      expect(Date.now() - started).toBeGreaterThanOrEqual(1000);
+      expect(seen).toHaveLength(2);
+    });
+
+    it('says who limited what, and for how long', async () => {
+      const { http } = instance({ status: 429, headers: { 'retry-after': '1' } }, 200);
+      const events = said(http);
+
+      await http.get('https://mirror.gcr.io/v2/library/alpine/blobs/sha256:abc');
+
+      expect(events).toEqual([
+        {
+          lifecycle: 'rate-limited',
+          summary: 'Rate limited by mirror.gcr.io pulling library/alpine, trying again in 1 second',
+        },
+      ]);
+    });
+
+    it('takes Retry-After as a date', async () => {
+      const date = new Date(Date.now() + 1000).toUTCString();
+      const { http } = instance({ status: 429, headers: { 'retry-after': date } }, 200);
+      const events = said(http);
+
+      await http.get('https://mirror.gcr.io/v2/acme/app/manifests/latest');
+
+      expect(events).toEqual([
+        {
+          lifecycle: 'rate-limited',
+          summary: expect.stringMatching(/^Rate limited by mirror.gcr.io pulling acme\/app, trying again in \d+ ms$/),
+        },
+      ]);
+    });
+
+    it('says how long its own backoff is, without a Retry-After', async () => {
+      const { http } = instance(429, 200);
+      const events = said(http);
+
+      await http.put('https://ecr.example/v2/acme/app/manifests/latest', Buffer.from('{}'));
+
+      expect(events).toEqual([
+        { lifecycle: 'rate-limited', summary: 'Rate limited by ecr.example pushing acme/app, trying again in 1 ms' },
+      ]);
+    });
+
+    it("says nothing of a failure that isn't a rate limit", async () => {
+      const { http } = instance(503, 200);
+      const events = said(http);
+
+      await http.get('https://mirror.gcr.io/v2/library/alpine/manifests/latest');
+
+      expect(events).toEqual([]);
+    });
+  });
+});
+
+describe("a sandbox's events", () => {
+  it('include what its http says', async () => {
+    const environment = new SandboxEnvironment(new Logger());
+    let calls = 0;
+    // A 429 first, then the retry gets through.
+    environment.http.defaults.adapter = async (config) => {
+      const status = calls++ ? 200 : 429;
+      const response: AxiosResponse = { status, statusText: '', data: '', headers: { 'retry-after': '0' }, config };
+      if (status === 429) throw new AxiosError('failed', 'ERR_BAD_RESPONSE', config, null, response);
+      return response;
+    };
+    const seen = lastValueFrom(environment.event$.pipe(take(1)));
+
+    await environment.http.get('https://mirror.gcr.io/v2/library/alpine/manifests/latest');
+
+    await expect(seen).resolves.toEqual({
+      source: 'http',
+      lifecycle: 'rate-limited',
+      message: 'Rate limited by mirror.gcr.io pulling library/alpine, trying again in 0 ms',
+      summary: 'Rate limited by mirror.gcr.io pulling library/alpine, trying again in 0 ms',
+    });
   });
 });

@@ -26,6 +26,9 @@ export class Rowdy extends RowdyNames implements IApi {
     const auth = authenticator(this.http, this.log);
     this.http.interceptors.request.use(...auth.request);
     this.http.interceptors.response.use(...auth.response);
+    this.http
+      .events()
+      .subscribe((event) => this.environment?.event$.next({ source: 'http', message: event.summary, ...event }));
   }
 
   get images(): IImageApi {
