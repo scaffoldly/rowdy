@@ -244,7 +244,8 @@ role that create left.
 
 `sandboxId` is the sandbox's name, `{name}-{suffix}`, the same as the function's or the image's. It leaves the
 account ID in their ARNs out, so it's safe to show. Another process can use it to connect to the same sandbox:
-`get` looks the name up on every runtime, in the account and region its credentials are for.
+`get` looks the name up on every runtime, in the account and region its credentials are for. The sandbox's `runtime` says
+which one it found it on.
 
 ```ts
 const { sandboxId } = sandbox;

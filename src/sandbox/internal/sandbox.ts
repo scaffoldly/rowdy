@@ -83,6 +83,7 @@ const RUNTIMES: Record<NonNullable<SandboxOptions['runtime']>, SandboxComputeCla
 };
 
 export class SandboxImpl implements Sandbox {
+  readonly runtime: NonNullable<SandboxOptions['runtime']>;
   private environment: SandboxEnvironment;
   private compute: SandboxCompute;
   private credential$?: Credentials;
@@ -105,7 +106,8 @@ export class SandboxImpl implements Sandbox {
     this.credential$ = credentials && new Credentials(credentials);
     this.environment = new SandboxEnvironment(log, { signal, pollInterval, credentials: this.credential$?.provider });
 
-    this.compute = new RUNTIMES[runtime ?? 'aws.microvm'](this.environment);
+    this.runtime = runtime ?? 'aws.microvm';
+    this.compute = new RUNTIMES[this.runtime](this.environment);
   }
 
   static create(options?: SandboxOptions): SandboxPromiseImpl {

@@ -1856,6 +1856,7 @@ describe('sandbox', () => {
       const sandbox = (await Sandbox.get({ sandboxId: FUNCTION_NAME })) as SandboxImpl;
 
       expect(sandbox['compute']).toBeInstanceOf(MicrovmCompute);
+      expect(sandbox.runtime).toBe('aws.microvm');
       expect(attach).toHaveBeenCalledWith(FUNCTION_NAME, undefined);
     });
 
@@ -1863,6 +1864,7 @@ describe('sandbox', () => {
       const sandbox = (await Sandbox.get({ sandboxId: FUNCTION_NAME })) as SandboxImpl;
 
       expect(sandbox['compute']).toBeInstanceOf(LambdaCompute);
+      expect(sandbox.runtime).toBe('aws.lambda');
       expect(withArn).toHaveBeenCalledWith(FUNCTION_NAME);
       expect(observe).not.toHaveBeenCalled();
       expect(sandbox.sandboxId).toBe(FUNCTION_NAME);
