@@ -248,14 +248,19 @@ export class Transfer implements ILoggable {
   }
 
   /**
-   * A layers-from image, collected and checked: every platform but attestations, with its config. Errors for an
-   * image whose layers can't go in as they are, before anything is uploaded.
+   * A layers-from image, collected and checked: `platform`'s image, with its config. Errors for an image with none
+   * for `platform`, or whose layers can't go in as they are, before anything is uploaded.
    */
-  static source(log: Logger, http: AxiosInstance, ref: string): Observable<Source> {
+  static source(
+    log: Logger,
+    http: AxiosInstance,
+    ref: string,
+    platform: PullImageOptions['platform'] = 'linux/amd64'
+  ): Observable<Source> {
     return of(ref).pipe(
       // DEVNOTE: no auth for layersFrom, it must be a public image
       Transfer.normalize(null),
-      Transfer.collect(log, http),
+      Transfer.collect(log, http, [], platform),
       switchMap((manifest) =>
         from(manifest.images.filter((img) => img.manifest.platform?.architecture !== 'unknown')).pipe(
           mergeMap(async (img) => {
@@ -289,7 +294,12 @@ export class Transfer implements ILoggable {
     );
   }
 
-  static collect(log: Logger, http: AxiosInstance, layersFrom: string[] = []): OperatorFunction<Image, ImageManifest> {
+  static collect(
+    log: Logger,
+    http: AxiosInstance,
+    layersFrom: string[] = [],
+    platform: PullImageOptions['platform'] = 'linux/amd64'
+  ): OperatorFunction<Image, ImageManifest> {
     return (source) => {
       const headers: HttpHeaders = HttpHeaders.from({
         Accept: [
@@ -303,7 +313,7 @@ export class Transfer implements ILoggable {
         tap((image) => log.info(`${image.image}: Pulling from ${image.slug}`)),
         switchMap((image) =>
           from(layersFrom).pipe(
-            concatMap((ref) => Transfer.source(log, http, ref)),
+            concatMap((ref) => Transfer.source(log, http, ref, platform)),
             toArray(),
             map((sources) => ({ image, sources }))
           )
@@ -372,9 +382,14 @@ export class Transfer implements ILoggable {
                 throw new Error(`Unsupported mediaType on index: ${data.mediaType}`);
               }
 
-              if (sources.length) {
-                // Drop attestation manifests, since we're fundamentally altering the image with new layers
-                index.manifests = index.manifests?.filter((m) => m.platform?.architecture !== 'unknown');
+              // Only the platform that runs is copied: every other one, attestations included, is pulls from a
+              // registry that rate-limits for nothing.
+              const [os, architecture] = platform.split('/');
+              index.manifests = index.manifests?.filter(
+                (m) => m.platform?.os === os && m.platform?.architecture === architecture
+              );
+              if (!index.manifests?.length) {
+                throw new Error(`${image.image} has no ${platform} image`);
               }
 
               return {

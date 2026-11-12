@@ -603,15 +603,27 @@ describe('transfers', () => {
         expect(response.status).toBe(200);
       }, 120000);
 
-      it('checks rowdy:beta as a layers-from source', async () => {
+      it('checks rowdy:beta as a layers-from source, for the platform that runs', async () => {
         const source = await lastValueFrom(Transfer.source(logger, rowdy.http, ROWDY_LAYERS));
         expect(source.from).toBe(ROWDY_LAYERS);
-        expect(source.configs.size).toBeGreaterThanOrEqual(2);
+        expect(source.configs.size).toBe(1);
+        expect(source.manifest.images.map(platformOf)).toEqual(['linux/amd64']);
+      }, 120000);
+
+      it('checks a source for the platform it is asked for', async () => {
+        const source = await lastValueFrom(Transfer.source(logger, rowdy.http, ROWDY_LAYERS, 'linux/arm64'));
+        expect(source.manifest.images.map(platformOf)).toEqual(['linux/arm64']);
+      }, 120000);
+
+      it('refuses a source with no image for the platform', async () => {
+        await expect(
+          lastValueFrom(Transfer.source(logger, rowdy.http, ROWDY_LAYERS, 'linux/s390x' as 'linux/amd64'))
+        ).rejects.toThrow(`${ROWDY_LAYERS} has no linux/s390x image`);
       }, 120000);
 
       it('accepts a third-party source built like rowdy', async () => {
         const source = await lastValueFrom(Transfer.source(logger, rowdy.http, TUNNELD));
-        expect(source.configs.size).toBeGreaterThanOrEqual(2);
+        expect(source.configs.size).toBe(1);
       }, 120000);
 
       it('refuses a source that sets its own Env', async () => {
@@ -643,7 +655,7 @@ describe('transfers', () => {
 
         it("injects every source's layer in order, rowdy last", () => {
           const injected = layered.images.filter((img) => !!img.config);
-          expect(injected.length).toBeGreaterThanOrEqual(2);
+          expect(injected.length).toBe(1);
           for (const img of injected) {
             const layers = img.image.layers!;
             const config = JSON.parse(img.config!.toString('utf-8')) as External['Config'];
@@ -656,11 +668,12 @@ describe('transfers', () => {
           }
         });
 
-        it('copies a platform no source publishes unchanged', () => {
-          const i386 = layered.images.find((img) => platformOf(img) === 'linux/386');
-          expect(i386).toBeDefined();
-          expect(i386!.config).toBeUndefined();
-          expect(i386!.image.layers!.length).toBe(appLayers(i386!.manifest.digest));
+        it('copies only the platform that runs, and no attestation', () => {
+          expect(plain.images.map(platformOf)).toEqual(['linux/amd64']);
+          expect(layered.images.map(platformOf)).toEqual(['linux/amd64']);
+          expect(layered.index.manifests?.map((m) => `${m.platform?.os}/${m.platform?.architecture}`)).toEqual([
+            'linux/amd64',
+          ]);
         });
       });
     });
@@ -678,11 +691,15 @@ describe('transfers', () => {
         //   JSON.stringify(result.images, null, 2)
         // );
         // expect(true).toBe(false);
-        expect(JSON.parse(JSON.stringify(result.index))).toEqual(JSON.parse(JSON.stringify(collected.index)));
-        expect(result.images.length).toEqual(collected.images.length);
-        expect(result.images.sort((a, b) => a.image.config!.digest!.localeCompare(b.image.config!.digest!))).toEqual(
-          collected.images.sort((a, b) => a.image.config!.digest!.localeCompare(b.image.config!.digest!))
-        );
+        // The fixtures hold every platform; only linux/amd64 is collected.
+        const amd64 = (m?: { platform?: { os?: string; architecture?: string } }) =>
+          m?.platform?.os === 'linux' && m.platform.architecture === 'amd64';
+        const expected = JSON.parse(JSON.stringify(collected));
+        expected.index.manifests = expected.index.manifests.filter(amd64);
+        expected.images = expected.images.filter((img: { manifest: External['Manifest'] }) => amd64(img.manifest));
+        expect(JSON.parse(JSON.stringify(result.index))).toEqual(expected.index);
+        expect(result.images.length).toEqual(1);
+        expect(JSON.parse(JSON.stringify(result.images))).toEqual(expected.images);
       });
     });
   });
