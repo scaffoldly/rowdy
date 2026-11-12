@@ -8,6 +8,8 @@ import { MicrovmCompute, POLL, TERMINATE_POLL } from '../../../src/aws/microvm/c
 import { EXEC_STREAM, execFrame } from '../../../src/proxy/shell';
 import { EXEC_ID_HEADER, EXEC_PATH, FILES_PATH, HOOKS_PORT } from '../../../src/aws/microvm';
 import { ComputeSpec } from '../../../src/sandbox/internal/compute';
+import { CmdId } from '../../../src/aws/exec';
+import { CloudWatchLogsClient } from '@aws-sdk/client-cloudwatch-logs';
 
 const IMAGE_URI = '123456789012.dkr.ecr.us-east-1.amazonaws.com/scaffoldly/sandbox@sha256:abc';
 const IMAGE_ARN = 'arn:aws:lambda:us-east-1:123456789012:microvm-image:sandbox-box';
@@ -72,10 +74,13 @@ describe('aws microvm compute', () => {
       return handler(command.input);
     };
     const { image } = compute as unknown as { image: Record<'iam' | 'logs' | 'microvms' | 's3' | 'sts', Client> };
-    [image.iam, image.logs, image.microvms, image.s3, image.sts, compute['microvms']].forEach((client) => {
-      (client as unknown as Client).send = send;
-    });
+    [image.iam, image.logs, image.microvms, image.s3, image.sts, compute['microvms'], compute['sts']].forEach(
+      (client) => {
+        (client as unknown as Client).send = send;
+      }
+    );
     jest.spyOn(compute['image']['s3'].config, 'region').mockResolvedValue('us-east-1');
+    jest.spyOn(compute['microvms'].config, 'region').mockResolvedValue('us-east-1');
     jest
       .spyOn(compute['environment'].images, 'pullImage')
       .mockReturnValue(of({ Image: 'alpine', ImageUri: IMAGE_URI }));
@@ -140,7 +145,7 @@ describe('aws microvm compute', () => {
 
       await create(compute);
 
-      expect(compute.sandboxId).toBe(IMAGE_ARN);
+      expect(compute.sandboxId).toBe('sandbox-box');
     });
 
     it('builds FROM the image in ECR with rowdy as the entrypoint', async () => {
@@ -283,7 +288,7 @@ describe('aws microvm compute', () => {
         const { compute, sent } = setup({ GetMicrovmImageVersionCommand: () => ({ state: 'IN_PROGRESS' }) });
 
         await expect(start(compute)).resolves.toBe(compute);
-        expect(compute.sandboxId).toBe(IMAGE_ARN);
+        expect(compute.sandboxId).toBe('sandbox-box');
         expect(names(sent)).toContain('CreateMicrovmImageCommand');
         expect(names(sent)).not.toContain('GetMicrovmImageVersionCommand');
       });
@@ -504,34 +509,77 @@ describe('aws microvm compute', () => {
     });
   });
 
+  describe('output', () => {
+    const cmdId = (sandbox = 'sandbox-box') =>
+      CmdId.stringify({ sandbox, day: '2026/11/12', version: '1.0', vm: 'microvm-11111111', exec: '66666666' });
+
+    it("reads the stream its cmdId names, in the image's log group", async () => {
+      const { compute } = setup({
+        GetMicrovmImageCommand: () => ({ latestActiveImageVersion: '1.0' }),
+        GetMicrovmImageVersionCommand: () => ({
+          logging: { cloudWatch: { logGroup: '/aws/lambda-microvms/sandbox-box' } },
+        }),
+      });
+      compute['image'].withArn(IMAGE_ARN);
+      const logs = jest.spyOn(CloudWatchLogsClient.prototype, 'send').mockResolvedValue({ events: [] } as never);
+
+      await lastValueFrom(compute.output(cmdId()));
+
+      expect((logs.mock.calls[0]![0] as { input: unknown }).input).toMatchObject({
+        logGroupIdentifier: 'arn:aws:logs:us-east-1:123456789012:log-group:/aws/lambda-microvms/sandbox-box',
+        logStreamNamePrefix: '2026/11/12[1.0]microvm-11111111',
+        filterPattern: '"rowdy.exec" "66666666"',
+      });
+    });
+
+    it("refuses another sandbox's cmdId, before reaching AWS", async () => {
+      const { compute, sent } = setup();
+      compute['image'].withArn(IMAGE_ARN);
+
+      await expect(lastValueFrom(compute.output(cmdId('sandbox-other')))).rejects.toThrow(
+        'Not a command in this sandbox.'
+      );
+      expect(sent).toEqual([]);
+    });
+  });
+
   describe('attach', () => {
     it('connects to a sandbox', async () => {
       const { compute } = setup({ ListTagsCommand: () => ({ Tags: { 'run.rowdy.aws': 'microvm' } }) });
 
-      await lastValueFrom(compute.attach(IMAGE_ARN));
+      await lastValueFrom(compute.attach('sandbox-box'));
 
-      expect(compute.sandboxId).toBe(IMAGE_ARN);
+      expect(compute.sandboxId).toBe('sandbox-box');
+    });
+
+    it("finds a sandbox by its name, at the ARN of the caller's own account and region", async () => {
+      const { compute, sent } = setup({ ListTagsCommand: () => ({ Tags: { 'run.rowdy.aws': 'microvm' } }) });
+
+      await lastValueFrom(compute.attach('sandbox-box'));
+
+      expect(input(sent, 'ListTagsCommand')).toEqual({ Resource: IMAGE_ARN });
+      expect(compute['imageArn']).toBe(IMAGE_ARN);
     });
 
     it('refuses an image that is not one', async () => {
       const { compute } = setup({ ListTagsCommand: () => ({ Tags: {} }) });
 
-      await expect(lastValueFrom(compute.attach(IMAGE_ARN))).rejects.toThrow(`Not a sandbox: ${IMAGE_ARN}`);
+      await expect(lastValueFrom(compute.attach('sandbox-box'))).rejects.toThrow('Not a sandbox: sandbox-box');
     });
 
     it('connects to a sandbox whose meta has every entry asked for', async () => {
       const Tags = { 'run.rowdy.aws': 'microvm', 'run.rowdy.meta.sub': 'github:1', 'run.rowdy.meta.x': 'y' };
       const { compute } = setup({ ListTagsCommand: () => ({ Tags }) });
 
-      await expect(lastValueFrom(compute.attach(IMAGE_ARN, { sub: 'github:1' }))).resolves.toBe(compute);
+      await expect(lastValueFrom(compute.attach('sandbox-box', { sub: 'github:1' }))).resolves.toBe(compute);
     });
 
     it("refuses a sandbox whose meta doesn't match", async () => {
       const Tags = { 'run.rowdy.aws': 'microvm', 'run.rowdy.meta.sub': 'github:1' };
       const { compute } = setup({ ListTagsCommand: () => ({ Tags }) });
 
-      await expect(lastValueFrom(compute.attach(IMAGE_ARN, { sub: 'github:2' }))).rejects.toThrow(
-        `Not a sandbox: ${IMAGE_ARN}`
+      await expect(lastValueFrom(compute.attach('sandbox-box', { sub: 'github:2' }))).rejects.toThrow(
+        'Not a sandbox: sandbox-box'
       );
     });
   });
@@ -608,10 +656,12 @@ describe('aws microvm compute', () => {
       const done = await run(compute);
 
       expect(done.exitCode).toBe(3);
-      expect(JSON.parse(Buffer.from(done.cmdId, 'base64url').toString())).toEqual({
-        logGroupIdentifiers: ['arn:aws:logs:us-east-1:123456789012:log-group:/aws/lambda-microvms/sandbox'],
-        logStreamNamePrefixes: [`${STARTED.toISOString().slice(0, 10).replace(/-/g, '/')}[1.0]mvm-1`],
-        logEventFilterPattern: `"rowdy.exec" "${CMD}"`,
+      expect(CmdId.parse(done.cmdId, 'sandbox-box')).toEqual({
+        sandbox: 'sandbox-box',
+        day: STARTED.toISOString().slice(0, 10).replace(/-/g, '/'),
+        version: '1.0',
+        vm: 'mvm-1',
+        exec: CMD,
       });
       await expect(done.stdout()).resolves.toBe('hello world\n');
       await expect(done.stderr()).resolves.toBe('oops\n');

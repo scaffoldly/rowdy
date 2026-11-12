@@ -30,6 +30,7 @@ import {
   finalize,
   defaultIfEmpty,
   defer,
+  first,
   firstValueFrom,
   from,
   subscribeOn,
@@ -40,10 +41,12 @@ import {
   map,
   concatMap,
   merge,
+  mergeMap,
   NEVER,
   Observable,
   of,
   race,
+  scan,
   ReplaySubject,
   switchMap,
   take,
@@ -59,7 +62,7 @@ import { humanize } from '../../aws/errors';
 import { LambdaCompute } from '../../aws/lambda/compute';
 import { MicrovmCompute } from '../../aws/microvm/compute';
 import { EXEC_STREAM } from '../../proxy/frames';
-import { DEFAULTS, SandboxCompute, SandboxComputeClass } from './compute';
+import { DEFAULTS, SandboxCompute, SandboxComputeClass, SandboxError } from './compute';
 import { SandboxPromiseImpl } from './create';
 import { Credentials } from '../../aws/credentials';
 import { DeleteRoleCommand, DeleteRolePolicyCommand, IAMClient, paginateListRoles } from '@aws-sdk/client-iam';
@@ -197,7 +200,7 @@ export class SandboxImpl implements Sandbox {
       created.catch((error) => {
         throw humanize(error);
       }),
-      sandbox
+      sandbox.events()
     );
   }
 
@@ -209,16 +212,45 @@ export class SandboxImpl implements Sandbox {
     signal: abort,
     meta,
   }: SandboxLookup): SandboxPromiseImpl {
-    const runtime = sandboxId.includes(':microvm-image:') ? 'aws.microvm' : 'aws.lambda';
-    const sandbox = new SandboxImpl({ runtime, logLevel, pollInterval, credentials, signal: abort });
-    const { signal } = sandbox.environment;
+    // An id is the sandbox's name, which doesn't say its runtime, so the sandbox is whichever runtime has it.
+    const sandboxes = (Object.keys(RUNTIMES) as (keyof typeof RUNTIMES)[]).map(
+      (runtime) => new SandboxImpl({ runtime, logLevel, pollInterval, credentials, signal: abort })
+    );
+    type Tried = { found?: SandboxImpl; error?: unknown };
 
     const attached = lastValueFrom(
-      race(
-        iif(() => signal.aborted, of(signal), fromEvent(signal, 'abort')).pipe(
-          switchMap(() => throwError(() => signal.reason))
-        ),
-        defer(() => sandbox.compute.attach(sandboxId, meta)).pipe(map(() => sandbox.stoppingOnAbort()))
+      iif(
+        // A name, never an ARN or a path to something else in the account.
+        () => !sandboxId || /[:/]/.test(sandboxId),
+        throwError(() => new SandboxError(`Not a sandbox: ${sandboxId}`)),
+        from(sandboxes).pipe(
+          mergeMap((sandbox) => {
+            const { signal } = sandbox.environment;
+            return race(
+              iif(() => signal.aborted, of(signal), fromEvent(signal, 'abort')).pipe(
+                switchMap(() => throwError(() => signal.reason))
+              ),
+              defer(() => sandbox.compute.attach(sandboxId, meta)).pipe(map(() => sandbox))
+            ).pipe(
+              map((found): Tried => ({ found })),
+              catchError((error) => of<Tried>({ error }))
+            );
+          }),
+          scan((tried, each) => [...tried, each], [] as Tried[]),
+          first((tried) => tried.some(({ found }) => found) || tried.length === sandboxes.length),
+          map((tried) => {
+            const found = tried.find(({ found }) => found)?.found;
+            if (found) return found.stoppingOnAbort();
+            const errors = tried.map(({ error }) => error);
+            // Anything but missing, like a denial, is what to say.
+            const refused = errors.find((error) => !isNotFound(error));
+            if (refused) throw refused;
+            // AWS's own message names the ARN, and so the account.
+            throw Object.assign(new SandboxError(`No sandbox named ${sandboxId}`), {
+              name: 'ResourceNotFoundException',
+            });
+          })
+        )
       ).pipe(
         // Work starts after this returns, so `.events()` on the result sees the first step.
         subscribeOn(asapScheduler)
@@ -229,7 +261,7 @@ export class SandboxImpl implements Sandbox {
       attached.catch((error) => {
         throw humanize(error);
       }),
-      sandbox
+      merge(...sandboxes.map((sandbox) => sandbox.events()))
     );
   }
 
@@ -408,7 +440,7 @@ export class SandboxImpl implements Sandbox {
     if (sandbox) return sandbox.delete();
 
     // A create that failed before its image or function existed leaves its role, which names it at the end.
-    const name = lookup.sandboxId.split(':').pop();
+    const name = lookup.sandboxId;
     const iam = new IAMClient({ credentials: lookup.credentials });
     const gone = (error: unknown): Observable<never> => (isNotFound(error) ? EMPTY : throwError(() => error));
     await lastValueFrom(

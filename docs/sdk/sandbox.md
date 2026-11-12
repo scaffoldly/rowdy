@@ -172,6 +172,11 @@ Output keeps reaching `stdout` and `stderr` until the command exits. Its `signal
 
 Reads part of a command's output back from CloudWatch Logs by its `cmdId`, any time after it started. Use it for what `stdout()` cut, or from a different process with `Sandbox.get`.
 
+A `cmdId` says where in the sandbox's own log the command's output is: the sandbox's name, the day, version and VM
+of its log stream, and the command's id, as `rowdy://exec/{sandbox}/{day}/{version}/{vm}/{exec}`, gzipped and
+base64url-encoded. It has no account ID or log group ARN in it. `output` refuses one from another sandbox before it
+reaches AWS.
+
 ```ts
 const first = await sandbox.output(cmdId);
 const next = await sandbox.output(cmdId, { cursor: first.cursor });
@@ -237,8 +242,9 @@ role that create left.
 
 ## `Sandbox.get`
 
-`sandboxId` is the ARN of the function or the image. Another process can use it to connect to the same
-sandbox, whichever runtime it uses.
+`sandboxId` is the sandbox's name, `{name}-{suffix}`, the same as the function's or the image's. It leaves the
+account ID in their ARNs out, so it's safe to show. Another process can use it to connect to the same sandbox:
+`get` looks the name up on every runtime, in the account and region its credentials are for.
 
 ```ts
 const { sandboxId } = sandbox;
@@ -248,11 +254,11 @@ await again.runCommand('ls');
 ```
 
 ```
-arn:aws:lambda:us-east-1:123456789012:function:sandbox-bcdf245678
-arn:aws:lambda:us-east-1:123456789012:microvm-image:sandbox-bcdf245678
+sandbox-bcdf245678
 ```
 
-`get` rejects with `Not a sandbox` for anything `create` didn't make. It takes a `signal`, a `logLevel`, a `pollInterval` and `credentials`, and logs at
+`get` rejects with `Not a sandbox` for anything `create` didn't make, and for an ARN or anything else that isn't a
+name. It takes a `signal`, a `logLevel`, a `pollInterval` and `credentials`, and logs at
 the level described in [Logging](../sdk.md#logging).
 
 ## `Sandbox.list`

@@ -188,6 +188,7 @@ export type CommandOutputOptions = ExecOutputOptions;
 
 /** A running sandbox. */
 export interface Sandbox {
+  /** The sandbox's name, for `Sandbox.get`. It has no account ID in it, as an ARN would. */
   readonly sandboxId: string;
   /** Resolves when the command exits, whatever its exit code; rejects only if it could not run. */
   runCommand(cmd: string, args?: string[], options?: RunCommandOptions): Promise<CommandFinished>;

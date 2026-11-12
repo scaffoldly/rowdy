@@ -1,4 +1,3 @@
-import type { StartLiveTailCommandInput } from '@aws-sdk/client-cloudwatch-logs';
 import {
   CreateMicrovmAuthTokenCommand,
   GetMicrovmCommand,
@@ -12,6 +11,7 @@ import {
   RunMicrovmCommand,
   TerminateMicrovmCommand,
 } from '@aws-sdk/client-lambda-microvms';
+import { GetCallerIdentityCommand, STSClient } from '@aws-sdk/client-sts';
 import {
   catchError,
   concatMap,
@@ -41,8 +41,7 @@ import { ComputeSpec, MICROVM_MEMORY, SandboxCompute, SandboxError } from '../..
 import { META_TAG, TAG_KEY_REGEX, TAG_VALUE_REGEX } from '../tags';
 import { isNotFound } from '../shared';
 import { AwsClientLogger } from '../logger';
-import { EXEC_LOG } from '../../proxy/frames';
-import { execOf, execOutput, framesOf } from '../exec';
+import { CmdId, execOf, execOutput, framesOf } from '../exec';
 import { EXEC_ID_HEADER, EXEC_PATH, FILES_PATH, HOOKS_PORT } from './hooks';
 import { concurrency } from '../../concurrency';
 import { COMPUTE_TAG, MicrovmImage, POLL, TIMEOUT_TAG } from './index';
@@ -90,7 +89,7 @@ export class MicrovmCompute extends AwsClientLogger implements SandboxCompute {
                   );
                   const seconds = Number(Tags?.[TIMEOUT_TAG]);
                   return {
-                    sandboxId: imageArn!,
+                    sandboxId: name!,
                     name: name!,
                     runtime: 'aws.microvm',
                     running: !!live,
@@ -138,6 +137,7 @@ export class MicrovmCompute extends AwsClientLogger implements SandboxCompute {
   readonly stoppable = true;
 
   private microvms = this.track(new LambdaMicrovmsClient({ logger: this, credentials: this.environment.credentials }));
+  private sts = this.track(new STSClient({ logger: this, credentials: this.environment.credentials }));
 
   // What rowdy makes for the sandbox, apart from its running VMs.
   private image = new MicrovmImage(this.environment);
@@ -151,7 +151,12 @@ export class MicrovmCompute extends AwsClientLogger implements SandboxCompute {
     return this.environment.log.child('deploy');
   }
 
+  // The image's ARN has the account in it, so only its name leaves rowdy.
   get sandboxId(): string {
+    return this.imageArn.split(':').pop()!;
+  }
+
+  private get imageArn(): string {
     const { ImageArn } = this.image.State;
     if (!ImageArn) {
       throw new Error('Sandbox has no image');
@@ -180,8 +185,18 @@ export class MicrovmCompute extends AwsClientLogger implements SandboxCompute {
   }
 
   attach(sandboxId: string, meta: Record<string, string> = {}): Observable<this> {
-    return defer(() => this.microvms.send(new ListTagsCommand({ Resource: sandboxId }))).pipe(
-      map(({ Tags }) => {
+    // AWS finds an image only by its ARN, which is the caller's own account and region.
+    return forkJoin({
+      Region: defer(() => this.microvms.config.region()),
+      Identity: defer(() => this.sts.send(new GetCallerIdentityCommand({}))),
+    }).pipe(
+      map(({ Region, Identity: { Account } }) => `arn:aws:lambda:${Region}:${Account}:microvm-image:${sandboxId}`),
+      switchMap((imageArn) =>
+        from(this.microvms.send(new ListTagsCommand({ Resource: imageArn }))).pipe(
+          map(({ Tags }) => ({ imageArn, Tags }))
+        )
+      ),
+      map(({ imageArn, Tags }) => {
         // A value that isn't a string, like an undefined one, matches no sandbox.
         const matches = Object.entries(meta).every(
           ([key, value]) => typeof value === 'string' && Tags?.[`${META_TAG}${key}`] === value
@@ -189,7 +204,7 @@ export class MicrovmCompute extends AwsClientLogger implements SandboxCompute {
         if (Tags?.[COMPUTE_TAG] !== 'microvm' || !matches) {
           throw new SandboxError(`Not a sandbox: ${sandboxId}`);
         }
-        this.image.withArn(sandboxId);
+        this.image.withArn(imageArn);
         return this;
       })
     );
@@ -201,36 +216,30 @@ export class MicrovmCompute extends AwsClientLogger implements SandboxCompute {
 
     return defer(() => this.vm()).pipe(
       switchMap(({ microvmId, endpoint, imageVersion, startedAt }) =>
-        from(
-          this.microvms.send(new GetMicrovmImageVersionCommand({ imageIdentifier: this.sandboxId, imageVersion }))
-        ).pipe(
-          switchMap(({ logging }) =>
-            this.fetchHooks(microvmId, endpoint, EXEC_PATH, {
-              method: 'POST',
-              body: JSON.stringify(event),
-              signal: controller.signal,
-            }).pipe(
-              map((response) => {
-                if (!response.ok || !response.body) {
-                  throw new Error(`Command refused: ${response.status}`);
-                }
-                return response;
-              }),
-              switchMap((response) => {
-                const [, , , region, account] = this.sandboxId.split(':');
-                const execId = response.headers.get(EXEC_ID_HEADER) ?? '';
-                // A stream is named after the VM's start, so one that crosses midnight keeps its day.
-                const day = startedAt.toISOString().slice(0, 10).replace(/-/g, '/');
-                const locator: StartLiveTailCommandInput = {
-                  logGroupIdentifiers: [`arn:aws:logs:${region}:${account}:log-group:${logging?.cloudWatch?.logGroup}`],
-                  logStreamNamePrefixes: [`${day}[${imageVersion}]${microvmId}`],
-                  logEventFilterPattern: `"${EXEC_LOG.key}" "${execId}"`,
-                };
-                const cmdId = Buffer.from(JSON.stringify(locator)).toString('base64url');
-                return execOf(() => cmdId, from(response.body!).pipe(framesOf()));
-              })
-            )
-          )
+        this.fetchHooks(microvmId, endpoint, EXEC_PATH, {
+          method: 'POST',
+          body: JSON.stringify(event),
+          signal: controller.signal,
+        }).pipe(
+          map((response) => {
+            if (!response.ok || !response.body) {
+              throw new Error(`Command refused: ${response.status}`);
+            }
+            return response;
+          }),
+          switchMap((response) => {
+            const execId = response.headers.get(EXEC_ID_HEADER) ?? '';
+            // A stream is named after the VM's start, so one that crosses midnight keeps its day.
+            const day = startedAt.toISOString().slice(0, 10).replace(/-/g, '/');
+            const cmdId = CmdId.stringify({
+              sandbox: this.sandboxId,
+              day,
+              version: `${imageVersion}`,
+              vm: microvmId,
+              exec: execId,
+            });
+            return execOf(() => cmdId, from(response.body!).pipe(framesOf()));
+          })
         )
       ),
       finalize(() => {
@@ -241,21 +250,24 @@ export class MicrovmCompute extends AwsClientLogger implements SandboxCompute {
   }
 
   output(cmdId: string, options?: ExecOutputOptions): Observable<ExecOutput> {
-    return defer(() => this.microvms.send(new GetMicrovmImageCommand({ imageIdentifier: this.sandboxId }))).pipe(
-      switchMap(({ latestActiveImageVersion: imageVersion }) =>
-        this.microvms.send(new GetMicrovmImageVersionCommand({ imageIdentifier: this.sandboxId, imageVersion }))
-      ),
-      switchMap(({ logging }) => {
-        const [, , , region, account] = this.sandboxId.split(':');
-        const logGroup = logging?.cloudWatch?.logGroup;
-        return execOutput(
-          `arn:aws:logs:${region}:${account}:log-group:${logGroup}`,
-          cmdId,
-          options,
-          this.environment.credentials
-        );
-      })
-    );
+    return defer(() => {
+      const { day, version, vm, exec } = CmdId.parse(cmdId, this.sandboxId);
+      return from(this.microvms.send(new GetMicrovmImageCommand({ imageIdentifier: this.imageArn }))).pipe(
+        switchMap(({ latestActiveImageVersion: imageVersion }) =>
+          this.microvms.send(new GetMicrovmImageVersionCommand({ imageIdentifier: this.imageArn, imageVersion }))
+        ),
+        switchMap(({ logging }) => {
+          const [, , , region, account] = this.imageArn.split(':');
+          const logGroup = logging?.cloudWatch?.logGroup;
+          return execOutput(
+            `arn:aws:logs:${region}:${account}:log-group:${logGroup}`,
+            { logStreamNamePrefix: `${day}[${version}]${vm}`, exec },
+            options,
+            this.environment.credentials
+          );
+        })
+      );
+    });
   }
 
   writeFile(path: string, content: Uint8Array, mode: number | undefined, signal: AbortSignal): Observable<void> {
@@ -310,7 +322,7 @@ export class MicrovmCompute extends AwsClientLogger implements SandboxCompute {
   }
 
   stop(): Observable<this> {
-    return defer(() => this.microvms.send(new ListMicrovmsCommand({ imageIdentifier: this.sandboxId }))).pipe(
+    return defer(() => this.microvms.send(new ListMicrovmsCommand({ imageIdentifier: this.imageArn }))).pipe(
       switchMap(({ items = [] }) => {
         const live = items.flatMap(({ microvmId, state }) =>
           microvmId && state && !DEAD.includes(state) ? microvmId : []
@@ -324,7 +336,7 @@ export class MicrovmCompute extends AwsClientLogger implements SandboxCompute {
   }
 
   status(): Observable<SandboxStatus> {
-    const imageIdentifier = this.sandboxId;
+    const imageIdentifier = this.imageArn;
     return defer(() => this.microvms.send(new GetMicrovmImageCommand({ imageIdentifier }))).pipe(
       switchMap(({ state, latestActiveImageVersion, latestFailedImageVersion: imageVersion }) => {
         if ((state === 'CREATE_FAILED' || state === 'UPDATE_FAILED') && imageVersion) {
@@ -371,7 +383,7 @@ export class MicrovmCompute extends AwsClientLogger implements SandboxCompute {
 
   /** This image's VM, started if it has none, and where its command output lands. */
   private vm(): Observable<Vm> {
-    const imageIdentifier = this.sandboxId;
+    const imageIdentifier = this.imageArn;
     const region = imageIdentifier.split(':')[3];
 
     const start$ = defer(() => this.microvms.send(new GetMicrovmImageCommand({ imageIdentifier }))).pipe(

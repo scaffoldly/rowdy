@@ -1,9 +1,5 @@
-import {
-  CloudWatchLogsClient,
-  paginateFilterLogEvents,
-  StartLiveTailCommand,
-  StartLiveTailCommandInput,
-} from '@aws-sdk/client-cloudwatch-logs';
+import { CloudWatchLogsClient, paginateFilterLogEvents, StartLiveTailCommand } from '@aws-sdk/client-cloudwatch-logs';
+import { gunzipSync, gzipSync } from 'zlib';
 import {
   concatMap,
   defer,
@@ -131,41 +127,60 @@ export const execOf = (cmdId: () => string, source: Observable<ExecFrame>): Obse
     };
   });
 
+/**
+ * Where a command's output is in its sandbox's log: the sandbox, the day and version its log stream is named after, the
+ * VM or instance that ran it, and the command's own id. Nothing of the account's, which a log group's ARN would carry.
+ */
+export type CmdLocator = { sandbox: string; day: string; version: string; vm: string; exec: string };
+
+const CMD_URL = /^rowdy:\/\/exec\/([\w.-]+)\/(\d{4}\/\d{2}\/\d{2})\/([\w.$]+)\/([\w-]+)\/([\w-]+)$/;
+
+/** A command's id, `rowdy://exec/{sandbox}/{day}/{version}/{vm}/{exec}`, gzipped and base64url-encoded. */
+export const CmdId = {
+  stringify: ({ sandbox, day, version, vm, exec }: CmdLocator): string =>
+    gzipSync(`rowdy://exec/${sandbox}/${day}/${version}/${vm}/${exec}`).toString('base64url'),
+
+  /** The command an id locates, refused unless it's one of `sandbox`'s. The id comes from the caller. */
+  parse: (cmdId: string, sandbox: string): CmdLocator => {
+    let url = '';
+    try {
+      // A short URL, so anything that inflates past this isn't one.
+      url = gunzipSync(Buffer.from(cmdId, 'base64url'), { maxOutputLength: 1024 }).toString();
+    } catch {
+      url = '';
+    }
+    const [, found, day, version, vm, exec] = CMD_URL.exec(url) ?? [];
+    if (found !== sandbox || !day || !version || !vm || !exec) {
+      throw new SandboxError('Not a command in this sandbox.');
+    }
+    return { sandbox, day, version, vm, exec };
+  },
+};
+
 /** The most one read of a command's output answers with, in bytes. */
 export const EXEC_OUTPUT = { limit: 64 * 1024 };
 
 type ExecLine = { timestamp: number; seq: number; stream: number; data: string; dropped?: boolean };
 
 /**
- * Part of a command's output, from its log. `cmdId` comes from the caller, so it reaches only `logGroup`. History can
- * come back short while frames are still reaching CloudWatch, and `timeout` tails for them: frames are answered in
+ * Part of a command's output, from the log stream `logStreamNamePrefix` names in `logGroup`, the sandbox's own. History
+ * can come back short while frames are still reaching CloudWatch, and `timeout` tails for them: frames are answered in
  * `seq` order, so one seen by both counts once, and a read stops at a gap.
  */
 export const execOutput = (
   logGroup: string,
-  cmdId: string,
+  { logStreamNamePrefix, exec }: { logStreamNamePrefix: string; exec: string },
   { cursor, stream, timeout, signal }: ExecOutputOptions = {},
   credentials?: AwsSandboxOptions['credentials']
 ): Observable<ExecOutput> =>
   defer(() => {
-    let locator: StartLiveTailCommandInput | undefined;
-    try {
-      locator = JSON.parse(Buffer.from(cmdId, 'base64url').toString());
-    } catch {
-      locator = undefined;
-    }
-    const [identifier, ...others] = Array.isArray(locator?.logGroupIdentifiers) ? locator.logGroupIdentifiers : [];
-    if (identifier !== logGroup || others.length) {
-      throw new SandboxError('Not a command in this sandbox.');
-    }
+    const filterPattern = `"${EXEC_LOG.key}" "${exec}"`;
 
     const [startTime = 0, start = 0] = cursor?.split('.').map(Number) ?? [];
     if (!Number.isSafeInteger(startTime) || !Number.isSafeInteger(start)) {
       throw new SandboxError('Not a cursor from this command.');
     }
 
-    const [logStreamNamePrefix] = locator?.logStreamNamePrefixes ?? [];
-    const filterPattern = locator?.logEventFilterPattern;
     const logs = new CloudWatchLogsClient({ region: logGroup.split(':')[3], credentials });
     const abort = new AbortController();
 
@@ -181,7 +196,7 @@ export const execOutput = (
       logs.send(
         new StartLiveTailCommand({
           logGroupIdentifiers: [logGroup],
-          logStreamNamePrefixes: logStreamNamePrefix ? [logStreamNamePrefix] : undefined,
+          logStreamNamePrefixes: [logStreamNamePrefix],
           logEventFilterPattern: filterPattern,
         }),
         { abortSignal: abort.signal }

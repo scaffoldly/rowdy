@@ -1,10 +1,5 @@
 import { MetadataBearer } from '@smithy/types';
-import {
-  CloudWatchLogsClient,
-  CreateLogGroupCommand,
-  DeleteLogGroupCommand,
-  StartLiveTailCommandInput,
-} from '@aws-sdk/client-cloudwatch-logs';
+import { CloudWatchLogsClient, CreateLogGroupCommand, DeleteLogGroupCommand } from '@aws-sdk/client-cloudwatch-logs';
 import {
   CreateRoleCommand,
   GetRoleCommand,
@@ -98,8 +93,8 @@ import { concurrency } from '../../concurrency';
 import { Routes } from '../../routes';
 import { Crontab, ExecSchema, Volume } from '../../routes';
 import { Exec } from '../../api/types';
-import { EXEC_LOG, EXEC_STREAM } from '../../proxy/frames';
-import { execOf, framesOf } from '../exec';
+import { EXEC_STREAM } from '../../proxy/frames';
+import { CmdId, execOf, framesOf } from '../exec';
 import { Logger, mask } from '../../log';
 import { CdnStore, cdnStore } from '../../cdn';
 import { TPulledImage } from '../../api/types';
@@ -417,6 +412,10 @@ export class LambdaFunction extends AwsResource {
           ).pipe(map((FunctionUrl) => ({ Configuration, Code, Tags, Role, Policy, FunctionUrl })))
         ),
         tap(({ Configuration, Code, Tags, Role, Policy, FunctionUrl }) => {
+          // A sandbox is found by its name, and its ARN is what the rest of it uses.
+          if (this.isSandbox() && Configuration?.FunctionArn) {
+            this.FunctionArn.next(Configuration.FunctionArn.replace(/(function:[^:]+):.+$/, '$1'));
+          }
           // Reactive Properties
           if (Configuration?.FunctionName) this.Name.next(Configuration?.FunctionName);
           if (Code?.ImageUri) {
@@ -896,14 +895,17 @@ export class LambdaFunction extends AwsResource {
               framesOf(),
               tap(({ stream, payload }) => {
                 if (stream !== EXEC_STREAM.LOG) return;
-                const { logGroupName, logStreamName } = JSON.parse(payload.toString());
-                const [, , , region, account] = FunctionName.split(':');
-                const locator: StartLiveTailCommandInput = {
-                  logGroupIdentifiers: [`arn:aws:logs:${region}:${account}:log-group:${logGroupName}`],
-                  logStreamNamePrefixes: [logStreamName],
-                  logEventFilterPattern: `"${EXEC_LOG.key}" "${requestId}"`,
-                };
-                cmdId = Buffer.from(JSON.stringify(locator)).toString('base64url');
+                const { logStreamName } = JSON.parse(payload.toString());
+                // Lambda names a stream `{yyyy/mm/dd}/[{version}]{instance}`.
+                const [, day, version, vm] = /^(\d{4}\/\d{2}\/\d{2})\/\[([^\]]+)\](.+)$/.exec(logStreamName) ?? [];
+                if (!day || !version || !vm) return;
+                cmdId = CmdId.stringify({
+                  sandbox: FunctionName.split(':')[6] ?? '',
+                  day,
+                  version,
+                  vm,
+                  exec: requestId,
+                });
               })
             )
           );
