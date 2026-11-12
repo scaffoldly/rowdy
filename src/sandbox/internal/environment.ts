@@ -17,7 +17,7 @@ export class SandboxEnvironment implements IApi {
   readonly signal: AbortSignal = this.abort.signal;
   /** Events from what isn't a compute's own, such as copying an image. */
   readonly event$ = new Subject<Event>();
-  readonly http: RowdyHttp = RowdyHttp.from(axios.create());
+  readonly http: RowdyHttp = RowdyHttp.from(axios.create(), this.signal);
   readonly images: IImageApi = new ImageApi(this);
   readonly name = packageJson.name;
   readonly version = packageJson.version;

@@ -163,9 +163,11 @@ export type RowdyHttp = AxiosInstance & { events(): Observable<HttpEvents> };
 export const RowdyHttp = {
   /**
    * `http`, retrying. It only retries what it can: anything else, like a 401 for auth or a redirect, goes on to the
-   * interceptors after it, and a retry goes through them all again.
+   * interceptors after it, and a retry goes through them all again. Its requests end when `signal` aborts, waits for a
+   * retry included.
    */
-  from(http: AxiosInstance): RowdyHttp {
+  from(http: AxiosInstance, signal?: AbortSignal): RowdyHttp {
+    http.defaults.signal = signal;
     const event$ = new Subject<HttpEvents>();
     http.interceptors.response.use(undefined, async (error: AxiosError) => {
       const config = error.config as

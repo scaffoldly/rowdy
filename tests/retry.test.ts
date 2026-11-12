@@ -207,6 +207,38 @@ describe.each([
   });
 });
 
+// An http instance ends with what it's for: a request waiting out a registry's Retry-After included.
+describe.each([
+  ['RowdyHttp', (signal: AbortSignal) => RowdyHttp.from(axios.create(), signal)],
+  ['a sandbox', (signal: AbortSignal) => new SandboxEnvironment(new Logger(), { signal }).http],
+  ['the CLI', (signal: AbortSignal) => new Rowdy(new Logger(), signal).http],
+])("%s's http", (_name, made) => {
+  it('ends with its signal, a wait for a retry included', async () => {
+    const controller = new AbortController();
+    const http = made(controller.signal);
+    let calls = 0;
+    http.defaults.adapter = async (config) => {
+      calls++;
+      const response: AxiosResponse = {
+        status: 429,
+        statusText: '',
+        data: '',
+        headers: { 'retry-after': '3600' },
+        config,
+      };
+      throw new AxiosError('failed', 'ERR_BAD_RESPONSE', config, null, response);
+    };
+    const started = Date.now();
+
+    const got = http.get('https://mirror.gcr.io/v2/library/alpine/manifests/latest');
+    setTimeout(() => controller.abort(), 10);
+
+    await expect(got).rejects.toBeInstanceOf(CanceledError);
+    expect(Date.now() - started).toBeLessThan(1000);
+    expect(calls).toBe(1);
+  });
+});
+
 // Compiled, not called: a host tells an http event by its `source`, then its `type`.
 const _wait = (event: Event): number | undefined =>
   event.source === 'http' && event.type === 'rate-limited' ? event.wait : undefined;

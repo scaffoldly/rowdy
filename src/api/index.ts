@@ -13,7 +13,7 @@ import { CRI, GrpcResponse } from '@scaffoldly/rowdy-grpc';
 import { Readable } from 'stream';
 
 export class Rowdy extends RowdyNames implements IApi {
-  public readonly http: RowdyHttp = RowdyHttp.from(axios.create());
+  public readonly http: RowdyHttp;
 
   private _images: IImageApi = new ImageApi(this);
   private _proxy?: HttpProxy<Pipeline>;
@@ -23,6 +23,7 @@ export class Rowdy extends RowdyNames implements IApi {
     public readonly signal: AbortSignal
   ) {
     super();
+    this.http = RowdyHttp.from(axios.create(), signal);
     const auth = authenticator(this.http, this.log);
     this.http.interceptors.request.use(...auth.request);
     this.http.interceptors.response.use(...auth.response);
