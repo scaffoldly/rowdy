@@ -6,6 +6,7 @@ import { HttpEvents, RETRY, RowdyHttp } from '../src/util/axios';
 import { Rowdy } from '../src/api';
 import { Logger } from '../src/log';
 import { SandboxEnvironment } from '../src/sandbox/internal/environment';
+import type { Event } from '../src/events';
 
 // Both of rowdy's http instances, for a sandbox and for the CLI, retry as one from RowdyHttp does.
 describe.each([
@@ -109,6 +110,19 @@ describe.each([
     expect(seen).toHaveLength(1);
   });
 
+  it('stops waiting when its request is aborted', async () => {
+    const { http, seen } = instance({ status: 429, headers: { 'retry-after': '3600' } }, 200);
+    const controller = new AbortController();
+    const started = Date.now();
+
+    const got = http.get('https://mirror.gcr.io/v2/library/alpine/manifests/latest', { signal: controller.signal });
+    setTimeout(() => controller.abort(), 10);
+
+    await expect(got).rejects.toBeInstanceOf(CanceledError);
+    expect(Date.now() - started).toBeLessThan(1000);
+    expect(seen).toHaveLength(1);
+  });
+
   it('lets a retried request be challenged for auth again', async () => {
     const { http, seen } = instance(503, 200);
 
@@ -142,8 +156,10 @@ describe.each([
 
       expect(events).toEqual([
         {
-          lifecycle: 'rate-limited',
+          type: 'rate-limited',
           summary: 'Rate limited by mirror.gcr.io pulling library/alpine, trying again in 1 second',
+          wait: 1000,
+          retryAfter: '1',
         },
       ]);
     });
@@ -157,8 +173,10 @@ describe.each([
 
       expect(events).toEqual([
         {
-          lifecycle: 'rate-limited',
+          type: 'rate-limited',
           summary: expect.stringMatching(/^Rate limited by mirror.gcr.io pulling acme\/app, trying again in \d+ ms$/),
+          wait: expect.any(Number),
+          retryAfter: date,
         },
       ]);
     });
@@ -170,7 +188,11 @@ describe.each([
       await http.put('https://ecr.example/v2/acme/app/manifests/latest', Buffer.from('{}'));
 
       expect(events).toEqual([
-        { lifecycle: 'rate-limited', summary: 'Rate limited by ecr.example pushing acme/app, trying again in 1 ms' },
+        {
+          type: 'rate-limited',
+          summary: 'Rate limited by ecr.example pushing acme/app, trying again in 1 ms',
+          wait: 1,
+        },
       ]);
     });
 
@@ -184,6 +206,10 @@ describe.each([
     });
   });
 });
+
+// Compiled, not called: a host tells an http event by its `source`, then its `type`.
+const _wait = (event: Event): number | undefined =>
+  event.source === 'http' && event.type === 'rate-limited' ? event.wait : undefined;
 
 describe("a sandbox's events", () => {
   it('include what its http says', async () => {
@@ -202,9 +228,11 @@ describe("a sandbox's events", () => {
 
     await expect(seen).resolves.toEqual({
       source: 'http',
-      lifecycle: 'rate-limited',
+      type: 'rate-limited',
       message: 'Rate limited by mirror.gcr.io pulling library/alpine, trying again in 0 ms',
       summary: 'Rate limited by mirror.gcr.io pulling library/alpine, trying again in 0 ms',
+      wait: 0,
+      retryAfter: '0',
     });
   });
 });

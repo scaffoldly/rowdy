@@ -1,4 +1,11 @@
-import axios, { AxiosInstance, AxiosError, AxiosResponse, InternalAxiosRequestConfig, AxiosHeaders } from 'axios';
+import axios, {
+  AxiosInstance,
+  AxiosError,
+  AxiosResponse,
+  InternalAxiosRequestConfig,
+  AxiosHeaders,
+  CanceledError,
+} from 'axios';
 import { Readable } from 'stream';
 import ms from 'ms';
 import { Observable, Subject } from 'rxjs';
@@ -135,11 +142,20 @@ export const RETRY = { retries: 6, minTimeout: 1_000, maxTimeout: 15_000 };
 export const RETRYABLE: ReadonlySet<number> = new Set([429, 500, 502, 503, 504]);
 
 /** An axios instance that retries a retryable status, or one of the request's `alsoRetry`, waiting longer each time. */
-/** What an http instance says of its requests: `summary` is for reading. */
-export type HttpEvents = {
-  lifecycle: 'rate-limited';
+/** Something an http instance says of its requests: `type` tells it apart, and `summary` is for reading. */
+export type HttpEvent<Type extends string> = {
+  type: Type;
   summary: string;
 };
+
+/** A registry answered 429. `wait` is the milliseconds until it's tried again, and `retryAfter` the registry's own. */
+export type RateLimitedEvent = HttpEvent<'rate-limited'> & {
+  wait: number;
+  retryAfter?: string;
+};
+
+/** What an http instance says of its requests. */
+export type HttpEvents = RateLimitedEvent;
 
 /** An axios instance that retries what it can, saying so in `events()` when a registry rate-limits it. */
 export type RowdyHttp = AxiosInstance & { events(): Observable<HttpEvents> };
@@ -176,12 +192,28 @@ export const RowdyHttp = {
         const slug = path.replace(/^\/v2\//, '').replace(/\/(manifests|blobs)\/.*$/, '');
         const verb = ['get', 'head'].includes(config.method ?? 'get') ? 'pulling' : 'pushing';
         event$.next({
-          lifecycle: 'rate-limited',
+          type: 'rate-limited',
           summary: `Rate limited by ${host} ${verb} ${slug}, trying again in ${ms(wait, { long: true })}`,
+          wait,
+          ...(header ? { retryAfter: header } : {}),
         });
       }
-      // Unref'd, so a wait doesn't hold the process open once its request is given up on.
-      await new Promise((resolve) => setTimeout(resolve, wait).unref?.());
+      // A request aborted while it waits is cancelled then, as axios would cancel one in flight. Unref'd, so a wait
+      // doesn't hold the process open once its request is given up on.
+      await new Promise<void>((resolve, reject) => {
+        const { signal } = config;
+        const cancel = () => {
+          clearTimeout(timer);
+          reject(new CanceledError(undefined, undefined, config));
+        };
+        const timer = setTimeout(() => {
+          signal?.removeEventListener?.('abort', cancel);
+          resolve();
+        }, wait);
+        timer.unref?.();
+        if (signal?.aborted) return cancel();
+        signal?.addEventListener?.('abort', cancel);
+      });
       // A new attempt can be challenged for auth again.
       return http.request({ ...config, attempt: attempt + 1, _isRetry: false } as InternalAxiosRequestConfig);
     });
