@@ -24,7 +24,7 @@ import { ComputeSpec, SandboxCompute, SandboxError } from '../../sandbox/interna
 import { META_TAG, TAG_KEY_REGEX, TAG_VALUE_REGEX } from '../tags';
 import { concurrency } from '../../concurrency';
 import type { SandboxEnvironment } from '../../sandbox/internal/environment';
-import { execOutput } from '../exec';
+import { CmdId, execOutput } from '../exec';
 import type { LambdaFunction } from './index';
 
 export class LambdaCompute implements SandboxCompute {
@@ -63,7 +63,7 @@ export class LambdaCompute implements SandboxCompute {
           from(lambda.send(new ListTagsCommand({ Resource: FunctionArn }))).pipe(
             map(
               ({ Tags }): SandboxSummary => ({
-                sandboxId: FunctionArn!,
+                sandboxId: FunctionName!,
                 name: FunctionName!,
                 runtime: 'aws.lambda',
                 state: State === 'Failed' ? 'failed' : State === 'Pending' ? 'building' : 'ready',
@@ -108,7 +108,12 @@ export class LambdaCompute implements SandboxCompute {
     );
   }
 
+  // The function's ARN has the account in it, so only its name leaves rowdy.
   get sandboxId(): string {
+    return this.arn.split(':').pop()!;
+  }
+
+  private get arn(): string {
     // A deleted sandbox keeps its id, as one on aws.microvm does.
     const FunctionArn = this.lambda?.State.FunctionArn ?? this.functionArn;
     if (!FunctionArn) {
@@ -153,7 +158,7 @@ export class LambdaCompute implements SandboxCompute {
         if (Configuration?.Environment?.Variables?.ROWDY_SANDBOX !== 'true' || !matches) {
           throw new SandboxError(`Not a sandbox: ${sandboxId}`);
         }
-        this.functionArn = sandboxId;
+        this.functionArn = lambda.State.FunctionArn;
         return this;
       })
     );
@@ -169,9 +174,15 @@ export class LambdaCompute implements SandboxCompute {
   output(cmdId: string, options?: ExecOutputOptions): Observable<ExecOutput> {
     return this.lambda$.pipe(
       switchMap((lambda) => {
-        const [, , , region, account] = this.sandboxId.split(':');
+        const { day, version, vm, exec } = CmdId.parse(cmdId, this.sandboxId);
+        const [, , , region, account] = this.arn.split(':');
         const logGroup = lambda.Status.Configuration?.LoggingConfig?.LogGroup;
-        return execOutput(`arn:aws:logs:${region}:${account}:log-group:${logGroup}`, cmdId, options, this.credentials);
+        return execOutput(
+          `arn:aws:logs:${region}:${account}:log-group:${logGroup}`,
+          { logStreamNamePrefix: `${day}/[${version}]${vm}`, exec },
+          options,
+          this.credentials
+        );
       })
     );
   }

@@ -188,7 +188,10 @@ export type CommandOutputOptions = ExecOutputOptions;
 
 /** A running sandbox. */
 export interface Sandbox {
+  /** The sandbox's name, for `Sandbox.get`. It has no account ID in it, as an ARN would. */
   readonly sandboxId: string;
+  /** What it runs on, as `Sandbox.get` found it. Its id doesn't say. */
+  readonly runtime: NonNullable<SandboxOptions['runtime']>;
   /** Resolves when the command exits, whatever its exit code; rejects only if it could not run. */
   runCommand(cmd: string, args?: string[], options?: RunCommandOptions): Promise<CommandFinished>;
   /** Resolves once the command has started, with its handle. `runtime: 'aws.lambda'` rejects. */

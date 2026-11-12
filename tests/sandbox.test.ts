@@ -30,12 +30,14 @@ import { SandboxEnvironment } from '../src/sandbox/internal/environment';
 import { Credentials } from '../src/aws/credentials';
 import { LambdaMicrovmsClient } from '@aws-sdk/client-lambda-microvms';
 import { Exec, ExecFinished, ExecFrame } from '../src/api/types';
-import { execOf } from '../src/aws/exec';
+import { CmdId, execOf } from '../src/aws/exec';
+import { CloudWatchLogsClient } from '@aws-sdk/client-cloudwatch-logs';
 import { SandboxError } from '../src/sandbox/internal/compute';
 import { EXEC_STREAM, execFrame } from '../src/proxy/shell';
 import { computeHash, SandboxImpl } from '../src/sandbox/internal/sandbox';
 
 const FUNCTION_ARN = 'arn:aws:lambda:us-east-1:123456789012:function:sandbox-box';
+const FUNCTION_NAME = 'sandbox-box';
 
 const lambdaOf = (sandbox: SandboxImpl): LambdaFunction => (sandbox['compute'] as LambdaCompute)['lambda']!;
 
@@ -64,6 +66,9 @@ const _options: SandboxOptions[] = [
   { runtime: 'aws.microvm', memory: 600 },
 ];
 
+const missing = (): Observable<never> =>
+  throwError(() => Object.assign(new Error('missing'), { name: 'ResourceNotFoundException' }));
+
 // The default options as they were hashed before compute joined them.
 const UNHASHED =
   '{"image":"scaffoldly/sandbox","timeout":900000,"memory":512,"env":[["HOME","/tmp"],["XDG_CACHE_HOME","/tmp/.cache"],["XDG_CONFIG_HOME","/tmp/.config"],["XDG_DATA_HOME","/tmp/.local/share"],["XDG_STATE_HOME","/tmp/.local/state"]]}';
@@ -74,6 +79,9 @@ describe('sandbox', () => {
 
   beforeEach(() => {
     observe = jest.spyOn(LambdaFunction.prototype, 'observe').mockImplementation(deployed);
+    // A get looks a name up on every runtime, and one a test doesn't set up hasn't got it.
+    jest.spyOn(MicrovmCompute.prototype, 'attach').mockImplementation(missing);
+    jest.spyOn(LambdaFunction.prototype, 'withArn').mockImplementation(missing);
     // Where a build is, as AWS would say for one that's done.
     [MicrovmCompute, LambdaCompute].forEach((compute) =>
       jest.spyOn(compute.prototype, 'status').mockReturnValue(of({ state: 'ready' as const }))
@@ -457,7 +465,7 @@ describe('sandbox', () => {
           return of(this);
         });
 
-        await SandboxImpl.get({ sandboxId: FUNCTION_ARN, logLevel: 'error' });
+        await SandboxImpl.get({ sandboxId: FUNCTION_NAME, logLevel: 'error' });
 
         expect(new Logger().level).toBe('error');
       });
@@ -629,7 +637,7 @@ describe('sandbox', () => {
         });
         const controller = new AbortController();
         await Sandbox.get({
-          sandboxId: 'arn:aws:lambda:us-east-1:123456789012:microvm-image:sandbox-box',
+          sandboxId: 'sandbox-box',
           signal: controller.signal,
         });
 
@@ -907,7 +915,7 @@ describe('sandbox', () => {
       expect(found).toEqual(
         expect.arrayContaining([
           {
-            sandboxId: IMAGE,
+            sandboxId: 'box-bcdf2',
             name: 'box-bcdf2',
             runtime: 'aws.microvm',
             running: true,
@@ -917,7 +925,7 @@ describe('sandbox', () => {
             state: 'ready',
           },
           {
-            sandboxId: 'arn:aws:lambda:us-east-1:123456789012:function:sandbox-ghjk4',
+            sandboxId: 'sandbox-ghjk4',
             name: 'sandbox-ghjk4',
             runtime: 'aws.lambda',
             meta: {},
@@ -1195,7 +1203,7 @@ describe('sandbox', () => {
       });
       const seen: unknown[] = [];
 
-      const getting = Sandbox.get({ sandboxId: 'arn:aws:lambda:us-east-1:123456789012:function:sandbox-bcdf245678' });
+      const getting = Sandbox.get({ sandboxId: 'sandbox-bcdf245678' });
       getting.events().subscribe((emitted) => seen.push(emitted));
       await getting;
 
@@ -1402,12 +1410,12 @@ describe('sandbox', () => {
 
     it('are its own', async () => {
       const { stop } = microvm();
-      const getting = Sandbox.get({ sandboxId: IMAGE });
+      const getting = Sandbox.get({ sandboxId: 'box-bcdf2' });
 
       await getting.stop();
 
       expect(stop).toHaveBeenCalledTimes(1);
-      expect((await getting).sandboxId).toBe(IMAGE);
+      expect((await getting).sandboxId).toBe('box-bcdf2');
     });
 
     it("make a failed create each call's error, not an unhandled rejection", async () => {
@@ -1428,11 +1436,11 @@ describe('sandbox', () => {
   });
 
   describe('sandboxId', () => {
-    it('is the function arn', async () => {
+    it("is the function's name, so the account in its ARN stays out of it", async () => {
       const sandbox = await SandboxImpl.create({ runtime: 'aws.lambda' });
       lambdaOf(sandbox).State.FunctionArn = FUNCTION_ARN;
 
-      expect(sandbox.sandboxId).toBe(FUNCTION_ARN);
+      expect(sandbox.sandboxId).toBe(FUNCTION_NAME);
     });
 
     it('throws before a function exists', async () => {
@@ -1496,11 +1504,48 @@ describe('sandbox', () => {
 
       const { cmdId } = await sandbox.runCommand('sh');
 
-      expect(JSON.parse(Buffer.from(cmdId, 'base64url').toString())).toEqual({
-        logGroupIdentifiers: [expect.stringMatching(/^arn:aws:logs:.+:log-group:\/aws\/lambda\/sandbox$/)],
-        logStreamNamePrefixes: ['2026/11/07/[$LATEST]abc'],
-        logEventFilterPattern: '"rowdy.exec" "req"',
+      // The log group's ARN has the account in it, so the id names only where in the sandbox's own log it is.
+      expect(CmdId.parse(cmdId, FUNCTION_NAME)).toEqual({
+        sandbox: FUNCTION_NAME,
+        day: '2026/11/07',
+        version: '$LATEST',
+        vm: 'abc',
+        exec: 'req',
       });
+    });
+
+    it("reads a command's output from the stream its cmdId names, in the function's log group", async () => {
+      const location = { logGroupName: '/aws/lambda/sandbox-box', logStreamName: '2026/11/07/[$LATEST]abc' };
+      const { sandbox } = await start(
+        payload(execFrame(EXEC_STREAM.LOG, Buffer.from(JSON.stringify(location)))),
+        payload(execFrame(EXEC_STREAM.EXIT, Buffer.from('{"code":0}')))
+      );
+      const { cmdId } = await sandbox.runCommand('sh');
+      lambdaOf(sandbox)['_status'] = { Configuration: { LoggingConfig: { LogGroup: '/aws/lambda/sandbox-box' } } };
+      const logs = jest.spyOn(CloudWatchLogsClient.prototype, 'send').mockResolvedValue({ events: [] } as never);
+
+      await sandbox.output(cmdId);
+
+      expect((logs.mock.calls[0]![0] as { input: unknown }).input).toMatchObject({
+        logGroupIdentifier: 'arn:aws:logs:us-east-1:123456789012:log-group:/aws/lambda/sandbox-box',
+        logStreamNamePrefix: '2026/11/07/[$LATEST]abc',
+        filterPattern: '"rowdy.exec" "req"',
+      });
+    });
+
+    it("refuses another sandbox's cmdId, before reaching AWS", async () => {
+      const { sandbox } = await start(exited);
+      const logs = jest.spyOn(CloudWatchLogsClient.prototype, 'send');
+      const other = CmdId.stringify({
+        sandbox: 'sandbox-other',
+        day: '2026/11/07',
+        version: '$LATEST',
+        vm: 'a',
+        exec: 'b',
+      });
+
+      await expect(sandbox.output(other)).rejects.toThrow('Not a command in this sandbox.');
+      expect(logs).not.toHaveBeenCalled();
     });
 
     it('collects stdout, stderr and the exit code', async () => {
@@ -1721,13 +1766,13 @@ describe('sandbox', () => {
     const sandbox = await Sandbox.create({ runtime: 'aws.lambda' });
     await sandbox.delete();
 
-    expect(sandbox.sandboxId).toBe(FUNCTION);
+    expect(sandbox.sandboxId).toBe('sandbox-bcdf2');
   });
 
   it('deletes by lookup, refusing a sandbox the lookup is refused', async () => {
     const remove = jest.fn(async () => {});
     const get = jest.spyOn(SandboxImpl, 'get').mockReturnValue(Promise.resolve({ delete: remove }) as never);
-    const lookup = { sandboxId: 'arn:aws:lambda:us-east-1:123456789012:microvm-image:box', meta: { sub: 'github:1' } };
+    const lookup = { sandboxId: 'box', meta: { sub: 'github:1' } };
 
     await Sandbox.delete(lookup);
 
@@ -1768,7 +1813,7 @@ describe('sandbox', () => {
       );
     }) as never);
 
-    await Sandbox.delete({ sandboxId: 'arn:aws:lambda:us-east-1:123456789012:microvm-image:box-bcdf2' });
+    await Sandbox.delete({ sandboxId: 'box-bcdf2' });
 
     expect(sent).toEqual([
       { name: 'ListRolesCommand', input: { PathPrefix: '/rowdy/sandbox/' } },
@@ -1802,41 +1847,83 @@ describe('sandbox', () => {
       withArn = jest.spyOn(LambdaFunction.prototype, 'withArn').mockImplementation(hydrate({ ROWDY_SANDBOX: 'true' }));
     });
 
-    it('connects to a microvm by its image arn', async () => {
-      const arn = 'arn:aws:lambda:us-east-1:123456789012:microvm-image:sandbox-box';
+    it('connects to a microvm by its name, when no function has it', async () => {
+      withArn.mockImplementation(missing);
       const attach = jest.spyOn(MicrovmCompute.prototype, 'attach').mockImplementation(function (this: MicrovmCompute) {
         return of(this);
       });
 
-      const sandbox = (await Sandbox.get({ sandboxId: arn })) as SandboxImpl;
+      const sandbox = (await Sandbox.get({ sandboxId: FUNCTION_NAME })) as SandboxImpl;
 
       expect(sandbox['compute']).toBeInstanceOf(MicrovmCompute);
-      expect(attach).toHaveBeenCalledWith(arn, undefined);
-      expect(withArn).not.toHaveBeenCalled();
+      expect(sandbox.runtime).toBe('aws.microvm');
+      expect(attach).toHaveBeenCalledWith(FUNCTION_NAME, undefined);
     });
 
     it('connects to the sandbox without deploying', async () => {
-      const sandbox = await Sandbox.get({ sandboxId: FUNCTION_ARN });
+      const sandbox = (await Sandbox.get({ sandboxId: FUNCTION_NAME })) as SandboxImpl;
 
-      expect(withArn).toHaveBeenCalledWith(FUNCTION_ARN);
+      expect(sandbox['compute']).toBeInstanceOf(LambdaCompute);
+      expect(sandbox.runtime).toBe('aws.lambda');
+      expect(withArn).toHaveBeenCalledWith(FUNCTION_NAME);
       expect(observe).not.toHaveBeenCalled();
-      expect(sandbox.sandboxId).toBe(FUNCTION_ARN);
+      expect(sandbox.sandboxId).toBe(FUNCTION_NAME);
     });
+
+    it('is missing when no runtime has it', async () => {
+      withArn.mockImplementation(missing);
+
+      await expect(Sandbox.get({ sandboxId: FUNCTION_NAME })).rejects.toMatchObject({
+        name: 'ResourceNotFoundException',
+        message: `No sandbox named ${FUNCTION_NAME}`,
+      });
+    });
+
+    it("finds one runtime's sandbox when the other refuses the lookup", async () => {
+      jest
+        .spyOn(MicrovmCompute.prototype, 'attach')
+        .mockReturnValue(throwError(() => Object.assign(new Error('denied'), { name: 'AccessDeniedException' })));
+
+      const sandbox = (await Sandbox.get({ sandboxId: FUNCTION_NAME })) as SandboxImpl;
+
+      expect(sandbox['compute']).toBeInstanceOf(LambdaCompute);
+    });
+
+    it('says what refused the lookup, when no runtime has the sandbox', async () => {
+      withArn.mockImplementation(missing);
+      jest
+        .spyOn(MicrovmCompute.prototype, 'attach')
+        .mockReturnValue(throwError(() => Object.assign(new Error('denied'), { name: 'AccessDeniedException' })));
+
+      await expect(Sandbox.get({ sandboxId: FUNCTION_NAME })).rejects.toThrow('denied');
+    });
+
+    it.each([FUNCTION_ARN, 'sandbox/box', ''])(
+      'refuses %p, which is no name, before reaching AWS',
+      async (sandboxId) => {
+        const attach = jest.spyOn(MicrovmCompute.prototype, 'attach');
+
+        await expect(Sandbox.get({ sandboxId })).rejects.toThrow(`Not a sandbox: ${sandboxId}`);
+
+        expect(attach).not.toHaveBeenCalled();
+        expect(withArn).not.toHaveBeenCalled();
+      }
+    );
 
     it('rejects a function that is not a sandbox', async () => {
       withArn.mockImplementation(hydrate({}));
 
-      await expect(Sandbox.get({ sandboxId: FUNCTION_ARN })).rejects.toThrow(`Not a sandbox: ${FUNCTION_ARN}`);
+      await expect(Sandbox.get({ sandboxId: FUNCTION_NAME })).rejects.toThrow(`Not a sandbox: ${FUNCTION_NAME}`);
     });
 
     it('rejects a lookup that fails', async () => {
       withArn.mockReturnValue(throwError(() => new Error('ResourceNotFoundException')));
 
-      await expect(Sandbox.get({ sandboxId: FUNCTION_ARN })).rejects.toThrow('ResourceNotFoundException');
+      await expect(Sandbox.get({ sandboxId: FUNCTION_NAME })).rejects.toThrow('ResourceNotFoundException');
     });
 
     it('rejects with the reason when aborted', async () => {
-      await expect(Sandbox.get({ sandboxId: FUNCTION_ARN, signal: AbortSignal.abort('stop') })).rejects.toBe('stop');
+      await expect(Sandbox.get({ sandboxId: FUNCTION_NAME, signal: AbortSignal.abort('stop') })).rejects.toBe('stop');
 
       expect(withArn).not.toHaveBeenCalled();
     });
@@ -1849,7 +1936,7 @@ describe('sandbox', () => {
         })
       );
 
-      const sandbox = await Sandbox.get({ sandboxId: FUNCTION_ARN });
+      const sandbox = await Sandbox.get({ sandboxId: FUNCTION_NAME });
 
       await expect(sandbox.runCommand('ls')).resolves.toMatchObject({ exitCode: 0 });
     });
@@ -1877,7 +1964,7 @@ describe('credentials', () => {
   // The compute a create with these credentials makes.
   const created = async (asked: () => Promise<typeof given>): Promise<MicrovmCompute> => {
     const create = jest.spyOn(MicrovmCompute.prototype, 'create').mockImplementation(function (this: MicrovmCompute) {
-      Object.assign(this, { imageArn: IMAGE });
+      this['image'].withArn(IMAGE);
       return of(this);
     });
     await Sandbox.create({ runtime: 'aws.microvm', credentials: asked });
@@ -1972,18 +2059,19 @@ describe('credentials', () => {
     const seen: unknown[] = [];
     jest.spyOn(MicrovmCompute.prototype, 'create').mockImplementation(function (this: MicrovmCompute) {
       seen.push(this['environment'].credentials);
-      Object.assign(this, { imageArn: IMAGE });
+      this['image'].withArn(IMAGE);
       return of(this);
     });
     jest.spyOn(MicrovmCompute.prototype, 'attach').mockImplementation(function (this: MicrovmCompute) {
       seen.push(this['environment'].credentials);
-      Object.assign(this, { imageArn: IMAGE });
+      this['image'].withArn(IMAGE);
       return of(this);
     });
     const list = jest.spyOn(MicrovmCompute, 'list').mockReturnValue(EMPTY);
 
     await Sandbox.create({ runtime: 'aws.microvm', credentials });
-    await Sandbox.get({ sandboxId: IMAGE, credentials });
+    jest.spyOn(LambdaFunction.prototype, 'withArn').mockImplementation(missing);
+    await Sandbox.get({ sandboxId: 'box-bcdf2', credentials });
     await Sandbox.list({ runtime: 'aws.microvm', credentials });
 
     for (const replayed of seen as (() => Promise<unknown>)[]) {

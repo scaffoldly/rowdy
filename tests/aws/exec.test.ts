@@ -2,7 +2,8 @@ import { CloudWatchLogsClient, FilterLogEventsCommand, StartLiveTailCommand } fr
 import { afterEach, beforeEach, describe, expect, it, jest } from '@jest/globals';
 import { from, lastValueFrom, switchMap, toArray } from 'rxjs';
 import { Exec, ExecFinished, ExecFrame, ExecOutputOptions } from '../../src/api/types';
-import { EXEC_OUTPUT, execOf, execOutput, RETAINED } from '../../src/aws/exec';
+import { gunzipSync, gzipSync } from 'zlib';
+import { CmdId, EXEC_OUTPUT, execOf, execOutput, RETAINED } from '../../src/aws/exec';
 import { EXEC_LOG, EXEC_STREAM } from '../../src/proxy/shell';
 import { SandboxError } from '../../src/sandbox/internal/compute';
 
@@ -79,12 +80,7 @@ describe('execOf', () => {
 
 describe('execOutput', () => {
   const GROUP = 'arn:aws:logs:us-east-1:123456789012:log-group:/aws/lambda-microvms/sandbox';
-  const locator = {
-    logGroupIdentifiers: [GROUP],
-    logStreamNamePrefixes: ['2026/11/07[1.0]mvm-1'],
-    logEventFilterPattern: '"rowdy.exec" "cmd-1"',
-  };
-  const cmdId = (input: unknown = locator): string => Buffer.from(JSON.stringify(input)).toString('base64url');
+  const locator = { logStreamNamePrefix: '2026/11/07[1.0]mvm-1', exec: 'cmd-1' };
 
   const event = (seq: number, stream: number, text: string, extra = {}) => ({
     timestamp: 1000 + seq,
@@ -107,7 +103,7 @@ describe('execOutput', () => {
     return mock(async () => queue.shift());
   };
 
-  const read = (options?: ExecOutputOptions, id = cmdId()) => lastValueFrom(execOutput(GROUP, id, options));
+  const read = (options?: ExecOutputOptions) => lastValueFrom(execOutput(GROUP, locator, options));
 
   afterEach(() => {
     jest.restoreAllMocks();
@@ -129,8 +125,8 @@ describe('execOutput', () => {
     expect(command).toBeInstanceOf(FilterLogEventsCommand);
     expect(command.input).toMatchObject({
       logGroupIdentifier: GROUP,
-      logStreamNamePrefix: locator.logStreamNamePrefixes[0],
-      filterPattern: locator.logEventFilterPattern,
+      logStreamNamePrefix: locator.logStreamNamePrefix,
+      filterPattern: '"rowdy.exec" "cmd-1"',
     });
   });
 
@@ -186,22 +182,6 @@ describe('execOutput', () => {
     await expect(read()).resolves.toMatchObject({ text: 'out' });
   });
 
-  describe('a cmd_id from outside', () => {
-    it.each([
-      ['another log group', cmdId({ ...locator, logGroupIdentifiers: [`${GROUP}-other`] })],
-      ['this and another log group', cmdId({ ...locator, logGroupIdentifiers: [GROUP, `${GROUP}-other`] })],
-      ['no log group', cmdId({})],
-      ['a group that is not a list', cmdId({ logGroupIdentifiers: GROUP })],
-      ['null', cmdId(null)],
-      ['not JSON', 'not-a-locator'],
-    ])('refuses %s, before reaching AWS', async (_name, id) => {
-      const send = history([]);
-
-      await expect(read({}, id)).rejects.toThrow(new SandboxError('Not a command in this sandbox.'));
-      expect(send).not.toHaveBeenCalled();
-    });
-  });
-
   it('refuses a cursor it did not give', async () => {
     const send = history([]);
 
@@ -228,7 +208,11 @@ describe('execOutput', () => {
       await expect(read({ timeout: 5000 })).resolves.toMatchObject({ text: 'onetwo', exitCode: 4 });
       const [command] = send.mock.calls[0] as unknown as [StartLiveTailCommand];
       expect(command).toBeInstanceOf(StartLiveTailCommand);
-      expect(command.input).toEqual(locator);
+      expect(command.input).toEqual({
+        logGroupIdentifiers: [GROUP],
+        logStreamNamePrefixes: [locator.logStreamNamePrefix],
+        logEventFilterPattern: '"rowdy.exec" "cmd-1"',
+      });
     });
 
     it('counts a frame seen by history and the tail once', async () => {
@@ -261,5 +245,48 @@ describe('execOutput', () => {
       const [, options] = send.mock.calls[0] as unknown as [unknown, { abortSignal: AbortSignal }];
       expect(options.abortSignal.aborted).toBe(true);
     });
+  });
+});
+
+describe('CmdId', () => {
+  const locator = {
+    sandbox: 'sandbox-builds-bcdf245678',
+    day: '2026/11/12',
+    version: '1.0',
+    vm: '11111111-2222-3333-4444-555555555555',
+    exec: '66666666-7777-8888-9999-000000000000',
+  };
+  const gzipped = (url: string): string => gzipSync(url).toString('base64url');
+
+  it('is a gzipped rowdy:// URL, with nothing of the account in it', () => {
+    const cmdId = CmdId.stringify(locator);
+
+    expect(gunzipSync(Buffer.from(cmdId, 'base64url')).toString()).toBe(
+      'rowdy://exec/sandbox-builds-bcdf245678/2026/11/12/1.0/11111111-2222-3333-4444-555555555555/66666666-7777-8888-9999-000000000000'
+    );
+  });
+
+  it("parses back to what it was made from, for its own sandbox's", () => {
+    expect(CmdId.parse(CmdId.stringify(locator), locator.sandbox)).toEqual(locator);
+  });
+
+  it("takes Lambda's $LATEST as a version", () => {
+    const lambda = { ...locator, day: '2026/11/07', version: '$LATEST', vm: 'abc123' };
+
+    expect(CmdId.parse(CmdId.stringify(lambda), lambda.sandbox)).toEqual(lambda);
+  });
+
+  it.each([
+    ["another sandbox's", CmdId.stringify({ ...locator, sandbox: 'sandbox-other' })],
+    ['a URL with a part missing', gzipped('rowdy://exec/sandbox-builds-bcdf245678/2026/11/12/1.0/vm')],
+    ['a URL with a path in a part', gzipped(`rowdy://exec/${locator.sandbox}/2026/11/12/1.0/../vm/exec`)],
+    ['a filter pattern in the id', gzipped(`rowdy://exec/${locator.sandbox}/2026/11/12/1.0/vm/a" "b`)],
+    ['a URL of something else', gzipped('https://example.com/')],
+    ['one that inflates past a URL', gzipSync(Buffer.alloc(1024 * 1024, 'a')).toString('base64url')],
+    ['the old JSON locator', Buffer.from(JSON.stringify({ logStreamNamePrefixes: ['a'] })).toString('base64url')],
+    ['not gzip', 'not-a-cmd-id'],
+    ['nothing', ''],
+  ])('refuses %s', (_name, cmdId) => {
+    expect(() => CmdId.parse(cmdId, locator.sandbox)).toThrow(new SandboxError('Not a command in this sandbox.'));
   });
 });

@@ -7,7 +7,7 @@ export class SandboxPromiseImpl implements SandboxPromise, Promise<SandboxImpl> 
 
   constructor(
     private created: Promise<SandboxImpl>,
-    private sandbox: SandboxImpl
+    private event$: Observable<Event>
   ) {
     // Its methods can be called later, so a failed create isn't an unhandled rejection meanwhile. Awaiting it, or a
     // call, still rejects.
@@ -15,7 +15,7 @@ export class SandboxPromiseImpl implements SandboxPromise, Promise<SandboxImpl> 
   }
 
   events(): Observable<Event> {
-    return this.sandbox.events();
+    return this.event$;
   }
 
   // The sandbox's own methods, each once it's there. A failed create is each call's error.
