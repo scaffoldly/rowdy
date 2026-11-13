@@ -91,22 +91,33 @@ rowdy create aws microvm --build --platform linux/arm64 --memory 1024 \
   each memory size is its own image.
 - **The name** is the first 40 hex characters of the platform image's digest, a `-`, and the first
   23 of the build-spec hash.
-  - The spec is every input that can differ between two builds:
-    - the source and its digest
-    - each layer with its digest
-    - the zip's Dockerfile
+  - The spec is what an image is asked to be built from:
+    - the source and its platform digest
+    - each layer by the reference asked for, like `ghcr.io/tunneld-it/tunneld:latest`, in order
+    - rowdy's binary path, the zip's `ENTRYPOINT`
     - AWS's base image and the version rowdy pins
     - the architecture, capabilities and memory
     - a hash of the environment
-    - the hooks and rowdy's version
-  - The full spec is kept beside the zip as `<name>/spec.json`.
-- **Tags:** the spec's fields, each layer as `layer.<n>`, the full hash as `spec`, plus `memory`,
-  `built` (UTC) and, when the image's build annotated it, `from` and `from.sha256` from
-  `org.opencontainers.image.base.name` and `base.digest`. `built`, `from` and `from.sha256` stay
-  out of the hash. None of a sandbox's tags are set, so a prebuilt image is never listed or deleted
-  as a sandbox.
+    - the hooks
+  - Layer digests, the ECR copy and rowdy's version aren't in it. An image keeps matching across rowdy
+    releases and layer pushes, and keeps the layers it was built with.
+  - The spec, its hash and the tags are kept beside the zip as `<name>/spec.json`.
+- **Tags:**
+  - the spec's fields
+  - the full hash as `spec`, and `memory`
+  - outside the hash:
+    - what it was built with: each layer as `layer.<n>`, `<reference>@<digest>`, and `rowdy`, its
+      version
+    - `built` (UTC)
+    - `from` and `from.sha256`, from `org.opencontainers.image.base.name` and `base.digest`, when the
+      image's build annotated it
+
+  None of a sandbox's tags are set, so a prebuilt image is never listed or deleted as a sandbox.
+
 - **Run again**, it reuses an image built from the same spec. A change to any part of the spec
-  gives a new name and a new image. The image it replaces is left where it is.
+  gives a new name and a new image. The image it replaces is left where it is. A new layer digest
+  or rowdy release isn't a change to the spec, so a fresh build has to be asked for by changing
+  the spec, or by deleting the image.
 
 The output prints each layer with the digest it resolved to, and the image's ARN with `built` or
 `reused`. In GitHub Actions, these are also the `arn` and `status` outputs.

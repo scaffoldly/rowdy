@@ -85,7 +85,11 @@ export const POLL = { delay: 5000 };
 
 const gone = (error: unknown): Observable<never> => (isNotFound(error) ? EMPTY : throwError(() => error));
 
-/** What a prebuilt image is built from, every field that can differ between two builds, as its tags say it. */
+/**
+ * What a prebuilt image is built from, as its build-spec hash covers it. Its layers go in by the references asked for,
+ * not their digests, and rowdy's version and ECR copy not at all, so an image keeps matching across rowdy releases and
+ * layer pushes with the layers it was built with. Those are in its tags, outside the hash.
+ */
 export type PrebuildSpec = {
   registry: string;
   namespace: string;
@@ -93,8 +97,8 @@ export type PrebuildSpec = {
   tag: string;
   sha256: string;
   platform: string;
-  layers: { from: string; digest: string }[];
-  dockerfile: string;
+  layers: string[];
+  entrypoint: string;
   baseImageArn: string;
   baseImageVersion: string;
   architecture: string;
@@ -103,7 +107,6 @@ export type PrebuildSpec = {
   environmentVariables: string;
   hooks: CreateMicrovmImageCommandInput['hooks'];
   egressNetworkConnectors: string[];
-  rowdy: string;
 };
 
 /**
@@ -334,9 +337,9 @@ export class MicrovmImage extends AwsResource {
     if (Prebuild) {
       creates.push(
         // What it's built from, every field that can differ between two builds, and the name that follows.
-        combineLatest([this.Pulled, this.Dockerfile, this.BaseImageArn, this.BaseImageVersion]).pipe(
+        combineLatest([this.Pulled, this.BaseImageArn, this.BaseImageVersion]).pipe(
           take(1),
-          map(([{ Image, Source, Layers = [] }, Dockerfile, baseImageArn = '', baseImageVersion = '']) => {
+          map(([{ Image, Source, Layers = [] }, baseImageArn = '', baseImageVersion = '']) => {
             if (!Source?.digest) {
               throw new Error(`${Image} has no ${Platform} digest to name its image by`);
             }
@@ -347,8 +350,8 @@ export class MicrovmImage extends AwsResource {
               tag: Source.tag,
               sha256: Source.digest.replace(/^sha256:/, ''),
               platform: Platform,
-              layers: Layers,
-              dockerfile: createHash('sha256').update(Dockerfile).digest('hex'),
+              layers: Layers.map(({ from }) => from),
+              entrypoint: ROWDY_BIN,
               baseImageArn,
               baseImageVersion,
               architecture,
@@ -364,7 +367,6 @@ export class MicrovmImage extends AwsResource {
                 .digest('hex'),
               hooks: request.hooks,
               egressNetworkConnectors: [],
-              rowdy: this.environment.version,
             };
             // Built in PrebuildSpec's key order, so the same spec always encodes, and hashes, the same.
             const hash = createHash('sha256').update(JSON.stringify(spec)).digest('hex');
@@ -377,10 +379,11 @@ export class MicrovmImage extends AwsResource {
                   : createHash('sha256').update(JSON.stringify(value)).digest('hex'),
               ])
             );
-            Layers.forEach(({ from, digest }, index) => (tags[`layer.${index}`] = `${from}@${digest}`));
             tags.spec = hash;
             tags.memory = `${spec.minimumMemoryInMiB}`;
-            // For picking the newest image of a name, or of a FROM, rather than an exact spec: not in the hash.
+            // What it was built with, and for picking the newest image of a name or of a FROM: not in the hash.
+            Layers.forEach(({ from, digest }, index) => (tags[`layer.${index}`] = `${from}@${digest}`));
+            tags.rowdy = this.environment.version;
             tags.built = new Date().toISOString().replace(/\.\d+Z$/, 'Z');
             if (Source.base && TAG_VALUE_REGEX.test(Source.base.name)) {
               tags.from = Source.base.name;
@@ -388,12 +391,14 @@ export class MicrovmImage extends AwsResource {
             }
             return { name: `${spec.sha256.slice(0, 40)}-${hash.slice(0, 23)}`, spec, hash, tags };
           }),
-          tap(({ name, spec }) => {
+          tap(({ name, spec, tags }) => {
             this.Name.next(name);
             this.log.info(
               `${this.Image.getValue()} is ${spec.registry}/${spec.namespace}/${spec.name}:${spec.tag}@sha256:${spec.sha256} for ${spec.platform}`
             );
-            spec.layers.forEach(({ from, digest }) => this.log.info(`${from} is ${digest}`));
+            Object.entries(tags)
+              .filter(([key]) => key.startsWith('layer.'))
+              .forEach(([, layer]) => this.log.info(`Layer ${layer}`));
           }),
           tap((resolved) => this.Spec.next(resolved))
         )
@@ -439,12 +444,12 @@ export class MicrovmImage extends AwsResource {
         // The whole spec beside its zip, for what its tags only hash.
         combineLatest([this.Bucket, this.Spec]).pipe(
           take(1),
-          switchMap(([Bucket, { name, spec, hash }]) =>
+          switchMap(([Bucket, { name, spec, hash, tags }]) =>
             this.s3.send(
               new PutObjectCommand({
                 Bucket,
                 Key: `${name}/spec.json`,
-                Body: JSON.stringify({ ...spec, spec: hash }),
+                Body: JSON.stringify({ ...spec, spec: hash, tags }),
                 ContentType: 'application/json',
               })
             )

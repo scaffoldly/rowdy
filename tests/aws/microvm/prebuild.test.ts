@@ -205,16 +205,39 @@ describe('aws microvm prebuild', () => {
     expect(Object.values(tags(sent)).join(' ')).not.toContain('secret-value');
   });
 
-  it('names the same spec the same, and a new layer digest anew', async () => {
+  it('names the same spec the same, whatever its layers and rowdy are now', async () => {
     const first = setup();
-    const again = setup();
-    const moved = setup({}, { ...PULLED, Layers: [ROWDY, { ...TUNNELD, digest: `sha256:${'e'.repeat(64)}` }] });
+    const moved = setup(
+      {},
+      {
+        ...PULLED,
+        ImageUri: IMAGE_URI.replace('sha256:ecr', 'sha256:recopied'),
+        Layers: [
+          { ...ROWDY, digest: `sha256:${'f'.repeat(64)}` },
+          { ...TUNNELD, digest: `sha256:${'e'.repeat(64)}` },
+        ],
+      }
+    );
+    Object.assign(moved.environment, { version: '9.9.9' });
 
-    await Promise.all([build(first.image), build(again.image), build(moved.image)]);
+    await Promise.all([build(first.image), build(moved.image)]);
 
     const named = (sent: Sent[]) => input(sent, 'CreateMicrovmImageCommand').name;
-    expect(named(again.sent)).toBe(named(first.sent));
-    expect(named(moved.sent)).not.toBe(named(first.sent));
+    expect(named(moved.sent)).toBe(named(first.sent));
+    expect(tags(moved.sent)).toMatchObject({ rowdy: '9.9.9', 'layer.1': `${TUNNELD.from}@sha256:${'e'.repeat(64)}` });
+  });
+
+  it('names an image of other layers anew', async () => {
+    const first = setup();
+    const other = setup(
+      {},
+      { ...PULLED, Layers: [ROWDY, { from: 'ghcr.io/acme/tools:latest', digest: TUNNELD.digest }] }
+    );
+
+    await Promise.all([build(first.image), build(other.image)]);
+
+    const named = (sent: Sent[]) => input(sent, 'CreateMicrovmImageCommand').name;
+    expect(named(other.sent)).not.toBe(named(first.sent));
   });
 
   it('keeps its whole spec beside its zip', async () => {
@@ -225,8 +248,10 @@ describe('aws microvm prebuild', () => {
     const { name } = input(sent, 'CreateMicrovmImageCommand') as { name: string };
     const spec = sent.find((s) => s.name === 'PutObjectCommand' && s.input.Key === `${name}/spec.json`)!.input;
     expect(JSON.parse(spec.Body as string)).toMatchObject({
-      layers: [ROWDY, TUNNELD],
+      layers: [ROWDY.from, TUNNELD.from],
+      entrypoint: '/usr/local/bin/rowdy',
       spec: tags(sent).spec,
+      tags: { 'layer.0': `${ROWDY.from}@${ROWDY.digest}`, rowdy: expect.any(String) },
     });
   });
 
