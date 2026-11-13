@@ -10,5 +10,11 @@ export const EXEC_PATH = '/rowdy/exec';
  */
 export const FILES_PATH = '/rowdy/files';
 
+/**
+ * Where a command's `rowdy.exec` lines are kept in the VM as well as logged, one file per command, `{cmdId}.jsonl`, for
+ * a VM whose output reaches no log. Read back through `FILES_PATH`.
+ */
+export const EXEC_FILES = { dir: '/var/lib/rowdy/exec' };
+
 /** Carries a command's id on the response whose body is its frames. */
 export const EXEC_ID_HEADER = 'x-rowdy-cmd-id';

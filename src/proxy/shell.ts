@@ -17,7 +17,7 @@ import {
   timer,
 } from 'rxjs';
 import { Chunk, FileDescriptors, Pipeline, Proxy, Request, Response } from '../pipeline';
-import { PassThrough } from 'stream';
+import { PassThrough, Writable } from 'stream';
 import { ILoggable, log as root, Logger, Trace } from '../log';
 import childProcess from 'child_process';
 import { execa } from 'execa';
@@ -164,13 +164,14 @@ export class ShellProxy<P extends Pipeline> extends Proxy<P, ShellResponse> {
 
   /**
    * Sends a running command to `response` as exec frames, and to the log, under `cmdId`, for whoever reads it later.
-   * `settle` runs each way the command can end.
+   * `settle` runs each way the command can end, and `keep` gets each line the log does, ended with the command.
    */
   protected multiplex(
     cmdId: string,
     shell: ShellResponse,
     response: Response<P>,
-    settle = (end: () => void): void => end()
+    settle = (end: () => void): void => end(),
+    keep?: Writable
   ): void {
     // The frames below carry the output into the log.
     shell.relaying = false;
@@ -178,9 +179,9 @@ export class ShellProxy<P extends Pipeline> extends Proxy<P, ShellResponse> {
     let seq = 0;
     let logged = 0;
     const line = (stream: number, data: Buffer, dropped?: boolean): void => {
-      process.stdout.write(
-        `${JSON.stringify({ [EXEC_LOG.key]: { cmd: cmdId, seq: seq++, stream, data: data.toString('base64'), dropped } })}\n`
-      );
+      const json = `${JSON.stringify({ [EXEC_LOG.key]: { cmd: cmdId, seq: seq++, stream, data: data.toString('base64'), dropped } })}\n`;
+      process.stdout.write(json);
+      keep?.write(json);
     };
 
     const send = (stream: number, payload: Buffer): void => {
@@ -198,9 +199,17 @@ export class ShellProxy<P extends Pipeline> extends Proxy<P, ShellResponse> {
     shell.fds.stderr.on('data', (chunk: Buffer) => send(EXEC_STREAM.STDERR, chunk));
     shell.subscribe({
       next: (exit) => send(EXEC_STREAM.EXIT, Buffer.from(JSON.stringify(exit))),
-      // Lambda freezes a function when its response ends, so what stdout still holds has to reach the log first.
-      error: (error: Error) => process.stdout.write('', () => settle(() => response.error(error))),
-      complete: () => process.stdout.write('', () => settle(() => response.complete())),
+      // Lambda freezes a function when its response ends, so what stdout still holds has to reach the log first, and
+      // `keep` its file: a reader then never finds a finished command's file short of its exit. `end` calls back on
+      // an error too, so a file that couldn't be kept doesn't hold the response.
+      error: (error: Error) =>
+        process.stdout.write('', () =>
+          keep ? keep.end(() => settle(() => response.error(error))) : settle(() => response.error(error))
+        ),
+      complete: () =>
+        process.stdout.write('', () =>
+          keep ? keep.end(() => settle(() => response.complete())) : settle(() => response.complete())
+        ),
     });
   }
 
