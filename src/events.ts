@@ -7,7 +7,11 @@ export type Event = { message: string } & (
   | ({ source: 'cdk' } & CdkEvent)
   | ({ source: 'transfer' } & TransferEvent)
   | ({ source: 'http' } & HttpEvents)
+  | ({ source: 'sandbox' } & SandboxEvents)
 );
+
+/** A sandbox starts from an image prebuilt for exactly what it asked for, instead of building one. */
+export type SandboxEvents = { type: 'prebuilt'; summary: string };
 
 /** Called with each event, in order. An error it throws is logged, and doesn't affect what emitted it. */
 export type EventCallback = (event: Event) => void | PromiseLike<void>;

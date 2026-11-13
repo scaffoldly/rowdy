@@ -76,7 +76,7 @@ import { ownedBucket } from '../s3';
 import { HOOKS_PORT } from './hooks';
 
 export const BUCKET_PREFIX = 'rowdy-sandboxes-';
-const BUCKET_OWNER = { Key: 'rowdy:owner', Value: 'rowdy-sandboxes' };
+export const BUCKET_OWNER = { Key: 'rowdy:owner', Value: 'rowdy-sandboxes' };
 export const COMPUTE_TAG = 'run.rowdy.aws';
 export const TIMEOUT_TAG = 'run.rowdy.timeout';
 
@@ -84,6 +84,19 @@ export const TIMEOUT_TAG = 'run.rowdy.timeout';
 export const POLL = { delay: 5000 };
 
 const gone = (error: unknown): Observable<never> => (isNotFound(error) ? EMPTY : throwError(() => error));
+
+/** The hooks rowdy's runtime serves in the VM, with how long each may take. */
+const HOOKS = {
+  port: HOOKS_PORT,
+  microvmImageHooks: {
+    ready: 'ENABLED',
+    readyTimeoutInSeconds: 120,
+    validate: 'ENABLED',
+    validateTimeoutInSeconds: 120,
+  },
+  microvmHooks: { run: 'ENABLED', runTimeoutInSeconds: 60 },
+} satisfies CreateMicrovmImageCommandInput['hooks'];
+const CAPABILITIES: NonNullable<CreateMicrovmImageCommandInput['additionalOsCapabilities']> = ['ALL'];
 
 /** What a prebuilt image is built from, every field that can differ between two builds, as its tags say it. */
 export type PrebuildSpec = {
@@ -104,6 +117,18 @@ export type PrebuildSpec = {
   hooks: CreateMicrovmImageCommandInput['hooks'];
   egressNetworkConnectors: string[];
   rowdy: string;
+};
+
+/** A prebuilt image as `prebuilt` resolves it: its name, spec, spec hash and tags, and what they came from. */
+export type Prebuilt = {
+  name: string;
+  spec: PrebuildSpec;
+  hash: string;
+  tags: Record<string, string>;
+  pulled: TPulledImage;
+  dockerfile: string;
+  baseImageArn: string;
+  baseImageVersion: string;
 };
 
 /**
@@ -143,7 +168,7 @@ export class MicrovmImage extends AwsResource {
   private BaseImageVersion = new ReplaySubject<string | undefined>(1);
   private Pulled = new ReplaySubject<TPulledImage>(1);
   private Dockerfile = new ReplaySubject<string>(1);
-  private Spec = new ReplaySubject<{ name: string; spec: PrebuildSpec; hash: string; tags: Record<string, string> }>(1);
+  private Spec = new ReplaySubject<Prebuilt>(1);
   private Built = new ReplaySubject<boolean>(1);
 
   public readonly State: {
@@ -257,19 +282,10 @@ export class MicrovmImage extends AwsResource {
     // What an image is built with, apart from its name, base, role, zip and tags.
     const request = {
       cpuConfigurations: [{ architecture }],
-      additionalOsCapabilities: ['ALL'],
+      additionalOsCapabilities: CAPABILITIES,
       resources: [{ minimumMemoryInMiB: this.Memory.getValue() }],
       environmentVariables: this.Environment.getValue(),
-      hooks: {
-        port: HOOKS_PORT,
-        microvmImageHooks: {
-          ready: 'ENABLED',
-          readyTimeoutInSeconds: 120,
-          validate: 'ENABLED',
-          validateTimeoutInSeconds: 120,
-        },
-        microvmHooks: { run: 'ENABLED', runTimeoutInSeconds: 60 },
-      },
+      hooks: HOOKS,
     } satisfies Partial<CreateMicrovmImageCommandInput>;
     // A prebuilt image's name is known once its image is copied and its base is picked.
     const Name$ = Prebuild ? this.Spec.pipe(map(({ name }) => name)) : of(this.Name.getValue());
@@ -286,33 +302,47 @@ export class MicrovmImage extends AwsResource {
           this.LogGroupArn.next(`arn:aws:logs:${Region}:${Account}:log-group:/aws/lambda-microvms/${Name}`);
         })
       ),
-      // Its image, copied into ECR with rowdy's layers and the ones it's given.
-      defer(() =>
-        this.environment.images.pullImage(this.Image.getValue(), {
-          layersFrom: [ROWDY_LAYERS, ...this.LayersFrom.getValue()],
-          platform: Platform,
-        })
-      ).pipe(
-        tap((pulled) => {
-          this.Pulled.next(pulled);
-          this.ImageUri.next(pulled.ImageUri);
-          this.Dockerfile.next(`FROM ${pulled.ImageUri}\nENTRYPOINT ["${ROWDY_BIN}"]\n`);
-        }),
-        switchMap(({ ImageUri }) =>
-          Name$.pipe(
-            take(1),
-            map((Name) => ({ ImageUri, Name }))
-          )
-        ),
-        tap(({ ImageUri, Name }) => this.Key.next(`${Name}/${ImageUri}.zip`))
+      ...(Prebuild
+        ? [
+            // Its image copied, its base picked and its spec resolved, together: the spec names it.
+            this.prebuilt().pipe(
+              tap((prebuilt) => {
+                this.Name.next(prebuilt.name);
+                this.Pulled.next(prebuilt.pulled);
+                this.ImageUri.next(prebuilt.pulled.ImageUri);
+                this.Dockerfile.next(prebuilt.dockerfile);
+                this.BaseImageArn.next(prebuilt.baseImageArn);
+                this.BaseImageVersion.next(prebuilt.baseImageVersion);
+                this.Spec.next(prebuilt);
+              })
+            ),
+          ]
+        : [
+            // Its image, copied into ECR with rowdy's layers and the ones it's given.
+            defer(() =>
+              this.environment.images.pullImage(this.Image.getValue(), {
+                layersFrom: [ROWDY_LAYERS, ...this.LayersFrom.getValue()],
+                platform: Platform,
+              })
+            ).pipe(
+              tap((pulled) => {
+                this.Pulled.next(pulled);
+                this.ImageUri.next(pulled.ImageUri);
+                this.Dockerfile.next(`FROM ${pulled.ImageUri}\nENTRYPOINT ["${ROWDY_BIN}"]\n`);
+              })
+            ),
+            this.baseImage(architecture).pipe(
+              tap(({ imageArn, imageVersion }) => {
+                this.BaseImageArn.next(imageArn);
+                this.BaseImageVersion.next(imageVersion);
+              })
+            ),
+          ]),
+      combineLatest([Name$, this.ImageUri]).pipe(
+        take(1),
+        tap(([Name, ImageUri]) => this.Key.next(`${Name}/${ImageUri}.zip`))
       ),
       ownedBucket(this.s3, this.log, BUCKET_PREFIX, BUCKET_OWNER).pipe(tap((Bucket) => this.Bucket.next(Bucket))),
-      this.baseImage(architecture).pipe(
-        tap(({ imageArn, imageVersion }) => {
-          this.BaseImageArn.next(imageArn);
-          this.BaseImageVersion.next(imageVersion);
-        })
-      ),
       // AWS's own log group for an image of this name. It's made here, so its role can't make others.
       Name$.pipe(
         take(1),
@@ -330,75 +360,6 @@ export class MicrovmImage extends AwsResource {
         switchMap((Name) => this.role(roleName(Transfer.normalizeImage(this.Image.getValue()), Name)))
       ),
     ];
-
-    if (Prebuild) {
-      creates.push(
-        // What it's built from, every field that can differ between two builds, and the name that follows.
-        combineLatest([this.Pulled, this.Dockerfile, this.BaseImageArn, this.BaseImageVersion]).pipe(
-          take(1),
-          map(([{ Image, Source, Layers = [] }, Dockerfile, baseImageArn = '', baseImageVersion = '']) => {
-            if (!Source?.digest) {
-              throw new Error(`${Image} has no ${Platform} digest to name its image by`);
-            }
-            const spec: PrebuildSpec = {
-              registry: Source.registry,
-              namespace: Source.namespace,
-              name: Source.name,
-              tag: Source.tag,
-              sha256: Source.digest.replace(/^sha256:/, ''),
-              platform: Platform,
-              layers: Layers,
-              dockerfile: createHash('sha256').update(Dockerfile).digest('hex'),
-              baseImageArn,
-              baseImageVersion,
-              architecture,
-              additionalOsCapabilities: request.additionalOsCapabilities,
-              minimumMemoryInMiB: this.Memory.getValue(),
-              // Its values can be secrets: only their hash, by key order.
-              environmentVariables: createHash('sha256')
-                .update(
-                  JSON.stringify(
-                    Object.entries(request.environmentVariables).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
-                  )
-                )
-                .digest('hex'),
-              hooks: request.hooks,
-              egressNetworkConnectors: [],
-              rowdy: this.environment.version,
-            };
-            // Built in PrebuildSpec's key order, so the same spec always encodes, and hashes, the same.
-            const hash = createHash('sha256').update(JSON.stringify(spec)).digest('hex');
-            // A field that isn't a tag value as it is, like a list, goes in as its hash.
-            const tags = Object.fromEntries(
-              Object.entries(spec).map(([key, value]) => [
-                key,
-                typeof value !== 'object' && TAG_VALUE_REGEX.test(`${value}`)
-                  ? `${value}`
-                  : createHash('sha256').update(JSON.stringify(value)).digest('hex'),
-              ])
-            );
-            Layers.forEach(({ from, digest }, index) => (tags[`layer.${index}`] = `${from}@${digest}`));
-            tags.spec = hash;
-            tags.memory = `${spec.minimumMemoryInMiB}`;
-            // For picking the newest image of a name, or of a FROM, rather than an exact spec: not in the hash.
-            tags.built = new Date().toISOString().replace(/\.\d+Z$/, 'Z');
-            if (Source.base && TAG_VALUE_REGEX.test(Source.base.name)) {
-              tags.from = Source.base.name;
-              if (Source.base.digest) tags['from.sha256'] = Source.base.digest.replace(/^sha256:/, '');
-            }
-            return { name: `${spec.sha256.slice(0, 40)}-${hash.slice(0, 23)}`, spec, hash, tags };
-          }),
-          tap(({ name, spec }) => {
-            this.Name.next(name);
-            this.log.info(
-              `${this.Image.getValue()} is ${spec.registry}/${spec.namespace}/${spec.name}:${spec.tag}@sha256:${spec.sha256} for ${spec.platform}`
-            );
-            spec.layers.forEach(({ from, digest }) => this.log.info(`${from} is ${digest}`));
-          }),
-          tap((resolved) => this.Spec.next(resolved))
-        )
-      );
-    }
 
     const updates: Observable<unknown>[] = [
       // What its role may do: read its one zip, write its one log group and pull its one repository.
@@ -565,6 +526,85 @@ export class MicrovmImage extends AwsResource {
     ];
 
     return { creates, updates, deletes };
+  }
+
+  /**
+   * What a prebuilt image of this one is built from, and the name that follows. Its image is copied into ECR, or with
+   * `upload` false only named as it would be there, so a lookup can find a prebuilt image without copying anything.
+   */
+  prebuilt(upload = true): Observable<Prebuilt> {
+    const Platform = this.Platform.getValue();
+    const architecture = Platform === 'linux/arm64' ? 'ARM_64' : 'X86_64';
+    return forkJoin({
+      pulled: defer(() =>
+        this.environment.images.pullImage(this.Image.getValue(), {
+          layersFrom: [ROWDY_LAYERS, ...this.LayersFrom.getValue()],
+          platform: Platform,
+          upload,
+        })
+      ),
+      base: this.baseImage(architecture),
+    }).pipe(
+      map(({ pulled, base: { imageArn: baseImageArn, imageVersion: baseImageVersion } }) => {
+        const { Image, Source, Layers = [] } = pulled;
+        const Dockerfile = `FROM ${pulled.ImageUri}\nENTRYPOINT ["${ROWDY_BIN}"]\n`;
+        if (!Source?.digest) {
+          throw new Error(`${Image} has no ${Platform} digest to name its image by`);
+        }
+        const spec: PrebuildSpec = {
+          registry: Source.registry,
+          namespace: Source.namespace,
+          name: Source.name,
+          tag: Source.tag,
+          sha256: Source.digest.replace(/^sha256:/, ''),
+          platform: Platform,
+          layers: Layers,
+          dockerfile: createHash('sha256').update(Dockerfile).digest('hex'),
+          baseImageArn,
+          baseImageVersion,
+          architecture,
+          additionalOsCapabilities: CAPABILITIES,
+          minimumMemoryInMiB: this.Memory.getValue(),
+          // Its values can be secrets: only their hash, by key order.
+          environmentVariables: createHash('sha256')
+            .update(
+              JSON.stringify(
+                Object.entries(this.Environment.getValue()).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+              )
+            )
+            .digest('hex'),
+          hooks: HOOKS,
+          egressNetworkConnectors: [],
+          rowdy: this.environment.version,
+        };
+        // Built in PrebuildSpec's key order, so the same spec always encodes, and hashes, the same.
+        const hash = createHash('sha256').update(JSON.stringify(spec)).digest('hex');
+        // A field that isn't a tag value as it is, like a list, goes in as its hash.
+        const tags = Object.fromEntries(
+          Object.entries(spec).map(([key, value]) => [
+            key,
+            typeof value !== 'object' && TAG_VALUE_REGEX.test(`${value}`)
+              ? `${value}`
+              : createHash('sha256').update(JSON.stringify(value)).digest('hex'),
+          ])
+        );
+        Layers.forEach(({ from, digest }, index) => (tags[`layer.${index}`] = `${from}@${digest}`));
+        tags.spec = hash;
+        tags.memory = `${spec.minimumMemoryInMiB}`;
+        // For picking the newest image of a name, or of a FROM, rather than an exact spec: not in the hash.
+        tags.built = new Date().toISOString().replace(/\.\d+Z$/, 'Z');
+        if (Source.base && TAG_VALUE_REGEX.test(Source.base.name)) {
+          tags.from = Source.base.name;
+          if (Source.base.digest) tags['from.sha256'] = Source.base.digest.replace(/^sha256:/, '');
+        }
+        const name = `${spec.sha256.slice(0, 40)}-${hash.slice(0, 23)}`;
+        this.log.info(
+          `${this.Image.getValue()} is ${spec.registry}/${spec.namespace}/${spec.name}:${spec.tag}@sha256:${spec.sha256} for ${spec.platform}`
+        );
+        spec.layers.forEach(({ from, digest }) => this.log.info(`${from} is ${digest}`));
+        return { name, spec, hash, tags, pulled, dockerfile: Dockerfile, baseImageArn, baseImageVersion };
+      })
+    );
   }
 
   /** Its role, made first: IAM checks a change to a role that isn't there yet against the name with no path. */

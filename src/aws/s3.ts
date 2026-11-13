@@ -65,9 +65,10 @@ export const ensureBucket = (s3: S3Client, log: Logger, Bucket: string): Observa
 
 /**
  * This region's bucket named `{prefix}…` and tagged `owner`, the first by name if there are several, so that first
- * runs at once converge. Without one, creates `{prefix}{random}`, as Terraform's `bucket_prefix` does.
+ * runs at once converge. Without one, creates `{prefix}{random}`, as Terraform's `bucket_prefix` does, unless `create`
+ * is false: then it completes with none.
  */
-export const ownedBucket = (s3: S3Client, log: Logger, Prefix: string, owner: Tag): Observable<string> =>
+export const ownedBucket = (s3: S3Client, log: Logger, Prefix: string, owner: Tag, create = true): Observable<string> =>
   defer(() => s3.config.region()).pipe(
     switchMap((BucketRegion) => s3.send(new ListBucketsCommand({ Prefix, BucketRegion }))),
     switchMap(({ Buckets = [] }) => from(Buckets.flatMap(({ Name }) => Name ?? []).sort())),
@@ -85,6 +86,7 @@ export const ownedBucket = (s3: S3Client, log: Logger, Prefix: string, owner: Ta
     defaultIfEmpty(undefined),
     switchMap((Bucket) => {
       if (Bucket) return of(Bucket);
+      if (!create) return EMPTY;
       const created = `${Prefix}${randomBytes(8).toString('hex')}`;
       return createBucket(s3, log, created, [owner]).pipe(map(() => created));
     })

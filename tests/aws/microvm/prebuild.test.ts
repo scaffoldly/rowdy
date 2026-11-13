@@ -122,6 +122,7 @@ describe('aws microvm prebuild', () => {
     expect(environment.images.pullImage).toHaveBeenCalledWith('ghcr.io/tunneld-it/ubuntu:latest', {
       layersFrom: ['ghcr.io/scaffoldly/rowdy:beta', 'ghcr.io/tunneld-it/tunneld:latest'],
       platform: 'linux/arm64',
+      upload: true,
     });
   });
 

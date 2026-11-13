@@ -1,8 +1,8 @@
-import { defer, map, Observable, of, race, tap } from 'rxjs';
+import { defer, map, Observable, of, pipe, race, tap } from 'rxjs';
 import { AxiosInstance } from 'axios';
 import { IApi, IImageApi, PullImageOptions, TPulledImage, TRegistry } from './types';
 import { Logger } from '../log';
-import { ImageManifest, Transfer } from './internal/transfer';
+import { DenormalizedImage, ImageManifest, Transfer } from './internal/transfer';
 import { AwsRegistry } from '../aws/registry';
 import { LocalRegistry } from '../local/registry';
 
@@ -30,15 +30,28 @@ export class ImageApi implements IImageApi {
           Transfer.collect(this.log, this.http, opts?.layersFrom, opts?.platform),
           tap((manifest) => (collected = manifest)),
           Transfer.prepare(this.log, this.http, this.registry),
-          Transfer.upload(this.log, this.http, {
-            next: (event) =>
-              this.api.environment?.event$.next({
-                source: 'transfer',
-                message: `Copying the image: ${event.summary}`,
-                ...event,
-              }),
-          }),
-          Transfer.denormalize(opts?.platform)
+          opts?.upload === false
+            ? // A manifest's digest in ECR is that of the manifest as it would be uploaded.
+              map((transfer: Transfer): DenormalizedImage => {
+                const [os, architecture] = (opts.platform ?? 'linux/amd64').split('/');
+                const digest = transfer.index.manifests?.find(
+                  (m) => m.platform?.os === os && m.platform?.architecture === architecture
+                )?.digest;
+                if (!digest) throw new Error(`Unable to find image for platform: ${opts.platform ?? 'linux/amd64'}`);
+                const { namespace, name } = transfer.manifest;
+                return { imageRef: `${transfer.registry.registry}/${namespace}/${name}@${digest}` };
+              })
+            : pipe(
+                Transfer.upload(this.log, this.http, {
+                  next: (event) =>
+                    this.api.environment?.event$.next({
+                      source: 'transfer',
+                      message: `Copying the image: ${event.summary}`,
+                      ...event,
+                    }),
+                }),
+                Transfer.denormalize(opts?.platform)
+              )
         )
         .pipe(
           map(({ imageRef, command, entrypoint, workdir, environment }) => ({
