@@ -199,6 +199,11 @@ Everything the SDK calls for `aws.microvm`, by what it's for.
 - **CloudWatch Logs:** rowdy makes each sandbox's log group, `/aws/lambda-microvms/{name}`, before it
   builds, so the sandbox's role can only write to that one, and deletes it with the sandbox. The rest are
   for `sandbox.output()`, and `logs:StartLiveTail` is only used with a `timeout`.
+- **Prebuilt images:** a sandbox started from a prebuilt image needs nothing more.
+  - Reading and running the image use the `MicroVMs` statement. Its VM runs with no execution role, so
+    nothing is passed and no role or log group is made for it.
+  - Its record, `sandboxes/{microvmId}.json` in the sandbox bucket, uses `SandboxZips`.
+  - `Sandbox.list` reads the records with `s3:ListBucket`. Without a sandbox bucket, it finds none and makes none.
 
 ### Permissions for `aws.lambda`
 
@@ -342,6 +347,9 @@ boundary above caps.
 - **`RowdyPolicy`:** `s3:GetObject` on that sandbox's own zip, writing to that sandbox's own log group,
   and pulling from that sandbox's own ECR repository. On `aws.lambda`, writing to the function's own log
   group, and the X-Ray and EC2 network interface actions the boundary leaves out.
+
+A sandbox started from a prebuilt image gets no role. Its VM runs with none, so code in it has no
+credentials to use, and its command output is read from the VM, not a log.
 
 ## What rowdy doesn't do yet
 

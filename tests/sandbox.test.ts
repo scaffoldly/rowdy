@@ -32,6 +32,7 @@ import { LambdaMicrovmsClient } from '@aws-sdk/client-lambda-microvms';
 import { Exec, ExecFinished, ExecFrame } from '../src/api/types';
 import { CmdId, execOf } from '../src/aws/exec';
 import { CloudWatchLogsClient } from '@aws-sdk/client-cloudwatch-logs';
+import { S3Client } from '@aws-sdk/client-s3';
 import { SandboxError } from '../src/sandbox/internal/compute';
 import { EXEC_STREAM, execFrame } from '../src/proxy/shell';
 import { computeHash, SandboxImpl } from '../src/sandbox/internal/sandbox';
@@ -893,6 +894,98 @@ describe('sandbox', () => {
             return Promise.reject(new Error(`unexpected ${command.constructor.name}`));
         }
       }) as never);
+
+    const RECORD = {
+      microvmId: 'microvm-11111111-2222-3333-4444-555555555555',
+      name: 'box-prebuilt',
+      meta: { sub: 'github:2' },
+      timeout: 300_000,
+      imageArn: 'arn:aws:lambda:us-east-1:123456789012:microvm-image:prebuilt',
+      imageVersion: '1',
+      bucket: 'rowdy-sandboxes-abc',
+      startedAt: STARTED.toISOString(),
+    };
+
+    // The sandbox bucket, with `records` in it, or none at all.
+    const buckets = (records?: object[]): jest.SpyInstance =>
+      jest.spyOn(S3Client.prototype, 'send').mockImplementation(((command: {
+        constructor: { name: string };
+        input: { Key?: string };
+      }) => {
+        switch (command.constructor.name) {
+          case 'ListBucketsCommand':
+            return Promise.resolve({ Buckets: records ? [{ Name: 'rowdy-sandboxes-abc' }] : [] });
+          case 'GetBucketTaggingCommand':
+            return Promise.resolve({ TagSet: [{ Key: 'rowdy:owner', Value: 'rowdy-sandboxes' }] });
+          case 'ListObjectsV2Command':
+            return Promise.resolve({
+              Contents: (records ?? []).map((record) => ({
+                Key: `sandboxes/${(record as { microvmId: string }).microvmId}.json`,
+              })),
+            });
+          case 'GetObjectCommand':
+            return Promise.resolve({
+              Body: {
+                transformToString: async () =>
+                  JSON.stringify(
+                    (records ?? []).find((r) => command.input.Key?.includes((r as { microvmId: string }).microvmId))
+                  ),
+              },
+            });
+          default:
+            return Promise.reject(new Error(`unexpected ${command.constructor.name}`));
+        }
+      }) as never);
+
+    const region = process.env.AWS_REGION;
+    beforeEach(() => {
+      process.env.AWS_REGION = 'us-east-1';
+      buckets();
+    });
+    afterEach(() => {
+      if (region === undefined) delete process.env.AWS_REGION;
+      else process.env.AWS_REGION = region;
+    });
+
+    it('finds a sandbox started from a prebuilt image by its record, running while its VM is', async () => {
+      buckets([RECORD]);
+      microvms().mockImplementation(((command: { constructor: { name: string } }) =>
+        Promise.resolve(
+          command.constructor.name === 'ListMicrovmsCommand'
+            ? {
+                items: [
+                  { microvmId: RECORD.microvmId, imageArn: RECORD.imageArn, state: 'RUNNING', startedAt: STARTED },
+                ],
+              }
+            : { items: [] }
+        )) as never);
+
+      const found = await Sandbox.list({ runtime: 'aws.microvm', meta: { sub: 'github:2' } });
+
+      expect(found).toEqual([
+        {
+          sandboxId: RECORD.microvmId,
+          name: 'box-prebuilt',
+          runtime: 'aws.microvm',
+          running: true,
+          startedAt: STARTED,
+          stopsAt: new Date(STARTED.getTime() + 300_000),
+          meta: { sub: 'github:2' },
+          state: 'ready',
+        },
+      ]);
+    });
+
+    it('never makes a sandbox bucket to list from', async () => {
+      const send = buckets();
+      microvms();
+
+      await Sandbox.list({ runtime: 'aws.microvm' });
+
+      expect(send.mock.calls.map(([command]) => (command as object).constructor.name)).not.toContain(
+        'CreateBucketCommand'
+      );
+    });
 
     it("skips an image that's being deleted, without asking for its tags", async () => {
       functions();

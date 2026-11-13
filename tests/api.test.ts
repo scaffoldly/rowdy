@@ -75,6 +75,17 @@ describe('api', () => {
         60000
       );
 
+      aws(
+        'names the image the same without uploading it as by uploading it',
+        async () => {
+          const options = { platform: 'linux/arm64' as const, layersFrom: [ROWDY_LAYERS] };
+          const named = await lastValueFrom(rowdy.images.pullImage('busybox', { ...options, upload: false }));
+          const copied = await lastValueFrom(rowdy.images.pullImage('busybox', options));
+          expect(named.ImageUri).toBe(copied.ImageUri);
+        },
+        120000
+      );
+
       aws('should inject layers', async () => {
         const { Image: pulledImage, ImageUri: pulledImageRef } = await lastValueFrom(
           rowdy.images.pullImage('busybox', { layersFrom: [ROWDY_LAYERS] })

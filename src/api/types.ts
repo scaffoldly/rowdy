@@ -71,6 +71,8 @@ export type PullImageOptions = {
   // TODO: Support for plaform annotation
   platform?: 'linux/amd64' | 'linux/arm64';
   layersFrom?: string[];
+  /** False to name the image as it would be in ECR without copying it there: only manifests are read. */
+  upload?: boolean;
 };
 
 export interface IImageApi {

@@ -436,6 +436,40 @@ const sandbox = await creating;
 
 A command's own output isn't an event.
 
+## Prebuilt images
+
+On `aws.microvm`, `Sandbox.create` first looks for an image prebuilt by
+`rowdy create aws microvm --build` from exactly what the sandbox would build (see
+[the runtime docs](../runtime.md#prebuilt-microvm-images)). It reads only manifests to work out the
+image's name, then reads the image by that name. A match starts in seconds instead of building for about
+two minutes, and the create emits a `{ source: 'sandbox', type: 'prebuilt' }` event, "Starting from a
+prebuilt image". With no match, it builds as before.
+
+A match needs everything that goes into the image to be the same:
+
+- the image and its platform digest
+- every `layersFrom`, and rowdy's own layer, by digest
+- `memory`
+- `env`
+- rowdy's version
+
+The `timeout` and `meta` don't count, since they're set when the VM starts.
+
+A sandbox started from a prebuilt image is its one VM, so it differs from other microVM sandboxes:
+
+- **`sandboxId`** is the VM's id, like `microvm-ee6ef309-…`. `Sandbox.get` and `Sandbox.list` find it
+  by that.
+- **It starts on `create`**, and is billed from then until `stop()` or `timeout`.
+- **`stop()` ends it.** A later command doesn't start a new VM: it rejects, and you create another
+  sandbox.
+- **Every `create` makes a new sandbox**, even with the same options.
+- **It runs with no IAM role**, so code in it has no AWS credentials at all. With no role it writes no
+  log, so [`output`](#output) reads a command's output from the VM itself, where rowdy keeps each
+  command's lines, up to 16 MiB. That works only while the VM runs: once it ends, `output` rejects
+  with "This sandbox has stopped, and its command output went with it." Read what you need first.
+- **`delete()`** ends its VM and removes its record from the sandbox bucket. The prebuilt image is never
+  deleted.
+
 ## What rowdy creates
 
 Each sandbox gets its own resources, in the account and region of your credentials:
