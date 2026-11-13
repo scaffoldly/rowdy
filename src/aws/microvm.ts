@@ -1,7 +1,8 @@
 import { randomUUID } from 'crypto';
+import { createWriteStream, mkdirSync } from 'fs';
 import { chmod, mkdir, open, readFile, writeFile } from 'fs/promises';
 import { createServer, IncomingMessage, ServerResponse } from 'http';
-import { dirname, resolve } from 'path';
+import { dirname, join, resolve } from 'path';
 import { catchError, defer, from, map, NEVER, Observable, of } from 'rxjs';
 import { buffer, text } from 'stream/consumers';
 import { CRI } from '@scaffoldly/rowdy-grpc';
@@ -11,11 +12,11 @@ import { Chunk, Pipeline, Proxy, Request, Response, Result } from '../pipeline';
 import { EXEC_CONTENT_TYPE, EXEC_STREAM, execFrame, ShellProxy, ShellRequest, ShellResponse } from '../proxy/shell';
 import { isExecEvent } from './lambda';
 import { URI } from '../routes';
-import { EXEC_ID_HEADER, EXEC_PATH, FILES_PATH, HOOKS_PORT } from './microvm/hooks';
+import { EXEC_FILES, EXEC_ID_HEADER, EXEC_PATH, FILES_PATH, HOOKS_PORT } from './microvm/hooks';
 
 const log = root.child('microvm');
 
-export { EXEC_ID_HEADER, EXEC_PATH, FILES_PATH, HOOKS_PORT };
+export { EXEC_FILES, EXEC_ID_HEADER, EXEC_PATH, FILES_PATH, HOOKS_PORT };
 
 const HOOKS_PATH = '/aws/lambda-microvms/runtime/v1/';
 const HOOKS: ReadonlySet<string> = new Set(['ready', 'validate', 'run']);
@@ -263,7 +264,16 @@ export class MicrovmShellProxy extends ShellProxy<MicrovmPipeline> {
         const response = new MicrovmResponse(this.pipeline, this.hook)
           .withHeader('content-type', EXEC_CONTENT_TYPE)
           .withHeader(EXEC_ID_HEADER, cmdId);
-        this.multiplex(cmdId, shell, response);
+        // Kept in the VM too, for one whose output reaches no log. Losing it, to a full disk say, mustn't stop the command.
+        try {
+          mkdirSync(EXEC_FILES.dir, { recursive: true });
+        } catch {
+          // The write stream below says why.
+        }
+        const keep = createWriteStream(join(EXEC_FILES.dir, `${cmdId}.jsonl`)).on('error', (error) =>
+          log.warn('Exec Output Not Kept', { error: error.message })
+        );
+        this.multiplex(cmdId, shell, response, undefined, keep);
 
         // A hang-up is how a signal reaches a command. A detached one runs on with its log, and stops buffering frames
         // nobody will read.

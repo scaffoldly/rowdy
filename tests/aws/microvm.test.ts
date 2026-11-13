@@ -5,6 +5,7 @@ import { AddressInfo } from 'net';
 import { mergeMap, Observable, Subscription } from 'rxjs';
 import { Environment, Logger } from '../../src';
 import {
+  EXEC_FILES,
   EXEC_ID_HEADER,
   EXEC_PATH,
   FILES_PATH,
@@ -556,6 +557,58 @@ describe('aws microvm pipeline', () => {
       const response = await fetch(`${url}${EXEC_PATH}`, { method: 'POST', body });
 
       expect(response.status).toBe(400);
+    });
+
+    describe('its output, kept in the VM', () => {
+      const dir = EXEC_FILES.dir;
+      beforeEach(() => (EXEC_FILES.dir = mkdtempSync(join(tmpdir(), 'rowdy-exec-'))));
+      afterEach(() => (EXEC_FILES.dir = dir));
+
+      type Line = { cmd: string; seq: number; stream: number; data: string };
+      const kept = (cmdId: string): Line[] =>
+        readFileSync(join(EXEC_FILES.dir, `${cmdId}.jsonl`), 'utf8')
+          .trim()
+          .split('\n')
+          .map((json) => JSON.parse(json)['rowdy.exec']);
+
+      it('is each line the log gets, in order, ending with the exit', async () => {
+        const logged: string[] = [];
+        const write = process.stdout.write.bind(process.stdout);
+        jest.spyOn(process.stdout, 'write').mockImplementation(((chunk: string, ...rest: never[]) => {
+          if (typeof chunk === 'string' && chunk.includes('"rowdy.exec"')) logged.push(chunk);
+          return write(chunk, ...rest);
+        }) as never);
+        const url = await serve();
+
+        const response = await exec(url, 'sh', ['-c', 'echo out; echo err >&2']);
+        await frames(response);
+
+        const cmdId = response.headers.get(EXEC_ID_HEADER)!;
+        const lines = kept(cmdId);
+        expect(lines.map(({ seq }) => seq)).toEqual(lines.map((_, index) => index));
+        expect(lines.every(({ cmd }) => cmd === cmdId)).toBe(true);
+        const decoded = (stream: number) =>
+          lines
+            .filter((line) => line.stream === stream)
+            .map(({ data }) => Buffer.from(data, 'base64').toString())
+            .join('');
+        expect(decoded(EXEC_STREAM.STDOUT)).toBe('out\n');
+        expect(decoded(EXEC_STREAM.STDERR)).toBe('err\n');
+        expect(lines[lines.length - 1]?.stream).toBe(EXEC_STREAM.EXIT);
+        // Commands earlier tests left running log too.
+        const mine = logged.filter((json) => JSON.parse(json)['rowdy.exec'].cmd === cmdId);
+        expect(mine.join('')).toBe(readFileSync(join(EXEC_FILES.dir, `${cmdId}.jsonl`), 'utf8'));
+      });
+
+      it("doesn't stop a command when it can't be kept", async () => {
+        EXEC_FILES.dir = '/dev/null/rowdy-exec';
+        const url = await serve();
+
+        const mine = await frames(await exec(url, 'sh', ['-c', 'echo out']));
+
+        expect(text(mine, EXEC_STREAM.STDOUT)).toBe('out\n');
+        expect(JSON.parse(text(mine, EXEC_STREAM.EXIT))).toMatchObject({ code: 0 });
+      });
     });
 
     it('never logs a command or its arguments', async () => {
