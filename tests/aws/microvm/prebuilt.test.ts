@@ -191,6 +191,24 @@ describe('aws microvm compute from a prebuilt image', () => {
       );
     });
 
+    it('finds one built on another rowdy, with layers pushed since', async () => {
+      const handlers = await built();
+      const { compute, sent } = setup(handlers);
+      Object.assign(compute['environment'], { version: '9.9.9' });
+      jest.spyOn(compute['environment'].images, 'pullImage').mockReturnValue(
+        of({
+          ...PULLED,
+          ImageUri: IMAGE_URI.replace('sha256:ecr', 'sha256:recopied'),
+          Layers: [{ from: 'ghcr.io/scaffoldly/rowdy:beta', digest: `sha256:${'f'.repeat(64)}` }],
+        })
+      );
+
+      await lastValueFrom(compute.create(SPEC));
+
+      expect(compute.sandboxId).toBe(MICROVM_ID);
+      expect(names(sent)).not.toContain('CreateMicrovmImageCommand');
+    });
+
     it('keeps its record by its VM', async () => {
       const { compute, sent } = setup(await built());
 
