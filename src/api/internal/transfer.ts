@@ -47,6 +47,7 @@ export type External = {
     mediaType: 'application/vnd.oci.image.manifest.v1+json' | 'application/vnd.docker.distribution.manifest.v2+json';
     config: External['Ref'];
     layers: External['Ref'][];
+    annotations: Record<string, string>;
   }>;
   Config: Partial<{
     config: Partial<{
@@ -89,6 +90,8 @@ export type ImageManifest = Image & {
   // in place of the original config blob.
   images: { manifest: External['Manifest']; image: External['Image']; config?: Buffer }[];
   headers: HttpHeaders;
+  /** Each layers-from image, in order, with the digest of the platform's image it gave. */
+  sources: { from: string; digest: string }[];
 };
 
 /** A layers-from image as collected and checked: its configs keyed by platform manifest digest. */
@@ -478,12 +481,20 @@ export class Transfer implements ILoggable {
             tap(({ digest }) => log.debug(`Digest: ${digest}`)),
             map(({ digest, index, images }) => {
               // Make sure data types line up
+              const [os, architecture] = platform.split('/');
               const result: ImageManifest = {
                 ...image,
                 digest,
                 index,
                 images,
                 headers,
+                sources: sources.map((source) => ({
+                  from: source.from,
+                  digest:
+                    source.manifest.index.manifests?.find(
+                      (m) => m.platform?.os === os && m.platform?.architecture === architecture
+                    )?.digest ?? '',
+                })),
               };
               return result;
             })

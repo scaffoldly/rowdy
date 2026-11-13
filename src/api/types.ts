@@ -88,6 +88,20 @@ export interface IRegistryApi {
 export type TPulledImage = {
   Image: string;
   ImageUri: string;
+  /**
+   * Where the image came from, as normalized, and the digest of the platform's image there. `base` is the image it was
+   * built FROM, as its build annotated it, if it did.
+   */
+  Source?: {
+    registry: string;
+    namespace: string;
+    name: string;
+    tag: string;
+    digest: string;
+    base?: { name: string; digest?: string };
+  };
+  /** Each layers-from image, in order, with the digest of the platform's image it gave. */
+  Layers?: { from: string; digest: string }[];
   Command?: string[];
   Entrypoint?: string[];
   Environment?: Record<string, string>;
