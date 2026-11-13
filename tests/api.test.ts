@@ -57,6 +57,24 @@ describe('api', () => {
         });
       });
 
+      aws(
+        'says what it pulled, and every layer, by digest',
+        async () => {
+          const { Source, Layers } = await lastValueFrom(
+            rowdy.images.pullImage('ubuntu:noble-20251001', { platform: 'linux/arm64', layersFrom: [ROWDY_LAYERS] })
+          );
+          expect(Source).toMatchObject({
+            registry: 'mirror.gcr.io',
+            namespace: 'library',
+            name: 'ubuntu',
+            tag: 'noble-20251001',
+            digest: expect.stringMatching(/^sha256:[a-f0-9]{64}$/),
+          });
+          expect(Layers).toEqual([{ from: ROWDY_LAYERS, digest: expect.stringMatching(/^sha256:[a-f0-9]{64}$/) }]);
+        },
+        60000
+      );
+
       aws('should inject layers', async () => {
         const { Image: pulledImage, ImageUri: pulledImageRef } = await lastValueFrom(
           rowdy.images.pullImage('busybox', { layersFrom: [ROWDY_LAYERS] })

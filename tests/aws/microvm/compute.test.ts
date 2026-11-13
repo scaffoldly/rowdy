@@ -14,7 +14,12 @@ import { CloudWatchLogsClient } from '@aws-sdk/client-cloudwatch-logs';
 const IMAGE_URI = '123456789012.dkr.ecr.us-east-1.amazonaws.com/scaffoldly/sandbox@sha256:abc';
 const IMAGE_ARN = 'arn:aws:lambda:us-east-1:123456789012:microvm-image:sandbox-box';
 const BASE_ARN = 'arn:aws:lambda:us-east-1:aws:microvm-image:al2023-1';
-const AVAILABLE = { status: 'AVAILABLE', supportedCpuConfigurations: [{ architecture: 'X86_64' }] };
+const AVAILABLE = {
+  imageVersion: '1',
+  createdAt: new Date(1),
+  status: 'AVAILABLE',
+  supportedCpuConfigurations: [{ architecture: 'X86_64' }],
+};
 const ROLE_ARN = 'arn:aws:iam::123456789012:role/box';
 const SPEC: ComputeSpec = {
   image: 'scaffoldly/sandbox',
@@ -156,6 +161,7 @@ describe('aws microvm compute', () => {
       expect(dockerfile(sent)).toBe(`FROM ${IMAGE_URI}\nENTRYPOINT ["/usr/local/bin/rowdy"]\n`);
       expect(compute['environment'].images.pullImage).toHaveBeenCalledWith(SPEC.image, {
         layersFrom: ['ghcr.io/scaffoldly/rowdy:beta'],
+        platform: 'linux/amd64',
       });
     });
 
@@ -166,6 +172,7 @@ describe('aws microvm compute', () => {
 
       expect(compute['environment'].images.pullImage).toHaveBeenCalledWith(SPEC.image, {
         layersFrom: ['ghcr.io/scaffoldly/rowdy:beta', 'tunneld/tunneld:latest'],
+        platform: 'linux/amd64',
       });
     });
 
@@ -430,7 +437,7 @@ describe('aws microvm compute', () => {
     });
 
     it.each([
-      ['only ARM', { status: 'AVAILABLE', supportedCpuConfigurations: [{ architecture: 'ARM_64' }] }],
+      ['only ARM', { ...AVAILABLE, supportedCpuConfigurations: [{ architecture: 'ARM_64' }] }],
       ['expired', { ...AVAILABLE, status: 'EXPIRED' }],
     ])('skips one that is %s', async (_, version) => {
       const { compute, sent } = setup({
@@ -443,6 +450,22 @@ describe('aws microvm compute', () => {
       await create(compute);
 
       expect(input(sent, 'CreateMicrovmImageCommand')).toMatchObject({ baseImageArn: BASE_ARN });
+    });
+
+    it('pins its newest version for the architecture', async () => {
+      const { compute, sent } = setup({
+        ListManagedMicrovmImageVersionsCommand: () => ({
+          items: [
+            AVAILABLE,
+            { ...AVAILABLE, imageVersion: '3', createdAt: new Date(3), status: 'EXPIRED' },
+            { ...AVAILABLE, imageVersion: '2', createdAt: new Date(2) },
+          ],
+        }),
+      });
+
+      await create(compute);
+
+      expect(input(sent, 'CreateMicrovmImageCommand')).toMatchObject({ baseImageVersion: '2' });
     });
 
     it('rejects when none will do', async () => {

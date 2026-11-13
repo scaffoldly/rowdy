@@ -32,6 +32,9 @@ import { ShellPipeline } from './shell/pipeline';
 import { Pipeline, Result } from './pipeline';
 import { LambdaPipeline } from './aws/lambda';
 import { MicrovmPipeline } from './aws/microvm';
+import { MicrovmImage } from './aws/microvm/index';
+import { SandboxEnvironment } from './sandbox/internal/environment';
+import { DEFAULTS, MICROVM_MEMORY } from './sandbox/internal/compute';
 import packageJson from '../package.json';
 import { ABORT } from './abort';
 import { Rowdy } from './api';
@@ -55,7 +58,7 @@ import { dirname, join } from 'path';
 import { internalIpV4Sync } from 'internal-ip';
 import { deployFailedSummary, deploySummary, writeGithubOutput, writeGithubSummary } from './util/github';
 import { isStaticElf, programOf } from './util/elf';
-import { deploySources } from './api/internal/sources';
+import { deploySources, layerSources } from './api/internal/sources';
 import { concurrency } from './concurrency';
 
 export type { Secrets } from './secrets';
@@ -336,96 +339,155 @@ export class Environment implements ILoggable {
               describe: 'Create a new Rowdy container in AWS',
               handler: (_argv: Partial<Args>) => {},
               builder: (yargs) =>
-                yargs.demandCommand(1, 'Please specify a subcommand').command({
-                  command: 'lambda <image> [command...]',
-                  describe: 'Create a new Rowdy container in AWS Lambda',
-                  builder: (yargs) =>
-                    yargs
-                      .parserConfiguration({ 'unknown-options-as-args': true })
-                      .positional('image', {
-                        describe: 'Container image to deploy',
-                        type: 'string',
-                        demandOption: true,
-                      })
-                      .positional('command', {
-                        describe: 'Command to run in the container',
-                        type: 'string',
-                        array: true,
-                      }),
-                  handler: (argv) => {
-                    // TODO: Fix logging ability in these early handlers
-                    let lambda = new LambdaFunction(
-                      'Container',
-                      new LambdaImageService(this).withLayersFrom(deploySources(argv['layers-from']))
-                    ).withImage(argv.image);
+                yargs
+                  .demandCommand(1, 'Please specify a subcommand')
+                  .command({
+                    command: 'lambda <image> [command...]',
+                    describe: 'Create a new Rowdy container in AWS Lambda',
+                    builder: (yargs) =>
+                      yargs
+                        .parserConfiguration({ 'unknown-options-as-args': true })
+                        .positional('image', {
+                          describe: 'Container image to deploy',
+                          type: 'string',
+                          demandOption: true,
+                        })
+                        .positional('command', {
+                          describe: 'Command to run in the container',
+                          type: 'string',
+                          array: true,
+                        }),
+                    handler: (argv) => {
+                      // TODO: Fix logging ability in these early handlers
+                      let lambda = new LambdaFunction(
+                        'Container',
+                        new LambdaImageService(this).withLayersFrom(deploySources(argv['layers-from']))
+                      ).withImage(argv.image);
 
-                    // DEVNOTE: The function's environment is merged on update, so the legacy flags
-                    // are written explicitly: a function once deployed at debug must not stay there.
-                    const level = Environment.levelOf(argv);
-                    lambda = lambda
-                      .withEnvironment('ROWDY_LOG_LEVEL', level)
-                      .withEnvironment('ROWDY_DEBUG', `${level === 'debug' || level === 'trace'}`)
-                      .withEnvironment('ROWDY_TRACE', `${level === 'trace'}`);
-                    if (argv.command) {
-                      lambda = lambda.withCommand(argv.command);
-                    }
-                    if (argv.name) {
-                      lambda = lambda.withName(argv.name);
-                    }
-                    if (argv.memory) {
-                      lambda = lambda.withMemory(argv.memory);
-                    }
-                    if (argv.cri) {
-                      lambda = lambda.withCRI();
-                    }
-                    if (argv.routes) {
-                      lambda = lambda.withRoutes(Routes.fromURL(argv.routes));
-                    }
-                    const volumes = Volume.fromArgs(argv);
-                    if (volumes.length) {
-                      lambda = lambda.withRoutes(Routes.empty().withVolumes(volumes));
-                    }
-                    if (argv.secrets) {
-                      lambda = lambda.withSecrets(argv.secrets);
-                    }
+                      // DEVNOTE: The function's environment is merged on update, so the legacy flags
+                      // are written explicitly: a function once deployed at debug must not stay there.
+                      const level = Environment.levelOf(argv);
+                      lambda = lambda
+                        .withEnvironment('ROWDY_LOG_LEVEL', level)
+                        .withEnvironment('ROWDY_DEBUG', `${level === 'debug' || level === 'trace'}`)
+                        .withEnvironment('ROWDY_TRACE', `${level === 'trace'}`);
+                      if (argv.command) {
+                        lambda = lambda.withCommand(argv.command);
+                      }
+                      if (argv.name) {
+                        lambda = lambda.withName(argv.name);
+                      }
+                      if (argv.memory) {
+                        lambda = lambda.withMemory(argv.memory);
+                      }
+                      if (argv.cri) {
+                        lambda = lambda.withCRI();
+                      }
+                      if (argv.routes) {
+                        lambda = lambda.withRoutes(Routes.fromURL(argv.routes));
+                      }
+                      const volumes = Volume.fromArgs(argv);
+                      if (volumes.length) {
+                        lambda = lambda.withRoutes(Routes.empty().withVolumes(volumes));
+                      }
+                      if (argv.secrets) {
+                        lambda = lambda.withSecrets(argv.secrets);
+                      }
 
-                    // TODO: URL True/False
-                    // TODO: Stdin/Stdout/Stderr
+                      // TODO: URL True/False
+                      // TODO: Stdin/Stdout/Stderr
 
-                    this._subscriptions.push(
-                      lambda.observe().subscribe({
-                        next: (fn) => this.log.info('State Updated', Environment.flat(fn.State)),
-                        error: (error: Error) => {
-                          this.log.error('Lambda Function Installation Failed', {
-                            name: error.name,
-                            error: error.message,
-                          });
-                          writeGithubSummary(deployFailedSummary(argv.image, error));
-                          process.exitCode = 1;
-                          this.abort.abort('Installation failed');
-                        },
-                        complete: () => {
-                          this.log.info('Lambda Function Installation Complete');
-                          writeGithubOutput('url', lambda.State.FunctionUrl);
-                          if (lambda.State.Bucket) {
-                            writeGithubOutput('bucket', lambda.State.Bucket);
-                          }
-                          writeGithubSummary(
-                            deploySummary({
-                              url: lambda.State.FunctionUrl,
-                              image: argv.image,
-                              functionArn: lambda.State.FunctionArn,
-                              alias: lambda.State.Qualifier,
-                              memory: lambda.Status.Configuration?.MemorySize,
-                              volumes: lambda.volumes,
-                              bucket: lambda.State.Bucket,
-                            })
-                          );
-                        },
-                      })
-                    );
-                  },
-                }),
+                      this._subscriptions.push(
+                        lambda.observe().subscribe({
+                          next: (fn) => this.log.info('State Updated', Environment.flat(fn.State)),
+                          error: (error: Error) => {
+                            this.log.error('Lambda Function Installation Failed', {
+                              name: error.name,
+                              error: error.message,
+                            });
+                            writeGithubSummary(deployFailedSummary(argv.image, error));
+                            process.exitCode = 1;
+                            this.abort.abort('Installation failed');
+                          },
+                          complete: () => {
+                            this.log.info('Lambda Function Installation Complete');
+                            writeGithubOutput('url', lambda.State.FunctionUrl);
+                            if (lambda.State.Bucket) {
+                              writeGithubOutput('bucket', lambda.State.Bucket);
+                            }
+                            writeGithubSummary(
+                              deploySummary({
+                                url: lambda.State.FunctionUrl,
+                                image: argv.image,
+                                functionArn: lambda.State.FunctionArn,
+                                alias: lambda.State.Qualifier,
+                                memory: lambda.Status.Configuration?.MemorySize,
+                                volumes: lambda.volumes,
+                                bucket: lambda.State.Bucket,
+                              })
+                            );
+                          },
+                        })
+                      );
+                    },
+                  })
+                  .command({
+                    command: 'microvm <image>',
+                    describe: 'Prebuild a Lambda MicroVMs image for any sandbox to start from',
+                    builder: (yargs) =>
+                      yargs
+                        .positional('image', {
+                          describe: 'Container image to build from',
+                          type: 'string',
+                          demandOption: true,
+                        })
+                        .option('build', {
+                          type: 'boolean',
+                          description: 'Build the image only, named and tagged for what it is built from',
+                          demandOption: 'Only --build is supported: a sandbox on a MicroVM starts from the SDK',
+                        })
+                        // An image's memory is fixed when it's built, and a sandbox's default is a microVM's.
+                        .option('memory', {
+                          describe: 'Memory in megabytes, as a sandbox asks for it',
+                          type: 'number',
+                          choices: MICROVM_MEMORY,
+                          default: DEFAULTS.memory,
+                        })
+                        .option('platform', {
+                          type: 'string',
+                          description: 'The platform to build for, from a multi-platform image',
+                          choices: ['linux/amd64', 'linux/arm64'] as const,
+                          default: 'linux/amd64' as const,
+                        }),
+                    handler: (argv) => {
+                      const environment = new SandboxEnvironment(this.log, { signal: this.signal });
+                      const image = new MicrovmImage(environment)
+                        .withImage(argv.image, layerSources(argv['layers-from']))
+                        .withPlatform(argv.platform)
+                        .withMemory(argv.memory)
+                        .withPrebuild();
+
+                      this._subscriptions.push(
+                        environment.event$.subscribe(
+                          (event) => event.source === 'http' && this.log.info(event.message)
+                        ),
+                        image.observe().subscribe({
+                          error: (error: Error) => {
+                            this.log.error('MicroVM Image Build Failed', { name: error.name, error: error.message });
+                            writeGithubSummary(deployFailedSummary(argv.image, error));
+                            process.exitCode = 1;
+                            this.abort.abort('Build failed');
+                          },
+                          complete: () => {
+                            const status = image.State.Built ? 'built' : 'reused';
+                            this.log.info(`MicroVM Image ${status}: ${image.State.ImageArn}`);
+                            writeGithubOutput('arn', image.State.ImageArn);
+                            writeGithubOutput('status', status);
+                          },
+                        })
+                      );
+                    },
+                  }),
             }),
       })
       // .command({

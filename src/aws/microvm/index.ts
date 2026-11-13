@@ -17,6 +17,7 @@ import {
   GetMicrovmImageCommandOutput,
   GetMicrovmImageVersionCommand,
   LambdaMicrovmsClient,
+  ManagedMicrovmImageVersion,
   ListManagedMicrovmImagesCommand,
   ListManagedMicrovmImageVersionsCommand,
   UpdateMicrovmImageCommand,
@@ -54,12 +55,13 @@ import {
   timer,
 } from 'rxjs';
 import { ROWDY_LAYERS } from '../../api/internal/layers';
+import type { PullImageOptions, TPulledImage } from '../../api/types';
 import { Transfer } from '../../api/internal/transfer';
 import type { Logger } from '../../log';
 import type { SandboxEnvironment } from '../../sandbox/internal/environment';
 import { DEFAULTS } from '../../sandbox/internal/compute';
 import { AwsResource, type AwsSteps } from '../resource';
-import { META_TAG } from '../tags';
+import { META_TAG, TAG_VALUE_REGEX } from '../tags';
 import {
   _create,
   isNotFound,
@@ -77,12 +79,32 @@ export const BUCKET_PREFIX = 'rowdy-sandboxes-';
 const BUCKET_OWNER = { Key: 'rowdy:owner', Value: 'rowdy-sandboxes' };
 export const COMPUTE_TAG = 'run.rowdy.aws';
 export const TIMEOUT_TAG = 'run.rowdy.timeout';
-export const ARCHITECTURE = 'X86_64';
 
 /** How often a build is polled, in milliseconds. */
 export const POLL = { delay: 5000 };
 
 const gone = (error: unknown): Observable<never> => (isNotFound(error) ? EMPTY : throwError(() => error));
+
+/** What a prebuilt image is built from, every field that can differ between two builds, as its tags say it. */
+export type PrebuildSpec = {
+  registry: string;
+  namespace: string;
+  name: string;
+  tag: string;
+  sha256: string;
+  platform: string;
+  layers: { from: string; digest: string }[];
+  dockerfile: string;
+  baseImageArn: string;
+  baseImageVersion: string;
+  architecture: string;
+  additionalOsCapabilities: string[];
+  minimumMemoryInMiB: number;
+  environmentVariables: string;
+  hooks: CreateMicrovmImageCommandInput['hooks'];
+  egressNetworkConnectors: string[];
+  rowdy: string;
+};
 
 /**
  * A sandbox's image on Lambda MicroVMs, and what rowdy makes for it: its image copied into ECR, its zip in the account's
@@ -105,6 +127,8 @@ export class MicrovmImage extends AwsResource {
   private Environment = new BehaviorSubject<Record<string, string>>({});
   private Meta = new BehaviorSubject<Record<string, string>>({});
   private Wait = new BehaviorSubject<boolean>(true);
+  private Platform = new BehaviorSubject<NonNullable<PullImageOptions['platform']>>('linux/amd64');
+  private Prebuild = new BehaviorSubject<boolean>(false);
 
   // Resource Properties
   private ImageArn = new ReplaySubject<string | undefined>(1);
@@ -116,6 +140,11 @@ export class MicrovmImage extends AwsResource {
   private LogGroupName = new ReplaySubject<string | undefined>(1);
   private RoleName = new ReplaySubject<string | undefined>(1);
   private RoleArn = new ReplaySubject<string | undefined>(1);
+  private BaseImageVersion = new ReplaySubject<string | undefined>(1);
+  private Pulled = new ReplaySubject<TPulledImage>(1);
+  private Dockerfile = new ReplaySubject<string>(1);
+  private Spec = new ReplaySubject<{ name: string; spec: PrebuildSpec; hash: string; tags: Record<string, string> }>(1);
+  private Built = new ReplaySubject<boolean>(1);
 
   public readonly State: {
     ImageArn?: string;
@@ -127,6 +156,9 @@ export class MicrovmImage extends AwsResource {
     LogGroupName?: string;
     RoleName?: string;
     RoleArn?: string;
+    BaseImageVersion?: string;
+    /** Whether `observe` built the image, or found it built already. */
+    Built?: boolean;
   } = {};
 
   constructor(private environment: SandboxEnvironment) {
@@ -140,10 +172,12 @@ export class MicrovmImage extends AwsResource {
       this.BaseImageArn.pipe(map((v) => ['BaseImageArn', v] as const)),
       this.LogGroupName.pipe(map((v) => ['LogGroupName', v] as const)),
       this.RoleName.pipe(map((v) => ['RoleName', v] as const)),
-      this.RoleArn.pipe(map((v) => ['RoleArn', v] as const))
+      this.RoleArn.pipe(map((v) => ['RoleArn', v] as const)),
+      this.BaseImageVersion.pipe(map((v) => ['BaseImageVersion', v] as const)),
+      this.Built.pipe(map((v) => ['Built', v] as const))
     )
       .pipe(
-        tap(([key, value]) => (this.State[key] = value)),
+        tap(([key, value]) => Object.assign(this.State, { [key]: value })),
         takeUntil(fromEvent(this.signal, 'abort'))
       )
       .subscribe();
@@ -194,6 +228,21 @@ export class MicrovmImage extends AwsResource {
     return this;
   }
 
+  /** The platform its image is copied for, from a multi-platform index, and so its architecture. */
+  withPlatform(platform: NonNullable<PullImageOptions['platform']>): this {
+    this.Platform.next(platform);
+    return this;
+  }
+
+  /**
+   * Builds the image for no sandbox, named for what it's built from: the first 40 hex of the platform image's digest
+   * and the first 23 of the build-spec hash. Tagged with every field of its `PrebuildSpec`, and none of a sandbox's.
+   */
+  withPrebuild(): this {
+    this.Prebuild.next(true);
+    return this;
+  }
+
   /** An image rowdy made before, found by its ARN, for `delete`. */
   withArn(imageArn: string): this {
     this.ImageArn.next(imageArn);
@@ -202,15 +251,37 @@ export class MicrovmImage extends AwsResource {
   }
 
   protected prepare(): AwsSteps {
-    const Name = this.Name.getValue();
+    const Prebuild = this.Prebuild.getValue();
+    const Platform = this.Platform.getValue();
+    const architecture = Platform === 'linux/arm64' ? 'ARM_64' : 'X86_64';
+    // What an image is built with, apart from its name, base, role, zip and tags.
+    const request = {
+      cpuConfigurations: [{ architecture }],
+      additionalOsCapabilities: ['ALL'],
+      resources: [{ minimumMemoryInMiB: this.Memory.getValue() }],
+      environmentVariables: this.Environment.getValue(),
+      hooks: {
+        port: HOOKS_PORT,
+        microvmImageHooks: {
+          ready: 'ENABLED',
+          readyTimeoutInSeconds: 120,
+          validate: 'ENABLED',
+          validateTimeoutInSeconds: 120,
+        },
+        microvmHooks: { run: 'ENABLED', runTimeoutInSeconds: 60 },
+      },
+    } satisfies Partial<CreateMicrovmImageCommandInput>;
+    // A prebuilt image's name is known once its image is copied and its base is picked.
+    const Name$ = Prebuild ? this.Spec.pipe(map(({ name }) => name)) : of(this.Name.getValue());
 
     const creates: Observable<unknown>[] = [
       // The account and region name its image and its log group.
       forkJoin({
         Region: defer(() => this.s3.config.region()),
         Identity: defer(() => this.sts.send(new GetCallerIdentityCommand({}))),
+        Name: Name$.pipe(take(1)),
       }).pipe(
-        tap(({ Region, Identity: { Account } }) => {
+        tap(({ Region, Identity: { Account }, Name }) => {
           this.ImageArn.next(`arn:aws:lambda:${Region}:${Account}:microvm-image:${Name}`);
           this.LogGroupArn.next(`arn:aws:logs:${Region}:${Account}:log-group:/aws/lambda-microvms/${Name}`);
         })
@@ -219,24 +290,115 @@ export class MicrovmImage extends AwsResource {
       defer(() =>
         this.environment.images.pullImage(this.Image.getValue(), {
           layersFrom: [ROWDY_LAYERS, ...this.LayersFrom.getValue()],
+          platform: Platform,
         })
       ).pipe(
-        tap(({ ImageUri }) => {
-          this.ImageUri.next(ImageUri);
-          this.Key.next(`${Name}/${ImageUri}.zip`);
-        })
+        tap((pulled) => {
+          this.Pulled.next(pulled);
+          this.ImageUri.next(pulled.ImageUri);
+          this.Dockerfile.next(`FROM ${pulled.ImageUri}\nENTRYPOINT ["${ROWDY_BIN}"]\n`);
+        }),
+        switchMap(({ ImageUri }) =>
+          Name$.pipe(
+            take(1),
+            map((Name) => ({ ImageUri, Name }))
+          )
+        ),
+        tap(({ ImageUri, Name }) => this.Key.next(`${Name}/${ImageUri}.zip`))
       ),
       ownedBucket(this.s3, this.log, BUCKET_PREFIX, BUCKET_OWNER).pipe(tap((Bucket) => this.Bucket.next(Bucket))),
-      this.baseImage().pipe(tap((arn) => this.BaseImageArn.next(arn))),
-      // AWS's own log group for an image of this name. It's made here, so its role can't make others.
-      defer(() => this.logs.send(new CreateLogGroupCommand({ logGroupName: `/aws/lambda-microvms/${Name}` }))).pipe(
-        catchError((error) =>
-          error?.name === 'ResourceAlreadyExistsException' ? of(undefined) : throwError(() => error)
-        ),
-        tap(() => this.LogGroupName.next(`/aws/lambda-microvms/${Name}`))
+      this.baseImage(architecture).pipe(
+        tap(({ imageArn, imageVersion }) => {
+          this.BaseImageArn.next(imageArn);
+          this.BaseImageVersion.next(imageVersion);
+        })
       ),
-      this.role(roleName(Transfer.normalizeImage(this.Image.getValue()), Name)),
+      // AWS's own log group for an image of this name. It's made here, so its role can't make others.
+      Name$.pipe(
+        take(1),
+        switchMap((Name) =>
+          defer(() => this.logs.send(new CreateLogGroupCommand({ logGroupName: `/aws/lambda-microvms/${Name}` }))).pipe(
+            catchError((error) =>
+              error?.name === 'ResourceAlreadyExistsException' ? of(undefined) : throwError(() => error)
+            ),
+            tap(() => this.LogGroupName.next(`/aws/lambda-microvms/${Name}`))
+          )
+        )
+      ),
+      Name$.pipe(
+        take(1),
+        switchMap((Name) => this.role(roleName(Transfer.normalizeImage(this.Image.getValue()), Name)))
+      ),
     ];
+
+    if (Prebuild) {
+      creates.push(
+        // What it's built from, every field that can differ between two builds, and the name that follows.
+        combineLatest([this.Pulled, this.Dockerfile, this.BaseImageArn, this.BaseImageVersion]).pipe(
+          take(1),
+          map(([{ Image, Source, Layers = [] }, Dockerfile, baseImageArn = '', baseImageVersion = '']) => {
+            if (!Source?.digest) {
+              throw new Error(`${Image} has no ${Platform} digest to name its image by`);
+            }
+            const spec: PrebuildSpec = {
+              registry: Source.registry,
+              namespace: Source.namespace,
+              name: Source.name,
+              tag: Source.tag,
+              sha256: Source.digest.replace(/^sha256:/, ''),
+              platform: Platform,
+              layers: Layers,
+              dockerfile: createHash('sha256').update(Dockerfile).digest('hex'),
+              baseImageArn,
+              baseImageVersion,
+              architecture,
+              additionalOsCapabilities: request.additionalOsCapabilities,
+              minimumMemoryInMiB: this.Memory.getValue(),
+              // Its values can be secrets: only their hash, by key order.
+              environmentVariables: createHash('sha256')
+                .update(
+                  JSON.stringify(
+                    Object.entries(request.environmentVariables).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+                  )
+                )
+                .digest('hex'),
+              hooks: request.hooks,
+              egressNetworkConnectors: [],
+              rowdy: this.environment.version,
+            };
+            // Built in PrebuildSpec's key order, so the same spec always encodes, and hashes, the same.
+            const hash = createHash('sha256').update(JSON.stringify(spec)).digest('hex');
+            // A field that isn't a tag value as it is, like a list, goes in as its hash.
+            const tags = Object.fromEntries(
+              Object.entries(spec).map(([key, value]) => [
+                key,
+                typeof value !== 'object' && TAG_VALUE_REGEX.test(`${value}`)
+                  ? `${value}`
+                  : createHash('sha256').update(JSON.stringify(value)).digest('hex'),
+              ])
+            );
+            Layers.forEach(({ from, digest }, index) => (tags[`layer.${index}`] = `${from}@${digest}`));
+            tags.spec = hash;
+            tags.memory = `${spec.minimumMemoryInMiB}`;
+            // For picking the newest image of a name, or of a FROM, rather than an exact spec: not in the hash.
+            tags.built = new Date().toISOString().replace(/\.\d+Z$/, 'Z');
+            if (Source.base && TAG_VALUE_REGEX.test(Source.base.name)) {
+              tags.from = Source.base.name;
+              if (Source.base.digest) tags['from.sha256'] = Source.base.digest.replace(/^sha256:/, '');
+            }
+            return { name: `${spec.sha256.slice(0, 40)}-${hash.slice(0, 23)}`, spec, hash, tags };
+          }),
+          tap(({ name, spec }) => {
+            this.Name.next(name);
+            this.log.info(
+              `${this.Image.getValue()} is ${spec.registry}/${spec.namespace}/${spec.name}:${spec.tag}@sha256:${spec.sha256} for ${spec.platform}`
+            );
+            spec.layers.forEach(({ from, digest }) => this.log.info(`${from} is ${digest}`));
+          }),
+          tap((resolved) => this.Spec.next(resolved))
+        )
+      );
+    }
 
     const updates: Observable<unknown>[] = [
       // What its role may do: read its one zip, write its one log group and pull its one repository.
@@ -270,42 +432,65 @@ export class MicrovmImage extends AwsResource {
           );
         })
       ),
-      combineLatest([this.ImageArn, this.Bucket, this.Key, this.ImageUri, this.BaseImageArn, this.RoleArn]).pipe(
-        take(1),
-        switchMap(([imageIdentifier, Bucket, Key, ImageUri, baseImageArn, buildRoleArn]) =>
-          this.build(imageIdentifier!, Bucket!, Key!, ImageUri!, {
-            name: Name,
-            baseImageArn,
-            buildRoleArn,
-            cpuConfigurations: [{ architecture: ARCHITECTURE }],
-            additionalOsCapabilities: ['ALL'],
-            resources: [{ minimumMemoryInMiB: this.Memory.getValue() }],
-            environmentVariables: this.Environment.getValue(),
-            hooks: {
-              port: HOOKS_PORT,
-              microvmImageHooks: {
-                ready: 'ENABLED',
-                readyTimeoutInSeconds: 120,
-                validate: 'ENABLED',
-                validateTimeoutInSeconds: 120,
-              },
-              microvmHooks: { run: 'ENABLED', runTimeoutInSeconds: 60 },
-            },
-            codeArtifact: { uri: `s3://${Bucket}/${Key}` },
-            tags: {
-              'run.rowdy': 'aws',
-              [COMPUTE_TAG]: 'microvm',
-              [TIMEOUT_TAG]: `${this.Timeout.getValue() / 1000}`,
-              'run.rowdy.user.agent': this.environment.userAgent,
-              ...Object.fromEntries(
-                Object.entries(this.Meta.getValue()).map(([key, value]) => [`${META_TAG}${key}`, value])
-              ),
-            },
-          })
-        )
-      ),
     ];
 
+    if (Prebuild) {
+      updates.push(
+        // The whole spec beside its zip, for what its tags only hash.
+        combineLatest([this.Bucket, this.Spec]).pipe(
+          take(1),
+          switchMap(([Bucket, { name, spec, hash }]) =>
+            this.s3.send(
+              new PutObjectCommand({
+                Bucket,
+                Key: `${name}/spec.json`,
+                Body: JSON.stringify({ ...spec, spec: hash }),
+                ContentType: 'application/json',
+              })
+            )
+          )
+        )
+      );
+    }
+
+    updates.push(
+      combineLatest([
+        Name$,
+        this.ImageArn,
+        this.Bucket,
+        this.Key,
+        this.Dockerfile,
+        this.BaseImageArn,
+        this.BaseImageVersion,
+        this.RoleArn,
+        Prebuild ? this.Spec.pipe(map(({ tags }) => tags)) : of(undefined),
+      ]).pipe(
+        take(1),
+        switchMap(
+          ([Name, imageIdentifier, Bucket, Key, Dockerfile, baseImageArn, baseImageVersion, buildRoleArn, prebuilt]) =>
+            this.build(imageIdentifier!, Bucket!, Key!, Dockerfile, {
+              name: Name,
+              baseImageArn,
+              baseImageVersion,
+              buildRoleArn,
+              ...request,
+              codeArtifact: { uri: `s3://${Bucket}/${Key}` },
+              // A prebuilt image is no one's sandbox: none of a sandbox's tags, so nothing lists or deletes it as one.
+              tags: prebuilt ?? {
+                'run.rowdy': 'aws',
+                [COMPUTE_TAG]: 'microvm',
+                [TIMEOUT_TAG]: `${this.Timeout.getValue() / 1000}`,
+                'run.rowdy.user.agent': this.environment.userAgent,
+                ...Object.fromEntries(
+                  Object.entries(this.Meta.getValue()).map(([key, value]) => [`${META_TAG}${key}`, value])
+                ),
+              },
+            })
+        )
+      )
+    );
+
+    const Name = this.Name.getValue();
     // AWS deleting the image already, or done with it.
     let deleted = false;
     const deletes: Observable<unknown>[] = [
@@ -426,25 +611,30 @@ export class MicrovmImage extends AwsResource {
     );
   }
 
-  /** AWS's newest base image with a version available for this architecture. */
-  private baseImage(): Observable<string> {
+  /** AWS's newest base image with a version available for `architecture`, and that newest version, pinned. */
+  private baseImage(architecture: string): Observable<{ imageArn: string; imageVersion: string }> {
     return defer(() => this.microvms.send(new ListManagedMicrovmImagesCommand({}))).pipe(
       switchMap(({ items = [] }) =>
         from([...items].sort((a, b) => (b.createdAt?.getTime() ?? 0) - (a.createdAt?.getTime() ?? 0)))
       ),
       concatMap(({ imageArn }) =>
         from(this.microvms.send(new ListManagedMicrovmImageVersionsCommand({ imageIdentifier: imageArn }))).pipe(
-          filter(({ items = [] }) =>
-            items.some(
-              ({ status, supportedCpuConfigurations = [] }) =>
-                status === 'AVAILABLE' && supportedCpuConfigurations.some((cpu) => cpu.architecture === ARCHITECTURE)
-            )
+          map(
+            ({ items = [] }) =>
+              items
+                .filter(
+                  ({ status, supportedCpuConfigurations = [] }) =>
+                    status === 'AVAILABLE' &&
+                    supportedCpuConfigurations.some((cpu) => cpu.architecture === architecture)
+                )
+                .sort((a, b) => (b.createdAt?.getTime() ?? 0) - (a.createdAt?.getTime() ?? 0))[0]
           ),
-          map(() => imageArn!)
+          filter((version): version is ManagedMicrovmImageVersion => !!version?.imageVersion),
+          map(({ imageVersion }) => ({ imageArn: imageArn!, imageVersion: imageVersion! }))
         )
       ),
       take(1),
-      throwIfEmpty(() => new Error(`AWS has no base image for ${ARCHITECTURE} in this region`))
+      throwIfEmpty(() => new Error(`AWS has no base image for ${architecture} in this region`))
     );
   }
 
@@ -453,13 +643,11 @@ export class MicrovmImage extends AwsResource {
     imageIdentifier: string,
     Bucket: string,
     Key: string,
-    ImageUri: string,
+    Dockerfile: string,
     spec: CreateMicrovmImageCommandInput
   ): Observable<string> {
     const wait = this.Wait.getValue();
-    const Body = zipSync({
-      Dockerfile: [Buffer.from(`FROM ${ImageUri}\nENTRYPOINT ["${ROWDY_BIN}"]\n`), { mtime: new Date(2000, 0) }],
-    });
+    const Body = zipSync({ Dockerfile: [Buffer.from(Dockerfile), { mtime: new Date(2000, 0) }] });
     const etag = `"${createHash('md5').update(Body).digest('hex')}"`;
 
     return forkJoin({
@@ -476,6 +664,7 @@ export class MicrovmImage extends AwsResource {
         const built = image?.state === 'CREATED' || image?.state === 'UPDATED';
         if (built && head?.ETag === etag && image.latestActiveImageVersion) {
           this.log.debug('Sandbox Image Reused', { version: image.latestActiveImageVersion });
+          this.Built.next(false);
           return of(image.latestActiveImageVersion);
         }
 
@@ -496,7 +685,8 @@ export class MicrovmImage extends AwsResource {
           ),
           switchMap(({ imageVersion }) =>
             wait ? this.version(imageIdentifier, spec.name!, imageVersion!) : of(imageVersion!)
-          )
+          ),
+          tap(() => this.Built.next(true))
         );
       })
     );

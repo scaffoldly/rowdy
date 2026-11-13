@@ -1,8 +1,8 @@
-import { defer, map, Observable, of, race } from 'rxjs';
+import { defer, map, Observable, of, race, tap } from 'rxjs';
 import { AxiosInstance } from 'axios';
 import { IApi, IImageApi, PullImageOptions, TPulledImage, TRegistry } from './types';
 import { Logger } from '../log';
-import { Transfer } from './internal/transfer';
+import { ImageManifest, Transfer } from './internal/transfer';
 import { AwsRegistry } from '../aws/registry';
 import { LocalRegistry } from '../local/registry';
 
@@ -22,11 +22,13 @@ export class ImageApi implements IImageApi {
   }
 
   pullImage(image: string, opts?: PullImageOptions): Observable<TPulledImage> {
-    return defer(() =>
-      of(image)
+    return defer(() => {
+      let collected: ImageManifest | undefined;
+      return of(image)
         .pipe(
           Transfer.normalize(opts?.authorization, opts?.registry),
           Transfer.collect(this.log, this.http, opts?.layersFrom, opts?.platform),
+          tap((manifest) => (collected = manifest)),
           Transfer.prepare(this.log, this.http, this.registry),
           Transfer.upload(this.log, this.http, {
             next: (event) =>
@@ -42,13 +44,27 @@ export class ImageApi implements IImageApi {
           map(({ imageRef, command, entrypoint, workdir, environment }) => ({
             Image: image,
             ImageUri: imageRef,
+            Source: collected && {
+              registry: collected.registry,
+              namespace: collected.namespace,
+              name: collected.name,
+              tag: collected.tags[0] ?? '',
+              digest: collected.index.manifests?.[0]?.digest ?? '',
+              ...(collected.images[0]?.image.annotations?.['org.opencontainers.image.base.name'] && {
+                base: {
+                  name: collected.images[0].image.annotations['org.opencontainers.image.base.name'],
+                  digest: collected.images[0].image.annotations['org.opencontainers.image.base.digest'],
+                },
+              }),
+            },
+            Layers: collected?.sources,
             Command: command,
             Entrypoint: entrypoint,
             WorkDir: workdir,
             Environment: environment,
           }))
-        )
-    );
+        );
+    });
   }
 }
 

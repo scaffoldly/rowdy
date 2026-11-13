@@ -73,6 +73,44 @@ The layer's size and files are not inspected. rowdy's own image is built by this
 is not checked. A platform a source does not publish is copied
 without it, with a `Layers Skipped` warning.
 
+## Prebuilt microVM images
+
+`rowdy create aws microvm --build <image>` runs a microVM sandbox's create and stops once its image is
+built. It copies the image into ECR with rowdy's layer and any `--layers-from`, then makes the zip,
+role and log group, builds the image and waits for it. No MicroVM is started.
+
+```sh
+rowdy create aws microvm --build --platform linux/arm64 --memory 1024 \
+  --layers-from ghcr.io/tunneld-it/tunneld:latest \
+  ghcr.io/tunneld-it/ubuntu:latest
+```
+
+- **`--platform`:** `linux/amd64` (the default) or `linux/arm64`, which builds for `ARM_64`. An
+  image or layer with nothing for the platform fails before anything is copied.
+- **`--memory`:** 512 (the default), 1024, 2048, 4096 or 8192. A VM's size comes from its image, so
+  each memory size is its own image.
+- **The name** is the first 40 hex characters of the platform image's digest, a `-`, and the first
+  23 of the build-spec hash.
+  - The spec is every input that can differ between two builds:
+    - the source and its digest
+    - each layer with its digest
+    - the zip's Dockerfile
+    - AWS's base image and the version rowdy pins
+    - the architecture, capabilities and memory
+    - a hash of the environment
+    - the hooks and rowdy's version
+  - The full spec is kept beside the zip as `<name>/spec.json`.
+- **Tags:** the spec's fields, each layer as `layer.<n>`, the full hash as `spec`, plus `memory`,
+  `built` (UTC) and, when the image's build annotated it, `from` and `from.sha256` from
+  `org.opencontainers.image.base.name` and `base.digest`. `built`, `from` and `from.sha256` stay
+  out of the hash. None of a sandbox's tags are set, so a prebuilt image is never listed or deleted
+  as a sandbox.
+- **Run again**, it reuses an image built from the same spec. A change to any part of the spec
+  gives a new name and a new image. The image it replaces is left where it is.
+
+The output prints each layer with the digest it resolved to, and the image's ARN with `built` or
+`reused`. In GitHub Actions, these are also the `arn` and `status` outputs.
+
 ## `ENTRYPOINT` and `CMD`
 
 rowdy sets the function's image configuration, which overrides the image's own:
