@@ -902,8 +902,6 @@ describe('sandbox', () => {
       timeout: 300_000,
       imageArn: 'arn:aws:lambda:us-east-1:123456789012:microvm-image:prebuilt',
       imageVersion: '1',
-      roleName: 'library+ubuntu@box-prebuilt.abcd.rowdy.run',
-      logGroup: '/aws/lambda-microvms/box-prebuilt.abcd',
       bucket: 'rowdy-sandboxes-abc',
       startedAt: STARTED.toISOString(),
     };

@@ -1,7 +1,7 @@
 import { lastValueFrom, of } from 'rxjs';
 import { Logger } from '../../../src';
 import { SandboxEnvironment } from '../../../src/sandbox/internal/environment';
-import { MicrovmCompute, POLL, PrebuiltRecord, TERMINATE_POLL } from '../../../src/aws/microvm/compute';
+import { EXEC_FILE_POLL, MicrovmCompute, POLL, PrebuiltRecord, TERMINATE_POLL } from '../../../src/aws/microvm/compute';
 import { ComputeSpec, SandboxError } from '../../../src/sandbox/internal/compute';
 import type { TPulledImage } from '../../../src/api/types';
 import type { Event } from '../../../src/events';
@@ -114,12 +114,10 @@ describe('aws microvm compute from a prebuilt image', () => {
       if (!handler) throw new Error(`unexpected ${name}`);
       return handler(command.input);
     };
-    const clients = compute as unknown as Record<'iam' | 'logs' | 's3' | 'sts' | 'microvms', Client> & {
+    const clients = compute as unknown as Record<'s3' | 'sts' | 'microvms', Client> & {
       image: Record<'iam' | 'logs' | 'microvms' | 's3' | 'sts', Client>;
     };
     [
-      clients.iam,
-      clients.logs,
       clients.s3,
       clients.sts,
       clients.microvms,
@@ -180,34 +178,16 @@ describe('aws microvm compute from a prebuilt image', () => {
       expect(events).toContainEqual(expect.objectContaining({ source: 'sandbox', type: 'prebuilt' }));
     });
 
-    it('gives it a role and log group of its own, and its role writes only to its log group', async () => {
+    it('runs its VM with no role, so code in it has no credentials, and makes no role or log group', async () => {
       const { compute, sent } = setup(await built());
 
       await lastValueFrom(compute.create(SPEC));
 
-      const { RoleName, Path } = input(sent, 'CreateRoleCommand') as { RoleName: string; Path: string };
-      const { logGroupName } = input(sent, 'CreateLogGroupCommand') as { logGroupName: string };
-      expect(Path).toBe('/rowdy/sandbox/');
-      expect(logGroupName).toMatch(/^\/aws\/lambda-microvms\/box-abcde\.[0-9a-f]{8}$/);
-      expect(input(sent, 'RunMicrovmCommand')).toMatchObject({
-        executionRoleArn: `arn:aws:iam::${ACCOUNT}:role/rowdy/sandbox/${RoleName}`,
-        logging: { cloudWatch: { logGroup: logGroupName } },
-      });
-      const policy = JSON.parse(`${input(sent, 'PutRolePolicyCommand').PolicyDocument}`);
-      const writes = policy.Statement.find((s: { Action: string[] }) => s.Action.includes('logs:PutLogEvents'));
-      expect(writes.Resource).toBe(`arn:aws:logs:us-east-1:${ACCOUNT}:log-group:${logGroupName}:*`);
-    });
-
-    it('gives two creates of the same spec a role each', async () => {
-      const handlers = await built();
-      const first = setup(handlers);
-      const second = setup(handlers);
-
-      await lastValueFrom(first.compute.create(SPEC));
-      await lastValueFrom(second.compute.create(SPEC));
-
-      expect(input(first.sent, 'CreateRoleCommand').RoleName).not.toBe(
-        input(second.sent, 'CreateRoleCommand').RoleName
+      const run = input(sent, 'RunMicrovmCommand');
+      expect(run).not.toHaveProperty('executionRoleArn');
+      expect(run).not.toHaveProperty('logging');
+      expect(names(sent)).not.toEqual(
+        expect.arrayContaining([expect.stringMatching(/^(CreateRole|PutRolePolicy|CreateLogGroup)Command$/)])
       );
     });
 
@@ -247,18 +227,15 @@ describe('aws microvm compute from a prebuilt image', () => {
       expect(names(sent)).not.toContain('RunMicrovmCommand');
     });
 
-    it('cleans up what it made for a sandbox that fails to start', async () => {
+    it('ends a VM it started for a sandbox it could not keep a record of', async () => {
       const { compute, sent } = setup({
         ...(await built()),
-        RunMicrovmCommand: () => Promise.reject(Object.assign(new Error('nope'), { name: 'ValidationException' })),
+        PutObjectCommand: () => Promise.reject(Object.assign(new Error('nope'), { name: 'AccessDenied' })),
       });
 
       await expect(lastValueFrom(compute.create(SPEC))).rejects.toThrow('nope');
 
-      expect(names(sent)).toEqual(
-        expect.arrayContaining(['DeleteRolePolicyCommand', 'DeleteRoleCommand', 'DeleteLogGroupCommand'])
-      );
-      expect(names(sent)).not.toContain('PutObjectCommand');
+      expect(input(sent, 'TerminateMicrovmCommand')).toEqual({ microvmIdentifier: MICROVM_ID });
     });
   });
 
@@ -270,8 +247,6 @@ describe('aws microvm compute from a prebuilt image', () => {
       timeout: 300_000,
       imageArn: `arn:aws:lambda:us-east-1:${ACCOUNT}:microvm-image:prebuilt`,
       imageVersion: '1',
-      roleName: 'tunneld-it+ubuntu@box-abcde.0123abcd.rowdy.run',
-      logGroup: '/aws/lambda-microvms/box-abcde.0123abcd',
       bucket: 'rowdy-sandboxes-abc',
       startedAt: STARTED.toISOString(),
     };
@@ -326,14 +301,13 @@ describe('aws microvm compute from a prebuilt image', () => {
       await expect(lastValueFrom(compute['vm']())).rejects.toBeInstanceOf(SandboxError);
     });
 
-    it('deletes its role, log group and record, never the prebuilt image', async () => {
+    it('deletes its VM and its record, never the prebuilt image', async () => {
       const { compute, sent } = setup(stored());
       await lastValueFrom(compute.attach(MICROVM_ID));
 
       await lastValueFrom(compute.delete());
 
-      expect(input(sent, 'DeleteRoleCommand')).toEqual({ RoleName: RECORD.roleName });
-      expect(input(sent, 'DeleteLogGroupCommand')).toEqual({ logGroupName: RECORD.logGroup });
+      expect(input(sent, 'TerminateMicrovmCommand')).toEqual({ microvmIdentifier: MICROVM_ID });
       expect(input(sent, 'DeleteObjectCommand')).toEqual({
         Bucket: RECORD.bucket,
         Key: `sandboxes/${MICROVM_ID}.json`,
@@ -342,28 +316,108 @@ describe('aws microvm compute from a prebuilt image', () => {
       expect(names(sent).indexOf('DeleteObjectCommand')).toBe(names(sent).length - 1);
     });
 
-    it('reads command output from its own log group', async () => {
-      const { compute } = setup(stored());
-      await lastValueFrom(compute.attach(MICROVM_ID));
-      const read = jest
-        .spyOn(exec, 'execOutput')
-        .mockReturnValue(of({ text: '', cursor: '', exitCode: undefined, dropped: false }));
+    describe('its command output, read from the VM', () => {
+      const EXEC = '0f0e0d0c-0b0a-4908-8706-050403020100';
       const cmdId = exec.CmdId.stringify({
         sandbox: MICROVM_ID,
         day: '2026/11/13',
         version: '1',
         vm: MICROVM_ID,
-        exec: 'e1',
+        exec: EXEC,
+      });
+      const json = (seq: number, stream: number, data: string): string =>
+        `${JSON.stringify({ 'rowdy.exec': { cmd: EXEC, seq, stream, data: Buffer.from(data).toString('base64') } })}\n`;
+      const FILE = json(0, 1, 'one\n') + json(1, 2, 'two\n') + json(2, 4, JSON.stringify({ code: 3 }));
+
+      // The VM's file for EXEC, as it is after `at` reads, read from where it's asked.
+      const vmFile = (compute: MicrovmCompute, ...versions: string[]): jest.SpyInstance => {
+        let reads = 0;
+        return jest
+          .spyOn(compute as unknown as { readFile: MicrovmCompute['readFile'] }, 'readFile')
+          .mockImplementation((path: string, { offset = 0 }) => {
+            const file = versions[Math.min(reads++, versions.length - 1)]!;
+            return of(path === `/var/lib/rowdy/exec/${EXEC}.jsonl` ? Buffer.from(file).subarray(offset) : null);
+          });
+      };
+
+      it('reads every line, and how it ended', async () => {
+        const { compute } = setup(stored());
+        await lastValueFrom(compute.attach(MICROVM_ID));
+        vmFile(compute, FILE);
+
+        const read = await lastValueFrom(compute.output(cmdId));
+
+        expect(read).toMatchObject({ text: 'one\ntwo\n', exitCode: 3, dropped: false });
       });
 
-      await lastValueFrom(compute.output(cmdId));
+      it('reads one stream', async () => {
+        const { compute } = setup(stored());
+        await lastValueFrom(compute.attach(MICROVM_ID));
+        vmFile(compute, FILE);
 
-      expect(read).toHaveBeenCalledWith(
-        `arn:aws:logs:us-east-1:${ACCOUNT}:log-group:${RECORD.logGroup}`,
-        { logStreamNamePrefix: `2026/11/13[1]${MICROVM_ID}`, exec: 'e1' },
-        undefined,
-        undefined
-      );
+        await expect(lastValueFrom(compute.output(cmdId, { stream: 'stderr' }))).resolves.toMatchObject({
+          text: 'two\n',
+        });
+      });
+
+      it('reads on from its cursor, a line written half-way included once it is whole', async () => {
+        const { compute } = setup(stored());
+        await lastValueFrom(compute.attach(MICROVM_ID));
+        const first = json(0, 1, 'one\n');
+        const half = json(1, 1, 'two\n').slice(0, 10);
+        const read = vmFile(compute, first + half, FILE.replace(json(1, 2, 'two\n'), json(1, 1, 'two\n')));
+
+        const before = await lastValueFrom(compute.output(cmdId));
+        const after = await lastValueFrom(compute.output(cmdId, { cursor: before.cursor }));
+
+        expect(before).toMatchObject({ text: 'one\n', exitCode: undefined, cursor: `${Buffer.byteLength(first)}.1` });
+        expect(after).toMatchObject({ text: 'two\n', exitCode: 3 });
+        expect(read.mock.calls[1]?.[1]).toEqual({ offset: Buffer.byteLength(first) });
+      });
+
+      it('waits for more with a timeout, until it ends', async () => {
+        const { compute } = setup(stored());
+        await lastValueFrom(compute.attach(MICROVM_ID));
+        const timing = { ...EXEC_FILE_POLL };
+        Object.assign(EXEC_FILE_POLL, { delay: 1 });
+        vmFile(
+          compute,
+          json(0, 1, 'one\n'),
+          json(0, 1, 'one\n'),
+          FILE.replace(json(1, 2, 'two\n'), json(1, 1, 'two\n'))
+        );
+
+        const read = await lastValueFrom(compute.output(cmdId, { timeout: 5_000 }));
+        Object.assign(EXEC_FILE_POLL, timing);
+
+        expect(read).toMatchObject({ text: 'one\ntwo\n', exitCode: 3 });
+      });
+
+      it('says its output went with it once its VM has ended', async () => {
+        const { compute } = setup({
+          ...stored(),
+          GetMicrovmCommand: () => ({ microvmId: MICROVM_ID, state: 'TERMINATED' }),
+        });
+        await lastValueFrom(compute.attach(MICROVM_ID));
+
+        await expect(lastValueFrom(compute.output(cmdId))).rejects.toThrow(
+          'This sandbox has stopped, and its command output went with it.'
+        );
+      });
+
+      it('refuses a command id that names no file of its own', async () => {
+        const { compute } = setup(stored());
+        await lastValueFrom(compute.attach(MICROVM_ID));
+        const sneaky = exec.CmdId.stringify({
+          sandbox: MICROVM_ID,
+          day: '2026/11/13',
+          version: '1',
+          vm: MICROVM_ID,
+          exec: '..',
+        });
+
+        await expect(lastValueFrom(compute.output(sneaky))).rejects.toBeInstanceOf(SandboxError);
+      });
     });
   });
 });

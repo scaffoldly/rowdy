@@ -12,14 +12,6 @@ import {
   TerminateMicrovmCommand,
 } from '@aws-sdk/client-lambda-microvms';
 import { GetCallerIdentityCommand, STSClient } from '@aws-sdk/client-sts';
-import { CloudWatchLogsClient, CreateLogGroupCommand, DeleteLogGroupCommand } from '@aws-sdk/client-cloudwatch-logs';
-import {
-  CreateRoleCommand,
-  DeleteRoleCommand,
-  DeleteRolePolicyCommand,
-  IAMClient,
-  PutRolePolicyCommand,
-} from '@aws-sdk/client-iam';
 import {
   DeleteObjectCommand,
   GetObjectCommand,
@@ -27,8 +19,6 @@ import {
   PutObjectCommand,
   S3Client,
 } from '@aws-sdk/client-s3';
-import { randomBytes } from 'crypto';
-import promiseRetry from 'promise-retry';
 import {
   catchError,
   concat,
@@ -48,9 +38,12 @@ import {
   repeat,
   shareReplay,
   switchMap,
+  fromEvent,
+  takeUntil,
   tap,
   throwError,
   throwIfEmpty,
+  timer,
   toArray,
   EMPTY,
   ignoreElements,
@@ -62,18 +55,20 @@ import { Logger } from '../../log';
 import { ExecSchema } from '../../routes';
 import { ComputeSpec, MICROVM_MEMORY, SandboxCompute, SandboxError } from '../../sandbox/internal/compute';
 import { META_TAG, TAG_KEY_REGEX, TAG_VALUE_REGEX } from '../tags';
-import { isNotFound, isPropagating, isTransient, PROPAGATION, roleName, SANDBOX_ROLE_PATH } from '../shared';
+import { isNotFound } from '../shared';
 import { ownedBucket } from '../s3';
-import { Transfer } from '../../api/internal/transfer';
 import { AwsClientLogger } from '../logger';
-import { CmdId, execOf, execOutput, framesOf } from '../exec';
-import { EXEC_ID_HEADER, EXEC_PATH, FILES_PATH, HOOKS_PORT } from './hooks';
+import { CmdId, execOf, execOutput, execRead, framesOf } from '../exec';
+import { EXEC_FILES, EXEC_ID_HEADER, EXEC_PATH, FILES_PATH, HOOKS_PORT } from './hooks';
 import { concurrency } from '../../concurrency';
 import { BUCKET_OWNER, BUCKET_PREFIX, COMPUTE_TAG, MicrovmImage, POLL, TIMEOUT_TAG } from './index';
 
 const DEAD: ReadonlyArray<string> = ['TERMINATING', 'TERMINATED'];
 
 export { POLL };
+
+/** How often a command's file in the VM is read again while `output` waits for more, in milliseconds. */
+export const EXEC_FILE_POLL = { delay: 1000 };
 
 /** How often a terminating VM is polled, in milliseconds. */
 export const TERMINATE_POLL = { delay: 250 };
@@ -82,7 +77,7 @@ type Vm = { microvmId: string; endpoint: string; imageVersion: string; startedAt
 
 /**
  * A sandbox started from a prebuilt image, kept in the sandbox bucket under `RECORDS`: its one VM, whose id is the
- * sandbox's, and the role and log group rowdy made for it alone, since code in a VM can use its role.
+ * sandbox's. The VM runs with no role, so it writes no log, and its command output is read from the VM.
  */
 export type PrebuiltRecord = {
   microvmId: string;
@@ -92,8 +87,6 @@ export type PrebuiltRecord = {
   timeout: number;
   imageArn: string;
   imageVersion: string;
-  roleName: string;
-  logGroup: string;
   bucket: string;
   startedAt: string;
 };
@@ -103,13 +96,6 @@ export const RECORDS = 'sandboxes/';
 
 /** A sandbox started from a prebuilt image is named for its VM. */
 const MICROVM_ID = /^microvm-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
-
-const ASSUME_ROLE_POLICY = JSON.stringify({
-  Version: '2012-10-17',
-  Statement: [
-    { Effect: 'Allow', Principal: { Service: 'lambda.amazonaws.com' }, Action: ['sts:AssumeRole', 'sts:TagSession'] },
-  ],
-});
 
 /** Each image's VM while it's being found or started, shared by every handle in the process. */
 const STARTING = new Map<string, Observable<Vm>>();
@@ -235,8 +221,6 @@ export class MicrovmCompute extends AwsClientLogger implements SandboxCompute {
 
   private microvms = this.track(new LambdaMicrovmsClient({ logger: this, credentials: this.environment.credentials }));
   private sts = this.track(new STSClient({ logger: this, credentials: this.environment.credentials }));
-  private iam = this.track(new IAMClient({ logger: this, credentials: this.environment.credentials }));
-  private logs = this.track(new CloudWatchLogsClient({ logger: this, credentials: this.environment.credentials }));
   private s3 = this.track(new S3Client({ logger: this, credentials: this.environment.credentials }));
 
   // Set for a sandbox started from a prebuilt image, which is its VM rather than an image of its own.
@@ -284,7 +268,7 @@ export class MicrovmCompute extends AwsClientLogger implements SandboxCompute {
 
     // An image prebuilt from exactly what this sandbox would build, found by its name with nothing copied.
     const prebuilt$ = this.image.prebuilt(false).pipe(
-      switchMap(({ name: prebuilt, hash, pulled }) =>
+      switchMap(({ name: prebuilt, hash }) =>
         forkJoin({
           Region: defer(() => this.microvms.config.region()),
           Identity: defer(() => this.sts.send(new GetCallerIdentityCommand({}))),
@@ -294,7 +278,7 @@ export class MicrovmCompute extends AwsClientLogger implements SandboxCompute {
             from(this.microvms.send(new GetMicrovmImageCommand({ imageIdentifier: imageArn }))).pipe(
               map(({ state, latestActiveImageVersion: imageVersion, tags }) =>
                 (state === 'CREATED' || state === 'UPDATED') && imageVersion && tags?.spec === hash
-                  ? { imageArn, imageVersion, imageUri: pulled.ImageUri }
+                  ? { imageArn, imageVersion }
                   : undefined
               )
             )
@@ -317,14 +301,9 @@ export class MicrovmCompute extends AwsClientLogger implements SandboxCompute {
           );
         }
 
-        const { imageArn, imageVersion, imageUri } = found;
-        const [, , , region, account] = imageArn.split(':');
-        // Its own role and log group, under a key no other sandbox has: code in the VM can use its role.
-        const key = `${name}.${randomBytes(4).toString('hex')}`;
-        const RoleName = roleName(Transfer.normalizeImage(image), key);
-        const logGroup = `/aws/lambda-microvms/${key}`;
-        const made: { role?: boolean; logGroup?: boolean; microvmId?: string } = {};
-        const gone = (error: unknown): Observable<never> => (isNotFound(error) ? EMPTY : throwError(() => error));
+        const { imageArn, imageVersion } = found;
+        const region = imageArn.split(':')[3];
+        let started: string | undefined;
         this.environment.event$.next({
           source: 'sandbox',
           type: 'prebuilt',
@@ -332,98 +311,31 @@ export class MicrovmCompute extends AwsClientLogger implements SandboxCompute {
           message: 'Starting from a prebuilt image',
         });
 
+        const seconds = timeout / 1000;
+        const connector = (id: string): string =>
+          `arn:aws:lambda:${region}:aws:network-connector:aws-network-connector:${id}`;
         return forkJoin({
-          version: defer(() =>
-            this.microvms.send(new GetMicrovmImageVersionCommand({ imageIdentifier: imageArn, imageVersion }))
-          ),
           bucket: ownedBucket(this.s3, this.log, BUCKET_PREFIX, BUCKET_OWNER),
-          logGroup: defer(() => this.logs.send(new CreateLogGroupCommand({ logGroupName: logGroup }))).pipe(
-            tap(() => (made.logGroup = true))
-          ),
-          role: defer(() =>
-            this.iam.send(
-              new CreateRoleCommand({
-                RoleName,
-                Path: SANDBOX_ROLE_PATH,
-                Description: 'Runs a rowdy sandbox from a prebuilt image',
-                AssumeRolePolicyDocument: ASSUME_ROLE_POLICY,
+          // No execution role: code in the VM could read a role's credentials, and with none it has nothing to use.
+          run: defer(() =>
+            this.microvms.send(
+              new RunMicrovmCommand({
+                imageIdentifier: imageArn,
+                imageVersion,
+                ingressNetworkConnectors: [connector('HTTP_INGRESS')],
+                egressNetworkConnectors: [connector('INTERNET_EGRESS')],
+                maximumDurationInSeconds: seconds,
+                // Output doesn't count as traffic, so a quiet command must not look idle.
+                idlePolicy: {
+                  maxIdleDurationSeconds: Math.min(seconds, 28_800),
+                  suspendedDurationSeconds: 60,
+                  autoResumeEnabled: true,
+                },
               })
             )
-          ).pipe(tap(() => (made.role = true))),
+          ).pipe(tap(({ microvmId }) => (started = microvmId))),
         }).pipe(
-          // What its role may do: read the prebuilt image's zip and repository, and write only its own log group.
-          switchMap(({ version, bucket, role }) => {
-            const [, , zipBucket, ...zipKey] = (version.codeArtifact?.uri ?? '').split('/');
-            const [registry = '', ...repository] = (imageUri.split('@')[0] ?? '').split('/');
-            const [ecrAccount, , , ecrRegion] = registry.split('.');
-            return from(
-              this.iam.send(
-                new PutRolePolicyCommand({
-                  RoleName,
-                  PolicyName: 'RowdyPolicy',
-                  PolicyDocument: JSON.stringify({
-                    Version: '2012-10-17',
-                    Statement: [
-                      {
-                        Effect: 'Allow',
-                        Action: ['s3:GetObject'],
-                        Resource: `arn:aws:s3:::${zipBucket}/${zipKey.join('/')}`,
-                      },
-                      {
-                        Effect: 'Allow',
-                        Action: ['logs:CreateLogStream', 'logs:PutLogEvents'],
-                        Resource: `arn:aws:logs:${region}:${account}:log-group:${logGroup}:*`,
-                      },
-                      { Effect: 'Allow', Action: ['ecr:GetAuthorizationToken'], Resource: '*' },
-                      {
-                        Effect: 'Allow',
-                        Action: ['ecr:BatchCheckLayerAvailability', 'ecr:GetDownloadUrlForLayer', 'ecr:BatchGetImage'],
-                        Resource: `arn:aws:ecr:${ecrRegion}:${ecrAccount}:repository/${repository.join('/')}`,
-                      },
-                    ],
-                  }),
-                })
-              )
-            ).pipe(map(() => ({ bucket, executionRoleArn: role.Role!.Arn! })));
-          }),
-          switchMap(({ bucket, executionRoleArn }) => {
-            const seconds = timeout / 1000;
-            const connector = (id: string): string =>
-              `arn:aws:lambda:${region}:aws:network-connector:aws-network-connector:${id}`;
-            return from(
-              // A role just made can take a while to be one Lambda may use.
-              promiseRetry<{ microvmId?: string }>(
-                (retry) =>
-                  this.microvms
-                    .send(
-                      new RunMicrovmCommand({
-                        imageIdentifier: imageArn,
-                        imageVersion,
-                        executionRoleArn,
-                        logging: { cloudWatch: { logGroup } },
-                        ingressNetworkConnectors: [connector('HTTP_INGRESS')],
-                        egressNetworkConnectors: [connector('INTERNET_EGRESS')],
-                        maximumDurationInSeconds: seconds,
-                        // Output doesn't count as traffic, so a quiet command must not look idle.
-                        idlePolicy: {
-                          maxIdleDurationSeconds: Math.min(seconds, 28_800),
-                          suspendedDurationSeconds: 60,
-                          autoResumeEnabled: true,
-                        },
-                      })
-                    )
-                    .catch((error) => {
-                      if (isPropagating(error) || isTransient(error)) return retry(error);
-                      throw error;
-                    }),
-                PROPAGATION
-              )
-            ).pipe(
-              tap(({ microvmId }) => (made.microvmId = microvmId)),
-              map(({ microvmId }) => ({ bucket, microvmId: microvmId! }))
-            );
-          }),
-          switchMap(({ bucket, microvmId: microvmIdentifier }) =>
+          switchMap(({ bucket, run: { microvmId: microvmIdentifier } }) =>
             (wait
               ? defer(() => this.microvms.send(new GetMicrovmCommand({ microvmIdentifier }))).pipe(
                   repeat({ delay: this.environment.pollInterval ?? POLL.delay }),
@@ -439,14 +351,12 @@ export class MicrovmCompute extends AwsClientLogger implements SandboxCompute {
             ).pipe(
               map(
                 (startedAt): PrebuiltRecord => ({
-                  microvmId: microvmIdentifier,
+                  microvmId: microvmIdentifier!,
                   name,
                   meta,
                   timeout,
                   imageArn,
                   imageVersion,
-                  roleName: RoleName,
-                  logGroup,
                   bucket,
                   startedAt: (startedAt ?? new Date()).toISOString(),
                 })
@@ -467,34 +377,17 @@ export class MicrovmCompute extends AwsClientLogger implements SandboxCompute {
           ),
           tap((record) => (this.record = record)),
           map(() => this),
-          // What it made for a sandbox that didn't start goes with it.
+          // A VM started for a sandbox that has no record would run on unseen until its timeout.
           catchError((error) =>
             concat(
-              made.microvmId ? this.terminate(made.microvmId) : EMPTY,
-              made.role
-                ? concat(
-                    defer(() =>
-                      this.iam.send(new DeleteRolePolicyCommand({ RoleName, PolicyName: 'RowdyPolicy' }))
-                    ).pipe(catchError(gone)),
-                    defer(() => this.iam.send(new DeleteRoleCommand({ RoleName }))).pipe(catchError(gone))
-                  )
-                : EMPTY,
-              made.logGroup
-                ? defer(() => this.logs.send(new DeleteLogGroupCommand({ logGroupName: logGroup }))).pipe(
-                    catchError(gone)
-                  )
-                : EMPTY
-            ).pipe(
-              ignoreElements(),
-              catchError((cleanup) => {
-                this.log.warn('Sandbox Cleanup Failed', { error: cleanup });
-                return EMPTY;
-              }),
-              (cleaned) =>
-                concat(
-                  cleaned,
-                  throwError(() => error)
-                )
+              (started ? this.terminate(started) : EMPTY).pipe(
+                ignoreElements(),
+                catchError((cleanup) => {
+                  this.log.warn('Sandbox Cleanup Failed', { error: cleanup });
+                  return EMPTY;
+                })
+              ),
+              throwError(() => error)
             )
           )
         );
@@ -590,15 +483,47 @@ export class MicrovmCompute extends AwsClientLogger implements SandboxCompute {
   output(cmdId: string, options?: ExecOutputOptions): Observable<ExecOutput> {
     return defer(() => {
       const { day, version, vm, exec } = CmdId.parse(cmdId, this.sandboxId);
+      // Read from the VM, which keeps each command's lines in a file: with no role, it writes no log.
       if (this.record) {
-        const [, , , region, account] = this.record.imageArn.split(':');
-        return execOutput(
-          `arn:aws:logs:${region}:${account}:log-group:${this.record.logGroup}`,
-          { logStreamNamePrefix: `${day}[${version}]${vm}`, exec },
-          options,
-          this.environment.credentials
+        if (!/^[0-9a-f-]{36}$/.test(exec)) throw new SandboxError('Not a command in this sandbox.');
+        const { cursor, stream, timeout, signal = new AbortController().signal } = options ?? {};
+        const [offset = 0, start = 0] = cursor?.split('.').map(Number) ?? [];
+        if (!Number.isSafeInteger(offset) || !Number.isSafeInteger(start) || offset < 0) {
+          throw new SandboxError('Not a cursor from this command.');
+        }
+        const path = `${EXEC_FILES.dir}/${exec}.jsonl`;
+        let at = offset;
+        // Each whole line, with where the next read starts as its `timestamp`.
+        const read$ = defer(() => this.readFile(path, { offset: at }, signal)).pipe(
+          concatMap((bytes) => {
+            const end = bytes ? bytes.lastIndexOf('\n') + 1 : 0;
+            const from = at;
+            at += end;
+            let next = from;
+            return (bytes?.subarray(0, end).toString() ?? '')
+              .split('\n')
+              .filter(Boolean)
+              .map((message) => ({ message, timestamp: (next += Buffer.byteLength(message) + 1) }));
+          })
+        );
+        const event$ =
+          timeout === undefined
+            ? read$
+            : read$.pipe(
+                repeat({ delay: EXEC_FILE_POLL.delay }),
+                takeUntil(timer(timeout)),
+                takeUntil(fromEvent(signal, 'abort'))
+              );
+        return execRead(event$, { cursor, stream }, start).pipe(
+          catchError((error) => {
+            if (error instanceof SandboxError && /stopped/.test(error.message)) {
+              throw new SandboxError('This sandbox has stopped, and its command output went with it.');
+            }
+            throw error;
+          })
         );
       }
+
       return from(this.microvms.send(new GetMicrovmImageCommand({ imageIdentifier: this.imageArn }))).pipe(
         switchMap(({ latestActiveImageVersion: imageVersion }) =>
           this.microvms.send(new GetMicrovmImageVersionCommand({ imageIdentifier: this.imageArn, imageVersion }))
@@ -709,21 +634,10 @@ export class MicrovmCompute extends AwsClientLogger implements SandboxCompute {
 
   delete(): Observable<this> {
     if (this.record) {
-      const { roleName: RoleName, logGroup: logGroupName, bucket: Bucket, microvmId } = this.record;
-      const gone = (error: unknown): Observable<never> => (isNotFound(error) ? EMPTY : throwError(() => error));
-      // The prebuilt image is never its to delete. Its record last, so a delete that fails partway can be repeated.
+      const { bucket: Bucket, microvmId } = this.record;
+      // The prebuilt image is never its to delete: only its VM and its record are its own.
       return this.stop().pipe(
-        switchMap(() =>
-          concat(
-            defer(() => this.iam.send(new DeleteRolePolicyCommand({ RoleName, PolicyName: 'RowdyPolicy' }))).pipe(
-              catchError(gone)
-            ),
-            defer(() => this.iam.send(new DeleteRoleCommand({ RoleName }))).pipe(catchError(gone)),
-            defer(() => this.logs.send(new DeleteLogGroupCommand({ logGroupName }))).pipe(catchError(gone)),
-            defer(() => this.s3.send(new DeleteObjectCommand({ Bucket, Key: `${RECORDS}${microvmId}.json` })))
-          )
-        ),
-        last(),
+        switchMap(() => this.s3.send(new DeleteObjectCommand({ Bucket, Key: `${RECORDS}${microvmId}.json` }))),
         map(() => this)
       );
     }

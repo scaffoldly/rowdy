@@ -463,9 +463,12 @@ A sandbox started from a prebuilt image is its one VM, so it differs from other 
 - **`stop()` ends it.** A later command doesn't start a new VM: it rejects, and you create another
   sandbox.
 - **Every `create` makes a new sandbox**, even with the same options.
-- **It has a role and a log group of its own**, so code in one sandbox can't write into another's
-  output. `delete()` removes them, along with its record in the sandbox bucket. The prebuilt image is
-  never deleted.
+- **It runs with no IAM role**, so code in it has no AWS credentials at all. With no role it writes no
+  log, so [`output`](#output) reads a command's output from the VM itself, where rowdy keeps each
+  command's lines, up to 16 MiB. That works only while the VM runs: once it ends, `output` rejects
+  with "This sandbox has stopped, and its command output went with it." Read what you need first.
+- **`delete()`** ends its VM and removes its record from the sandbox bucket. The prebuilt image is never
+  deleted.
 
 ## What rowdy creates
 
