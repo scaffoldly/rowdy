@@ -93,7 +93,8 @@ rowdy create aws microvm --build --platform linux/arm64 --memory 1024 \
 - **The name** is the first 40 hex characters of the platform image's digest, a `-`, and the first
   23 of the build-spec hash.
   - The spec is what an image is asked to be built from:
-    - the source and its platform digest
+    - the source's registry and repository, and its platform digest, not the tag it was asked for by,
+      so a caller asking by any tag of the same image, or by digest, matches it
     - each layer by the reference asked for, like `ghcr.io/tunneld-it/tunneld:latest`, in order
     - rowdy's binary path, the zip's `ENTRYPOINT`
     - AWS's base image and the version rowdy pins
@@ -107,6 +108,7 @@ rowdy create aws microvm --build --platform linux/arm64 --memory 1024 \
   - the spec's fields
   - the full hash as `spec`, and `memory`
   - outside the hash:
+    - `tag`, the tag it was asked for by, when it was asked for by one
     - what it was built with: each layer as `layer.<n>`, `<reference>@<digest>`, and `rowdy`, its
       version
     - `built` (UTC)
