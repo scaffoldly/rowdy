@@ -8,8 +8,8 @@ import type { ExecSchema } from '../../routes';
 /** A sandbox can't do this, and trying again won't change that. */
 export class SandboxError extends Error {}
 
-/** What a sandbox has unless its options set it: `timeout` in milliseconds, `memory` in MB. */
-export const DEFAULTS = { timeout: 15 * 60 * 1000, memory: 512 };
+/** What a sandbox has unless its options set it: its `image`, `timeout` in milliseconds, `memory` in MB. */
+export const DEFAULTS = { image: 'scaffoldly/sandbox', timeout: 15 * 60 * 1000, memory: 512 };
 
 /** The sizes AWS offers a microVM, in MB. */
 export const MICROVM_MEMORY = [512, 1024, 2048, 4096, 8192] as const;

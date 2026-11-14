@@ -142,7 +142,7 @@ export class SandboxImpl implements Sandbox {
 
     const created = lastValueFrom(
       defer(() => {
-        const image = options?.image ?? 'scaffoldly/sandbox';
+        const image = options?.image ?? DEFAULTS.image;
         const timeout = options?.timeout ?? DEFAULTS.timeout;
         const memory = options?.memory ?? DEFAULTS.memory;
         const env = { ...RUNTIMES[runtime].env, ...options?.env };

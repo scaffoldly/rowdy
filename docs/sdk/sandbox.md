@@ -241,6 +241,11 @@ const page = await fetch(url, { headers });
 - **`headers`:** send both with every request. `X-aws-proxy-auth` is the token and `X-aws-proxy-port` the port.
   There's no way in without them, so a plain browser link needs a proxy that adds them.
 - **`expiresIn`:** minutes the token works, 1 to 60, 60 by default. Ask again for a new one.
+- **Refused requests:** AWS answers with a 403 and a plain-text body, never a 401:
+  `Request missing authentication` for no token or one that isn't a token, `Token authentication failed` once it has
+  expired, and `Access to port denied` for a token to another port. Ask `url()` again on an expired one. AWS takes a
+  token for about a minute past its `expiresAt`. A request it lets through gets the server's answer, or a 502 while
+  the sandbox can't resume.
 - **Without a port:** it's rowdy's own port, 32768, where rowdy takes commands and files.
 
 > **Warning:** a token for rowdy's own port can run any command, as root, and read or write any file in the
@@ -566,8 +571,9 @@ Cloudflare Worker that only describes sandboxes or their errors:
 | `humanize`        | The same error, its message saying what to do next, as `create` and the rest reject with.             |
 | `SandboxError`    | What rowdy rejects with when calling again won't help. `describeError` gives it `remedy: none`.       |
 | `OUT_OF_REQUESTS` | Matches the error a host's cap on outgoing requests gives.                                            |
-| `DEFAULTS`        | `timeout` and `memory` when the options don't set them.                                               |
+| `DEFAULTS`        | `image`, `timeout` and `memory` when the options don't set them.                                      |
 | `MICROVM_MEMORY`  | The `memory` sizes `aws.microvm` takes.                                                               |
+| `HOOKS_PORT`      | rowdy's own port in a microVM, 32768. A `url()` token for it can run any command: never hand one out. |
 
 `@scaffoldly/rowdy/sandbox` exports these too.
 
