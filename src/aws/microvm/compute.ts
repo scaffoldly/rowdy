@@ -8,8 +8,10 @@ import {
   ListTagsCommand,
   paginateListMicrovmImages,
   paginateListMicrovms,
+  ResumeMicrovmCommand,
   RunMicrovmCommand,
   RunMicrovmCommandOutput,
+  SuspendMicrovmCommand,
   TerminateMicrovmCommand,
 } from '@aws-sdk/client-lambda-microvms';
 import { GetCallerIdentityCommand, STSClient } from '@aws-sdk/client-sts';
@@ -49,7 +51,7 @@ import {
   EMPTY,
   ignoreElements,
 } from 'rxjs';
-import type { AwsSandboxOptions, FileRange, SandboxStatus, SandboxSummary, SandboxUrl } from '../../sandbox';
+import type { AwsSandboxOptions, FileRange, SandboxStatus, SandboxUrl } from '../../sandbox';
 import { Exec, ExecOutput, ExecOutputOptions } from '../../api/types';
 import type { SandboxEnvironment } from '../../sandbox/internal/environment';
 import { Logger } from '../../log';
@@ -65,6 +67,9 @@ import { concurrency } from '../../concurrency';
 import { BUCKET_OWNER, BUCKET_PREFIX, COMPUTE_TAG, MicrovmImage, POLL, TIMEOUT_TAG } from './index';
 
 const DEAD: ReadonlyArray<string> = ['TERMINATING', 'TERMINATED'];
+
+/** A VM in these states is billed for its snapshot, not compute. */
+const ASLEEP: ReadonlyArray<string> = ['SUSPENDING', 'SUSPENDED'];
 
 /** Seconds a VM exists, running or suspended. AWS's most, and not adjustable. */
 const LIFETIME = 28_800;
@@ -107,7 +112,7 @@ const STARTING = new Map<string, Observable<Vm>>();
 export class MicrovmCompute extends AwsClientLogger implements SandboxCompute {
   static readonly env = {};
 
-  static list(credentials?: AwsSandboxOptions['credentials']): Observable<SandboxSummary> {
+  static list(credentials?: AwsSandboxOptions['credentials']): Observable<SandboxStatus> {
     // One ListTags per image, so a busy host is throttled: adaptive retries slow down until AWS lets them through.
     const microvms = new LambdaMicrovmsClient({ credentials, retryMode: 'adaptive', maxAttempts: 8 });
     const s3 = new S3Client({ credentials });
@@ -141,7 +146,7 @@ export class MicrovmCompute extends AwsClientLogger implements SandboxCompute {
       switchMap(([vms, images, records]) =>
         merge(
           from(records).pipe(
-            map((record): SandboxSummary => {
+            map((record): SandboxStatus => {
               const live = vms.find(
                 ({ microvmId, state }) => microvmId === record.microvmId && state && !DEAD.includes(state)
               );
@@ -151,6 +156,7 @@ export class MicrovmCompute extends AwsClientLogger implements SandboxCompute {
                 name: record.name,
                 runtime: 'aws.microvm',
                 running: !!live,
+                suspended: live ? ASLEEP.includes(live.state!) : undefined,
                 startedAt: live ? startedAt : undefined,
                 stopsAt: live ? new Date(startedAt.getTime() + LIFETIME * 1000) : undefined,
                 meta: record.meta,
@@ -166,7 +172,7 @@ export class MicrovmCompute extends AwsClientLogger implements SandboxCompute {
                 from(microvms.send(new ListTagsCommand({ Resource: imageArn }))).pipe(
                   // An image of the account's own, not a sandbox, has no compute tag.
                   filter(({ Tags }) => Tags?.[COMPUTE_TAG] === 'microvm'),
-                  map(({ Tags }): SandboxSummary => {
+                  map(({ Tags }): SandboxStatus => {
                     const [live] = vms.filter(
                       ({ imageArn: arn, state }) => arn === imageArn && state && !DEAD.includes(state)
                     );
@@ -175,6 +181,7 @@ export class MicrovmCompute extends AwsClientLogger implements SandboxCompute {
                       name: name!,
                       runtime: 'aws.microvm',
                       running: !!live,
+                      suspended: live ? ASLEEP.includes(live.state!) : undefined,
                       startedAt: live?.startedAt,
                       stopsAt: live?.startedAt ? new Date(live.startedAt.getTime() + LIFETIME * 1000) : undefined,
                       meta: Object.fromEntries(
@@ -627,21 +634,140 @@ export class MicrovmCompute extends AwsClientLogger implements SandboxCompute {
     );
   }
 
+  suspend(): Observable<this> {
+    return defer(() =>
+      this.record
+        ? of([this.record.microvmId])
+        : from(this.microvms.send(new ListMicrovmsCommand({ imageIdentifier: this.imageArn }))).pipe(
+            map(({ items = [] }) =>
+              items.flatMap(({ microvmId, state }) => (microvmId && state && !DEAD.includes(state) ? microvmId : []))
+            )
+          )
+    ).pipe(
+      switchMap((live) => {
+        // A suspended VM's open response doesn't end until the connection times out, a minute later.
+        this.commands.forEach((controller) => controller.abort(new Error('Sandbox suspended')));
+        return live.length
+          ? forkJoin(
+              live.map((microvmIdentifier) =>
+                from(this.microvms.send(new SuspendMicrovmCommand({ microvmIdentifier }))).pipe(
+                  // One suspended or ended already is what suspend wanted.
+                  catchError((error) =>
+                    isNotFound(error) || error?.name === 'ConflictException' ? of(undefined) : throwError(() => error)
+                  ),
+                  switchMap(() =>
+                    defer(() => this.microvms.send(new GetMicrovmCommand({ microvmIdentifier }))).pipe(
+                      map(({ state }) => state),
+                      catchError((error) => (isNotFound(error) ? of(undefined) : throwError(() => error))),
+                      repeat({ delay: this.environment.pollInterval ?? POLL.delay }),
+                      first((state) => state === undefined || state === 'SUSPENDED' || DEAD.includes(state))
+                    )
+                  )
+                )
+              )
+            )
+          : of([]);
+      }),
+      map(() => this)
+    );
+  }
+
+  resume(): Observable<this> {
+    return defer(() =>
+      this.record
+        ? of([this.record.microvmId])
+        : from(this.microvms.send(new ListMicrovmsCommand({ imageIdentifier: this.imageArn }))).pipe(
+            map(({ items = [] }) =>
+              items.flatMap(({ microvmId, state }) => (microvmId && state && !DEAD.includes(state) ? microvmId : []))
+            )
+          )
+    ).pipe(
+      switchMap((live) =>
+        live.length
+          ? forkJoin(
+              live.map((microvmIdentifier) =>
+                from(this.microvms.send(new ResumeMicrovmCommand({ microvmIdentifier }))).pipe(
+                  // One running already is what resume wanted, and one that ended is for `vm()` to say.
+                  catchError((error) =>
+                    isNotFound(error) || error?.name === 'ConflictException' ? of(undefined) : throwError(() => error)
+                  ),
+                  switchMap(() =>
+                    defer(() => this.microvms.send(new GetMicrovmCommand({ microvmIdentifier }))).pipe(
+                      map(({ state }) => state),
+                      catchError((error) => (isNotFound(error) ? of(undefined) : throwError(() => error))),
+                      repeat({ delay: this.environment.pollInterval ?? POLL.delay }),
+                      first((state) => state === undefined || state === 'RUNNING' || DEAD.includes(state))
+                    )
+                  )
+                )
+              )
+            )
+          : of([])
+      ),
+      // A prebuilt sandbox's VM that ended says so, and an image's sandbox without one starts one.
+      switchMap(() => this.vm()),
+      map(() => this)
+    );
+  }
+
   status(): Observable<SandboxStatus> {
     // Its image was built before it started.
-    if (this.record) return of<SandboxStatus>({ state: 'ready' });
+    if (this.record) {
+      const { microvmId: microvmIdentifier } = this.record;
+      return defer(() => this.microvms.send(new GetMicrovmCommand({ microvmIdentifier }))).pipe(
+        catchError((error) =>
+          isNotFound(error) ? of({ state: undefined, startedAt: undefined }) : throwError(() => error)
+        ),
+        map(({ state, startedAt }): SandboxStatus => {
+          const live = !!state && !DEAD.includes(state) && !!startedAt;
+          return {
+            sandboxId: this.sandboxId,
+            name: this.record!.name,
+            runtime: 'aws.microvm',
+            meta: this.record!.meta,
+            state: 'ready',
+            running: live,
+            suspended: live ? ASLEEP.includes(state!) : undefined,
+            startedAt: live ? startedAt : undefined,
+            stopsAt: live ? new Date(startedAt!.getTime() + LIFETIME * 1000) : undefined,
+          };
+        })
+      );
+    }
     const imageIdentifier = this.imageArn;
-    return defer(() => this.microvms.send(new GetMicrovmImageCommand({ imageIdentifier }))).pipe(
-      switchMap(({ state, latestActiveImageVersion, latestFailedImageVersion: imageVersion }) => {
-        if ((state === 'CREATE_FAILED' || state === 'UPDATE_FAILED') && imageVersion) {
-          return from(this.microvms.send(new GetMicrovmImageVersionCommand({ imageIdentifier, imageVersion }))).pipe(
-            map(({ stateReason }): SandboxStatus => ({ state: 'failed', reason: stateReason }))
-          );
+    return forkJoin({
+      image: defer(() => this.microvms.send(new GetMicrovmImageCommand({ imageIdentifier }))),
+      live: defer(() => this.microvms.send(new ListMicrovmsCommand({ imageIdentifier }))).pipe(
+        map(({ items = [] }) => items.find(({ state, startedAt }) => state && !DEAD.includes(state) && startedAt))
+      ),
+    }).pipe(
+      switchMap(
+        ({ image: { state, latestActiveImageVersion, latestFailedImageVersion: imageVersion, tags }, live }) => {
+          const vm = {
+            sandboxId: this.sandboxId,
+            name: this.sandboxId,
+            runtime: 'aws.microvm' as const,
+            meta: Object.fromEntries(
+              Object.entries(tags ?? {})
+                .filter(([key]) => key.startsWith(META_TAG))
+                .map(([key, value]) => [key.slice(META_TAG.length), value])
+            ),
+            running: !!live,
+            suspended: live ? ASLEEP.includes(live.state!) : undefined,
+            startedAt: live?.startedAt,
+            stopsAt: live?.startedAt ? new Date(live.startedAt.getTime() + LIFETIME * 1000) : undefined,
+          };
+          if ((state === 'CREATE_FAILED' || state === 'UPDATE_FAILED') && imageVersion) {
+            return from(this.microvms.send(new GetMicrovmImageVersionCommand({ imageIdentifier, imageVersion }))).pipe(
+              map(({ stateReason }): SandboxStatus => ({ state: 'failed', reason: stateReason, ...vm }))
+            );
+          }
+          return of<SandboxStatus>({
+            state: latestActiveImageVersion && !state?.endsWith('ING') ? 'ready' : 'building',
+            ...vm,
+          });
         }
-        return of<SandboxStatus>({
-          state: latestActiveImageVersion && !state?.endsWith('ING') ? 'ready' : 'building',
-        });
-      })
+      )
     );
   }
 
@@ -683,7 +809,6 @@ export class MicrovmCompute extends AwsClientLogger implements SandboxCompute {
     );
   }
 
-  /** This image's VM, started if it has none, and where its command output lands. */
   /** Starts a VM from an image ARN. It suspends after `idle` seconds without traffic, and stays resumable for its lifetime. */
   private runVM({
     imageIdentifier,
@@ -719,6 +844,7 @@ export class MicrovmCompute extends AwsClientLogger implements SandboxCompute {
     );
   }
 
+  /** This image's VM, started if it has none, and where its command output lands. */
   private vm(): Observable<Vm> {
     // A sandbox started from a prebuilt image is its one VM, and ends with it.
     if (this.record) {

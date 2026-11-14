@@ -84,29 +84,31 @@ export type { Event, EventCallback } from '../events';
 export type { AwsCredentials } from '../aws/credentials';
 export * from './core';
 
-/** Where a sandbox's build is. */
+/**
+ * A sandbox as AWS says it is now: what `status()` gives, each of `Sandbox.list`'s results, and what `stop()`,
+ * `suspend()` and `resume()` resolve to once they're done. The VM's fields are set on `aws.microvm` only.
+ */
 export interface SandboxStatus {
+  /** What `Sandbox.get` and `Sandbox.delete` take. A prebuilt sandbox's is its VM's id, `microvm-…`. */
+  sandboxId: string;
+  /** `{name}-{suffix}`, from `create`'s `name`. The same as `sandboxId`, except for a prebuilt sandbox. */
+  name: string;
+  /** Where it runs. */
+  runtime: NonNullable<SandboxOptions['runtime']>;
+  /** What `create` was given as `meta`. */
+  meta: Record<string, string>;
   /** `building` until it can run a command, then `ready`, or `failed` if its build failed. */
   state: 'building' | 'ready' | 'failed';
   /** Why the build failed, as AWS says. */
   reason?: string;
-}
-
-/** A sandbox as `Sandbox.list` finds it. */
-export interface SandboxSummary {
-  sandboxId: string;
-  name: string;
-  runtime: NonNullable<SandboxOptions['runtime']>;
-  /** Whether a microVM is up, and billed. Undefined on `aws.lambda`, which is billed only while a command runs. */
+  /** Whether a microVM is up, suspended included. Undefined on `aws.lambda`, which is billed only while a command runs. */
   running?: boolean;
+  /** Whether the running microVM is suspended: billed for its snapshot, not compute, until something resumes it. */
+  suspended?: boolean;
   /** When the running microVM started. */
   startedAt?: Date;
-  /** When the running microVM's `timeout` ends it. */
+  /** When AWS ends the running microVM, 8 hours after it started, suspended or not. */
   stopsAt?: Date;
-  /** What `create` was given as `meta`. */
-  meta: Record<string, string>;
-  /** Where its build is. */
-  state: SandboxStatus['state'];
 }
 
 export interface SandboxListOptions extends AwsSandboxOptions {
@@ -245,10 +247,22 @@ export interface Sandbox {
    */
   url(port?: number, options?: UrlOptions): Promise<SandboxUrl>;
   /**
+   * Suspends its VM, keeping memory, files and running processes, and resolves once it's suspended. It isn't billed for
+   * compute while suspended. A command in progress rejects. Safe to call more than once. `runtime: 'aws.lambda'`
+   * rejects.
+   */
+  suspend(): Promise<SandboxStatus>;
+  /**
+   * Resumes its VM, and resolves once it's running. A request to a suspended VM resumes it too, so this is for being
+   * ready ahead of one. A sandbox from an image with no VM starts one, as a command would. `runtime: 'aws.lambda'`
+   * rejects.
+   */
+  resume(): Promise<SandboxStatus>;
+  /**
    * Ends everything running in this sandbox, including a command in progress, and everything a `Sandbox.get` of it
    * started. Safe to call more than once. The next command starts it again. `runtime: 'aws.lambda'` rejects for now.
    */
-  stop(): Promise<void>;
+  stop(): Promise<SandboxStatus>;
   /**
    * Stops it, then removes it and what rowdy made for it: on `aws.microvm` its image, role, zip and log group, and on
    * `aws.lambda` its function, role and log group. Its command output goes with its log group. The images it was
@@ -276,6 +290,8 @@ export interface SandboxPromise
       | 'readFileToBuffer'
       | 'mkDir'
       | 'url'
+      | 'suspend'
+      | 'resume'
       | 'status'
       | 'stop'
       | 'delete'
@@ -287,7 +303,7 @@ export interface SandboxFactory {
   /** Connects to a sandbox that is already running. */
   get(lookup: SandboxLookup): SandboxPromise;
   /** The sandboxes in this account and region. */
-  list(options?: SandboxListOptions): Promise<SandboxSummary[]>;
+  list(options?: SandboxListOptions): Promise<SandboxStatus[]>;
   /** Deletes a sandbox, as its own `delete` does. Refuses one whose `meta` doesn't have every entry given. */
   delete(lookup: SandboxLookup): Promise<void>;
 }

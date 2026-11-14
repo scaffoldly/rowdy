@@ -985,7 +985,47 @@ describe('aws microvm compute', () => {
       ])('makes an image %j into %j', async (image, expected) => {
         const { compute } = running({ GetMicrovmImageCommand: () => image });
 
-        expect(await status(compute)).toEqual(expected);
+        expect(await status(compute)).toMatchObject({ ...expected, running: false });
+      });
+
+      it.each([
+        ['RUNNING', false],
+        ['SUSPENDING', true],
+        ['SUSPENDED', true],
+      ])('says a %s VM is running, and whether it is suspended', async (state, suspended) => {
+        const { compute } = running({
+          GetMicrovmImageCommand: () => ({ state: 'CREATED', latestActiveImageVersion: '1.0' }),
+          ListMicrovmsCommand: () => ({
+            items: [
+              { microvmId: 'old', state: 'TERMINATED', startedAt: new Date(0) },
+              { microvmId: 'a', state, startedAt: STARTED },
+            ],
+          }),
+        });
+
+        expect(await status(compute)).toEqual({
+          sandboxId: 'sandbox-box',
+          name: 'sandbox-box',
+          runtime: 'aws.microvm',
+          meta: {},
+          state: 'ready',
+          running: true,
+          suspended,
+          startedAt: STARTED,
+          stopsAt: new Date(STARTED.getTime() + 28_800_000),
+        });
+      });
+
+      it("says its meta from the image's tags", async () => {
+        const { compute } = running({
+          GetMicrovmImageCommand: () => ({
+            state: 'CREATED',
+            latestActiveImageVersion: '1.0',
+            tags: { 'run.rowdy.meta.sub': 'github:1', 'run.rowdy.timeout': '600' },
+          }),
+        });
+
+        expect(await status(compute)).toMatchObject({ meta: { sub: 'github:1' } });
       });
 
       it('says why a build failed', async () => {
@@ -994,7 +1034,11 @@ describe('aws microvm compute', () => {
           GetMicrovmImageVersionCommand: () => ({ state: 'FAILED', stateReason: 'ready hook timed out' }),
         });
 
-        expect(await status(compute)).toEqual({ state: 'failed', reason: 'ready hook timed out' });
+        expect(await status(compute)).toMatchObject({
+          state: 'failed',
+          reason: 'ready hook timed out',
+          running: false,
+        });
         expect(input(sent, 'GetMicrovmImageVersionCommand')).toEqual({
           imageIdentifier: IMAGE_ARN,
           imageVersion: '1.0',
@@ -1141,6 +1185,102 @@ describe('aws microvm compute', () => {
 
         await expect(remove(compute)).rejects.toMatchObject({ name: 'AccessDenied' });
         expect(deletes(sent)).not.toContain('DeleteMicrovmImageCommand');
+      });
+    });
+
+    describe('suspend', () => {
+      const suspend = (compute: MicrovmCompute): Promise<MicrovmCompute> => lastValueFrom(compute.suspend());
+      const suspended = (sent: Sent[]): unknown[] =>
+        sent.filter(({ name }) => name === 'SuspendMicrovmCommand').map(({ input }) => input.microvmIdentifier);
+
+      it('suspends what is live, and waits until it is', async () => {
+        const states = ['SUSPENDING', 'SUSPENDED'];
+        const { compute, sent } = running({
+          GetMicrovmCommand: () => ({ state: states.shift() }),
+          ListMicrovmsCommand: () => ({
+            items: [
+              { microvmId: 'a', state: 'RUNNING' },
+              { microvmId: 'c', state: 'TERMINATED' },
+            ],
+          }),
+          SuspendMicrovmCommand: () => ({}),
+        });
+
+        await expect(suspend(compute)).resolves.toBe(compute);
+
+        expect(suspended(sent)).toEqual(['a']);
+        expect(names(sent).filter((name) => name === 'GetMicrovmCommand')).toHaveLength(2);
+      });
+
+      it('does nothing with nothing running', async () => {
+        const { compute, sent } = running();
+
+        await expect(suspend(compute)).resolves.toBe(compute);
+        expect(suspended(sent)).toEqual([]);
+      });
+
+      it.each(['ResourceNotFoundException', 'ConflictException'])(
+        'is fine with a VM suspended or ended already: %s',
+        async (name) => {
+          const { compute } = running({
+            GetMicrovmCommand: () => ({ state: 'SUSPENDED' }),
+            ListMicrovmsCommand: () => ({ items: [{ microvmId: 'a', state: 'SUSPENDED' }] }),
+            SuspendMicrovmCommand: () => Promise.reject(missing(name)),
+          });
+
+          await expect(suspend(compute)).resolves.toBe(compute);
+        }
+      );
+
+      it('rejects on any other failure', async () => {
+        const { compute } = running({
+          ListMicrovmsCommand: () => ({ items: [{ microvmId: 'a', state: 'RUNNING' }] }),
+          SuspendMicrovmCommand: () => Promise.reject(missing('AccessDeniedException')),
+        });
+
+        await expect(suspend(compute)).rejects.toThrow('missing');
+      });
+    });
+
+    describe('resume', () => {
+      it('resumes what is suspended, then has its VM', async () => {
+        const states = ['SUSPENDED', 'RUNNING'];
+        const { compute, sent } = running({
+          GetMicrovmCommand: () => ({
+            microvmId: 'a',
+            state: states.shift() ?? 'RUNNING',
+            endpoint: 'vm.example',
+            imageVersion: '1.0',
+            startedAt: STARTED,
+          }),
+          ListMicrovmsCommand: () => ({ items: [{ microvmId: 'a', state: 'SUSPENDED' }] }),
+          ResumeMicrovmCommand: () => ({}),
+        });
+
+        await expect(lastValueFrom(compute.resume())).resolves.toBe(compute);
+
+        expect(sent.filter(({ name }) => name === 'ResumeMicrovmCommand').map(({ input }) => input)).toEqual([
+          { microvmIdentifier: 'a' },
+        ]);
+        expect(names(sent)).not.toContain('RunMicrovmCommand');
+      });
+
+      it('starts a VM when it has none, as a command would', async () => {
+        const { compute, sent } = running();
+
+        await lastValueFrom(compute.resume());
+
+        expect(names(sent)).not.toContain('ResumeMicrovmCommand');
+        expect(names(sent)).toContain('RunMicrovmCommand');
+      });
+
+      it('is fine with a VM running already', async () => {
+        const { compute } = running({
+          ListMicrovmsCommand: () => ({ items: [{ microvmId: 'mvm-1', state: 'RUNNING' }] }),
+          ResumeMicrovmCommand: () => Promise.reject(missing('ConflictException')),
+        });
+
+        await expect(lastValueFrom(compute.resume())).resolves.toBe(compute);
       });
     });
 

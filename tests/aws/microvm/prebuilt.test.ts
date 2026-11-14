@@ -310,6 +310,58 @@ describe('aws microvm compute from a prebuilt image', () => {
       expect(names(sent)).not.toContain('ListMicrovmsCommand');
     });
 
+    it('suspends and resumes only its VM', async () => {
+      const states = ['SUSPENDED', 'RUNNING'];
+      const { compute, sent } = setup({
+        ...stored(),
+        GetMicrovmCommand: () => ({
+          microvmId: MICROVM_ID,
+          state: states.shift() ?? 'RUNNING',
+          endpoint: 'vm.example',
+          imageVersion: '1',
+          startedAt: new Date(0),
+        }),
+        SuspendMicrovmCommand: () => ({}),
+        ResumeMicrovmCommand: () => ({}),
+      });
+      await lastValueFrom(compute.attach(MICROVM_ID));
+
+      await lastValueFrom(compute.suspend());
+      await lastValueFrom(compute.resume());
+
+      expect(
+        sent.filter(({ name }) => /^(Suspend|Resume)MicrovmCommand$/.test(name)).map(({ name, input }) => [name, input])
+      ).toEqual([
+        ['SuspendMicrovmCommand', { microvmIdentifier: MICROVM_ID }],
+        ['ResumeMicrovmCommand', { microvmIdentifier: MICROVM_ID }],
+      ]);
+      expect(names(sent)).not.toContain('ListMicrovmsCommand');
+    });
+
+    it.each([
+      [
+        { microvmId: MICROVM_ID, state: 'SUSPENDED', startedAt: new Date(0) },
+        { running: true, suspended: true },
+      ],
+      [{ microvmId: MICROVM_ID, state: 'TERMINATED', startedAt: new Date(0) }, { running: false }],
+    ])('says from %j whether its VM is running and suspended', async (vm, expected) => {
+      const { compute } = setup({ ...stored(), GetMicrovmCommand: () => vm });
+      await lastValueFrom(compute.attach(MICROVM_ID));
+
+      expect(await lastValueFrom(compute.status())).toMatchObject({ state: 'ready', ...expected });
+    });
+
+    it("can't resume once its VM has ended", async () => {
+      const { compute } = setup({
+        ...stored(),
+        GetMicrovmCommand: () => ({ microvmId: MICROVM_ID, state: 'TERMINATED' }),
+        ResumeMicrovmCommand: () => Promise.reject(Object.assign(new Error('gone'), { name: 'ConflictException' })),
+      });
+      await lastValueFrom(compute.attach(MICROVM_ID));
+
+      await expect(lastValueFrom(compute.resume())).rejects.toThrow('This sandbox has stopped');
+    });
+
     it("can't run a command once its VM has ended", async () => {
       const { compute } = setup({
         ...stored(),

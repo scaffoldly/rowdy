@@ -2,7 +2,7 @@ import type { Observable } from 'rxjs';
 import type { Exec, ExecOutput, ExecOutputOptions } from '../../api/types';
 import type { SandboxEnvironment } from './environment';
 import type { Event } from '../../events';
-import type { AwsSandboxOptions, FileRange, SandboxStatus, SandboxSummary, SandboxUrl } from '..';
+import type { AwsSandboxOptions, FileRange, SandboxStatus, SandboxUrl } from '..';
 import type { ExecSchema } from '../../routes';
 
 /** A sandbox can't do this, and trying again won't change that. */
@@ -45,6 +45,10 @@ export interface SandboxCompute {
   output(cmdId: string, options?: ExecOutputOptions): Observable<ExecOutput>;
   /** Emits once, when nothing is left running. Safe to call more than once. */
   stop(): Observable<this>;
+  /** Emits once, when its VM is suspended, or it has none. Safe to call more than once. */
+  suspend(): Observable<this>;
+  /** Emits once, when its VM is running. */
+  resume(): Observable<this>;
   /** Emits once, when the sandbox and what rowdy made for it are gone. Safe to call more than once. */
   delete(): Observable<this>;
   /** Emits once, with where its build is. */
@@ -68,5 +72,5 @@ export interface SandboxComputeClass {
   /** Throws for a spec this compute can't run, before anything reaches AWS. */
   assert(spec: Pick<ComputeSpec, 'timeout' | 'memory' | 'env' | 'meta'>): void;
   /** Each sandbox on this compute, once. */
-  list(credentials?: AwsSandboxOptions['credentials']): Observable<SandboxSummary>;
+  list(credentials?: AwsSandboxOptions['credentials']): Observable<SandboxStatus>;
 }
