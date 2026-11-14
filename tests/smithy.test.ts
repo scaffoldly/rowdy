@@ -97,6 +97,17 @@ describe('SmithyClientLogger', () => {
       expect(debug).toHaveBeenCalledTimes(1);
     });
 
+    it('leaves a command it would not log unwalked', () => {
+      const output: Record<string, unknown> = {};
+      output.Body = output;
+      const toJSON = jest.fn(() => ({}));
+
+      client.info({ clientName: 'S3Client', commandName: 'GetObjectCommand', input: { toJSON }, output });
+
+      expect(toJSON).not.toHaveBeenCalled();
+      expect(debug).not.toHaveBeenCalled();
+    });
+
     it('emits nothing itself', () => {
       logged('CreateRoleCommand');
 

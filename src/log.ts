@@ -52,18 +52,27 @@ export const maskEnv = (env: Record<string, unknown> = {}, plain: ReadonlySet<st
     .map(([name, value]) => `${name}=${plain.has(name) ? String(value ?? '') : mask(value)}`)
     .join(', ')}]`;
 
-const masked = (value: unknown, key = ''): unknown => {
+// Only arrays and plain objects are walked: anything else, like a response stream, can lead back to itself.
+const masked = (value: unknown, key = '', above: ReadonlySet<object> = new Set()): unknown => {
   if (typeof value === 'string') {
     return SENSITIVE.test(key) ? mask(value) : value;
   }
+  if (!value || typeof value !== 'object' || typeof (value as { toJSON?: unknown }).toJSON === 'function') {
+    return value;
+  }
+  if (above.has(value)) {
+    return '[Circular]';
+  }
+  const within = new Set(above).add(value);
   if (Array.isArray(value)) {
-    return value.map((v) => masked(v, key));
+    return value.map((v) => masked(v, key, within));
   }
-  if (value && typeof value === 'object' && typeof (value as { toJSON?: unknown }).toJSON !== 'function') {
-    const env = key === 'Variables';
-    return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, env ? mask(v) : masked(v, k)]));
+  const proto = Object.getPrototypeOf(value);
+  if (proto !== Object.prototype && proto !== null) {
+    return `[${(value as object).constructor?.name || 'Object'}]`;
   }
-  return value;
+  const env = key === 'Variables';
+  return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, env ? mask(v) : masked(v, k, within)]));
 };
 
 /** JSON of an arbitrary structure with `Variables` maps and credential-named strings masked. */
