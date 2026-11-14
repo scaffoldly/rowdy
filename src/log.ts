@@ -53,9 +53,11 @@ export const maskEnv = (env: Record<string, unknown> = {}, plain: ReadonlySet<st
     .join(', ')}]`;
 
 // Only arrays and plain objects are walked: anything else, like a response stream, can lead back to itself.
-const masked = (value: unknown, key = '', above: ReadonlySet<object> = new Set()): unknown => {
+// Everything under a credential-named key is masked too, like a token kept under a name that says nothing.
+const masked = (value: unknown, key = '', above: ReadonlySet<object> = new Set(), under = false): unknown => {
+  const hidden = under || SENSITIVE.test(key);
   if (typeof value === 'string') {
-    return SENSITIVE.test(key) ? mask(value) : value;
+    return hidden ? mask(value) : value;
   }
   if (!value || typeof value !== 'object' || typeof (value as { toJSON?: unknown }).toJSON === 'function') {
     return value;
@@ -65,14 +67,14 @@ const masked = (value: unknown, key = '', above: ReadonlySet<object> = new Set()
   }
   const within = new Set(above).add(value);
   if (Array.isArray(value)) {
-    return value.map((v) => masked(v, key, within));
+    return value.map((v) => masked(v, key, within, hidden));
   }
   const proto = Object.getPrototypeOf(value);
   if (proto !== Object.prototype && proto !== null) {
     return `[${(value as object).constructor?.name || 'Object'}]`;
   }
   const env = key === 'Variables';
-  return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, env ? mask(v) : masked(v, k, within)]));
+  return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, env ? mask(v) : masked(v, k, within, hidden)]));
 };
 
 /** JSON of an arbitrary structure with `Variables` maps and credential-named strings masked. */

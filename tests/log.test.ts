@@ -124,7 +124,8 @@ describe('log masking', () => {
       expect(out).not.toContain('canary-secret-value');
       expect(out).not.toContain('bmFyeS10b2tlbi12YWx1');
       expect(out).not.toContain('canary-session-token');
-      expect(out).toContain('"proxyEndpoint":"https://ecr"');
+      // Under `authorizationData`, so masked with the token beside it.
+      expect(out).not.toContain('"proxyEndpoint":"https://ecr"');
       expect(out).toContain('"routes":"./routes.yaml"');
       expect(out).toContain('"Expiration":"1970-01-01T00:00:00.000Z"');
     });
@@ -153,6 +154,20 @@ describe('log masking', () => {
         ContentLength: 2,
         bare: {},
       });
+    });
+
+    it('masks every string under a credential-named key, whatever its own name', () => {
+      const token = 'eyJraWQiOiJjYW5hcnkifQ.canary-token-body.cccc.dddd.eeee';
+      const out = maskJson({
+        authToken: { 'X-aws-proxy-auth': token },
+        Credentials: { AccessKeyId: 'ASIACANARYCANARY0000', Expiration: new Date(0), list: ['canary-in-a-list-0000'] },
+        endpoint: 'vm.example',
+      });
+
+      expect(out).not.toContain('canary');
+      expect(out).toContain('"X-aws-proxy-auth":"eyJr…eeee (');
+      expect(out).toContain('"Expiration":"1970-01-01T00:00:00.000Z"');
+      expect(out).toContain('"endpoint":"vm.example"');
     });
 
     it('handles undefined and primitives', () => {
