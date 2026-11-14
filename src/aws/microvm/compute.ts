@@ -238,6 +238,8 @@ export class MicrovmCompute extends AwsClientLogger implements SandboxCompute {
   // What rowdy makes for the sandbox, apart from its running VMs.
   private image = new MicrovmImage(this.environment);
   private commands = new Set<AbortController>();
+  // Each VM's token for the hooks port, asked for on first use and replayed until half its life is gone.
+  private hooksTokens = new Map<string, { token$: Observable<Record<string, string>>; halfLife: number }>();
 
   constructor(private environment: SandboxEnvironment) {
     super();
@@ -922,21 +924,43 @@ export class MicrovmCompute extends AwsClientLogger implements SandboxCompute {
     path: string,
     init: Omit<RequestInit, 'headers'> & { headers?: Record<string, string>; signal: AbortSignal }
   ): Observable<globalThis.Response> {
-    return defer(() =>
-      this.microvms.send(
-        new CreateMicrovmAuthTokenCommand({
-          microvmIdentifier,
-          expirationInMinutes: 5,
-          allowedPorts: [{ port: HOOKS_PORT }],
-        })
-      )
-    ).pipe(
-      switchMap(({ authToken }) =>
+    const cached = this.hooksTokens.get(microvmIdentifier);
+    if (!cached || Date.now() >= cached.halfLife) {
+      const minutes = 60;
+      const fresh = { halfLife: Infinity, token$: EMPTY as Observable<Record<string, string>> };
+      fresh.token$ = defer(() =>
+        this.microvms.send(
+          new CreateMicrovmAuthTokenCommand({
+            microvmIdentifier,
+            expirationInMinutes: minutes,
+            allowedPorts: [{ port: HOOKS_PORT }],
+          })
+        )
+      ).pipe(
+        tap(() => (fresh.halfLife = Date.now() + (minutes / 2) * 60_000)),
+        map(({ authToken }) => authToken ?? {}),
+        // A failed ask isn't kept, so the next request asks again.
+        catchError((error) => {
+          if (this.hooksTokens.get(microvmIdentifier) === fresh) this.hooksTokens.delete(microvmIdentifier);
+          return throwError(() => error);
+        }),
+        shareReplay(1)
+      );
+      this.hooksTokens.set(microvmIdentifier, fresh);
+    }
+    const entry = this.hooksTokens.get(microvmIdentifier)!;
+    return entry.token$.pipe(
+      switchMap((authToken) =>
         fetch(`https://${endpoint}${path}`, {
           ...init,
           headers: { ...init.headers, ...authToken, 'X-aws-proxy-port': `${HOOKS_PORT}` },
         })
-      )
+      ),
+      // AWS refused the token, so the next request asks for a new one.
+      tap(({ status }) => {
+        if (status === 403 && this.hooksTokens.get(microvmIdentifier) === entry)
+          this.hooksTokens.delete(microvmIdentifier);
+      })
     );
   }
 }
