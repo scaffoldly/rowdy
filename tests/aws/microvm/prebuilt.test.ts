@@ -173,7 +173,8 @@ describe('aws microvm compute from a prebuilt image', () => {
       expect(names(sent)).not.toContain('UpdateMicrovmImageCommand');
       expect(input(sent, 'RunMicrovmCommand')).toMatchObject({
         imageVersion: '1',
-        maximumDurationInSeconds: 300,
+        maximumDurationInSeconds: 28_800,
+        idlePolicy: { maxIdleDurationSeconds: 300, suspendedDurationSeconds: 28_800, autoResumeEnabled: true },
       });
       expect(events).toContainEqual(expect.objectContaining({ source: 'sandbox', type: 'prebuilt' }));
     });
@@ -184,7 +185,7 @@ describe('aws microvm compute from a prebuilt image', () => {
       await lastValueFrom(compute.create(SPEC));
 
       const run = input(sent, 'RunMicrovmCommand');
-      expect(run).not.toHaveProperty('executionRoleArn');
+      expect(run?.executionRoleArn).toBeUndefined();
       expect(run).not.toHaveProperty('logging');
       expect(names(sent)).not.toEqual(
         expect.arrayContaining([expect.stringMatching(/^(CreateRole|PutRolePolicy|CreateLogGroup)Command$/)])

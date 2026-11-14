@@ -703,7 +703,7 @@ describe('aws microvm compute', () => {
       await expect(run(compute)).rejects.toThrow('Command ended without an exit');
     });
 
-    it('starts a VM from the image, for its timeout', async () => {
+    it('starts a VM from the image, suspending after its timeout and resumable for its lifetime', async () => {
       const { compute, sent } = running();
 
       await run(compute);
@@ -712,8 +712,8 @@ describe('aws microvm compute', () => {
         imageIdentifier: IMAGE_ARN,
         imageVersion: '1.0',
         executionRoleArn: ROLE_ARN,
-        maximumDurationInSeconds: 600,
-        idlePolicy: { maxIdleDurationSeconds: 600 },
+        maximumDurationInSeconds: 28_800,
+        idlePolicy: { maxIdleDurationSeconds: 600, suspendedDurationSeconds: 28_800, autoResumeEnabled: true },
         ingressNetworkConnectors: [expect.stringContaining('HTTP_INGRESS')],
         egressNetworkConnectors: [expect.stringContaining('INTERNET_EGRESS')],
       });

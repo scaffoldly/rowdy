@@ -28,21 +28,25 @@ Installing the package and AWS credentials are covered in [the SDK docs](../sdk.
 checks them against that choice, and `Sandbox.create` throws a `RangeError` for a value out of range
 before anything reaches AWS.
 
-|                         | `aws.lambda`                       | `aws.microvm` (default)              |
-| ----------------------- | ---------------------------------- | ------------------------------------ |
-| Runs on                 | A Lambda function                  | A Lambda MicroVM                     |
-| `timeout`, in ms        | 1000 to 900000, whole seconds      | 1000 to 28800000, whole seconds      |
-| `timeout` limits        | Each command                       | The VM, from its first command       |
-| `memory`, in MB         | 128 to 10240, whole                | 512, 1024, 2048, 4096 or 8192        |
-| `env`                   | No limit from rowdy                | At most 50 variables                 |
-| Between commands        | Each command is its own invocation | Commands share one VM, and its files |
-| `stop()`                | Rejects, for now                   | Ends the VM                          |
-| `delete()`              | Removes the function               | Removes the image                    |
-| A command's `signal`    | Only the waiting stops             | Kills the command                    |
-| Ctrl+C during a command | Node's default                     | Stops the sandbox, then exits        |
+|                         | `aws.lambda`                       | `aws.microvm` (default)               |
+| ----------------------- | ---------------------------------- | ------------------------------------- |
+| Runs on                 | A Lambda function                  | A Lambda MicroVM                      |
+| `timeout`, in ms        | 1000 to 900000, whole seconds      | 1000 to 28800000, whole seconds       |
+| `timeout` limits        | Each command                       | The VM's idle time before it suspends |
+| `memory`, in MB         | 128 to 10240, whole                | 512, 1024, 2048, 4096 or 8192         |
+| `env`                   | No limit from rowdy                | At most 50 variables                  |
+| Between commands        | Each command is its own invocation | Commands share one VM, and its files  |
+| `stop()`                | Rejects, for now                   | Ends the VM                           |
+| `delete()`              | Removes the function               | Removes the image                     |
+| A command's `signal`    | Only the waiting stops             | Kills the command                     |
+| Ctrl+C during a command | Node's default                     | Stops the sandbox, then exits         |
 
-A microVM stays up after its command exits, and is billed, until `stop()` or `timeout`. Call `stop()`
-in a `finally`, as above. MicroVMs run on x86_64 only.
+A microVM stays up after its command exits, and is billed, until `timeout` passes with no traffic to it.
+Then it suspends: it isn't billed for compute, only for its snapshot, and it still counts against the
+account's microVM memory quota. The next request resumes it, with its memory and files as they were. AWS
+ends every microVM 8 hours after it started, running or suspended, and that isn't adjustable. A command
+that prints nothing for `timeout` is suspended with the VM, and its output stops until something resumes
+it. Call `stop()` in a `finally`, as above, to end it sooner. MicroVMs run on x86_64 only.
 
 ## `Sandbox.create`
 
@@ -166,7 +170,7 @@ const command = await sandbox.runCommand({
 const { exitCode } = await command.wait();
 ```
 
-Output keeps reaching `stdout` and `stderr` until the command exits. Its `signal` stops following the command, without killing it: only `stop()` or the sandbox's `timeout` ends it. [`output`](#output) reads what it printed from anywhere. On `aws.lambda`, `detached` rejects.
+Output keeps reaching `stdout` and `stderr` until the command exits. Its `signal` stops following the command, without killing it: only `stop()` or the end of the VM's 8 hours ends it, and with nothing reading it, it's suspended after `timeout`. [`output`](#output) reads what it printed from anywhere. On `aws.lambda`, `detached` rejects.
 
 ## `output`
 
@@ -281,7 +285,7 @@ const running = (await Sandbox.list({ runtime: 'aws.microvm' })).filter(({ runni
 | `meta`    | Only sandboxes whose `meta` has every one of these entries. |
 | `signal`  | Rejects the listing.                                        |
 
-Each has its `sandboxId`, `name`, `runtime`, `meta` and `state`, as `status()` says it but without a `reason`. A microVM sandbox also says whether it's `running`, and if it is, `startedAt` and `stopsAt`, when its `timeout` ends it. A Lambda sandbox is billed only while a command runs, so it has neither.
+Each has its `sandboxId`, `name`, `runtime`, `meta` and `state`, as `status()` says it but without a `reason`. A microVM sandbox also says whether it's `running`, which a suspended one is, and if it is, `startedAt` and `stopsAt`, 8 hours later, when AWS ends it. A Lambda sandbox is billed only while a command runs, so it has neither.
 
 ## Meta
 
@@ -348,7 +352,7 @@ no VM is left running. A second Ctrl+C quits straight away, without waiting. A p
 `SIGINT` handler decides how it exits.
 
 This only applies during a command. Between commands, Ctrl+C ends the process and leaves the VM
-running until `timeout`, unless the program stops it.
+running until `timeout` suspends it, unless the program stops it.
 
 ## Events
 
@@ -464,7 +468,7 @@ A sandbox started from a prebuilt image is its one VM, so it differs from other 
 
 - **`sandboxId`** is the VM's id, like `microvm-ee6ef309-…`. `Sandbox.get` and `Sandbox.list` find it
   by that.
-- **It starts on `create`**, and is billed from then until `stop()` or `timeout`.
+- **It starts on `create`**, and is billed from then until `stop()` or it suspends.
 - **`stop()` ends it.** A later command doesn't start a new VM: it rejects, and you create another
   sandbox.
 - **Every `create` makes a new sandbox**, even with the same options.
