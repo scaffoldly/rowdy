@@ -150,7 +150,7 @@ export class MicrovmImage extends AwsResource {
 
   // Reactive Properties
   private Name = new BehaviorSubject<string>('sandbox');
-  private Image = new BehaviorSubject<string>('scaffoldly/sandbox');
+  private Image = new BehaviorSubject<string>(DEFAULTS.image);
   private LayersFrom = new BehaviorSubject<string[]>([]);
   private Timeout = new BehaviorSubject<number>(DEFAULTS.timeout);
   private Memory = new BehaviorSubject<number>(DEFAULTS.memory);

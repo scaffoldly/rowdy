@@ -200,7 +200,7 @@ export interface SandboxUrl {
   url: string;
   /** Send both with every request: `X-aws-proxy-auth`, a token for this port only, and `X-aws-proxy-port`. */
   headers: Record<string, string>;
-  /** When the token stops working. */
+  /** When the token stops working. AWS takes it for about a minute longer, so a clock a little behind is fine. */
   expiresAt: Date;
 }
 
@@ -244,6 +244,13 @@ export interface Sandbox {
    *
    * Without `port`, it's rowdy's own port, and its token can run any command and read or write any file in the
    * sandbox until it expires. Keep that one in the process that asked for it.
+   *
+   * AWS answers a request it refuses with a 403 and a plain-text body, never a 401:
+   * - `Request missing authentication`: no `X-aws-proxy-auth`, or one that isn't a token.
+   * - `Token authentication failed`: the token has expired. Call `url()` again for a new one.
+   * - `Access to port denied`: the token is for another port than `X-aws-proxy-port` names.
+   *
+   * A request the token lets through gets the server's own answer, which is a 502 while the sandbox can't resume.
    */
   url(port?: number, options?: UrlOptions): Promise<SandboxUrl>;
   /**
