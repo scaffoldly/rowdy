@@ -44,6 +44,7 @@ describe('pullImage', () => {
   it('names its image as it would be in ECR without uploading it, when told not to', async () => {
     const manifest = {
       registry: 'ghcr.io',
+      slug: 'tunneld-it/ubuntu',
       namespace: 'tunneld-it',
       name: 'ubuntu',
       tags: ['latest'],
@@ -76,6 +77,35 @@ describe('pullImage', () => {
     expect(pulled.ImageUri).toBe('123456789012.dkr.ecr.us-east-1.amazonaws.com/tunneld-it/ubuntu@sha256:rewritten');
     expect(upload).not.toHaveBeenCalled();
     expect(denormalize).not.toHaveBeenCalled();
+  });
+
+  it('names a deeper path, as in ECR, by all of it, without uploading', async () => {
+    const manifest = Transfer.normalizeImage('ghcr.io/tunneld-it/prebuild/sandbox:latest', null);
+    jest
+      .spyOn(Transfer, 'collect')
+      .mockReturnValue(
+        map(() => ({ ...manifest, index: { manifests: [] }, images: [], sources: [] })) as unknown as OperatorFunction<
+          unknown,
+          ImageManifest
+        >
+      );
+    jest.spyOn(Transfer, 'prepare').mockReturnValue(
+      map(() => ({
+        registry: { registry: '123456789012.dkr.ecr.us-east-1.amazonaws.com' },
+        manifest,
+        index: { manifests: [{ digest: 'sha256:rewritten', platform: { os: 'linux', architecture: 'amd64' } }] },
+      })) as never
+    );
+
+    const pulled = await lastValueFrom(
+      new SandboxEnvironment(new Logger()).images.pullImage('ghcr.io/tunneld-it/prebuild/sandbox:latest', {
+        upload: false,
+      })
+    );
+
+    expect(pulled.ImageUri).toBe(
+      '123456789012.dkr.ecr.us-east-1.amazonaws.com/tunneld-it/prebuild/sandbox@sha256:rewritten'
+    );
   });
 
   it('says what its image was built FROM, as its build annotated it', async () => {

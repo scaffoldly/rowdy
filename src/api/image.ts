@@ -38,8 +38,7 @@ export class ImageApi implements IImageApi {
                   (m) => m.platform?.os === os && m.platform?.architecture === architecture
                 )?.digest;
                 if (!digest) throw new Error(`Unable to find image for platform: ${opts.platform ?? 'linux/amd64'}`);
-                const { namespace, name } = transfer.manifest;
-                return { imageRef: `${transfer.registry.registry}/${namespace}/${name}@${digest}` };
+                return { imageRef: `${transfer.registry.registry}/${transfer.manifest.slug}@${digest}` };
               })
             : pipe(
                 Transfer.upload(this.log, this.http, {
