@@ -1991,6 +1991,36 @@ describe('sandbox', () => {
       await expect(Sandbox.get({ sandboxId: FUNCTION_NAME })).rejects.toThrow('denied');
     });
 
+    it("says another runtime's error over a denial", async () => {
+      withArn.mockReturnValue(throwError(() => Object.assign(new Error('denied'), { name: 'AccessDeniedException' })));
+      jest
+        .spyOn(MicrovmCompute.prototype, 'attach')
+        .mockReturnValue(throwError(() => new Error(`Not a sandbox: ${FUNCTION_NAME}`)));
+
+      await expect(Sandbox.get({ sandboxId: FUNCTION_NAME })).rejects.toThrow(`Not a sandbox: ${FUNCTION_NAME}`);
+    });
+
+    it('says the denial when the other runtime only misses', async () => {
+      withArn.mockReturnValue(throwError(() => Object.assign(new Error('denied'), { name: 'AccessDeniedException' })));
+      jest
+        .spyOn(MicrovmCompute.prototype, 'attach')
+        .mockReturnValue(throwError(() => Object.assign(new Error('gone'), { name: 'ResourceNotFoundException' })));
+
+      await expect(Sandbox.get({ sandboxId: FUNCTION_NAME })).rejects.toThrow('denied');
+    });
+
+    it('looks only on the runtime asked for', async () => {
+      const attach = jest.spyOn(MicrovmCompute.prototype, 'attach').mockImplementation(function (this: MicrovmCompute) {
+        return of(this);
+      });
+
+      const sandbox = (await Sandbox.get({ sandboxId: FUNCTION_NAME, runtime: 'aws.microvm' })) as SandboxImpl;
+
+      expect(sandbox.runtime).toBe('aws.microvm');
+      expect(attach).toHaveBeenCalledWith(FUNCTION_NAME, undefined);
+      expect(withArn).not.toHaveBeenCalled();
+    });
+
     it.each([FUNCTION_ARN, 'sandbox/box', ''])(
       'refuses %p, which is no name, before reaching AWS',
       async (sandboxId) => {
