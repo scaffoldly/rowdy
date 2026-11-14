@@ -28,6 +28,7 @@ export class SandboxPromiseImpl implements SandboxPromise, Promise<SandboxImpl> 
   readonly readFileToBuffer: Sandbox['readFileToBuffer'] = (...args) =>
     this.created.then((sandbox) => sandbox.readFileToBuffer(...args));
   readonly mkDir: Sandbox['mkDir'] = (...args) => this.created.then((sandbox) => sandbox.mkDir(...args));
+  readonly url: Sandbox['url'] = (...args) => this.created.then((sandbox) => sandbox.url(...args));
   readonly status: Sandbox['status'] = () => this.created.then((sandbox) => sandbox.status());
   readonly stop: Sandbox['stop'] = () => this.created.then((sandbox) => sandbox.stop());
   readonly delete: Sandbox['delete'] = () => this.created.then((sandbox) => sandbox.delete());

@@ -829,6 +829,64 @@ describe('aws microvm compute', () => {
       });
     });
 
+    describe('url', () => {
+      const { signal } = new AbortController();
+
+      it("gives the VM's endpoint and a token for the one port", async () => {
+        const { compute, sent } = running();
+        const before = Date.now();
+
+        const url = await lastValueFrom(compute.url(3000, 30, signal));
+
+        expect(input(sent, 'CreateMicrovmAuthTokenCommand')).toEqual({
+          microvmIdentifier: 'mvm-1',
+          expirationInMinutes: 30,
+          allowedPorts: [{ port: 3000 }],
+        });
+        expect(url).toEqual({
+          url: 'https://vm.example',
+          headers: { 'X-aws-proxy-auth': 'token', 'X-aws-proxy-port': '3000' },
+          expiresAt: expect.any(Date),
+        });
+        expect(url.expiresAt.getTime()).toBeGreaterThanOrEqual(before + 30 * 60_000);
+      });
+
+      it('starts the VM like a command would', async () => {
+        const { compute, sent } = running();
+
+        await lastValueFrom(compute.url(8080, 60, signal));
+
+        expect(sent.map(({ name }) => name)).toContain('RunMicrovmCommand');
+      });
+
+      it("is rowdy's own port without one", async () => {
+        const { compute, sent } = running();
+
+        const url = await lastValueFrom(compute.url(undefined, 60, signal));
+
+        expect(input(sent, 'CreateMicrovmAuthTokenCommand')).toMatchObject({ allowedPorts: [{ port: HOOKS_PORT }] });
+        expect(url.headers['X-aws-proxy-port']).toBe(`${HOOKS_PORT}`);
+      });
+
+      it.each([0, 65536, 80.5])('refuses port %p, before reaching AWS', async (port) => {
+        const { compute, sent } = running();
+
+        await expect(lastValueFrom(compute.url(port, 60, signal))).rejects.toThrow(
+          `Not a port this sandbox can serve: ${port}`
+        );
+        expect(sent).toEqual([]);
+      });
+
+      it.each([0, 61, 1.5])('refuses a token for %p minutes, before reaching AWS', async (minutes) => {
+        const { compute, sent } = running();
+
+        await expect(lastValueFrom(compute.url(8080, minutes, signal))).rejects.toThrow(
+          `expiresIn is 1 to 60 minutes, not ${minutes}`
+        );
+        expect(sent).toEqual([]);
+      });
+    });
+
     it('starts one VM for two first commands at once, across handles', async () => {
       const first = running();
       const second = running();

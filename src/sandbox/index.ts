@@ -186,6 +186,22 @@ export interface FileOptions {
   signal?: AbortSignal;
 }
 
+export interface UrlOptions {
+  /** Minutes until the token stops working, 1 to 60. Defaults to 60. */
+  expiresIn?: number;
+  signal?: AbortSignal;
+}
+
+/** Where to reach a port in the sandbox, and what to send with each request. */
+export interface SandboxUrl {
+  /** The VM's endpoint, `https://…`. */
+  url: string;
+  /** Send both with every request: `X-aws-proxy-auth`, a token for this port only, and `X-aws-proxy-port`. */
+  headers: Record<string, string>;
+  /** When the token stops working. */
+  expiresAt: Date;
+}
+
 export type Command = Omit<Exec, 'frames'>;
 export type CommandFinished = Omit<ExecFinished, 'frames'>;
 export type CommandOutput = ExecOutput;
@@ -221,6 +237,14 @@ export interface Sandbox {
   /** Makes a directory and its parents, and is fine if it's there. `runtime: 'aws.lambda'` rejects for now. */
   mkDir(path: string, options?: FileOptions): Promise<void>;
   /**
+   * The sandbox's endpoint for `port`, with a token that reaches that port and no other. A server in the sandbox must
+   * listen on it. Starts the VM if it isn't running, and resumes it if it's suspended. `runtime: 'aws.lambda'` rejects.
+   *
+   * Without `port`, it's rowdy's own port, and its token can run any command and read or write any file in the
+   * sandbox until it expires. Keep that one in the process that asked for it.
+   */
+  url(port?: number, options?: UrlOptions): Promise<SandboxUrl>;
+  /**
    * Ends everything running in this sandbox, including a command in progress, and everything a `Sandbox.get` of it
    * started. Safe to call more than once. The next command starts it again. `runtime: 'aws.lambda'` rejects for now.
    */
@@ -245,7 +269,16 @@ export interface SandboxPromise
   extends Promise<Sandbox>,
     Pick<
       Sandbox,
-      'events' | 'runCommand' | 'output' | 'writeFiles' | 'readFileToBuffer' | 'mkDir' | 'status' | 'stop' | 'delete'
+      | 'events'
+      | 'runCommand'
+      | 'output'
+      | 'writeFiles'
+      | 'readFileToBuffer'
+      | 'mkDir'
+      | 'url'
+      | 'status'
+      | 'stop'
+      | 'delete'
     > {}
 
 export interface SandboxFactory {

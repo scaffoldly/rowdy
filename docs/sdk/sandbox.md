@@ -225,6 +225,34 @@ const config = await sandbox.readFileToBuffer({ path: 'config.json', cwd: '/etc/
 
 Each takes a `signal`, and starts the sandbox's VM if it has none, as a command would. On `aws.lambda`, they reject for now.
 
+## `url`
+
+On `aws.microvm`, `url(port)` gives the VM's endpoint for a server listening in the sandbox, and a token for that
+port and no other.
+
+```ts
+await sandbox.runCommand({ cmd: 'npx', args: ['serve', '-l', '3000'], detached: true });
+
+const { url, headers, expiresAt } = await sandbox.url(3000, { expiresIn: 30 });
+const page = await fetch(url, { headers });
+```
+
+- **`headers`:** send both with every request. `X-aws-proxy-auth` is the token and `X-aws-proxy-port` the port.
+  There's no way in without them, so a plain browser link needs a proxy that adds them.
+- **`expiresIn`:** minutes the token works, 1 to 60, 60 by default. Ask again for a new one.
+- **Without a port:** it's rowdy's own port, 32768, where rowdy takes commands and files.
+
+> **Warning:** a token for rowdy's own port can run any command, as root, and read or write any file in the
+> sandbox until it expires. Keep it in the process that asked for it. To share a server with a person, a browser
+> or a model, pass that server's port.
+
+- **WebSockets:** pass the token and port as subprotocols instead: `lambda-microvms`,
+  `lambda-microvms.authentication.<token>` and `lambda-microvms.port.<port>`.
+
+It takes a `signal`, and starts the sandbox's VM if it has none, as a command would. A request to a suspended VM
+resumes it. A sandbox from an image gets a new VM, and a new URL, once its VM has ended, so ask again after that. On
+`aws.lambda`, it rejects.
+
 ## `stop`
 
 `stop()` ends everything running in the sandbox, including a command in progress, whose `runCommand`

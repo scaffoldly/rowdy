@@ -2,7 +2,7 @@ import type { Observable } from 'rxjs';
 import type { Exec, ExecOutput, ExecOutputOptions } from '../../api/types';
 import type { SandboxEnvironment } from './environment';
 import type { Event } from '../../events';
-import type { AwsSandboxOptions, FileRange, SandboxStatus, SandboxSummary } from '..';
+import type { AwsSandboxOptions, FileRange, SandboxStatus, SandboxSummary, SandboxUrl } from '..';
 import type { ExecSchema } from '../../routes';
 
 /** A sandbox can't do this, and trying again won't change that. */
@@ -55,6 +55,8 @@ export interface SandboxCompute {
   readFile(path: string, range: FileRange, signal: AbortSignal): Observable<Buffer | null>;
   /** Emits once, when the directory is there. */
   mkDir(path: string, signal: AbortSignal): Observable<void>;
+  /** Emits once, with the endpoint for `port`, or the runtime's own, and a token for that port only, good for `minutes`. */
+  url(port: number | undefined, minutes: number, signal: AbortSignal): Observable<SandboxUrl>;
   /** Each step of what this compute does on its provider, from now on. */
   events(): Observable<Event>;
 }

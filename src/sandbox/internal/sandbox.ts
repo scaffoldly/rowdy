@@ -15,6 +15,8 @@ import type {
   SandboxOptions,
   SandboxStatus,
   SandboxSummary,
+  SandboxUrl,
+  UrlOptions,
   Event,
 } from '..';
 import { isAxiosError } from 'axios';
@@ -419,6 +421,15 @@ export class SandboxImpl implements Sandbox {
       ? AbortSignal.any([options.signal, this.environment.signal])
       : this.environment.signal;
     await lastValueFrom(this.compute.mkDir(path, signal)).catch((error) => {
+      throw humanize(error);
+    });
+  }
+
+  async url(port?: number, options?: UrlOptions): Promise<SandboxUrl> {
+    const signal = options?.signal
+      ? AbortSignal.any([options.signal, this.environment.signal])
+      : this.environment.signal;
+    return lastValueFrom(this.compute.url(port, options?.expiresIn ?? 60, signal)).catch((error) => {
       throw humanize(error);
     });
   }
