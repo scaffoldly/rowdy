@@ -53,7 +53,8 @@ import {
 } from '@scaffoldly/rowdy-vfs';
 import { Volume } from './routes';
 import { LambdaImageService } from './aws/lambda/image';
-import { readFileSync, rmSync } from 'fs';
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'fs';
+import { parseSecrets } from './secrets';
 import { dirname, join } from 'path';
 import { internalIpV4Sync } from 'internal-ip';
 import { deployFailedSummary, deploySummary, writeGithubOutput, writeGithubSummary } from './util/github';
@@ -280,6 +281,34 @@ export class Environment implements ILoggable {
               .usage('$0 serve [options] -- <command> [args...]')
           ),
         handler: (argv: Partial<Args>) => this.setup(argv),
+      })
+      .command({
+        command: 'secrets <dir>',
+        describe: "Write each secret to a file of its own in <dir>, named for it, as a docker build's secrets",
+        builder: (yargs) =>
+          yargs
+            .positional('dir', { type: 'string', demandOption: true, describe: 'The directory to write them to' })
+            .option('secrets', {
+              type: 'string',
+              description: 'Secrets: NAME=value lines and JSON objects, in any mix; NAME=value lines win',
+            }),
+        handler: (argv) => {
+          const secrets = parseSecrets(argv.secrets ?? '', {
+            onEmpty: (name) => this.log.warn('Secret Empty', { name }),
+          });
+          // Only the directory's owner, the build, reads them.
+          mkdirSync(argv.dir, { recursive: true, mode: 0o700 });
+          const written = Object.entries(secrets).filter(([name, value]) => {
+            // A name is a file's name and a build secret's id: one a JSON key can't make a path of.
+            if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) {
+              this.log.warn('Secret Skipped', { reason: 'Not a NAME of letters, digits and _' });
+              return false;
+            }
+            writeFileSync(join(argv.dir, name), value, { mode: 0o600 });
+            return true;
+          });
+          this.log.info('Secrets Written', { count: written.length });
+        },
       })
       // TODO: Re-add 'install' command
       .command({
