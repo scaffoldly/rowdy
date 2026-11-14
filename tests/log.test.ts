@@ -129,6 +129,32 @@ describe('log masking', () => {
       expect(out).toContain('"Expiration":"1970-01-01T00:00:00.000Z"');
     });
 
+    it('names a value that leads back to itself instead of walking it again', () => {
+      const looped: Record<string, unknown> = { name: 'a' };
+      looped.self = looped;
+      const shared = { id: 1 };
+
+      expect(JSON.parse(maskJson({ looped, list: [shared, shared] }))).toEqual({
+        looped: { name: 'a', self: '[Circular]' },
+        list: [{ id: 1 }, { id: 1 }],
+      });
+    });
+
+    it('names anything but arrays and plain objects by its class instead of walking it', () => {
+      class Stream {
+        socket: { stream?: Stream } = {};
+        constructor() {
+          this.socket.stream = this;
+        }
+      }
+
+      expect(JSON.parse(maskJson({ Body: new Stream(), ContentLength: 2, bare: Object.create(null) }))).toEqual({
+        Body: '[Stream]',
+        ContentLength: 2,
+        bare: {},
+      });
+    });
+
     it('handles undefined and primitives', () => {
       expect(maskJson(undefined)).toBeUndefined();
       expect(maskJson('plain')).toBe('"plain"');

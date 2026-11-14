@@ -30,10 +30,12 @@ export abstract class SmithyClientLogger extends ClientLogger<Client<any, any, a
         input?: unknown;
         output?: unknown;
       };
-      this.log.debug(`[${clientName ?? 'UnknownClient'}] [${commandName ?? 'UnknownCommand'}]`, {
-        input: maskJson(input),
-        output: maskJson(output),
-      });
+      if (this.log.enabled('debug')) {
+        this.log.debug(`[${clientName ?? 'UnknownClient'}] [${commandName ?? 'UnknownCommand'}]`, {
+          input: maskJson(input),
+          output: maskJson(output),
+        });
+      }
       this.changed(actionOf(commandName), input);
     }
   };
@@ -47,10 +49,12 @@ export abstract class SmithyClientLogger extends ClientLogger<Client<any, any, a
         input?: unknown;
         error?: unknown;
       };
-      this.log.debug(`[${clientName ?? 'UnknownClient'}] [${commandName ?? 'UnknownCommand'}]`, {
-        input: maskJson(input),
-        error: inspect(error),
-      });
+      if (this.log.enabled('debug')) {
+        this.log.debug(`[${clientName ?? 'UnknownClient'}] [${commandName ?? 'UnknownCommand'}]`, {
+          input: maskJson(input),
+          error: inspect(error),
+        });
+      }
       return;
     }
   };
