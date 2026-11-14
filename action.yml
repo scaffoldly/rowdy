@@ -6,7 +6,7 @@ branding:
   color: gray-dark
 inputs:
   name:
-    description: "The name of the application. (Default: the execution role's id) With ROWDY_BUILD, the prebuild's name: its image is ghcr.io/<owner>/prebuild/<name>."
+    description: "The name of the application. (Default: the execution role's id)"
     required: false
     default: ""
   cloud:
@@ -20,7 +20,7 @@ inputs:
     required: false
     default: ""
   dockerfile:
-    description: "Path to a Dockerfile to build and push to ghcr.io/<owner>/<repo>:rowdy, then deploy as :rowdy@<digest> (pinned to the build, with a stable alias and Function URL). The build context is the Dockerfile's directory. With ROWDY_BUILD, it's pushed by digest to ghcr.io/<owner>/prebuild/<name> for the runner's platform, and a microVM image is prebuilt from it."
+    description: "Path to a Dockerfile to build and push to ghcr.io/<owner>/<repo>:rowdy, then deploy as :rowdy@<digest> (pinned to the build, with a stable alias and Function URL). The build context is the Dockerfile's directory."
     required: false
     default: ""
   command:
@@ -62,13 +62,13 @@ outputs:
     description: The bucket rowdy manages for s3:///<prefix> volumes, when the deployment has one.
     value: ${{ steps.deploy.outputs.bucket }}
   digest:
-    description: The digest of the image built from dockerfile. With ROWDY_BUILD, the platform image's, for a later job to combine into a tag.
+    description: The digest of the image built from dockerfile.
     value: ${{ steps.build.outputs.digest || steps.build-again.outputs.digest }}
   arn:
-    description: With ROWDY_BUILD, the prebuilt microVM image's ARN.
+    description: The prebuilt microVM image's ARN, when one was built.
     value: ${{ steps.deploy.outputs.arn }}
   status:
-    description: With ROWDY_BUILD, built or reused.
+    description: Whether a prebuilt microVM image was built or reused.
     value: ${{ steps.deploy.outputs.status }}
 runs:
   using: "composite"
