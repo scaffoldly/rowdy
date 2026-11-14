@@ -87,6 +87,7 @@ rowdy create aws microvm --build --platform linux/arm64 --memory 1024 \
 
 - **`--platform`:** `linux/amd64` (the default) or `linux/arm64`, which builds for `ARM_64`. An
   image or layer with nothing for the platform fails before anything is copied.
+- **`--dockerfile`:** the Dockerfile the image was built from, for its `from` tags below.
 - **`--memory`:** 512 (the default), 1024, 2048, 4096 or 8192. A VM's size comes from its image, so
   each memory size is its own image.
 - **The name** is the first 40 hex characters of the platform image's digest, a `-`, and the first
@@ -109,8 +110,10 @@ rowdy create aws microvm --build --platform linux/arm64 --memory 1024 \
     - what it was built with: each layer as `layer.<n>`, `<reference>@<digest>`, and `rowdy`, its
       version
     - `built` (UTC)
-    - `from` and `from.sha256`, from `org.opencontainers.image.base.name` and `base.digest`, when the
-      image's build annotated it
+    - `from` and `from.sha256`: with `--dockerfile <path>`, the Dockerfile's last stage's `FROM`, its
+      `ARG` defaults expanded, and that image's digest for `--platform`. Not one it can't know, like
+      an earlier stage, `scratch` or an `ARG` with no default. Without `--dockerfile`,
+      `org.opencontainers.image.base.name` and `base.digest`, when the image's build annotated it.
 
   None of a sandbox's tags are set, so a prebuilt image is never listed or deleted as a sandbox.
 

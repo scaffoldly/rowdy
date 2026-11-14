@@ -1,12 +1,16 @@
 import { createHash } from 'crypto';
 import { strFromU8, unzipSync, zipSync } from 'fflate';
-import { lastValueFrom, of } from 'rxjs';
+import { lastValueFrom, map, of } from 'rxjs';
 import { Logger } from '../../../src';
 import { SandboxEnvironment } from '../../../src/sandbox/internal/environment';
 import { MicrovmImage, POLL } from '../../../src/aws/microvm/index';
 import { COMPUTE_TAG } from '../../../src/aws/microvm/index';
 import { META_TAG, TAG_VALUE_REGEX } from '../../../src/aws/tags';
 import type { TPulledImage } from '../../../src/api/types';
+import { ImageManifest, Transfer } from '../../../src/api/internal/transfer';
+import { mkdtempSync, writeFileSync } from 'fs';
+import { tmpdir } from 'os';
+import { join } from 'path';
 
 type Sent = { name: string; input: Record<string, unknown> };
 type Handler = (input: Record<string, unknown>) => unknown;
@@ -158,6 +162,74 @@ describe('aws microvm prebuild', () => {
       minimumMemoryInMiB: '512',
       memory: '512',
       rowdy: expect.any(String),
+    });
+  });
+
+  describe('built from a Dockerfile', () => {
+    const BASE = `sha256:${'9'.repeat(64)}`;
+    const dockerfile = (text: string): string => {
+      const dir = mkdtempSync(join(tmpdir(), 'rowdy-dockerfile-'));
+      writeFileSync(join(dir, 'Dockerfile'), text);
+      return join(dir, 'Dockerfile');
+    };
+    // What a registry answers for the base, by platform.
+    const collected = (): jest.SpyInstance =>
+      jest
+        .spyOn(Transfer, 'collect')
+        .mockImplementation(() =>
+          map(() => ({ index: { manifests: [{ digest: BASE }] } }) as unknown as ImageManifest)
+        );
+    const unannotated: TPulledImage = { ...PULLED, Source: { ...PULLED.Source!, base: undefined } };
+
+    it("tags its last stage's FROM, ARGs and all, with its digest for the platform", async () => {
+      const collect = collected();
+      const { image, sent } = setup({}, unannotated, 'linux/arm64');
+
+      await build(
+        image.withDockerfile(
+          dockerfile(
+            'ARG BASE=mirror.gcr.io/library/ubuntu\nARG TAG=noble\nFROM golang:1 AS build\nFROM ${BASE}:${TAG}\n'
+          )
+        )
+      );
+
+      expect(tags(sent)).toMatchObject({ from: 'mirror.gcr.io/library/ubuntu:noble', 'from.sha256': '9'.repeat(64) });
+      expect(collect).toHaveBeenCalledWith(expect.anything(), expect.anything(), [], 'linux/arm64');
+    });
+
+    it.each([
+      ['an earlier stage', 'FROM alpine:3 AS Base\nFROM base\n'],
+      ['scratch', 'FROM alpine:3 AS x\nFROM scratch\n'],
+      ['an ARG with no default', 'ARG BASE\nFROM $BASE\n'],
+    ])("tags no FROM that's %s", async (_, text) => {
+      const collect = collected();
+      const { image, sent } = setup({}, unannotated);
+
+      await build(image.withDockerfile(dockerfile(text)));
+
+      expect(tags(sent)).not.toHaveProperty('from');
+      expect(collect).not.toHaveBeenCalledWith(expect.anything(), expect.anything(), [], expect.anything());
+    });
+
+    it("still builds when its Dockerfile can't be read", async () => {
+      const { image, sent } = setup({}, unannotated);
+
+      await build(image.withDockerfile('/nowhere/Dockerfile'));
+
+      expect(names(sent)).toContain('CreateMicrovmImageCommand');
+      expect(tags(sent)).not.toHaveProperty('from');
+    });
+
+    it('takes its FROM over the annotations, and keeps it out of the hash', async () => {
+      collected();
+      const annotated = setup();
+      const fromDockerfile = setup();
+
+      await build(annotated.image);
+      await build(fromDockerfile.image.withDockerfile(dockerfile('FROM mirror.gcr.io/library/debian:12\n')));
+
+      expect(tags(fromDockerfile.sent).from).toBe('mirror.gcr.io/library/debian:12');
+      expect(tags(fromDockerfile.sent).spec).toBe(tags(annotated.sent).spec);
     });
   });
 
