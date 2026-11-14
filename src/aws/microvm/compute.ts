@@ -68,6 +68,9 @@ import { BUCKET_OWNER, BUCKET_PREFIX, COMPUTE_TAG, MicrovmImage, POLL, TIMEOUT_T
 
 const DEAD: ReadonlyArray<string> = ['TERMINATING', 'TERMINATED'];
 
+/** A VM in these states is billed for its snapshot, not compute. */
+const ASLEEP: ReadonlyArray<string> = ['SUSPENDING', 'SUSPENDED'];
+
 /** Seconds a VM exists, running or suspended. AWS's most, and not adjustable. */
 const LIFETIME = 28_800;
 
@@ -153,6 +156,7 @@ export class MicrovmCompute extends AwsClientLogger implements SandboxCompute {
                 name: record.name,
                 runtime: 'aws.microvm',
                 running: !!live,
+                suspended: live ? ASLEEP.includes(live.state!) : undefined,
                 startedAt: live ? startedAt : undefined,
                 stopsAt: live ? new Date(startedAt.getTime() + LIFETIME * 1000) : undefined,
                 meta: record.meta,
@@ -177,6 +181,7 @@ export class MicrovmCompute extends AwsClientLogger implements SandboxCompute {
                       name: name!,
                       runtime: 'aws.microvm',
                       running: !!live,
+                      suspended: live ? ASLEEP.includes(live.state!) : undefined,
                       startedAt: live?.startedAt,
                       stopsAt: live?.startedAt ? new Date(live.startedAt.getTime() + LIFETIME * 1000) : undefined,
                       meta: Object.fromEntries(
@@ -707,17 +712,46 @@ export class MicrovmCompute extends AwsClientLogger implements SandboxCompute {
 
   status(): Observable<SandboxStatus> {
     // Its image was built before it started.
-    if (this.record) return of<SandboxStatus>({ state: 'ready' });
+    if (this.record) {
+      const { microvmId: microvmIdentifier } = this.record;
+      return defer(() => this.microvms.send(new GetMicrovmCommand({ microvmIdentifier }))).pipe(
+        catchError((error) =>
+          isNotFound(error) ? of({ state: undefined, startedAt: undefined }) : throwError(() => error)
+        ),
+        map(({ state, startedAt }): SandboxStatus => {
+          const live = !!state && !DEAD.includes(state) && !!startedAt;
+          return {
+            state: 'ready',
+            running: live,
+            suspended: live ? ASLEEP.includes(state!) : undefined,
+            startedAt: live ? startedAt : undefined,
+            stopsAt: live ? new Date(startedAt!.getTime() + LIFETIME * 1000) : undefined,
+          };
+        })
+      );
+    }
     const imageIdentifier = this.imageArn;
-    return defer(() => this.microvms.send(new GetMicrovmImageCommand({ imageIdentifier }))).pipe(
-      switchMap(({ state, latestActiveImageVersion, latestFailedImageVersion: imageVersion }) => {
+    return forkJoin({
+      image: defer(() => this.microvms.send(new GetMicrovmImageCommand({ imageIdentifier }))),
+      live: defer(() => this.microvms.send(new ListMicrovmsCommand({ imageIdentifier }))).pipe(
+        map(({ items = [] }) => items.find(({ state, startedAt }) => state && !DEAD.includes(state) && startedAt))
+      ),
+    }).pipe(
+      switchMap(({ image: { state, latestActiveImageVersion, latestFailedImageVersion: imageVersion }, live }) => {
+        const vm: Partial<SandboxStatus> = {
+          running: !!live,
+          suspended: live ? ASLEEP.includes(live.state!) : undefined,
+          startedAt: live?.startedAt,
+          stopsAt: live?.startedAt ? new Date(live.startedAt.getTime() + LIFETIME * 1000) : undefined,
+        };
         if ((state === 'CREATE_FAILED' || state === 'UPDATE_FAILED') && imageVersion) {
           return from(this.microvms.send(new GetMicrovmImageVersionCommand({ imageIdentifier, imageVersion }))).pipe(
-            map(({ stateReason }): SandboxStatus => ({ state: 'failed', reason: stateReason }))
+            map(({ stateReason }): SandboxStatus => ({ state: 'failed', reason: stateReason, ...vm }))
           );
         }
         return of<SandboxStatus>({
           state: latestActiveImageVersion && !state?.endsWith('ING') ? 'ready' : 'building',
+          ...vm,
         });
       })
     );

@@ -968,12 +968,31 @@ describe('sandbox', () => {
           name: 'box-prebuilt',
           runtime: 'aws.microvm',
           running: true,
+          suspended: false,
           startedAt: STARTED,
           stopsAt: new Date(STARTED.getTime() + 28_800_000),
           meta: { sub: 'github:2' },
           state: 'ready',
         },
       ]);
+    });
+
+    it('says a suspended VM is running and suspended', async () => {
+      buckets([RECORD]);
+      microvms().mockImplementation(((command: { constructor: { name: string } }) =>
+        Promise.resolve(
+          command.constructor.name === 'ListMicrovmsCommand'
+            ? {
+                items: [
+                  { microvmId: RECORD.microvmId, imageArn: RECORD.imageArn, state: 'SUSPENDED', startedAt: STARTED },
+                ],
+              }
+            : { items: [] }
+        )) as never);
+
+      const [found] = await Sandbox.list({ runtime: 'aws.microvm' });
+
+      expect(found).toMatchObject({ sandboxId: RECORD.microvmId, running: true, suspended: true });
     });
 
     it('never makes a sandbox bucket to list from', async () => {
@@ -1012,6 +1031,7 @@ describe('sandbox', () => {
             name: 'box-bcdf2',
             runtime: 'aws.microvm',
             running: true,
+            suspended: false,
             startedAt: STARTED,
             stopsAt: new Date(STARTED.getTime() + 28_800_000),
             meta: { sub: 'github:1' },

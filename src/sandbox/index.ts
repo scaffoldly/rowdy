@@ -90,6 +90,14 @@ export interface SandboxStatus {
   state: 'building' | 'ready' | 'failed';
   /** Why the build failed, as AWS says. */
   reason?: string;
+  /** Whether a microVM is up, suspended included. Undefined on `aws.lambda`, which is billed only while a command runs. */
+  running?: boolean;
+  /** Whether the running microVM is suspended: billed for its snapshot, not compute, until something resumes it. */
+  suspended?: boolean;
+  /** When the running microVM started. */
+  startedAt?: Date;
+  /** When AWS ends the running microVM, 8 hours after it started, suspended or not. */
+  stopsAt?: Date;
 }
 
 /** A sandbox as `Sandbox.list` finds it. */
@@ -97,11 +105,13 @@ export interface SandboxSummary {
   sandboxId: string;
   name: string;
   runtime: NonNullable<SandboxOptions['runtime']>;
-  /** Whether a microVM is up, and billed. Undefined on `aws.lambda`, which is billed only while a command runs. */
+  /** Whether a microVM is up, suspended included. Undefined on `aws.lambda`, which is billed only while a command runs. */
   running?: boolean;
+  /** Whether the running microVM is suspended: billed for its snapshot, not compute, until something resumes it. */
+  suspended?: boolean;
   /** When the running microVM started. */
   startedAt?: Date;
-  /** When the running microVM's `timeout` ends it. */
+  /** When AWS ends the running microVM, 8 hours after it started, suspended or not. */
   stopsAt?: Date;
   /** What `create` was given as `meta`. */
   meta: Record<string, string>;

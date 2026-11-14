@@ -94,7 +94,8 @@ image, so the next `create` builds again.
 
 With `wait: false`, an `aws.microvm` sandbox resolves as soon as AWS is building its image, which suits a host
 that can't hold a request open for two minutes. `status()` says where the build is: `building`, `ready`, or
-`failed` with AWS's `reason`. A command before it's ready rejects. `aws.lambda` always waits.
+`failed` with AWS's `reason`. A command before it's ready rejects. `aws.lambda` always waits. On `aws.microvm`,
+`status()` also says whether its VM is `running` and `suspended`, with `startedAt` and `stopsAt` while it's up.
 
 ```ts
 const sandbox = await Sandbox.create({ image: 'node:24', wait: false });
@@ -336,7 +337,7 @@ const running = (await Sandbox.list({ runtime: 'aws.microvm' })).filter(({ runni
 | `meta`    | Only sandboxes whose `meta` has every one of these entries. |
 | `signal`  | Rejects the listing.                                        |
 
-Each has its `sandboxId`, `name`, `runtime`, `meta` and `state`, as `status()` says it but without a `reason`. A microVM sandbox also says whether it's `running`, which a suspended one is, and if it is, `startedAt` and `stopsAt`, 8 hours later, when AWS ends it. A Lambda sandbox is billed only while a command runs, so it has neither.
+Each has its `sandboxId`, `name`, `runtime`, `meta` and `state`, as `status()` says it but without a `reason`. A microVM sandbox also says whether it's `running`, which a suspended one is, and if it is, whether it's `suspended`, `startedAt`, and `stopsAt`, 8 hours later, when AWS ends it. A Lambda sandbox is billed only while a command runs, so it has neither.
 
 ## Meta
 
