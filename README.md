@@ -181,6 +181,10 @@ secrets: |
 Syntax, precedence, comments and quoting, multi-line secrets and errors:
 [docs/secrets.md](docs/secrets.md).
 
+`rowdy secrets <dir>` reads the same `--secrets` and writes each one to a file of its own in `<dir>`,
+named for it, for a `docker build`'s secrets. A name that isn't letters, digits and `_` is skipped,
+as is an empty value. The GitHub Action uses it to make a Dockerfile's secrets available to its build.
+
 ## Runtime environment
 
 On deploy, rowdy copies the image into ECR and adds itself as a layer (`/usr/local/bin/rowdy`).
