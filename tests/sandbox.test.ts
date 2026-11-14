@@ -1172,6 +1172,28 @@ describe('sandbox', () => {
 
       await expect(call(sandbox)).rejects.toThrow(new SandboxError('files are not implemented on runtime aws.lambda'));
     });
+
+    it('rejects url on Lambda', async () => {
+      const sandbox = await Sandbox.create({ runtime: 'aws.lambda' });
+
+      await expect(sandbox.url(8080)).rejects.toThrow(new SandboxError('url is not implemented on runtime aws.lambda'));
+    });
+
+    it('asks for a 60 minute token unless told otherwise', async () => {
+      microvm();
+      const url = jest
+        .spyOn(MicrovmCompute.prototype, 'url')
+        .mockReturnValue(of({ url: 'https://vm.example', headers: {}, expiresAt: new Date(0) }));
+      const sandbox = await Sandbox.create();
+
+      await sandbox.url();
+      await sandbox.url(3000, { expiresIn: 5 });
+
+      expect(url.mock.calls.map(([port, minutes]) => [port, minutes])).toEqual([
+        [undefined, 60],
+        [3000, 5],
+      ]);
+    });
   });
 
   describe('a detached command', () => {

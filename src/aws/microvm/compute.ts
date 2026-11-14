@@ -49,7 +49,7 @@ import {
   EMPTY,
   ignoreElements,
 } from 'rxjs';
-import type { AwsSandboxOptions, FileRange, SandboxStatus, SandboxSummary } from '../../sandbox';
+import type { AwsSandboxOptions, FileRange, SandboxStatus, SandboxSummary, SandboxUrl } from '../../sandbox';
 import { Exec, ExecOutput, ExecOutputOptions } from '../../api/types';
 import type { SandboxEnvironment } from '../../sandbox/internal/environment';
 import { Logger } from '../../log';
@@ -574,6 +574,35 @@ export class MicrovmCompute extends AwsClientLogger implements SandboxCompute {
       switchMap(async (response) => {
         if (response.status !== 204) throw new Error(`Making ${path} failed: ${await response.text()}`);
       })
+    );
+  }
+
+  url(port: number = HOOKS_PORT, minutes: number, signal: AbortSignal): Observable<SandboxUrl> {
+    if (!Number.isInteger(port) || port < 1 || port > 65535) {
+      return throwError(() => new SandboxError(`Not a port this sandbox can serve: ${port}`));
+    }
+    if (!Number.isInteger(minutes) || minutes < 1 || minutes > 60) {
+      return throwError(() => new SandboxError(`expiresIn is 1 to 60 minutes, not ${minutes}`));
+    }
+    return defer(() => this.vm()).pipe(
+      switchMap(({ microvmId, endpoint }) =>
+        defer(() =>
+          this.microvms.send(
+            new CreateMicrovmAuthTokenCommand({
+              microvmIdentifier: microvmId,
+              expirationInMinutes: minutes,
+              allowedPorts: [{ port }],
+            }),
+            { abortSignal: signal }
+          )
+        ).pipe(
+          map(({ authToken }) => ({
+            url: `https://${endpoint}`,
+            headers: { ...authToken, 'X-aws-proxy-port': `${port}` },
+            expiresAt: new Date(Date.now() + minutes * 60_000),
+          }))
+        )
+      )
     );
   }
 

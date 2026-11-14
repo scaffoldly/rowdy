@@ -18,7 +18,7 @@ import {
 import { ROWDY_LAYERS } from '../../api/internal/layers';
 import { Exec, ExecOutput, ExecOutputOptions } from '../../api/types';
 import type { Event } from '../../events';
-import type { AwsSandboxOptions, SandboxStatus, SandboxSummary } from '../../sandbox';
+import type { AwsSandboxOptions, SandboxStatus, SandboxSummary, SandboxUrl } from '../../sandbox';
 import type { ExecSchema } from '../../routes';
 import { ComputeSpec, SandboxCompute, SandboxError } from '../../sandbox/internal/compute';
 import { META_TAG, TAG_KEY_REGEX, TAG_VALUE_REGEX } from '../tags';
@@ -224,5 +224,9 @@ export class LambdaCompute implements SandboxCompute {
 
   mkDir(): Observable<void> {
     return throwError(() => new SandboxError('files are not implemented on runtime aws.lambda'));
+  }
+
+  url(): Observable<SandboxUrl> {
+    return throwError(() => new SandboxError('url is not implemented on runtime aws.lambda'));
   }
 }
