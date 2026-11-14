@@ -245,6 +245,18 @@ export interface Sandbox {
    */
   url(port?: number, options?: UrlOptions): Promise<SandboxUrl>;
   /**
+   * Suspends its VM, keeping memory, files and running processes, and resolves once it's suspended. It isn't billed for
+   * compute while suspended. A command in progress rejects. Safe to call more than once. `runtime: 'aws.lambda'`
+   * rejects.
+   */
+  suspend(): Promise<void>;
+  /**
+   * Resumes its VM, and resolves once it's running. A request to a suspended VM resumes it too, so this is for being
+   * ready ahead of one. A sandbox from an image with no VM starts one, as a command would. `runtime: 'aws.lambda'`
+   * rejects.
+   */
+  resume(): Promise<void>;
+  /**
    * Ends everything running in this sandbox, including a command in progress, and everything a `Sandbox.get` of it
    * started. Safe to call more than once. The next command starts it again. `runtime: 'aws.lambda'` rejects for now.
    */
@@ -276,6 +288,8 @@ export interface SandboxPromise
       | 'readFileToBuffer'
       | 'mkDir'
       | 'url'
+      | 'suspend'
+      | 'resume'
       | 'status'
       | 'stop'
       | 'delete'

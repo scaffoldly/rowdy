@@ -449,6 +449,18 @@ export class SandboxImpl implements Sandbox {
     });
   }
 
+  async suspend(): Promise<void> {
+    await lastValueFrom(this.compute.suspend()).catch((error) => {
+      throw humanize(error);
+    });
+  }
+
+  async resume(): Promise<void> {
+    await lastValueFrom(this.compute.resume()).catch((error) => {
+      throw humanize(error);
+    });
+  }
+
   async status(): Promise<SandboxStatus> {
     return lastValueFrom(this.compute.status()).catch((error) => {
       throw humanize(error);

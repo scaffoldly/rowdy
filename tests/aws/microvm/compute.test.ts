@@ -1144,6 +1144,102 @@ describe('aws microvm compute', () => {
       });
     });
 
+    describe('suspend', () => {
+      const suspend = (compute: MicrovmCompute): Promise<MicrovmCompute> => lastValueFrom(compute.suspend());
+      const suspended = (sent: Sent[]): unknown[] =>
+        sent.filter(({ name }) => name === 'SuspendMicrovmCommand').map(({ input }) => input.microvmIdentifier);
+
+      it('suspends what is live, and waits until it is', async () => {
+        const states = ['SUSPENDING', 'SUSPENDED'];
+        const { compute, sent } = running({
+          GetMicrovmCommand: () => ({ state: states.shift() }),
+          ListMicrovmsCommand: () => ({
+            items: [
+              { microvmId: 'a', state: 'RUNNING' },
+              { microvmId: 'c', state: 'TERMINATED' },
+            ],
+          }),
+          SuspendMicrovmCommand: () => ({}),
+        });
+
+        await expect(suspend(compute)).resolves.toBe(compute);
+
+        expect(suspended(sent)).toEqual(['a']);
+        expect(names(sent).filter((name) => name === 'GetMicrovmCommand')).toHaveLength(2);
+      });
+
+      it('does nothing with nothing running', async () => {
+        const { compute, sent } = running();
+
+        await expect(suspend(compute)).resolves.toBe(compute);
+        expect(suspended(sent)).toEqual([]);
+      });
+
+      it.each(['ResourceNotFoundException', 'ConflictException'])(
+        'is fine with a VM suspended or ended already: %s',
+        async (name) => {
+          const { compute } = running({
+            GetMicrovmCommand: () => ({ state: 'SUSPENDED' }),
+            ListMicrovmsCommand: () => ({ items: [{ microvmId: 'a', state: 'SUSPENDED' }] }),
+            SuspendMicrovmCommand: () => Promise.reject(missing(name)),
+          });
+
+          await expect(suspend(compute)).resolves.toBe(compute);
+        }
+      );
+
+      it('rejects on any other failure', async () => {
+        const { compute } = running({
+          ListMicrovmsCommand: () => ({ items: [{ microvmId: 'a', state: 'RUNNING' }] }),
+          SuspendMicrovmCommand: () => Promise.reject(missing('AccessDeniedException')),
+        });
+
+        await expect(suspend(compute)).rejects.toThrow('missing');
+      });
+    });
+
+    describe('resume', () => {
+      it('resumes what is suspended, then has its VM', async () => {
+        const states = ['SUSPENDED', 'RUNNING'];
+        const { compute, sent } = running({
+          GetMicrovmCommand: () => ({
+            microvmId: 'a',
+            state: states.shift() ?? 'RUNNING',
+            endpoint: 'vm.example',
+            imageVersion: '1.0',
+            startedAt: STARTED,
+          }),
+          ListMicrovmsCommand: () => ({ items: [{ microvmId: 'a', state: 'SUSPENDED' }] }),
+          ResumeMicrovmCommand: () => ({}),
+        });
+
+        await expect(lastValueFrom(compute.resume())).resolves.toBe(compute);
+
+        expect(sent.filter(({ name }) => name === 'ResumeMicrovmCommand').map(({ input }) => input)).toEqual([
+          { microvmIdentifier: 'a' },
+        ]);
+        expect(names(sent)).not.toContain('RunMicrovmCommand');
+      });
+
+      it('starts a VM when it has none, as a command would', async () => {
+        const { compute, sent } = running();
+
+        await lastValueFrom(compute.resume());
+
+        expect(names(sent)).not.toContain('ResumeMicrovmCommand');
+        expect(names(sent)).toContain('RunMicrovmCommand');
+      });
+
+      it('is fine with a VM running already', async () => {
+        const { compute } = running({
+          ListMicrovmsCommand: () => ({ items: [{ microvmId: 'mvm-1', state: 'RUNNING' }] }),
+          ResumeMicrovmCommand: () => Promise.reject(missing('ConflictException')),
+        });
+
+        await expect(lastValueFrom(compute.resume())).resolves.toBe(compute);
+      });
+    });
+
     describe('stop', () => {
       const stop = (compute: MicrovmCompute): Promise<MicrovmCompute> => lastValueFrom(compute.stop());
       const stopped = (sent: Sent[]): unknown[] =>

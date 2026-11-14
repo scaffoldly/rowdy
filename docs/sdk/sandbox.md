@@ -253,6 +253,29 @@ It takes a `signal`, and starts the sandbox's VM if it has none, as a command wo
 resumes it. A sandbox from an image gets a new VM, and a new URL, once its VM has ended, so ask again after that. On
 `aws.lambda`, it rejects.
 
+## `suspend` and `resume`
+
+On `aws.microvm`, `suspend()` suspends the sandbox's VM and resolves once it's suspended. Its memory, files and
+running processes are kept, and it isn't billed for compute, only for its snapshot. `resume()` resolves once it's
+running again.
+
+```ts
+await sandbox.suspend();
+// ...later, from this process or a `Sandbox.get` of it
+await sandbox.resume();
+```
+
+- **Without calling `resume()`:** a command, a file call or a request to its `url` resumes it on its own, in a few
+  seconds. `resume()` is for having it ready ahead of one.
+- **A command in progress** rejects when its sandbox is suspended. A detached one is suspended with the VM, and goes
+  on after a resume.
+- **A sandbox from an image with no VM:** `suspend()` does nothing, and `resume()` starts one, as a command would.
+- **A prebuilt sandbox whose VM has ended:** `resume()` rejects, as a command would.
+- **How long:** a VM ends 8 hours after it started, suspended or not. A sandbox from an image starts a new one on its
+  next command.
+
+Both are safe to call more than once. On `aws.lambda`, they reject.
+
 ## `stop`
 
 `stop()` ends everything running in the sandbox, including a command in progress, whose `runCommand`

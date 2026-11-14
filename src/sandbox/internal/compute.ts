@@ -45,6 +45,10 @@ export interface SandboxCompute {
   output(cmdId: string, options?: ExecOutputOptions): Observable<ExecOutput>;
   /** Emits once, when nothing is left running. Safe to call more than once. */
   stop(): Observable<this>;
+  /** Emits once, when its VM is suspended, or it has none. Safe to call more than once. */
+  suspend(): Observable<this>;
+  /** Emits once, when its VM is running. */
+  resume(): Observable<this>;
   /** Emits once, when the sandbox and what rowdy made for it are gone. Safe to call more than once. */
   delete(): Observable<this>;
   /** Emits once, with where its build is. */

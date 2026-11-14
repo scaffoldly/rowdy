@@ -1173,6 +1173,14 @@ describe('sandbox', () => {
       await expect(call(sandbox)).rejects.toThrow(new SandboxError('files are not implemented on runtime aws.lambda'));
     });
 
+    it.each(['suspend', 'resume'] as const)('rejects %s on Lambda', async (method) => {
+      const sandbox = await Sandbox.create({ runtime: 'aws.lambda' });
+
+      await expect(sandbox[method]()).rejects.toThrow(
+        new SandboxError(`${method} is not implemented on runtime aws.lambda`)
+      );
+    });
+
     it('rejects url on Lambda', async () => {
       const sandbox = await Sandbox.create({ runtime: 'aws.lambda' });
 

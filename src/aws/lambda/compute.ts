@@ -195,6 +195,14 @@ export class LambdaCompute implements SandboxCompute {
     return throwError(() => new SandboxError('stop is not implemented on runtime aws.lambda'));
   }
 
+  suspend(): Observable<this> {
+    return throwError(() => new SandboxError('suspend is not implemented on runtime aws.lambda'));
+  }
+
+  resume(): Observable<this> {
+    return throwError(() => new SandboxError('resume is not implemented on runtime aws.lambda'));
+  }
+
   status(): Observable<SandboxStatus> {
     return this.lambda$.pipe(
       map((lambda): SandboxStatus => {

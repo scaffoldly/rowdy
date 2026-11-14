@@ -62,6 +62,8 @@ Everything the SDK calls for `aws.microvm`, by what it's for.
         "lambda:GetMicrovm",
         "lambda:ListMicrovms",
         "lambda:TerminateMicrovm",
+        "lambda:SuspendMicrovm",
+        "lambda:ResumeMicrovm",
         "lambda:DeleteMicrovmImage",
         "lambda:CreateMicrovmAuthToken",
         "lambda:ListTags",
