@@ -147,6 +147,28 @@ runs:
         username: ${{ github.actor }}
         password: ${{ github.token }}
 
+    - name: Set up Node.js
+      uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+
+    # Each secret is a file of its own, by rowdy's own parsing of secrets, for the build to mount as a BuildKit secret.
+    # Mounted only into a RUN that asks for one, a secret is never in a layer, the image's config or its history.
+    - name: Write build secrets
+      id: secrets
+      if: ${{ inputs.dockerfile != '' }}
+      shell: bash
+      env:
+        ROWDY_SECRETS: ${{ inputs.secrets }}
+      run: |
+        dir="$RUNNER_TEMP/rowdy-secrets"
+        npx --yes @scaffoldly/rowdy@beta secrets "$dir"
+        {
+          echo "files<<EOF"
+          for file in "$dir"/*; do
+            if [ -f "$file" ]; then echo "$(basename "$file")=$file"; fi
+          done
+          echo "EOF"
+        } >> "$GITHUB_OUTPUT"
+
     - name: Build and push image
       id: build
       if: ${{ inputs.dockerfile != '' }}
@@ -167,6 +189,7 @@ runs:
         outputs: ${{ steps.image.outputs.build == 'true' && format('type=image,name={0},push-by-digest=true,name-canonical=true,push=true,rewrite-timestamp=true', steps.image.outputs.name) || '' }}
         provenance: ${{ steps.image.outputs.build == 'true' && 'false' || '' }}
         build-args: ${{ steps.image.outputs.build == 'true' && 'SOURCE_DATE_EPOCH=0' || '' }}
+        secret-files: ${{ steps.secrets.outputs.files }}
 
     - name: Wait to push again
       if: ${{ steps.build.outcome == 'failure' }}
@@ -192,6 +215,12 @@ runs:
         outputs: ${{ steps.image.outputs.build == 'true' && format('type=image,name={0},push-by-digest=true,name-canonical=true,push=true,rewrite-timestamp=true', steps.image.outputs.name) || '' }}
         provenance: ${{ steps.image.outputs.build == 'true' && 'false' || '' }}
         build-args: ${{ steps.image.outputs.build == 'true' && 'SOURCE_DATE_EPOCH=0' || '' }}
+        secret-files: ${{ steps.secrets.outputs.files }}
+
+    - name: Remove build secrets
+      if: ${{ always() && inputs.dockerfile != '' }}
+      shell: bash
+      run: rm -rf "$RUNNER_TEMP/rowdy-secrets"
 
     - name: Configure AWS Credentials
       if: ${{ inputs.cloud == 'aws' }}
@@ -199,9 +228,6 @@ runs:
       with:
         aws-region: ${{ env.AWS_REGION || 'us-east-1' }}
         role-to-assume: ${{ env.AWS_ROLE_ARN }}
-
-    - name: Set up Node.js
-      uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
 
     - name: Deploy with Rowdy
       id: deploy
