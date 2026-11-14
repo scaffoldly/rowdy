@@ -9,6 +9,7 @@ import {
   paginateListMicrovmImages,
   paginateListMicrovms,
   RunMicrovmCommand,
+  RunMicrovmCommandOutput,
   TerminateMicrovmCommand,
 } from '@aws-sdk/client-lambda-microvms';
 import { GetCallerIdentityCommand, STSClient } from '@aws-sdk/client-sts';
@@ -303,7 +304,6 @@ export class MicrovmCompute extends AwsClientLogger implements SandboxCompute {
         }
 
         const { imageArn, imageVersion } = found;
-        const region = imageArn.split(':')[3];
         let started: string | undefined;
         this.environment.event$.next({
           source: 'sandbox',
@@ -312,30 +312,12 @@ export class MicrovmCompute extends AwsClientLogger implements SandboxCompute {
           message: 'Starting from a prebuilt image',
         });
 
-        const seconds = timeout / 1000;
-        const connector = (id: string): string =>
-          `arn:aws:lambda:${region}:aws:network-connector:aws-network-connector:${id}`;
         return forkJoin({
           bucket: ownedBucket(this.s3, this.log, BUCKET_PREFIX, BUCKET_OWNER),
           // No execution role: code in the VM could read a role's credentials, and with none it has nothing to use.
-          run: defer(() =>
-            this.microvms.send(
-              new RunMicrovmCommand({
-                imageIdentifier: imageArn,
-                imageVersion,
-                ingressNetworkConnectors: [connector('HTTP_INGRESS')],
-                egressNetworkConnectors: [connector('INTERNET_EGRESS')],
-                maximumDurationInSeconds: LIFETIME,
-                // `timeout` without traffic to the endpoint suspends it, a quiet command included. It stays
-                // resumable until its lifetime ends.
-                idlePolicy: {
-                  maxIdleDurationSeconds: Math.min(seconds, LIFETIME),
-                  suspendedDurationSeconds: LIFETIME,
-                  autoResumeEnabled: true,
-                },
-              })
-            )
-          ).pipe(tap(({ microvmId }) => (started = microvmId))),
+          run: this.runVM({ imageIdentifier: imageArn, imageVersion, idle: timeout / 1000 }).pipe(
+            tap(({ microvmId }) => (started = microvmId))
+          ),
         }).pipe(
           switchMap(({ bucket, run: { microvmId: microvmIdentifier } }) =>
             (wait
@@ -673,6 +655,41 @@ export class MicrovmCompute extends AwsClientLogger implements SandboxCompute {
   }
 
   /** This image's VM, started if it has none, and where its command output lands. */
+  /** Starts a VM from an image ARN. It suspends after `idle` seconds without traffic, and stays resumable for its lifetime. */
+  private runVM({
+    imageIdentifier,
+    imageVersion,
+    executionRoleArn,
+    idle,
+  }: {
+    imageIdentifier: string;
+    imageVersion?: string;
+    executionRoleArn?: string;
+    idle: number;
+  }): Observable<RunMicrovmCommandOutput> {
+    const region = imageIdentifier.split(':')[3];
+    const connector = (id: string): string =>
+      `arn:aws:lambda:${region}:aws:network-connector:aws-network-connector:${id}`;
+    return defer(() =>
+      this.microvms.send(
+        new RunMicrovmCommand({
+          imageIdentifier,
+          imageVersion,
+          executionRoleArn,
+          ingressNetworkConnectors: [connector('HTTP_INGRESS')],
+          egressNetworkConnectors: [connector('INTERNET_EGRESS')],
+          maximumDurationInSeconds: LIFETIME,
+          // A quiet command doesn't count as traffic, so it's suspended with the VM.
+          idlePolicy: {
+            maxIdleDurationSeconds: Math.min(idle, LIFETIME),
+            suspendedDurationSeconds: LIFETIME,
+            autoResumeEnabled: true,
+          },
+        })
+      )
+    );
+  }
+
   private vm(): Observable<Vm> {
     // A sandbox started from a prebuilt image is its one VM, and ends with it.
     if (this.record) {
@@ -689,7 +706,6 @@ export class MicrovmCompute extends AwsClientLogger implements SandboxCompute {
       );
     }
     const imageIdentifier = this.imageArn;
-    const region = imageIdentifier.split(':')[3];
 
     const start$ = defer(() => this.microvms.send(new GetMicrovmImageCommand({ imageIdentifier }))).pipe(
       map((image) => {
@@ -707,28 +723,14 @@ export class MicrovmCompute extends AwsClientLogger implements SandboxCompute {
             if (live?.microvmId) return of(live.microvmId);
 
             return from(this.microvms.send(new GetMicrovmImageVersionCommand({ imageIdentifier, imageVersion }))).pipe(
-              switchMap(({ buildRoleArn: executionRoleArn }) => {
-                const seconds = Number(tags?.[TIMEOUT_TAG]) || 900;
-                const connector = (id: string): string =>
-                  `arn:aws:lambda:${region}:aws:network-connector:aws-network-connector:${id}`;
-                return this.microvms.send(
-                  new RunMicrovmCommand({
-                    imageIdentifier,
-                    imageVersion,
-                    executionRoleArn,
-                    ingressNetworkConnectors: [connector('HTTP_INGRESS')],
-                    egressNetworkConnectors: [connector('INTERNET_EGRESS')],
-                    maximumDurationInSeconds: LIFETIME,
-                    // `timeout` without traffic to the endpoint suspends it, a quiet command included. It stays
-                    // resumable until its lifetime ends.
-                    idlePolicy: {
-                      maxIdleDurationSeconds: Math.min(seconds, LIFETIME),
-                      suspendedDurationSeconds: LIFETIME,
-                      autoResumeEnabled: true,
-                    },
-                  })
-                );
-              }),
+              switchMap(({ buildRoleArn: executionRoleArn }) =>
+                this.runVM({
+                  imageIdentifier,
+                  imageVersion,
+                  executionRoleArn,
+                  idle: Number(tags?.[TIMEOUT_TAG]) || 900,
+                })
+              ),
               map(({ microvmId }) => microvmId!)
             );
           })

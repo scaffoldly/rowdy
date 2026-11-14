@@ -185,7 +185,7 @@ describe('aws microvm compute from a prebuilt image', () => {
       await lastValueFrom(compute.create(SPEC));
 
       const run = input(sent, 'RunMicrovmCommand');
-      expect(run).not.toHaveProperty('executionRoleArn');
+      expect(run?.executionRoleArn).toBeUndefined();
       expect(run).not.toHaveProperty('logging');
       expect(names(sent)).not.toEqual(
         expect.arrayContaining([expect.stringMatching(/^(CreateRole|PutRolePolicy|CreateLogGroup)Command$/)])
