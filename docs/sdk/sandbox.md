@@ -258,7 +258,7 @@ resumes it. A sandbox from an image gets a new VM, and a new URL, once its VM ha
 
 On `aws.microvm`, `suspend()` suspends the sandbox's VM and resolves once it's suspended. Its memory, files and
 running processes are kept, and it isn't billed for compute, only for its snapshot. `resume()` resolves once it's
-running again.
+running again. Both resolve to the sandbox's `status()` afterwards, as `stop()` does.
 
 ```ts
 await sandbox.suspend();
@@ -281,7 +281,7 @@ Both are safe to call more than once. On `aws.lambda`, they reject.
 
 `stop()` ends everything running in the sandbox, including a command in progress, whose `runCommand`
 rejects. That covers anything started through a `Sandbox.get` of it, in any process. It's safe to call
-more than once.
+more than once. It resolves to the sandbox's `status()` afterwards, with `running: false`.
 
 The sandbox itself stays. The next command starts a new VM from the image, without the old one's files.
 
@@ -337,7 +337,7 @@ const running = (await Sandbox.list({ runtime: 'aws.microvm' })).filter(({ runni
 | `meta`    | Only sandboxes whose `meta` has every one of these entries. |
 | `signal`  | Rejects the listing.                                        |
 
-Each has its `sandboxId`, `name`, `runtime`, `meta` and `state`, as `status()` says it but without a `reason`. A microVM sandbox also says whether it's `running`, which a suspended one is, and if it is, whether it's `suspended`, `startedAt`, and `stopsAt`, 8 hours later, when AWS ends it. A Lambda sandbox is billed only while a command runs, so it has neither.
+Each is a `SandboxStatus`, the same as `status()` gives: its `sandboxId`, `name`, `runtime`, `meta` and `state`, with a `reason` when it failed. A microVM sandbox also says whether it's `running`, which a suspended one is, and if it is, whether it's `suspended`, `startedAt`, and `stopsAt`, 8 hours later, when AWS ends it. A Lambda sandbox is billed only while a command runs, so it has neither.
 
 ## Meta
 

@@ -1004,12 +1004,28 @@ describe('aws microvm compute', () => {
         });
 
         expect(await status(compute)).toEqual({
+          sandboxId: 'sandbox-box',
+          name: 'sandbox-box',
+          runtime: 'aws.microvm',
+          meta: {},
           state: 'ready',
           running: true,
           suspended,
           startedAt: STARTED,
           stopsAt: new Date(STARTED.getTime() + 28_800_000),
         });
+      });
+
+      it("says its meta from the image's tags", async () => {
+        const { compute } = running({
+          GetMicrovmImageCommand: () => ({
+            state: 'CREATED',
+            latestActiveImageVersion: '1.0',
+            tags: { 'run.rowdy.meta.sub': 'github:1', 'run.rowdy.timeout': '600' },
+          }),
+        });
+
+        expect(await status(compute)).toMatchObject({ meta: { sub: 'github:1' } });
       });
 
       it('says why a build failed', async () => {

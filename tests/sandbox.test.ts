@@ -85,7 +85,9 @@ describe('sandbox', () => {
     jest.spyOn(LambdaFunction.prototype, 'withArn').mockImplementation(missing);
     // Where a build is, as AWS would say for one that's done.
     [MicrovmCompute, LambdaCompute].forEach((compute) =>
-      jest.spyOn(compute.prototype, 'status').mockReturnValue(of({ state: 'ready' as const }))
+      jest
+        .spyOn(compute.prototype, 'status')
+        .mockReturnValue(of({ sandboxId: 'box', name: 'box', runtime: 'aws.microvm', meta: {}, state: 'ready' }))
     );
   });
 
@@ -1193,6 +1195,24 @@ describe('sandbox', () => {
       await expect(call(sandbox)).rejects.toThrow(new SandboxError('files are not implemented on runtime aws.lambda'));
     });
 
+    it.each(['suspend', 'resume', 'stop'] as const)('resolves %s to its status after', async (method) => {
+      microvm();
+      const order: string[] = [];
+      jest.spyOn(MicrovmCompute.prototype, method).mockImplementation(function (this: MicrovmCompute) {
+        order.push(method);
+        return of(this);
+      });
+      jest.spyOn(MicrovmCompute.prototype, 'status').mockImplementation(() => {
+        order.push('status');
+        return of({ sandboxId: 'box', name: 'box', runtime: 'aws.microvm', meta: {}, state: 'ready', suspended: true });
+      });
+      const sandbox = await Sandbox.create();
+      order.length = 0;
+
+      await expect(sandbox[method]()).resolves.toMatchObject({ sandboxId: 'box', suspended: true });
+      expect(order).toEqual([method, 'status']);
+    });
+
     it.each(['suspend', 'resume'] as const)('rejects %s on Lambda', async (method) => {
       const sandbox = await Sandbox.create({ runtime: 'aws.lambda' });
 
@@ -1287,7 +1307,7 @@ describe('sandbox', () => {
       });
       const sandbox = await Sandbox.create({ runtime: 'aws.microvm' });
 
-      await expect(sandbox.stop()).resolves.toBeUndefined();
+      await expect(sandbox.stop()).resolves.toMatchObject({ sandboxId: 'box' });
 
       expect(stop).toHaveBeenCalledTimes(1);
     });

@@ -14,7 +14,6 @@ import type {
   SandboxLookup,
   SandboxOptions,
   SandboxStatus,
-  SandboxSummary,
   SandboxUrl,
   UrlOptions,
   Event,
@@ -280,7 +279,7 @@ export class SandboxImpl implements Sandbox {
     );
   }
 
-  static list({ runtime, meta = {}, credentials, signal }: SandboxListOptions = {}): Promise<SandboxSummary[]> {
+  static list({ runtime, meta = {}, credentials, signal }: SandboxListOptions = {}): Promise<SandboxStatus[]> {
     // A host's stdout is its own.
     new Logger('sandbox').withSink('stderr');
     const runtimes = runtime ? [runtime] : (Object.keys(RUNTIMES) as (keyof typeof RUNTIMES)[]);
@@ -443,20 +442,20 @@ export class SandboxImpl implements Sandbox {
     });
   }
 
-  async stop(): Promise<void> {
-    await lastValueFrom(this.compute.stop()).catch((error) => {
+  async stop(): Promise<SandboxStatus> {
+    return lastValueFrom(this.compute.stop().pipe(switchMap(() => this.compute.status()))).catch((error) => {
       throw humanize(error);
     });
   }
 
-  async suspend(): Promise<void> {
-    await lastValueFrom(this.compute.suspend()).catch((error) => {
+  async suspend(): Promise<SandboxStatus> {
+    return lastValueFrom(this.compute.suspend().pipe(switchMap(() => this.compute.status()))).catch((error) => {
       throw humanize(error);
     });
   }
 
-  async resume(): Promise<void> {
-    await lastValueFrom(this.compute.resume()).catch((error) => {
+  async resume(): Promise<SandboxStatus> {
+    return lastValueFrom(this.compute.resume().pipe(switchMap(() => this.compute.status()))).catch((error) => {
       throw humanize(error);
     });
   }
@@ -514,7 +513,10 @@ export class SandboxImpl implements Sandbox {
     if (this.compute.stoppable) {
       this.environment.signal.addEventListener(
         'abort',
-        () => void this.stop().catch((error) => this.environment.log.warn('Sandbox Stop Failed', { error })),
+        () =>
+          void lastValueFrom(this.compute.stop()).catch((error) =>
+            this.environment.log.warn('Sandbox Stop Failed', { error })
+          ),
         { once: true }
       );
     }
@@ -523,7 +525,7 @@ export class SandboxImpl implements Sandbox {
 
   // Ctrl+C would otherwise end this process and leave the VM running, and billing, until its timeout.
   private interrupted(): void {
-    this.stop()
+    lastValueFrom(this.compute.stop())
       .catch((error) => this.environment.log.warn('Sandbox Stop Failed', { error }))
       .finally(() => {
         // A host with its own handler decides how it exits.

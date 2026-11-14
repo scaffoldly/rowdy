@@ -2,7 +2,7 @@ import type { Observable } from 'rxjs';
 import type { Exec, ExecOutput, ExecOutputOptions } from '../../api/types';
 import type { SandboxEnvironment } from './environment';
 import type { Event } from '../../events';
-import type { AwsSandboxOptions, FileRange, SandboxStatus, SandboxSummary, SandboxUrl } from '..';
+import type { AwsSandboxOptions, FileRange, SandboxStatus, SandboxUrl } from '..';
 import type { ExecSchema } from '../../routes';
 
 /** A sandbox can't do this, and trying again won't change that. */
@@ -72,5 +72,5 @@ export interface SandboxComputeClass {
   /** Throws for a spec this compute can't run, before anything reaches AWS. */
   assert(spec: Pick<ComputeSpec, 'timeout' | 'memory' | 'env' | 'meta'>): void;
   /** Each sandbox on this compute, once. */
-  list(credentials?: AwsSandboxOptions['credentials']): Observable<SandboxSummary>;
+  list(credentials?: AwsSandboxOptions['credentials']): Observable<SandboxStatus>;
 }

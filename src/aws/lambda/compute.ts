@@ -18,7 +18,7 @@ import {
 import { ROWDY_LAYERS } from '../../api/internal/layers';
 import { Exec, ExecOutput, ExecOutputOptions } from '../../api/types';
 import type { Event } from '../../events';
-import type { AwsSandboxOptions, SandboxStatus, SandboxSummary, SandboxUrl } from '../../sandbox';
+import type { AwsSandboxOptions, SandboxStatus, SandboxUrl } from '../../sandbox';
 import type { ExecSchema } from '../../routes';
 import { ComputeSpec, SandboxCompute, SandboxError } from '../../sandbox/internal/compute';
 import { META_TAG, TAG_KEY_REGEX, TAG_VALUE_REGEX } from '../tags';
@@ -52,7 +52,7 @@ export class LambdaCompute implements SandboxCompute {
     });
   }
 
-  static list(credentials?: AwsSandboxOptions['credentials']): Observable<SandboxSummary> {
+  static list(credentials?: AwsSandboxOptions['credentials']): Observable<SandboxStatus> {
     const lambda = new LambdaClient({ credentials });
     return from(paginateListFunctions({ client: lambda }, {})).pipe(
       concatMap(({ Functions = [] }) => Functions),
@@ -62,7 +62,7 @@ export class LambdaCompute implements SandboxCompute {
         ({ FunctionArn, FunctionName, State }) =>
           from(lambda.send(new ListTagsCommand({ Resource: FunctionArn }))).pipe(
             map(
-              ({ Tags }): SandboxSummary => ({
+              ({ Tags }): SandboxStatus => ({
                 sandboxId: FunctionName!,
                 name: FunctionName!,
                 runtime: 'aws.lambda',
@@ -206,9 +206,20 @@ export class LambdaCompute implements SandboxCompute {
   status(): Observable<SandboxStatus> {
     return this.lambda$.pipe(
       map((lambda): SandboxStatus => {
-        const { State, StateReason } = lambda.Status.Configuration ?? {};
-        if (State === 'Failed') return { state: 'failed', reason: StateReason };
-        return { state: State === 'Pending' ? 'building' : 'ready' };
+        const { Configuration, Tags } = lambda.Status;
+        const { State, StateReason } = Configuration ?? {};
+        return {
+          sandboxId: this.sandboxId,
+          name: this.sandboxId,
+          runtime: 'aws.lambda',
+          meta: Object.fromEntries(
+            Object.entries(Tags ?? {})
+              .filter(([key]) => key.startsWith(META_TAG))
+              .map(([key, value]) => [key.slice(META_TAG.length), value])
+          ),
+          state: State === 'Failed' ? 'failed' : State === 'Pending' ? 'building' : 'ready',
+          ...(State === 'Failed' ? { reason: StateReason } : {}),
+        };
       })
     );
   }
