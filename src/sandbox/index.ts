@@ -84,10 +84,16 @@ export type { Event, EventCallback } from '../events';
 export type { AwsCredentials } from '../aws/credentials';
 export * from './core';
 
-/** A sandbox as `status()`, `Sandbox.list` and its lifecycle methods find it. */
+/**
+ * A sandbox as AWS says it is now: what `status()` gives, each of `Sandbox.list`'s results, and what `stop()`,
+ * `suspend()` and `resume()` resolve to once they're done. The VM's fields are set on `aws.microvm` only.
+ */
 export interface SandboxStatus {
+  /** What `Sandbox.get` and `Sandbox.delete` take. A prebuilt sandbox's is its VM's id, `microvm-…`. */
   sandboxId: string;
+  /** `{name}-{suffix}`, from `create`'s `name`. The same as `sandboxId`, except for a prebuilt sandbox. */
   name: string;
+  /** Where it runs. */
   runtime: NonNullable<SandboxOptions['runtime']>;
   /** What `create` was given as `meta`. */
   meta: Record<string, string>;
