@@ -65,6 +65,9 @@ import { BUCKET_OWNER, BUCKET_PREFIX, COMPUTE_TAG, MicrovmImage, POLL, TIMEOUT_T
 
 const DEAD: ReadonlyArray<string> = ['TERMINATING', 'TERMINATED'];
 
+/** Seconds a VM exists, running or suspended. AWS's most, and not adjustable. */
+const LIFETIME = 28_800;
+
 export { POLL };
 
 /** How often a command's file in the VM is read again while `output` waits for more, in milliseconds. */
@@ -148,7 +151,7 @@ export class MicrovmCompute extends AwsClientLogger implements SandboxCompute {
                 runtime: 'aws.microvm',
                 running: !!live,
                 startedAt: live ? startedAt : undefined,
-                stopsAt: live ? new Date(startedAt.getTime() + record.timeout) : undefined,
+                stopsAt: live ? new Date(startedAt.getTime() + LIFETIME * 1000) : undefined,
                 meta: record.meta,
                 state: 'ready',
               };
@@ -166,15 +169,13 @@ export class MicrovmCompute extends AwsClientLogger implements SandboxCompute {
                     const [live] = vms.filter(
                       ({ imageArn: arn, state }) => arn === imageArn && state && !DEAD.includes(state)
                     );
-                    const seconds = Number(Tags?.[TIMEOUT_TAG]);
                     return {
                       sandboxId: name!,
                       name: name!,
                       runtime: 'aws.microvm',
                       running: !!live,
                       startedAt: live?.startedAt,
-                      stopsAt:
-                        live?.startedAt && seconds ? new Date(live.startedAt.getTime() + seconds * 1000) : undefined,
+                      stopsAt: live?.startedAt ? new Date(live.startedAt.getTime() + LIFETIME * 1000) : undefined,
                       meta: Object.fromEntries(
                         Object.entries(Tags ?? {})
                           .filter(([key]) => key.startsWith(META_TAG))
@@ -324,11 +325,12 @@ export class MicrovmCompute extends AwsClientLogger implements SandboxCompute {
                 imageVersion,
                 ingressNetworkConnectors: [connector('HTTP_INGRESS')],
                 egressNetworkConnectors: [connector('INTERNET_EGRESS')],
-                maximumDurationInSeconds: seconds,
-                // Output doesn't count as traffic, so a quiet command must not look idle.
+                maximumDurationInSeconds: LIFETIME,
+                // `timeout` without traffic to the endpoint suspends it, a quiet command included. It stays
+                // resumable until its lifetime ends.
                 idlePolicy: {
-                  maxIdleDurationSeconds: Math.min(seconds, 28_800),
-                  suspendedDurationSeconds: 60,
+                  maxIdleDurationSeconds: Math.min(seconds, LIFETIME),
+                  suspendedDurationSeconds: LIFETIME,
                   autoResumeEnabled: true,
                 },
               })
@@ -716,11 +718,12 @@ export class MicrovmCompute extends AwsClientLogger implements SandboxCompute {
                     executionRoleArn,
                     ingressNetworkConnectors: [connector('HTTP_INGRESS')],
                     egressNetworkConnectors: [connector('INTERNET_EGRESS')],
-                    maximumDurationInSeconds: seconds,
-                    // Output doesn't count as traffic, so a quiet command must not look idle.
+                    maximumDurationInSeconds: LIFETIME,
+                    // `timeout` without traffic to the endpoint suspends it, a quiet command included. It stays
+                    // resumable until its lifetime ends.
                     idlePolicy: {
-                      maxIdleDurationSeconds: Math.min(seconds, 28_800),
-                      suspendedDurationSeconds: 60,
+                      maxIdleDurationSeconds: Math.min(seconds, LIFETIME),
+                      suspendedDurationSeconds: LIFETIME,
                       autoResumeEnabled: true,
                     },
                   })

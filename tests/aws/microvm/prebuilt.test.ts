@@ -173,7 +173,8 @@ describe('aws microvm compute from a prebuilt image', () => {
       expect(names(sent)).not.toContain('UpdateMicrovmImageCommand');
       expect(input(sent, 'RunMicrovmCommand')).toMatchObject({
         imageVersion: '1',
-        maximumDurationInSeconds: 300,
+        maximumDurationInSeconds: 28_800,
+        idlePolicy: { maxIdleDurationSeconds: 300, suspendedDurationSeconds: 28_800, autoResumeEnabled: true },
       });
       expect(events).toContainEqual(expect.objectContaining({ source: 'sandbox', type: 'prebuilt' }));
     });

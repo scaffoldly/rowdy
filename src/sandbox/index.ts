@@ -67,7 +67,10 @@ export interface LambdaSandboxOptions extends BaseSandboxOptions, AwsSandboxOpti
 export interface MicrovmSandboxOptions extends BaseSandboxOptions, AwsSandboxOptions {
   /** Where the sandbox runs. Defaults to `aws.microvm`. */
   runtime?: 'aws.microvm';
-  /** Milliseconds until the sandbox stops: whole seconds, 1000 to 28800000. */
+  /**
+   * Milliseconds without traffic to the VM before it suspends: whole seconds, 1000 to 28800000. A suspended VM resumes
+   * on its next request, until 8 hours after it started, when AWS ends it either way.
+   */
   timeout?: number;
   /** Baseline memory in megabytes. */
   memory?: (typeof MICROVM_MEMORY)[number];
