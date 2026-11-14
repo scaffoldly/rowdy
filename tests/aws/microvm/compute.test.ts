@@ -829,6 +829,73 @@ describe('aws microvm compute', () => {
       });
     });
 
+    describe("the hooks port's token", () => {
+      const { signal } = new AbortController();
+      const tokens = (sent: Sent[]): Sent[] => sent.filter(({ name }) => name === 'CreateMicrovmAuthTokenCommand');
+      const mkDir = (compute: MicrovmCompute): Promise<void> =>
+        lastValueFrom(compute.mkDir('d', signal), { defaultValue: undefined });
+      const answering = (...statuses: number[]) => {
+        const built = running();
+        built.fetch.mockImplementation(async () => new Response(null, { status: statuses.shift() ?? 204 }));
+        return built;
+      };
+
+      it('is asked for once, for an hour, and replayed to each request', async () => {
+        const { compute, sent, fetch } = answering();
+
+        await mkDir(compute);
+        await mkDir(compute);
+        await mkDir(compute);
+
+        expect(tokens(sent).map(({ input }) => input)).toEqual([
+          { microvmIdentifier: 'mvm-1', expirationInMinutes: 60, allowedPorts: [{ port: HOOKS_PORT }] },
+        ]);
+        expect(fetch).toHaveBeenCalledTimes(3);
+      });
+
+      it('is asked for again once half its life is gone', async () => {
+        jest.useFakeTimers({ doNotFake: ['nextTick', 'setImmediate', 'queueMicrotask'] });
+        try {
+          const { compute, sent } = answering();
+
+          await mkDir(compute);
+          await jest.advanceTimersByTimeAsync(29 * 60_000);
+          await mkDir(compute);
+          expect(tokens(sent)).toHaveLength(1);
+
+          await jest.advanceTimersByTimeAsync(2 * 60_000);
+          await mkDir(compute);
+          expect(tokens(sent)).toHaveLength(2);
+        } finally {
+          jest.useRealTimers();
+        }
+      });
+
+      it('is asked for again after a failed ask', async () => {
+        const { compute, sent } = running({
+          CreateMicrovmAuthTokenCommand: jest
+            .fn()
+            .mockRejectedValueOnce(missing('ThrottlingException'))
+            .mockResolvedValue({ authToken: { 'X-aws-proxy-auth': 'token' } }),
+        });
+
+        await expect(mkDir(compute)).rejects.toThrow('missing');
+        await mkDir(compute).catch(() => undefined);
+
+        expect(tokens(sent)).toHaveLength(2);
+      });
+
+      it('is asked for again after AWS refuses it', async () => {
+        const { compute, sent } = answering(403, 204, 204);
+
+        await mkDir(compute).catch(() => undefined);
+        await mkDir(compute);
+        await mkDir(compute);
+
+        expect(tokens(sent)).toHaveLength(2);
+      });
+    });
+
     describe('url', () => {
       const { signal } = new AbortController();
 
