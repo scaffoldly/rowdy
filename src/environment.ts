@@ -453,6 +453,11 @@ export class Environment implements ILoggable {
                           choices: MICROVM_MEMORY,
                           default: DEFAULTS.memory,
                         })
+                        .option('dockerfile', {
+                          type: 'string',
+                          description:
+                            "The Dockerfile the image was built from: its last stage's FROM is tagged on the build",
+                        })
                         .option('platform', {
                           type: 'string',
                           description: 'The platform to build for, from a multi-platform image',
@@ -466,6 +471,7 @@ export class Environment implements ILoggable {
                         .withPlatform(argv.platform)
                         .withMemory(argv.memory)
                         .withPrebuild();
+                      if (argv.dockerfile) image.withDockerfile(argv.dockerfile);
 
                       this._subscriptions.push(
                         environment.event$.subscribe(

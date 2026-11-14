@@ -141,6 +141,7 @@
     "auth-header": "^1.0.0",
     "axios": "^1.12.2",
     "data-urls": "^6.0.0",
+    "dockerfile-ast": "^0.7.1",
     "dotenv": "^18.0.6",
     "eslint": "^9.0.0",
     "eslint-config-prettier": "^10.1.5",

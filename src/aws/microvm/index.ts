@@ -24,6 +24,8 @@ import {
 } from '@aws-sdk/client-lambda-microvms';
 import { GetCallerIdentityCommand, STSClient } from '@aws-sdk/client-sts';
 import { createHash } from 'crypto';
+import { DockerfileParser } from 'dockerfile-ast';
+import { readFileSync } from 'fs';
 import { zipSync } from 'fflate';
 import promiseRetry from 'promise-retry';
 import {
@@ -157,6 +159,7 @@ export class MicrovmImage extends AwsResource {
   private Wait = new BehaviorSubject<boolean>(true);
   private Platform = new BehaviorSubject<NonNullable<PullImageOptions['platform']>>('linux/amd64');
   private Prebuild = new BehaviorSubject<boolean>(false);
+  private BuiltFrom = new BehaviorSubject<string | undefined>(undefined);
 
   // Resource Properties
   private ImageArn = new ReplaySubject<string | undefined>(1);
@@ -259,6 +262,12 @@ export class MicrovmImage extends AwsResource {
   /** The platform its image is copied for, from a multi-platform index, and so its architecture. */
   withPlatform(platform: NonNullable<PullImageOptions['platform']>): this {
     this.Platform.next(platform);
+    return this;
+  }
+
+  /** The Dockerfile its image was built from, whose last stage's FROM a prebuilt image is tagged with. */
+  withDockerfile(path: string): this {
+    this.BuiltFrom.next(path);
     return this;
   }
 
@@ -547,8 +556,38 @@ export class MicrovmImage extends AwsResource {
         })
       ),
       base: this.baseImage(architecture),
+      // The Dockerfile's last stage's FROM, with its digest for this platform. Not one it can't know, like an earlier
+      // stage, scratch or an ARG with no default, and none at all if it can't be read: it's only a tag.
+      from: defer(() => {
+        const path = this.BuiltFrom.getValue();
+        if (!path) return of(undefined);
+        const dockerfile = DockerfileParser.parse(readFileSync(path, 'utf8'));
+        const froms = dockerfile.getFROMs();
+        const last = froms[froms.length - 1];
+        const line = last?.getRange().start.line ?? 0;
+        let unknown = false;
+        const ref = (last?.getImage() ?? '').replace(/\$\{?([A-Za-z_][A-Za-z0-9_]*)\}?/g, (_, variable: string) => {
+          const value = dockerfile.resolveVariable(variable, line);
+          if (value === null || value === undefined) unknown = true;
+          return value ?? '';
+        });
+        const stages = froms.slice(0, -1).map((from) => from.getBuildStage()?.toLowerCase());
+        if (!ref || unknown || ref.toLowerCase() === 'scratch' || stages.includes(ref.toLowerCase())) {
+          return of(undefined);
+        }
+        return of(ref).pipe(
+          Transfer.normalize(),
+          Transfer.collect(this.log, this.environment.http, [], Platform),
+          map(({ index }) => ({ name: ref, digest: index.manifests?.[0]?.digest }))
+        );
+      }).pipe(
+        catchError((error) => {
+          this.log.warn('Dockerfile Base Unknown', { error: `${error?.message ?? error}` });
+          return of(undefined);
+        })
+      ),
     }).pipe(
-      map(({ pulled, base: { imageArn: baseImageArn, imageVersion: baseImageVersion } }) => {
+      map(({ pulled, base: { imageArn: baseImageArn, imageVersion: baseImageVersion }, from }) => {
         const { Image, Source, Layers = [] } = pulled;
         const Dockerfile = `FROM ${pulled.ImageUri}\nENTRYPOINT ["${ROWDY_BIN}"]\n`;
         if (!Source?.digest) {
@@ -596,9 +635,11 @@ export class MicrovmImage extends AwsResource {
         Layers.forEach(({ from, digest }, index) => (tags[`layer.${index}`] = `${from}@${digest}`));
         tags.rowdy = this.environment.version;
         tags.built = new Date().toISOString().replace(/\.\d+Z$/, 'Z');
-        if (Source.base && TAG_VALUE_REGEX.test(Source.base.name)) {
-          tags.from = Source.base.name;
-          if (Source.base.digest) tags['from.sha256'] = Source.base.digest.replace(/^sha256:/, '');
+        // From its Dockerfile when given, else from the annotations of a build that set them.
+        const base = from ?? Source.base;
+        if (base && TAG_VALUE_REGEX.test(base.name)) {
+          tags.from = base.name;
+          if (base.digest) tags['from.sha256'] = base.digest.replace(/^sha256:/, '');
         }
         const name = `${spec.sha256.slice(0, 40)}-${hash.slice(0, 23)}`;
         this.log.info(
