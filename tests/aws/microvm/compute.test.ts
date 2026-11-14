@@ -854,16 +854,21 @@ describe('aws microvm compute', () => {
       });
 
       it('is asked for again once half its life is gone', async () => {
-        const now = jest.spyOn(Date, 'now');
-        const { compute, sent } = answering();
+        jest.useFakeTimers({ doNotFake: ['nextTick', 'setImmediate', 'queueMicrotask'] });
+        try {
+          const { compute, sent } = answering();
 
-        await mkDir(compute);
-        now.mockReturnValue(Date.now() + 29 * 60_000);
-        await mkDir(compute);
-        now.mockReturnValue(Date.now() + 31 * 60_000);
-        await mkDir(compute);
+          await mkDir(compute);
+          await jest.advanceTimersByTimeAsync(29 * 60_000);
+          await mkDir(compute);
+          expect(tokens(sent)).toHaveLength(1);
 
-        expect(tokens(sent)).toHaveLength(2);
+          await jest.advanceTimersByTimeAsync(2 * 60_000);
+          await mkDir(compute);
+          expect(tokens(sent)).toHaveLength(2);
+        } finally {
+          jest.useRealTimers();
+        }
       });
 
       it('is asked for again after a failed ask', async () => {

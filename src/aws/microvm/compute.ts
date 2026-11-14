@@ -39,6 +39,7 @@ import {
   Observable,
   of,
   repeat,
+  share,
   shareReplay,
   switchMap,
   fromEvent,
@@ -49,6 +50,7 @@ import {
   timer,
   toArray,
   EMPTY,
+  ReplaySubject,
   ignoreElements,
 } from 'rxjs';
 import type { AwsSandboxOptions, FileRange, SandboxStatus, SandboxUrl } from '../../sandbox';
@@ -239,7 +241,7 @@ export class MicrovmCompute extends AwsClientLogger implements SandboxCompute {
   private image = new MicrovmImage(this.environment);
   private commands = new Set<AbortController>();
   // Each VM's token for the hooks port, asked for on first use and replayed until half its life is gone.
-  private hooksTokens = new Map<string, { token$: Observable<Record<string, string>>; halfLife: number }>();
+  private hooksTokens = new Map<string, Observable<Record<string, string>>>();
 
   constructor(private environment: SandboxEnvironment) {
     super();
@@ -924,32 +926,30 @@ export class MicrovmCompute extends AwsClientLogger implements SandboxCompute {
     path: string,
     init: Omit<RequestInit, 'headers'> & { headers?: Record<string, string>; signal: AbortSignal }
   ): Observable<globalThis.Response> {
-    const cached = this.hooksTokens.get(microvmIdentifier);
-    if (!cached || Date.now() >= cached.halfLife) {
-      const minutes = 60;
-      const fresh = { halfLife: Infinity, token$: EMPTY as Observable<Record<string, string>> };
-      fresh.token$ = defer(() =>
+    const token$ =
+      this.hooksTokens.get(microvmIdentifier) ??
+      defer(() =>
         this.microvms.send(
           new CreateMicrovmAuthTokenCommand({
             microvmIdentifier,
-            expirationInMinutes: minutes,
+            expirationInMinutes: 60,
             allowedPorts: [{ port: HOOKS_PORT }],
           })
         )
       ).pipe(
-        tap(() => (fresh.halfLife = Date.now() + (minutes / 2) * 60_000)),
         map(({ authToken }) => authToken ?? {}),
-        // A failed ask isn't kept, so the next request asks again.
-        catchError((error) => {
-          if (this.hooksTokens.get(microvmIdentifier) === fresh) this.hooksTokens.delete(microvmIdentifier);
-          return throwError(() => error);
-        }),
-        shareReplay(1)
+        share({
+          connector: () => new ReplaySubject(1),
+          // A failed ask isn't kept, so the next request asks again.
+          resetOnError: true,
+          // Half its hour. Unref'd where it can be, so a waiting reset never keeps Node alive; a Worker's has no unref.
+          resetOnComplete: () =>
+            new Promise((resolve) => (setTimeout(resolve, 30 * 60_000) as { unref?: () => unknown }).unref?.()),
+          resetOnRefCountZero: false,
+        })
       );
-      this.hooksTokens.set(microvmIdentifier, fresh);
-    }
-    const entry = this.hooksTokens.get(microvmIdentifier)!;
-    return entry.token$.pipe(
+    this.hooksTokens.set(microvmIdentifier, token$);
+    return token$.pipe(
       switchMap((authToken) =>
         fetch(`https://${endpoint}${path}`, {
           ...init,
@@ -958,7 +958,7 @@ export class MicrovmCompute extends AwsClientLogger implements SandboxCompute {
       ),
       // AWS refused the token, so the next request asks for a new one.
       tap(({ status }) => {
-        if (status === 403 && this.hooksTokens.get(microvmIdentifier) === entry)
+        if (status === 403 && this.hooksTokens.get(microvmIdentifier) === token$)
           this.hooksTokens.delete(microvmIdentifier);
       })
     );
