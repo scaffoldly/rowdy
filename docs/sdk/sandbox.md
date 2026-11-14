@@ -259,8 +259,13 @@ sandbox-bcdf245678
 ```
 
 `get` rejects with `Not a sandbox` for anything `create` didn't make, and for an ARN or anything else that isn't a
-name. It takes a `signal`, a `logLevel`, a `pollInterval` and `credentials`, and logs at
-the level described in [Logging](../sdk.md#logging).
+name. When no runtime has the sandbox, it rejects with what a runtime said other than a miss. A denial is said only
+when no other runtime said something else, since credentials that may not use a runtime are denied every name on
+it. Pass `runtime` to look on one runtime only; `Sandbox.delete` takes it too. Each runtime's answer is logged at
+`debug`.
+
+It takes a `signal`, a `logLevel`, a `pollInterval` and `credentials`, and logs at the level described in
+[Logging](../sdk.md#logging).
 
 ## `Sandbox.list`
 

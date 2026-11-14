@@ -213,9 +213,11 @@ export class SandboxImpl implements Sandbox {
     credentials,
     signal: abort,
     meta,
+    runtime: only,
   }: SandboxLookup): SandboxPromiseImpl {
     // An id is the sandbox's name, which doesn't say its runtime, so the sandbox is whichever runtime has it.
-    const sandboxes = (Object.keys(RUNTIMES) as (keyof typeof RUNTIMES)[]).map(
+    const runtimes = only ? [only] : (Object.keys(RUNTIMES) as (keyof typeof RUNTIMES)[]);
+    const sandboxes = runtimes.map(
       (runtime) => new SandboxImpl({ runtime, logLevel, pollInterval, credentials, signal: abort })
     );
     type Tried = { found?: SandboxImpl; error?: unknown };
@@ -235,7 +237,10 @@ export class SandboxImpl implements Sandbox {
               defer(() => sandbox.compute.attach(sandboxId, meta)).pipe(map(() => sandbox))
             ).pipe(
               map((found): Tried => ({ found })),
-              catchError((error) => of<Tried>({ error }))
+              catchError((error) => {
+                sandbox.environment.log.debug('Sandbox Not Attached', { runtime: sandbox.runtime, sandboxId, error });
+                return of<Tried>({ error });
+              })
             );
           }),
           scan((tried, each) => [...tried, each], [] as Tried[]),
@@ -244,8 +249,14 @@ export class SandboxImpl implements Sandbox {
             const found = tried.find(({ found }) => found)?.found;
             if (found) return found.stoppingOnAbort();
             const errors = tried.map(({ error }) => error);
-            // Anything but missing, like a denial, is what to say.
-            const refused = errors.find((error) => !isNotFound(error));
+            // Anything but missing is what to say. A runtime the caller may not use denies every id, so another
+            // runtime's error says more.
+            const refused =
+              errors.find(
+                (error) =>
+                  !isNotFound(error) &&
+                  !['AccessDenied', 'AccessDeniedException'].includes(`${(error as { name?: string })?.name}`)
+              ) ?? errors.find((error) => !isNotFound(error));
             if (refused) throw refused;
             // AWS's own message names the ARN, and so the account.
             throw Object.assign(new SandboxError(`No sandbox named ${sandboxId}`), {

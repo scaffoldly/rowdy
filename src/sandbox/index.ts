@@ -120,6 +120,8 @@ export interface SandboxLookup extends Pick<SandboxOptions, 'logLevel' | 'pollIn
   meta?: Record<string, string>;
   /** Aborts the sandbox's work in progress, and stops it if it can `stop`. */
   signal?: AbortSignal;
+  /** Looks only on this runtime. Defaults to every runtime. */
+  runtime?: NonNullable<SandboxOptions['runtime']>;
 }
 
 export interface RunCommandParams {
