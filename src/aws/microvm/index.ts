@@ -101,15 +101,15 @@ const HOOKS = {
 const CAPABILITIES: NonNullable<CreateMicrovmImageCommandInput['additionalOsCapabilities']> = ['ALL'];
 
 /**
- * What a prebuilt image is built from, as its build-spec hash covers it. Its layers go in by the references asked for,
- * not their digests, and rowdy's version and ECR copy not at all, so an image keeps matching across rowdy releases and
- * layer pushes with the layers it was built with. Those are in its tags, outside the hash.
+ * What a prebuilt image is built from, as its build-spec hash covers it. Its image goes in by its platform digest, not
+ * the tag it was asked for by, so a caller asking by any tag, or by digest, matches it. Its layers go in by the
+ * references asked for, not their digests, and rowdy's version and ECR copy not at all, so an image keeps matching
+ * across rowdy releases and layer pushes with the layers it was built with. Those are in its tags, outside the hash.
  */
 export type PrebuildSpec = {
   registry: string;
   namespace: string;
   name: string;
-  tag: string;
   sha256: string;
   platform: string;
   layers: string[];
@@ -597,7 +597,6 @@ export class MicrovmImage extends AwsResource {
           registry: Source.registry,
           namespace: Source.namespace,
           name: Source.name,
-          tag: Source.tag,
           sha256: Source.digest.replace(/^sha256:/, ''),
           platform: Platform,
           layers: Layers.map(({ from }) => from),
@@ -631,6 +630,8 @@ export class MicrovmImage extends AwsResource {
         );
         tags.spec = hash;
         tags.memory = `${spec.minimumMemoryInMiB}`;
+        // The tag it was asked for by, which a caller can name it by too: the platform digest says what's in it.
+        if (!Source.tag.startsWith('untagged-') && TAG_VALUE_REGEX.test(Source.tag)) tags.tag = Source.tag;
         // What it was built with, and for picking the newest image of a name or of a FROM: not in the hash.
         Layers.forEach(({ from, digest }, index) => (tags[`layer.${index}`] = `${from}@${digest}`));
         tags.rowdy = this.environment.version;
@@ -643,7 +644,7 @@ export class MicrovmImage extends AwsResource {
         }
         const name = `${spec.sha256.slice(0, 40)}-${hash.slice(0, 23)}`;
         this.log.info(
-          `${this.Image.getValue()} is ${spec.registry}/${spec.namespace}/${spec.name}:${spec.tag}@sha256:${spec.sha256} for ${spec.platform}`
+          `${this.Image.getValue()} is ${spec.registry}/${spec.namespace}/${spec.name}@sha256:${spec.sha256} for ${spec.platform}`
         );
         Layers.forEach(({ from, digest }) => this.log.info(`Layer ${from}@${digest}`));
         return { name, spec, hash, tags, pulled, dockerfile: Dockerfile, baseImageArn, baseImageVersion };

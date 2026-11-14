@@ -759,15 +759,15 @@ export class TransferStatus implements ILoggable {
       throw new Error(`Unable to find status for digest: ${digest}`);
     }
 
-    const { namespace, name } = this._transfer?.manifest || {};
+    const { slug } = this._transfer?.manifest || {};
     const { registry } = this._transfer?.registry || {};
 
-    if (!registry || !namespace || !name) {
+    if (!registry || !slug) {
       throw new Error('Incomplete transfer information to construct image ref');
     }
 
     const tag = desired.digest.startsWith('sha256:') ? `@${desired.digest}` : `:${desired.digest}`;
-    return `${registry}/${namespace}/${name}${tag}`;
+    return `${registry}/${slug}${tag}`;
   }
 
   get code(): number {
@@ -848,7 +848,8 @@ export class Upload implements ILoggable {
     if (!match) {
       throw new Error(`Unable to parse upload URL: ${url.toString()}`);
     }
-    url.pathname = `/v2/${this.transfer.manifest.namespace}/${this.transfer.manifest.name}/${match[2]}/${match[3]}`;
+    // The repository `prepare` made: the whole path, which `namespace/name` is only when it has two parts.
+    url.pathname = `/v2/${this.transfer.manifest.slug}/${match[2]}/${match[3]}`;
     return url.toString();
   }
 

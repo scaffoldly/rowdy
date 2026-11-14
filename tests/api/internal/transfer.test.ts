@@ -8,6 +8,7 @@ import {
   External,
   ImageManifest,
   sourceHeaders,
+  TransferStatus,
   Upload,
 } from '../../../src/api/internal/transfer';
 import { HttpHeaders } from '../../../src/proxy/http';
@@ -95,6 +96,29 @@ describe('upload', () => {
     await expect(run(upload(http))).rejects.toThrow('failed');
 
     expect(http.get).toHaveBeenCalledTimes(1);
+  });
+
+  // The repository `prepare` makes is the image's whole path, so its uploads and its reference name that one too.
+  describe.each([
+    ['ghcr.io/tunneld-it/prebuild/sandbox@sha256:def', 'tunneld-it/prebuild/sandbox'],
+    ['mirror.gcr.io/library/alpine:3', 'library/alpine'],
+  ])('to the repository for %s', (image, repository) => {
+    const manifest = Transfer.normalizeImage(image, null);
+    const transfer = { manifest, registry: { registry: 'ecr.example' } } as unknown as Transfer;
+    const blob = new Upload(transfer, 'blob', { digest: 'sha256:abc', size: 1, mediaType: 'x' });
+
+    it('checks and uploads to it', () => {
+      expect(blob.verifyUrl).toBe(`https://ecr.example/v2/${repository}/blobs/sha256:abc`);
+      expect(blob.toUrl).toBe(`https://ecr.example/v2/${repository}/blobs/uploads/`);
+    });
+
+    it('names it in the image it copied', () => {
+      const status = new TransferStatus()
+        .withTransfer(transfer)
+        .withStatus({ digest: 'sha256:abc' } as unknown as Parameters<TransferStatus['withStatus']>[0]);
+
+      expect(status.imageRef('sha256:abc')).toBe(`ecr.example/${repository}@sha256:abc`);
+    });
   });
 
   describe('in chunks', () => {

@@ -300,6 +300,20 @@ describe('aws microvm prebuild', () => {
     expect(tags(moved.sent)).toMatchObject({ rowdy: '9.9.9', 'layer.1': `${TUNNELD.from}@sha256:${'e'.repeat(64)}` });
   });
 
+  it('names it the same by any tag, or by its digest alone, and tags only a tag that was asked for', async () => {
+    const latest = setup();
+    const pinned = setup({}, { ...PULLED, Source: { ...PULLED.Source!, tag: 'untagged-0d5255be' } });
+    const other = setup({}, { ...PULLED, Source: { ...PULLED.Source!, tag: 'noble' } });
+
+    await Promise.all([build(latest.image), build(pinned.image), build(other.image)]);
+
+    const named = (sent: Sent[]) => input(sent, 'CreateMicrovmImageCommand').name;
+    expect(named(pinned.sent)).toBe(named(latest.sent));
+    expect(named(other.sent)).toBe(named(latest.sent));
+    expect(tags(latest.sent).tag).toBe('latest');
+    expect(tags(pinned.sent)).not.toHaveProperty('tag');
+  });
+
   it('names an image of other layers anew', async () => {
     const first = setup();
     const other = setup(
