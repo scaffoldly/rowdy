@@ -89,27 +89,92 @@ into the deployed function:
 The Action assumes the role with `aws-actions/configure-aws-credentials`, using `AWS_REGION` from
 the environment if set and `us-east-1` otherwise.
 
+## Prebuilding a microVM image
+
+With `compute: microvm` and `ROWDY_BUILD: true` in the step's `env`, the Action prebuilds a microVM
+image from a Dockerfile instead of deploying anything. A sandbox created later from exactly what the
+image was built from starts from it in seconds, instead of building one for about two minutes. See
+[Prebuilt microVM images](https://github.com/scaffoldly/rowdy/blob/main/docs/runtime.md#prebuilt-microvm-images)
+on `main`.
+
+```yaml
+jobs:
+  prebuild:
+    strategy:
+      matrix:
+        runner: [ubuntu-24.04, ubuntu-24.04-arm]
+        memory: [512, 1024, 2048]
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+    steps:
+      - uses: scaffoldly/rowdy@github
+        id: rowdy
+        with:
+          cloud: aws
+          compute: microvm
+          dockerfile: prebuild/ubuntu/Dockerfile
+          name: ubuntu
+          memory: ${{ matrix.memory }}
+          layers-from: ghcr.io/tunneld-it/tunneld:latest
+        env:
+          ROWDY_BUILD: true
+          AWS_ROLE_ARN: ${{ vars.AWS_ROLE_ARN }}
+```
+
+- **Where it's pushed:** `ghcr.io/<owner>/prebuild/<name>`. `name` must be a valid image name:
+  lowercase letters and digits, with `.`, `_` or `-` between them. A new package on ghcr.io is
+  private. Make it public once in its settings: a sandbox looking for a prebuilt image reads it
+  without credentials.
+- **The platform is the runner's:** `linux/amd64` on an X64 runner and `linux/arm64` on an ARM64
+  one, each built natively, with no QEMU.
+- **Push by digest:** each run pushes only its platform's image, by digest, with no tag, so cells
+  for different platforms don't overwrite each other. The build is reproducible (timestamps pinned
+  with `SOURCE_DATE_EPOCH=0` and `rewrite-timestamp`, no provenance), so an unchanged Dockerfile
+  gives the same digest and pushes nothing new.
+- **The base:** the Dockerfile's last `FROM` and its platform digest go into the image's
+  `org.opencontainers.image.base.name` and `base.digest` annotations, and the prebuilt image's
+  `from` and `from.sha256` tags. A `FROM` of an earlier stage, an `ARG`, or `scratch` is left out.
+- **Then `--build`:** the Action runs `rowdy create aws microvm --build` on that digest, with
+  `memory` and `layers-from`, and sets `arn`, `status` (`built` or `reused`) and `digest`.
+- **The tag is yours to make:** a matrix's jobs can't hand their outputs to one job, so the Action
+  doesn't combine the platforms. A last job does, from each cell's `digest` (passed on as an
+  artifact, for example):
+
+  ```sh
+  docker buildx imagetools create -t ghcr.io/<owner>/prebuild/ubuntu:latest \
+    ghcr.io/<owner>/prebuild/ubuntu@<amd64 digest> \
+    ghcr.io/<owner>/prebuild/ubuntu@<arm64 digest>
+  ```
+
+  Callers name that tag, and a sandbox resolves it to its platform's digest.
+
 ## Inputs
 
-| Input         | Required | Default                  | Description                                                                                                                                                                                                                                                                                                                                                  |
-| ------------- | -------- | ------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `cloud`       | yes      |                          | Cloud provider. `aws` today.                                                                                                                                                                                                                                                                                                                                 |
-| `compute`     | yes      |                          | Compute type. `lambda` today.                                                                                                                                                                                                                                                                                                                                |
-| `dockerfile`  | one of   |                          | Dockerfile to build, push to `ghcr.io/<owner>/<repo>:rowdy` and deploy as `:rowdy@<digest>`. The build context is its directory. See [Building the image](#building-the-image).                                                                                                                                                                              |
-| `image`       | one of   |                          | Container image to deploy, such as `ghcr.io/owner/repo@sha256:…`. Ignored when `dockerfile` is set.                                                                                                                                                                                                                                                          |
-| `name`        | no       | the execution role's id  | Application name. Becomes the function name, sanitized.                                                                                                                                                                                                                                                                                                      |
-| `command`     | no       | image `ENTRYPOINT`+`CMD` | Override the command the container runs.                                                                                                                                                                                                                                                                                                                     |
-| `memory`      | no       | `256`                    | Memory for the container, in megabytes.                                                                                                                                                                                                                                                                                                                      |
-| `cri`         | no       | `false`                  | Enable the Container Runtime Interface.                                                                                                                                                                                                                                                                                                                      |
-| `routes`      | no       |                          | Path to, or inline YAML/JSON of, a Routes manifest. Accepts a path, `file://`, `data:`, or the manifest inline. A bare spec is accepted. See [Routes](https://github.com/scaffoldly/rowdy/blob/main/README.md#routes) on `main`.                                                                                                                             |
-| `secrets`     | no       |                          | Environment variables for the function: `NAME=value` lines and JSON objects such as `${{ toJSON(secrets) }}`, in any mix; lines override the JSON. See [Secrets](https://github.com/scaffoldly/rowdy/blob/main/docs/secrets.md) on `main`.                                                                                                                   |
-| `volumes`     | no       |                          | Volumes to mount, one per line, such as `s3://my-bucket:/data`. Added to any `volumes` in `routes`. See [Volumes](https://github.com/scaffoldly/rowdy/blob/main/docs/volumes.md) on `main`.                                                                                                                                                                  |
-| `layers-from` | no       |                          | Images whose one layer is added to the deployed image before rowdy's, one per line, such as `ghcr.io/tunnel-pizza/tunneld:latest`. Each must be public and built like rowdy's final stage (`FROM scratch`, one `COPY`), or the deploy fails. See [Your own layers](https://github.com/scaffoldly/rowdy/blob/main/docs/runtime.md#your-own-layers) on `main`. |
+| Input         | Required | Default                    | Description                                                                                                                                                                                                                                                                                                                                                  |
+| ------------- | -------- | -------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `cloud`       | yes      |                            | Cloud provider. `aws` today.                                                                                                                                                                                                                                                                                                                                 |
+| `compute`     | yes      |                            | Compute type. `lambda` today.                                                                                                                                                                                                                                                                                                                                |
+| `dockerfile`  | one of   |                            | Dockerfile to build, push to `ghcr.io/<owner>/<repo>:rowdy` and deploy as `:rowdy@<digest>`. The build context is its directory. See [Building the image](#building-the-image).                                                                                                                                                                              |
+| `image`       | one of   |                            | Container image to deploy, such as `ghcr.io/owner/repo@sha256:…`. Ignored when `dockerfile` is set.                                                                                                                                                                                                                                                          |
+| `name`        | no       | the execution role's id    | Application name. Becomes the function name, sanitized.                                                                                                                                                                                                                                                                                                      |
+| `command`     | no       | image `ENTRYPOINT`+`CMD`   | Override the command the container runs.                                                                                                                                                                                                                                                                                                                     |
+| `memory`      | no       | `256`, or `512` on microvm | Memory for the container, in megabytes. On `microvm`, one of 512, 1024, 2048, 4096 or 8192.                                                                                                                                                                                                                                                                  |
+| `cri`         | no       | `false`                    | Enable the Container Runtime Interface.                                                                                                                                                                                                                                                                                                                      |
+| `routes`      | no       |                            | Path to, or inline YAML/JSON of, a Routes manifest. Accepts a path, `file://`, `data:`, or the manifest inline. A bare spec is accepted. See [Routes](https://github.com/scaffoldly/rowdy/blob/main/README.md#routes) on `main`.                                                                                                                             |
+| `secrets`     | no       |                            | Environment variables for the function: `NAME=value` lines and JSON objects such as `${{ toJSON(secrets) }}`, in any mix; lines override the JSON. See [Secrets](https://github.com/scaffoldly/rowdy/blob/main/docs/secrets.md) on `main`.                                                                                                                   |
+| `volumes`     | no       |                            | Volumes to mount, one per line, such as `s3://my-bucket:/data`. Added to any `volumes` in `routes`. See [Volumes](https://github.com/scaffoldly/rowdy/blob/main/docs/volumes.md) on `main`.                                                                                                                                                                  |
+| `layers-from` | no       |                            | Images whose one layer is added to the deployed image before rowdy's, one per line, such as `ghcr.io/tunnel-pizza/tunneld:latest`. Each must be public and built like rowdy's final stage (`FROM scratch`, one `COPY`), or the deploy fails. See [Your own layers](https://github.com/scaffoldly/rowdy/blob/main/docs/runtime.md#your-own-layers) on `main`. |
 
-| Output  | Description                            |
-| ------- | -------------------------------------- |
-| `url`   | The deployed Function URL.             |
-| `image` | The image reference that was deployed. |
+| Output   | Description                                                                                |
+| -------- | ------------------------------------------------------------------------------------------ |
+| `url`    | The deployed Function URL.                                                                 |
+| `image`  | The image reference that was deployed.                                                     |
+| `digest` | The digest of the image built from `dockerfile`. With `ROWDY_BUILD`, the platform image's. |
+| `arn`    | With `ROWDY_BUILD`, the prebuilt microVM image's ARN.                                      |
+| `status` | With `ROWDY_BUILD`, `built` or `reused`.                                                   |
 
 ## Scheduled requests
 
@@ -155,7 +220,7 @@ How the app trusts the scheduled request, from
 
 ```ts
 export function fromRowdyCron(headers: Headers): boolean {
-  return headers.has('x-rowdy-cron');
+  return headers.has("x-rowdy-cron");
 }
 ```
 
@@ -165,7 +230,7 @@ And the route that consumes it, from
 ```ts
 export async function POST(req: NextRequest) {
   if (!fromRowdyCron(req.headers)) {
-    const auth = await authorizeAdmin(req.headers.get('authorization'));
+    const auth = await authorizeAdmin(req.headers.get("authorization"));
     if (!auth.ok) return unauthorized(auth.reason);
   }
   // ... sweep

@@ -6,7 +6,7 @@ branding:
   color: gray-dark
 inputs:
   name:
-    description: "The name of the application. (Default: the execution role's id)"
+    description: "The name of the application. (Default: the execution role's id) With ROWDY_BUILD, the prebuild's name: its image is ghcr.io/<owner>/prebuild/<name>."
     required: false
     default: ""
   cloud:
@@ -20,7 +20,7 @@ inputs:
     required: false
     default: ""
   dockerfile:
-    description: "Path to a Dockerfile to build and push to ghcr.io/<owner>/<repo>:rowdy, then deploy as :rowdy@<digest> (pinned to the build, with a stable alias and Function URL). The build context is the Dockerfile's directory."
+    description: "Path to a Dockerfile to build and push to ghcr.io/<owner>/<repo>:rowdy, then deploy as :rowdy@<digest> (pinned to the build, with a stable alias and Function URL). The build context is the Dockerfile's directory. With ROWDY_BUILD, it's pushed by digest to ghcr.io/<owner>/prebuild/<name> for the runner's platform, and a microVM image is prebuilt from it."
     required: false
     default: ""
   command:
@@ -28,9 +28,9 @@ inputs:
     required: false
     default: ""
   memory:
-    description: "Amount of memory to allocate to the deployed container in megbytes. (Default: 256)"
+    description: "Amount of memory to allocate to the deployed container in megabytes. (Default: 256 on lambda, 512 on microvm, which takes 512, 1024, 2048, 4096 or 8192)"
     required: false
-    default: "256"
+    default: ""
   cri:
     description: "Enable the Container Runtime Interface (CRI)"
     required: false
@@ -61,6 +61,15 @@ outputs:
   bucket:
     description: The bucket rowdy manages for s3:///<prefix> volumes, when the deployment has one.
     value: ${{ steps.deploy.outputs.bucket }}
+  digest:
+    description: The digest of the image built from dockerfile. With ROWDY_BUILD, the platform image's, for a later job to combine into a tag.
+    value: ${{ steps.build.outputs.digest || steps.build-again.outputs.digest }}
+  arn:
+    description: With ROWDY_BUILD, the prebuilt microVM image's ARN.
+    value: ${{ steps.deploy.outputs.arn }}
+  status:
+    description: With ROWDY_BUILD, built or reused.
+    value: ${{ steps.deploy.outputs.status }}
 runs:
   using: "composite"
   steps:
@@ -86,7 +95,47 @@ runs:
         IMAGE: ${{ inputs.image }}
         DOCKERFILE: ${{ inputs.dockerfile }}
         REPOSITORY: ${{ github.repository }}
+        OWNER: ${{ github.repository_owner }}
+        NAME: ${{ inputs.name }}
+        COMPUTE: ${{ inputs.compute }}
       run: |
+        # ROWDY_BUILD comes from the calling step's env, as rowdy's other settings do.
+        if [ "${ROWDY_BUILD:-}" = "true" ]; then
+          if [ "$COMPUTE" != "microvm" ]; then
+            echo "::error title=Rowdy::ROWDY_BUILD prebuilds a microVM image: set compute to microvm."
+            exit 1
+          fi
+          if [ -z "$DOCKERFILE" ] || [ ! -f "$DOCKERFILE" ]; then
+            echo "::error title=Rowdy::ROWDY_BUILD builds from a Dockerfile: set dockerfile to one in the checkout."
+            exit 1
+          fi
+          if ! echo "$NAME" | grep -Eq '^[a-z0-9]+([._-][a-z0-9]+)*$'; then
+            echo "::error title=Rowdy::With ROWDY_BUILD, name is the prebuild's image name: lowercase letters, digits and . _ - between them."
+            exit 1
+          fi
+          # Each runner builds its own platform, natively.
+          case "$RUNNER_ARCH" in
+            X64) PLATFORM=linux/amd64 ;;
+            ARM64) PLATFORM=linux/arm64 ;;
+            *)
+              echo "::error title=Rowdy::ROWDY_BUILD runs on an X64 or ARM64 runner, not $RUNNER_ARCH."
+              exit 1
+              ;;
+          esac
+          {
+            echo "build=true"
+            echo "platform=$PLATFORM"
+            echo "name=ghcr.io/$(echo "$OWNER" | tr '[:upper:]' '[:lower:]')/prebuild/$NAME"
+            echo "cache=prebuild-$NAME-${PLATFORM#*/}"
+            echo "context=$(dirname "$DOCKERFILE")"
+          } >> "$GITHUB_OUTPUT"
+          exit 0
+        fi
+        # The function is x86_64.
+        {
+          echo "platform=linux/amd64"
+          echo "cache=rowdy"
+        } >> "$GITHUB_OUTPUT"
         if [ -z "$DOCKERFILE" ]; then
           if [ -z "$IMAGE" ]; then
             echo "::error title=Rowdy::Set either image or dockerfile."
@@ -107,7 +156,7 @@ runs:
         echo "context=$(dirname "$DOCKERFILE")" >> "$GITHUB_OUTPUT"
 
     - name: Set up QEMU
-      if: ${{ inputs.dockerfile != '' && runner.arch != 'X64' }}
+      if: ${{ inputs.dockerfile != '' && runner.arch != 'X64' && steps.image.outputs.build != 'true' }}
       uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
 
     - name: Set up Docker Buildx
@@ -122,6 +171,45 @@ runs:
         username: ${{ github.actor }}
         password: ${{ github.token }}
 
+    # The OCI base annotations, which BuildKit doesn't set itself: the last stage's FROM, and its digest for the
+    # platform built. Left out for a FROM that names an earlier stage, an ARG, or scratch.
+    - name: Resolve base image
+      id: base
+      if: ${{ inputs.dockerfile != '' }}
+      shell: bash
+      env:
+        DOCKERFILE: ${{ inputs.dockerfile }}
+        PLATFORM: ${{ steps.image.outputs.platform }}
+      run: |
+        stages=()
+        base=""
+        while read -r line; do
+          set -- $line
+          shift
+          while [ "${1#--}" != "$1" ]; do shift; done
+          base="$1"
+          if [ "$(echo "${2:-}" | tr '[:upper:]' '[:lower:]')" = "as" ] && [ -n "${3:-}" ]; then
+            stages+=("$(echo "$3" | tr '[:upper:]' '[:lower:]')")
+          fi
+        done < <(grep -iE '^[[:space:]]*FROM[[:space:]]' "$DOCKERFILE")
+        lower="$(echo "$base" | tr '[:upper:]' '[:lower:]')"
+        if [ -z "$base" ] || [ "$lower" = "scratch" ] || [[ "$base" == *'$'* ]] || [[ " ${stages[*]} " == *" $lower "* ]]; then
+          exit 0
+        fi
+        # A base it can't read, a private one say, only goes without them.
+        if ! manifest="$(docker buildx imagetools inspect "$base" --format '{{json .Manifest}}')"; then
+          echo "::warning title=Rowdy::Couldn't read $base, so the image has no base annotations."
+          exit 0
+        fi
+        digest="$(echo "$manifest" | jq -r --arg os "${PLATFORM%/*}" --arg arch "${PLATFORM#*/}" \
+          'if .manifests then (.manifests[] | select(.platform.os == $os and .platform.architecture == $arch) | .digest) else .digest end' | head -n1)"
+        {
+          echo "annotations<<EOF"
+          echo "manifest:org.opencontainers.image.base.name=$base"
+          if [ -n "$digest" ]; then echo "manifest:org.opencontainers.image.base.digest=$digest"; fi
+          echo "EOF"
+        } >> "$GITHUB_OUTPUT"
+
     - name: Build and push image
       id: build
       if: ${{ inputs.dockerfile != '' }}
@@ -131,13 +219,18 @@ runs:
       with:
         context: ${{ steps.image.outputs.context }}
         file: ${{ inputs.dockerfile }}
-        # The function is x86_64.
-        platforms: linux/amd64
+        platforms: ${{ steps.image.outputs.platform }}
         pull: true
-        push: true
-        tags: ${{ steps.image.outputs.name }}:rowdy
-        cache-from: type=gha,scope=rowdy
-        cache-to: type=gha,scope=rowdy,mode=max
+        annotations: ${{ steps.base.outputs.annotations }}
+        cache-from: type=gha,scope=${{ steps.image.outputs.cache }}
+        cache-to: type=gha,scope=${{ steps.image.outputs.cache }},mode=max
+        # A prebuild is pushed by its digest alone, which is the same for the same image: timestamps are pinned and
+        # there's no provenance, whose build times would change it. A later job combines the platforms into a tag.
+        push: ${{ steps.image.outputs.build != 'true' }}
+        tags: ${{ steps.image.outputs.build != 'true' && format('{0}:rowdy', steps.image.outputs.name) || '' }}
+        outputs: ${{ steps.image.outputs.build == 'true' && format('type=image,name={0},push-by-digest=true,name-canonical=true,push=true,rewrite-timestamp=true', steps.image.outputs.name) || '' }}
+        provenance: ${{ steps.image.outputs.build == 'true' && 'false' || '' }}
+        build-args: ${{ steps.image.outputs.build == 'true' && 'SOURCE_DATE_EPOCH=0' || '' }}
 
     - name: Wait to push again
       if: ${{ steps.build.outcome == 'failure' }}
@@ -152,13 +245,18 @@ runs:
       with:
         context: ${{ steps.image.outputs.context }}
         file: ${{ inputs.dockerfile }}
-        # The function is x86_64.
-        platforms: linux/amd64
+        platforms: ${{ steps.image.outputs.platform }}
         pull: true
-        push: true
-        tags: ${{ steps.image.outputs.name }}:rowdy
-        cache-from: type=gha,scope=rowdy
-        cache-to: type=gha,scope=rowdy,mode=max
+        annotations: ${{ steps.base.outputs.annotations }}
+        cache-from: type=gha,scope=${{ steps.image.outputs.cache }}
+        cache-to: type=gha,scope=${{ steps.image.outputs.cache }},mode=max
+        # A prebuild is pushed by its digest alone, which is the same for the same image: timestamps are pinned and
+        # there's no provenance, whose build times would change it. A later job combines the platforms into a tag.
+        push: ${{ steps.image.outputs.build != 'true' }}
+        tags: ${{ steps.image.outputs.build != 'true' && format('{0}:rowdy', steps.image.outputs.name) || '' }}
+        outputs: ${{ steps.image.outputs.build == 'true' && format('type=image,name={0},push-by-digest=true,name-canonical=true,push=true,rewrite-timestamp=true', steps.image.outputs.name) || '' }}
+        provenance: ${{ steps.image.outputs.build == 'true' && 'false' || '' }}
+        build-args: ${{ steps.image.outputs.build == 'true' && 'SOURCE_DATE_EPOCH=0' || '' }}
 
     - name: Configure AWS Credentials
       if: ${{ inputs.cloud == 'aws' }}
@@ -175,11 +273,20 @@ runs:
       shell: bash
       run: |
         echo "image=$IMAGE" >> "$GITHUB_OUTPUT"
+        if [ "$BUILD" = "true" ]; then
+          # ROWDY_BUILD in the env is rowdy's --build.
+          export ROWDY_PLATFORM="$PLATFORM"
+          npx @scaffoldly/rowdy@beta create ${{ inputs.cloud }} ${{ inputs.compute }} "$IMAGE"
+          exit 0
+        fi
         npx @scaffoldly/rowdy@beta create ${{ inputs.cloud }} ${{ inputs.compute }} "$IMAGE" ${{ inputs.command }}
       env:
-        IMAGE: ${{ inputs.dockerfile != '' && format('{0}:rowdy@{1}', steps.image.outputs.name, steps.build.outputs.digest || steps.build-again.outputs.digest) || steps.image.outputs.ref }}
+        BUILD: ${{ steps.image.outputs.build }}
+        PLATFORM: ${{ steps.image.outputs.platform }}
+        IMAGE: ${{ inputs.dockerfile != '' && format(steps.image.outputs.build == 'true' && '{0}@{1}' || '{0}:rowdy@{1}', steps.image.outputs.name, steps.build.outputs.digest || steps.build-again.outputs.digest) || steps.image.outputs.ref }}
         ROWDY_NAME: "${{ inputs.name }}"
-        ROWDY_MEMORY: "${{ inputs.memory }}"
+        # A microVM's memory is one of AWS's sizes, the smallest 512.
+        ROWDY_MEMORY: "${{ inputs.memory || (inputs.compute == 'microvm' && '512' || '256') }}"
         ROWDY_CRI: "${{ inputs.cri }}"
         ROWDY_ROUTES: "${{ inputs.routes }}"
         ROWDY_SECRETS: "${{ inputs.secrets }}"
