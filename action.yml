@@ -147,45 +147,6 @@ runs:
         username: ${{ github.actor }}
         password: ${{ github.token }}
 
-    # The OCI base annotations, which BuildKit doesn't set itself: the last stage's FROM, and its digest for the
-    # platform built. Left out for a FROM that names an earlier stage, an ARG, or scratch.
-    - name: Resolve base image
-      id: base
-      if: ${{ inputs.dockerfile != '' }}
-      shell: bash
-      env:
-        DOCKERFILE: ${{ inputs.dockerfile }}
-        PLATFORM: ${{ steps.image.outputs.platform }}
-      run: |
-        stages=()
-        base=""
-        while read -r line; do
-          set -- $line
-          shift
-          while [ "${1#--}" != "$1" ]; do shift; done
-          base="$1"
-          if [ "$(echo "${2:-}" | tr '[:upper:]' '[:lower:]')" = "as" ] && [ -n "${3:-}" ]; then
-            stages+=("$(echo "$3" | tr '[:upper:]' '[:lower:]')")
-          fi
-        done < <(grep -iE '^[[:space:]]*FROM[[:space:]]' "$DOCKERFILE")
-        lower="$(echo "$base" | tr '[:upper:]' '[:lower:]')"
-        if [ -z "$base" ] || [ "$lower" = "scratch" ] || [[ "$base" == *'$'* ]] || [[ " ${stages[*]} " == *" $lower "* ]]; then
-          exit 0
-        fi
-        # A base it can't read, a private one say, only goes without them.
-        if ! manifest="$(docker buildx imagetools inspect "$base" --format '{{json .Manifest}}')"; then
-          echo "::warning title=Rowdy::Couldn't read $base, so the image has no base annotations."
-          exit 0
-        fi
-        digest="$(echo "$manifest" | jq -r --arg os "${PLATFORM%/*}" --arg arch "${PLATFORM#*/}" \
-          'if .manifests then (.manifests[] | select(.platform.os == $os and .platform.architecture == $arch) | .digest) else .digest end' | head -n1)"
-        {
-          echo "annotations<<EOF"
-          echo "manifest:org.opencontainers.image.base.name=$base"
-          if [ -n "$digest" ]; then echo "manifest:org.opencontainers.image.base.digest=$digest"; fi
-          echo "EOF"
-        } >> "$GITHUB_OUTPUT"
-
     - name: Build and push image
       id: build
       if: ${{ inputs.dockerfile != '' }}
@@ -197,7 +158,6 @@ runs:
         file: ${{ inputs.dockerfile }}
         platforms: ${{ steps.image.outputs.platform }}
         pull: true
-        annotations: ${{ steps.base.outputs.annotations }}
         cache-from: type=gha,scope=${{ steps.image.outputs.cache }}
         cache-to: type=gha,scope=${{ steps.image.outputs.cache }},mode=max
         # A prebuild is pushed by its digest alone, which is the same for the same image: timestamps are pinned and
@@ -223,7 +183,6 @@ runs:
         file: ${{ inputs.dockerfile }}
         platforms: ${{ steps.image.outputs.platform }}
         pull: true
-        annotations: ${{ steps.base.outputs.annotations }}
         cache-from: type=gha,scope=${{ steps.image.outputs.cache }}
         cache-to: type=gha,scope=${{ steps.image.outputs.cache }},mode=max
         # A prebuild is pushed by its digest alone, which is the same for the same image: timestamps are pinned and
@@ -250,8 +209,9 @@ runs:
       run: |
         echo "image=$IMAGE" >> "$GITHUB_OUTPUT"
         if [ "$BUILD" = "true" ]; then
-          # ROWDY_BUILD in the env is rowdy's --build.
+          # ROWDY_BUILD in the env is rowdy's --build, and the Dockerfile gives the build its FROM.
           export ROWDY_PLATFORM="$PLATFORM"
+          if [ -n "$DOCKERFILE" ]; then export ROWDY_DOCKERFILE="$DOCKERFILE"; fi
           npx @scaffoldly/rowdy@beta create ${{ inputs.cloud }} ${{ inputs.compute }} "$IMAGE"
           exit 0
         fi
@@ -259,6 +219,7 @@ runs:
       env:
         BUILD: ${{ steps.image.outputs.build }}
         PLATFORM: ${{ steps.image.outputs.platform }}
+        DOCKERFILE: ${{ inputs.dockerfile }}
         IMAGE: ${{ inputs.dockerfile != '' && format(steps.image.outputs.build == 'true' && '{0}@{1}' || '{0}:rowdy@{1}', steps.image.outputs.name, steps.build.outputs.digest || steps.build-again.outputs.digest) || steps.image.outputs.ref }}
         ROWDY_NAME: "${{ inputs.name }}"
         # A microVM's memory is one of AWS's sizes, the smallest 512.

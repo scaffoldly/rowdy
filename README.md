@@ -134,9 +134,9 @@ jobs:
   for different platforms don't overwrite each other. The build is reproducible (timestamps pinned
   with `SOURCE_DATE_EPOCH=0` and `rewrite-timestamp`, no provenance), so an unchanged Dockerfile
   gives the same digest and pushes nothing new.
-- **The base:** the Dockerfile's last `FROM` and its platform digest go into the image's
-  `org.opencontainers.image.base.name` and `base.digest` annotations, and the prebuilt image's
-  `from` and `from.sha256` tags. A `FROM` of an earlier stage, an `ARG`, or `scratch` is left out.
+- **The base:** rowdy reads the Dockerfile's last stage's `FROM`, and that image's digest for the
+  platform, into the prebuilt image's `from` and `from.sha256` tags. A `FROM` of an earlier
+  stage, an `ARG` with no default, or `scratch` gets none.
 - **Then `--build`:** the Action runs `rowdy create aws microvm --build` on that digest, with
   `memory` and `layers-from`, and sets `arn`, `status` (`built` or `reused`) and `digest`.
 - **The tag is yours to make:** a matrix's jobs can't hand their outputs to one job, so the Action
