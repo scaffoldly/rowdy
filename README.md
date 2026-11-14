@@ -54,6 +54,15 @@ the tag, so the URL stays the same from one build to the next. The `:rowdy` tag 
 Action and leaves the repository's other tags alone. The build cache lives in the GitHub Actions
 cache under the `rowdy` scope for the same reason.
 
+Every one of `secrets` is also a [BuildKit secret](https://docs.docker.com/build/building/secrets/)
+for that build, by its name, whether the Dockerfile uses it or not. A `RUN` gets one only by asking
+for it, and it's never in the image: not in a layer, its config or its history, as a build arg would
+be. For a tool that reads one from its environment, like `@sentry/nextjs` reading `SENTRY_AUTH_TOKEN`:
+
+```dockerfile
+RUN --mount=type=secret,id=SENTRY_AUTH_TOKEN,env=SENTRY_AUTH_TOKEN npm run build
+```
+
 A build that needs a different context, build arguments or another registry belongs in its own
 steps. Pass the result as `image` instead (`image` is ignored when `dockerfile` is set). Keep a tag
 in front of the digest: an image with only a digest gets a new alias, and a new Function URL, on
@@ -164,7 +173,7 @@ jobs:
 | `memory`      | no       | `256`, or `512` on microvm | Memory for the container, in megabytes. On `microvm`, one of 512, 1024, 2048, 4096 or 8192.                                                                                                                                                                                                                                                                  |
 | `cri`         | no       | `false`                    | Enable the Container Runtime Interface.                                                                                                                                                                                                                                                                                                                      |
 | `routes`      | no       |                            | Path to, or inline YAML/JSON of, a Routes manifest. Accepts a path, `file://`, `data:`, or the manifest inline. A bare spec is accepted. See [Routes](https://github.com/scaffoldly/rowdy/blob/main/README.md#routes) on `main`.                                                                                                                             |
-| `secrets`     | no       |                            | Environment variables for the function: `NAME=value` lines and JSON objects such as `${{ toJSON(secrets) }}`, in any mix; lines override the JSON. See [Secrets](https://github.com/scaffoldly/rowdy/blob/main/docs/secrets.md) on `main`.                                                                                                                   |
+| `secrets`     | no       |                            | Environment variables for the function: `NAME=value` lines and JSON objects such as `${{ toJSON(secrets) }}`, in any mix; lines override the JSON. See [Secrets](https://github.com/scaffoldly/rowdy/blob/main/docs/secrets.md) on `main`. Also BuildKit secrets for a `dockerfile` build: see [Building the image](#building-the-image).                    |
 | `volumes`     | no       |                            | Volumes to mount, one per line, such as `s3://my-bucket:/data`. Added to any `volumes` in `routes`. See [Volumes](https://github.com/scaffoldly/rowdy/blob/main/docs/volumes.md) on `main`.                                                                                                                                                                  |
 | `layers-from` | no       |                            | Images whose one layer is added to the deployed image before rowdy's, one per line, such as `ghcr.io/tunnel-pizza/tunneld:latest`. Each must be public and built like rowdy's final stage (`FROM scratch`, one `COPY`), or the deploy fails. See [Your own layers](https://github.com/scaffoldly/rowdy/blob/main/docs/runtime.md#your-own-layers) on `main`. |
 
