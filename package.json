@@ -123,7 +123,7 @@
     "@bufbuild/protobuf": "^2.10.0",
     "@connectrpc/connect": "^2.1.0",
     "@eslint/js": "^9.28.0",
-    "@scaffoldly/rowdy-cdk": "0.1.0-beta.20261107173833.ed9b6bd",
+    "@scaffoldly/rowdy-cdk": "0.1.0-beta.20261114053219.9fc3835",
     "@scaffoldly/rowdy-grpc": "^0.1.0-beta.20261015173030.c8f7cb7",
     "@scaffoldly/rowdy-vfs": "^0.1.0-beta.20261025040757.7c82f24",
     "@smithy/core": "^3.35.0",
