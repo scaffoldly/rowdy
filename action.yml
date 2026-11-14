@@ -97,44 +97,16 @@ runs:
         REPOSITORY: ${{ github.repository }}
         OWNER: ${{ github.repository_owner }}
         NAME: ${{ inputs.name }}
-        COMPUTE: ${{ inputs.compute }}
       run: |
-        # ROWDY_BUILD comes from the calling step's env, as rowdy's other settings do.
-        if [ "${ROWDY_BUILD:-}" = "true" ]; then
-          if [ "$COMPUTE" != "microvm" ]; then
-            echo "::error title=Rowdy::ROWDY_BUILD prebuilds a microVM image: set compute to microvm."
-            exit 1
-          fi
-          if [ -z "$DOCKERFILE" ] || [ ! -f "$DOCKERFILE" ]; then
-            echo "::error title=Rowdy::ROWDY_BUILD builds from a Dockerfile: set dockerfile to one in the checkout."
-            exit 1
-          fi
-          if ! echo "$NAME" | grep -Eq '^[a-z0-9]+([._-][a-z0-9]+)*$'; then
-            echo "::error title=Rowdy::With ROWDY_BUILD, name is the prebuild's image name: lowercase letters, digits and . _ - between them."
-            exit 1
-          fi
-          # Each runner builds its own platform, natively.
-          case "$RUNNER_ARCH" in
-            X64) PLATFORM=linux/amd64 ;;
-            ARM64) PLATFORM=linux/arm64 ;;
-            *)
-              echo "::error title=Rowdy::ROWDY_BUILD runs on an X64 or ARM64 runner, not $RUNNER_ARCH."
-              exit 1
-              ;;
-          esac
-          {
-            echo "build=true"
-            echo "platform=$PLATFORM"
-            echo "name=ghcr.io/$(echo "$OWNER" | tr '[:upper:]' '[:lower:]')/prebuild/$NAME"
-            echo "cache=prebuild-$NAME-${PLATFORM#*/}"
-            echo "context=$(dirname "$DOCKERFILE")"
-          } >> "$GITHUB_OUTPUT"
-          exit 0
-        fi
-        # The function is x86_64.
+        # ROWDY_BUILD comes from the calling step's env, as rowdy's other settings do. A prebuild is built for the
+        # runner's own platform, and the function is x86_64.
+        BUILD="${ROWDY_BUILD:-false}"
+        PLATFORM=linux/amd64
+        if [ "$BUILD" = "true" ] && [ "$RUNNER_ARCH" = "ARM64" ]; then PLATFORM=linux/arm64; fi
         {
-          echo "platform=linux/amd64"
-          echo "cache=rowdy"
+          echo "build=$BUILD"
+          echo "platform=$PLATFORM"
+          echo "cache=$([ "$BUILD" = "true" ] && echo "prebuild-$NAME-${PLATFORM#*/}" || echo rowdy)"
         } >> "$GITHUB_OUTPUT"
         if [ -z "$DOCKERFILE" ]; then
           if [ -z "$IMAGE" ]; then
@@ -152,7 +124,11 @@ runs:
           exit 1
         fi
         # ghcr.io rejects uppercase, and github.repository keeps the owner's case.
-        echo "name=ghcr.io/$(echo "$REPOSITORY" | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_OUTPUT"
+        if [ "$BUILD" = "true" ]; then
+          echo "name=ghcr.io/$(echo "$OWNER" | tr '[:upper:]' '[:lower:]')/prebuild/$NAME" >> "$GITHUB_OUTPUT"
+        else
+          echo "name=ghcr.io/$(echo "$REPOSITORY" | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_OUTPUT"
+        fi
         echo "context=$(dirname "$DOCKERFILE")" >> "$GITHUB_OUTPUT"
 
     - name: Set up QEMU
