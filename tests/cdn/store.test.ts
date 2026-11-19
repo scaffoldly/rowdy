@@ -6,6 +6,9 @@ import {
 } from '@aws-sdk/client-cloudfront-keyvaluestore';
 import { lastValueFrom } from 'rxjs';
 import { cdnStore, CloudFrontStore } from '../../src/cdn';
+import { Logger } from '../../src/log';
+
+const LOG = new Logger('test', { write: () => true });
 
 const ARN = 'arn:aws:cloudfront::442239336012:key-value-store/706d9bf2-5c29-4b7c-8900-89eb32d9723d';
 
@@ -53,7 +56,9 @@ describe('cdn stores', () => {
     const items: Record<string, string> = { url: 'https://example.com/', SAME: 'v', CHANGED: 'old' };
     const sent = fakeStore(items);
 
-    const written = await lastValueFrom(CloudFrontStore.from(ARN)!.write({ SAME: 'v', CHANGED: 'new', ADDED: 'a' }));
+    const written = await lastValueFrom(
+      CloudFrontStore.from(ARN)!.write({ SAME: 'v', CHANGED: 'new', ADDED: 'a' }, LOG)
+    );
 
     expect(written).toEqual({ store: 'cloudfront', target: ARN, written: ['CHANGED', 'ADDED'], skipped: [] });
     expect(items).toEqual({ url: 'https://example.com/', SAME: 'v', CHANGED: 'new', ADDED: 'a' });
@@ -62,7 +67,7 @@ describe('cdn stores', () => {
 
   it('sends nothing but the listing when the store is up to date', async () => {
     const sent = fakeStore({ A: '1' });
-    const written = await lastValueFrom(CloudFrontStore.from(ARN)!.write({ A: '1' }));
+    const written = await lastValueFrom(CloudFrontStore.from(ARN)!.write({ A: '1' }, LOG));
     expect(written.written).toEqual([]);
     expect(sent.every((c) => c instanceof ListKeysCommand)).toBe(true);
   });
@@ -71,7 +76,7 @@ describe('cdn stores', () => {
     const items: Record<string, string> = {};
     fakeStore(items);
     const written = await lastValueFrom(
-      CloudFrontStore.from(ARN)!.write({ BIG: 'x'.repeat(1025), FITS: 'x'.repeat(1024), ['K'.repeat(513)]: 'v' })
+      CloudFrontStore.from(ARN)!.write({ BIG: 'x'.repeat(1025), FITS: 'x'.repeat(1024), ['K'.repeat(513)]: 'v' }, LOG)
     );
     expect(written.written).toEqual(['FITS']);
     expect(written.skipped).toEqual(['BIG', 'K'.repeat(513)]);
@@ -83,7 +88,7 @@ describe('cdn stores', () => {
     const sent = fakeStore(items, 10);
     const environment = Object.fromEntries(Array.from({ length: 120 }, (_, i) => [`KEY_${i}`, `${i}`]));
 
-    const written = await lastValueFrom(CloudFrontStore.from(ARN)!.write(environment));
+    const written = await lastValueFrom(CloudFrontStore.from(ARN)!.write(environment, LOG));
 
     expect(written.written).toHaveLength(120);
     expect(sent.filter((c) => c instanceof ListKeysCommand)).toHaveLength(3);

@@ -8,6 +8,8 @@ const shared: Options = {
   splitting: true,
   // tsup leaves peers external by default. rxjs is optional, so requiring it at load would crash without it.
   noExternal: ['rxjs'],
+  // A logger's component is its class's name, which bundling would otherwise rename on a collision.
+  keepNames: true,
 };
 
 export default defineConfig([

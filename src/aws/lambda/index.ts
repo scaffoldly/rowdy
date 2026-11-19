@@ -312,7 +312,7 @@ export class LambdaFunction extends AwsResource {
   }
 
   override get log(): Logger {
-    return this.imageService.log.child('deploy');
+    return this.imageService.log.child(this);
   }
 
   get signal(): AbortSignal {
@@ -436,7 +436,7 @@ export class LambdaFunction extends AwsResource {
             Configuration?.ImageConfigResponse?.ImageConfig?.WorkingDirectory;
           if (workdir) this.WorkingDirectory.next(workdir);
           if (Configuration?.Environment?.Variables?.ROWDY_ROUTES)
-            this.Routes.next(Routes.fromDataURL(Configuration.Environment.Variables.ROWDY_ROUTES));
+            this.Routes.next(Routes.fromDataURL(Configuration.Environment.Variables.ROWDY_ROUTES, this.log));
           if (Policy?.PolicyDocument) {
             const policy = JSON.parse(decodeURIComponent(Policy.PolicyDocument));
             const statements = policy.Statement as Statement[];
@@ -650,7 +650,7 @@ export class LambdaFunction extends AwsResource {
         Object.entries(this.State).filter((entry): entry is [string, string] => !!entry[1])
       );
       this.log.debug(`writeStore(store=${store.name}, target=${store.target}, keys=${Object.keys(values).join(',')})`);
-      return store.write(values, this);
+      return store.write(values, this.log, this);
     }).pipe(
       tap(({ written, skipped }) => {
         this.log.info('Store Written', { store: store.name, target: store.target, written: written.length });

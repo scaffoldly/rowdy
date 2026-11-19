@@ -7,6 +7,7 @@ import {
   UpdateKeysCommand,
 } from '@aws-sdk/client-cloudfront-keyvaluestore';
 import { Logger } from '@smithy/types';
+import type { Logger as RowdyLogger } from '../../log';
 import {
   bufferCount,
   defer,
@@ -22,10 +23,7 @@ import {
   reduce,
   switchMap,
 } from 'rxjs';
-import { log as root } from '../../log';
 import { CdnStore, Written } from '../store';
-
-const log = root.child('cdn');
 
 // CloudFront KeyValueStore quotas.
 const MAX_KEY_BYTES = 512;
@@ -45,7 +43,8 @@ export class CloudFrontStore extends CdnStore {
     return 'cloudfront';
   }
 
-  write(values: Record<string, string>, logger?: Logger): Observable<Written> {
+  write(values: Record<string, string>, parent: RowdyLogger, logger?: Logger): Observable<Written> {
+    const log = parent.child(this);
     const KvsARN = this.target;
     const client = new CloudFrontKeyValueStoreClient({ logger });
     const fits = ([key, value]: [string, string]): boolean =>

@@ -45,7 +45,22 @@ const sandbox = await Sandbox.create({ image: 'node:24', credentials });
 
 ## Logging
 
-Your program's stdout stays yours: everything the SDK logs goes to stderr, at every level.
+Your program's stdout stays yours: by default, a sandbox writes its logs to `process.stderr`, at every level, or to
+`console` where there's no `process`, like a Worker without `nodejs_compat`.
+
+The `logger` option of `Sandbox.create`, `get`, `list` and `delete` sends one sandbox's logs elsewhere, and only that
+sandbox's. It takes a stream with `write`, like `process.stderr`, which gets one formatted line at a time, or a
+console-like logger, like pino, whose `error`, `warn`, `info` and `debug` each get the line's fields, then its
+message:
+
+```ts
+import pino from 'pino';
+
+const sandbox = await Sandbox.create({ logger: pino(), logLevel: 'info' });
+// {"level":30,"component":"MicrovmCompute","msg":"…"}
+```
+
+Each line's `component` is the class that wrote it.
 
 The level defaults to `warn`, not the `info` of the CLI, so a program's terminal stays quiet unless
 something is wrong. The `logLevel` option of `Sandbox.create` sets it, and otherwise the variables in
@@ -56,4 +71,5 @@ wins only when `logLevel` is left out.
 ROWDY_LOG_LEVEL=info node index.js 2>rowdy.log
 ```
 
-The level and where logs go apply to the whole process, so every sandbox in it shares them.
+Both are each sandbox's own: two sandboxes in one process can log to different places at different levels. The level
+filters a line before the logger sees it, so a pino logger at `debug` still needs `logLevel: 'debug'`.

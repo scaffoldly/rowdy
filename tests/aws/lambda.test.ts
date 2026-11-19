@@ -1,6 +1,6 @@
 import { Environment, Logger, Rowdy } from '@scaffoldly/rowdy';
 import { isExecEvent, LambdaPipeline, LambdaRequest } from '../../src/aws/lambda';
-import { log } from '../../src/log';
+import { runtimeLog as log } from '../../src/runtime-log';
 import { FileDescriptors, Result } from '../../src/pipeline';
 import { ShellResponse } from '../../src/proxy/shell';
 import { HttpProxy } from '../../src/proxy/http';

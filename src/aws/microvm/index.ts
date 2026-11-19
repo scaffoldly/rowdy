@@ -215,7 +215,7 @@ export class MicrovmImage extends AwsResource {
   }
 
   override get log(): Logger {
-    return this.environment.log.child('deploy');
+    return this.environment.log.child(this);
   }
 
   get signal(): AbortSignal {

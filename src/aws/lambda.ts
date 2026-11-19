@@ -2,7 +2,8 @@ import { AsyncSubject, defer, EMPTY, map, NEVER, Observable, of, race, switchMap
 import { Proxy, Pipeline, Request, Response, Result, Chunk } from '../pipeline';
 import type { Environment } from '../environment';
 import axios from 'axios';
-import { log as root, Logger, maskHeaders, maskQuery, maskUrl, Trace } from '../log';
+import { Logger, maskHeaders, maskQuery, maskUrl, Trace } from '../log';
+import { runtimeLog as root } from '../runtime-log';
 import { APIGatewayProxyEventV2 } from 'aws-lambda';
 import { HttpProxy, HttpHeaders, HttpResponse, Source } from '../proxy/http';
 import { EXEC_CONTENT_TYPE, EXEC_STREAM, execFrame, ShellProxy, ShellRequest, ShellResponse } from '../proxy/shell';
@@ -196,7 +197,7 @@ export class LambdaRequest extends Request<LambdaPipeline> {
 
       let uri: URI;
       try {
-        uri = this.pipeline.routes.intoURI(rawPath);
+        uri = this.pipeline.routes.intoURI(rawPath, log);
       } catch (error) {
         uri = URI.fromError(error instanceof Error ? error : new Error(String(error)), 500);
       }

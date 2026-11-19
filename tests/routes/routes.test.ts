@@ -1,33 +1,38 @@
 import { Crontab, Routes, URI, Volume } from '@scaffoldly/rowdy';
 import { writeFileSync } from 'fs';
 import { tmpdir } from 'os';
+import { Logger } from '../../src/log';
+
+const LOG = new Logger('test', { write: () => true });
 
 // TODO
-// expect(routes.intoURI('/')!.toString()).toBe('file:///var/www/html/');
-// expect(routes.intoURI('/stdout')!.toString()).toBe('rowdy://stdout/');
-// expect(routes.intoURI('/stderr')!.toString()).toBe('rowdy://stderr/');
+// expect(routes.intoURI('/', LOG)!.toString()).toBe('file:///var/www/html/');
+// expect(routes.intoURI('/stdout', LOG)!.toString()).toBe('rowdy://stdout/');
+// expect(routes.intoURI('/stderr', LOG)!.toString()).toBe('rowdy://stderr/');
 
 describe('routes', () => {
   describe('default', () => {
     it('should handle default', () => {
       const routes = Routes.default();
       expect(routes.rules).toHaveLength(11);
-      expect(routes.intoURI('')!.toString()).toBe('rowdy://http:404/');
-      expect(routes.intoURI('/foo/bar')!.toString()).toBe('rowdy://http:404/foo/bar');
-      expect(routes.intoURI('/foo/bar?q=1')!.toString()).toBe('rowdy://http:404/foo/bar?q=1');
-      expect(routes.intoURI('/@rowdy/health')!.toString()).toBe('rowdy://health/');
-      expect(routes.intoURI('/@rowdy/health/baz')!.toString()).toBe('rowdy://http:404/%40rowdy/health/baz');
-      expect(routes.intoURI('/@rowdy/ping')!.toString()).toBe('rowdy://ping/');
-      expect(routes.intoURI('/@rowdy/ping/baz')!.toString()).toBe('rowdy://http:404/%40rowdy/ping/baz');
-      expect(routes.intoURI('/@rowdy/routes')!.toString()).toBe('rowdy://routes/');
-      expect(routes.intoURI('/@rowdy/routes/baz')!.toString()).toBe('rowdy://http:404/%40rowdy/routes/baz');
-      expect(routes.intoURI('/@rowdy/200')!.toString()).toBe('rowdy://http:200/');
-      expect(routes.intoURI('/@rowdy/200/baz')!.toString()).toBe('rowdy://http:404/%40rowdy/200/baz');
-      expect(routes.intoURI('/@rowdy/500')!.toString()).toBe('rowdy://http:500/');
-      expect(routes.intoURI('/@rowdy/500/baz')!.toString()).toBe('rowdy://http:404/%40rowdy/500/baz');
-      expect(routes.intoURI('/@rowdy/cri/foo/bar/baz')!.toString()).toBe('rowdy://cri/foo/bar/baz');
-      expect(routes.intoURI('/@rowdy/cri/foo/bar/baz?bing=bong')!.toString()).toBe('rowdy://cri/foo/bar/baz?bing=bong');
-      expect(routes.intoURI('/@rowdy/version')!.toString()).toBe('rowdy://version/');
+      expect(routes.intoURI('', LOG)!.toString()).toBe('rowdy://http:404/');
+      expect(routes.intoURI('/foo/bar', LOG)!.toString()).toBe('rowdy://http:404/foo/bar');
+      expect(routes.intoURI('/foo/bar?q=1', LOG)!.toString()).toBe('rowdy://http:404/foo/bar?q=1');
+      expect(routes.intoURI('/@rowdy/health', LOG)!.toString()).toBe('rowdy://health/');
+      expect(routes.intoURI('/@rowdy/health/baz', LOG)!.toString()).toBe('rowdy://http:404/%40rowdy/health/baz');
+      expect(routes.intoURI('/@rowdy/ping', LOG)!.toString()).toBe('rowdy://ping/');
+      expect(routes.intoURI('/@rowdy/ping/baz', LOG)!.toString()).toBe('rowdy://http:404/%40rowdy/ping/baz');
+      expect(routes.intoURI('/@rowdy/routes', LOG)!.toString()).toBe('rowdy://routes/');
+      expect(routes.intoURI('/@rowdy/routes/baz', LOG)!.toString()).toBe('rowdy://http:404/%40rowdy/routes/baz');
+      expect(routes.intoURI('/@rowdy/200', LOG)!.toString()).toBe('rowdy://http:200/');
+      expect(routes.intoURI('/@rowdy/200/baz', LOG)!.toString()).toBe('rowdy://http:404/%40rowdy/200/baz');
+      expect(routes.intoURI('/@rowdy/500', LOG)!.toString()).toBe('rowdy://http:500/');
+      expect(routes.intoURI('/@rowdy/500/baz', LOG)!.toString()).toBe('rowdy://http:404/%40rowdy/500/baz');
+      expect(routes.intoURI('/@rowdy/cri/foo/bar/baz', LOG)!.toString()).toBe('rowdy://cri/foo/bar/baz');
+      expect(routes.intoURI('/@rowdy/cri/foo/bar/baz?bing=bong', LOG)!.toString()).toBe(
+        'rowdy://cri/foo/bar/baz?bing=bong'
+      );
+      expect(routes.intoURI('/@rowdy/version', LOG)!.toString()).toBe('rowdy://version/');
     });
   });
 
@@ -36,8 +41,10 @@ describe('routes', () => {
       const routes = Routes.empty()
         .withPath('/foo', 'http://example.com/foo')
         .withPath('/bar', 'http://example.com/bar?extra=param');
-      expect(routes.intoURI('/foo?bing=bong#baz')!.toString()).toBe('http://example.com/foo?bing=bong#baz');
-      expect(routes.intoURI('/bar?bing=bong#baz')!.toString()).toBe('http://example.com/bar?extra=param&bing=bong#baz');
+      expect(routes.intoURI('/foo?bing=bong#baz', LOG)!.toString()).toBe('http://example.com/foo?bing=bong#baz');
+      expect(routes.intoURI('/bar?bing=bong#baz', LOG)!.toString()).toBe(
+        'http://example.com/bar?extra=param&bing=bong#baz'
+      );
     });
   });
 
@@ -50,32 +57,34 @@ describe('routes', () => {
       .intoDataURL();
 
     it('should route', () => {
-      const routes = Routes.fromDataURL(data);
+      const routes = Routes.fromDataURL(data, LOG);
       expect(routes.rules).toHaveLength(7);
-      expect(routes.intoURI('/github')!.toString()).toBe('https://www.githubstatus.com/api/v2/status.json');
-      expect(routes.intoURI('/circleci')!.toString()).toBe('https://status.circleci.com/api/v2/status.json');
-      expect(routes.intoURI('/travisci')!.toString()).toBe('https://www.traviscistatus.com/api/v2/status.json');
-      expect(routes.intoURI('/unknown')!.toString()).toBe('http://localhost:8080/api/unknown');
-      expect(routes.intoURI('/unknown/')!.toString()).toBe('http://localhost:8080/api/unknown/');
-      expect(routes.intoURI('/also/unknown')!.toString()).toBe('http://localhost:8080/api/also/unknown');
-      expect(routes.intoURI('/')!.toString()).toBe('http://localhost:8080/api/');
-      expect(routes.intoURI('')!.toString()).toBe('http://localhost:8080/api/');
+      expect(routes.intoURI('/github', LOG)!.toString()).toBe('https://www.githubstatus.com/api/v2/status.json');
+      expect(routes.intoURI('/circleci', LOG)!.toString()).toBe('https://status.circleci.com/api/v2/status.json');
+      expect(routes.intoURI('/travisci', LOG)!.toString()).toBe('https://www.traviscistatus.com/api/v2/status.json');
+      expect(routes.intoURI('/unknown', LOG)!.toString()).toBe('http://localhost:8080/api/unknown');
+      expect(routes.intoURI('/unknown/', LOG)!.toString()).toBe('http://localhost:8080/api/unknown/');
+      expect(routes.intoURI('/also/unknown', LOG)!.toString()).toBe('http://localhost:8080/api/also/unknown');
+      expect(routes.intoURI('/', LOG)!.toString()).toBe('http://localhost:8080/api/');
+      expect(routes.intoURI('', LOG)!.toString()).toBe('http://localhost:8080/api/');
     });
 
     it('should preserve query and fragment', () => {
-      const routes = Routes.fromDataURL(data);
-      expect(routes.intoURI('/github?foo=bar#baz')!.toString()).toBe(
+      const routes = Routes.fromDataURL(data, LOG);
+      expect(routes.intoURI('/github?foo=bar#baz', LOG)!.toString()).toBe(
         'https://www.githubstatus.com/api/v2/status.json?foo=bar#baz'
       );
-      expect(routes.intoURI('/unknown?foo=bar#baz')!.toString()).toBe('http://localhost:8080/api/unknown?foo=bar#baz');
+      expect(routes.intoURI('/unknown?foo=bar#baz', LOG)!.toString()).toBe(
+        'http://localhost:8080/api/unknown?foo=bar#baz'
+      );
     });
   });
 
   describe('from url', () => {
     it('should create from relative path', () => {
       const path = `${__dirname}/routes.yaml`;
-      const routes = Routes.fromURL(path);
-      expect(routes.intoURI('/foo')!.toString()).toBe('http://localhost:3000/foo');
+      const routes = Routes.fromURL(path, LOG);
+      expect(routes.intoURI('/foo', LOG)!.toString()).toBe('http://localhost:3000/foo');
     });
   });
 
@@ -96,18 +105,18 @@ spec:
     "/api{/*path}": "http://localhost:8010/api/*path"
 `
       );
-      const routes = Routes.fromPath(file);
+      const routes = Routes.fromPath(file, LOG);
 
-      expect(routes.intoURI('/api/v1/login')!.toString()).toBe('http://localhost:8000/api/v1/login');
-      expect(routes.intoURI('/api/v1/csrftoken/login')!.toString()).toBe(
+      expect(routes.intoURI('/api/v1/login', LOG)!.toString()).toBe('http://localhost:8000/api/v1/login');
+      expect(routes.intoURI('/api/v1/csrftoken/login', LOG)!.toString()).toBe(
         'http://localhost:8000/api/v1/csrftoken/login'
       );
-      expect(routes.intoURI('/api/v1/me')!.toString()).toBe('http://localhost:8000/api/v1/me');
-      expect(routes.intoURI('/en.main.143734868f788885.js')!.toString()).toBe(
+      expect(routes.intoURI('/api/v1/me', LOG)!.toString()).toBe('http://localhost:8000/api/v1/me');
+      expect(routes.intoURI('/en.main.143734868f788885.js', LOG)!.toString()).toBe(
         'http://localhost:8020/en.main.143734868f788885.js'
       );
-      expect(routes.intoURI('/api/v1/namespace')!.toString()).toBe('http://localhost:8010/api/v1/namespace');
-      expect(routes.intoURI('/api/v1/node?itemsPerPage=10&page=1&sortBy=d,creationTimestamp')!.toString()).toBe(
+      expect(routes.intoURI('/api/v1/namespace', LOG)!.toString()).toBe('http://localhost:8010/api/v1/namespace');
+      expect(routes.intoURI('/api/v1/node?itemsPerPage=10&page=1&sortBy=d,creationTimestamp', LOG)!.toString()).toBe(
         'http://localhost:8010/api/v1/node?itemsPerPage=10&page=1&sortBy=d%2CcreationTimestamp'
       );
     });
@@ -133,41 +142,44 @@ spec:
   });
 
   it('should create from inline yaml', () => {
-    const routes = Routes.fromURL(yaml);
-    expect(routes.intoURI('/foo')!.toString()).toBe('http://localhost:8080/foo');
-    expect(routes.intoURI('/bar')!.toString()).toBe('http://localhost:3000/bar');
+    const routes = Routes.fromURL(yaml, LOG);
+    expect(routes.intoURI('/foo', LOG)!.toString()).toBe('http://localhost:8080/foo');
+    expect(routes.intoURI('/bar', LOG)!.toString()).toBe('http://localhost:3000/bar');
   });
 
   it('should create from inline json', () => {
-    const routes = Routes.fromURL(json);
-    expect(routes.intoURI('/foo')!.toString()).toBe('http://localhost:8080/foo');
-    expect(routes.intoURI('/bar')!.toString()).toBe('http://localhost:3000/bar');
+    const routes = Routes.fromURL(json, LOG);
+    expect(routes.intoURI('/foo', LOG)!.toString()).toBe('http://localhost:8080/foo');
+    expect(routes.intoURI('/bar', LOG)!.toString()).toBe('http://localhost:3000/bar');
   });
 
   it('should accept a bare spec as shorthand', () => {
-    const routes = Routes.fromURL(`default: "http://localhost:3000/"
+    const routes = Routes.fromURL(
+      `default: "http://localhost:3000/"
 crontab:
   - "*/15 * * * * POST http://localhost:3000/tunnel/gc"
-`);
-    expect(routes.intoURI('/bar')!.toString()).toBe('http://localhost:3000/bar');
+`,
+      LOG
+    );
+    expect(routes.intoURI('/bar', LOG)!.toString()).toBe('http://localhost:3000/bar');
     expect(routes.crontab).toEqual(['*/15 * * * * POST http://localhost:3000/tunnel/gc']);
   });
 
   it('should accept a bare spec as json', () => {
-    const routes = Routes.fromURL(JSON.stringify({ paths: { '/foo': 'http://localhost:8080/foo' } }));
-    expect(routes.intoURI('/foo')!.toString()).toBe('http://localhost:8080/foo');
-    expect(routes.intoURI('/bar')!.toString()).toBe('rowdy://http:404/bar');
+    const routes = Routes.fromURL(JSON.stringify({ paths: { '/foo': 'http://localhost:8080/foo' } }), LOG);
+    expect(routes.intoURI('/foo', LOG)!.toString()).toBe('http://localhost:8080/foo');
+    expect(routes.intoURI('/bar', LOG)!.toString()).toBe('rowdy://http:404/bar');
   });
 
   it('should accept a single-line bare spec', () => {
-    const routes = Routes.fromURL('default: http://localhost:3000/');
-    expect(routes.intoURI('/bar')!.toString()).toBe('http://localhost:3000/bar');
+    const routes = Routes.fromURL('default: http://localhost:3000/', LOG);
+    expect(routes.intoURI('/bar', LOG)!.toString()).toBe('http://localhost:3000/bar');
   });
 
   it('should accept a bare spec from a file', () => {
     const file = `${tmpdir()}/routes-bare-${Date.now()}.yaml`;
     writeFileSync(file, 'paths:\n  "/foo": "http://localhost:8080/foo"\n');
-    expect(Routes.fromPath(file).intoURI('/foo')!.toString()).toBe('http://localhost:8080/foo');
+    expect(Routes.fromPath(file, LOG).intoURI('/foo', LOG)!.toString()).toBe('http://localhost:8080/foo');
   });
 
   it('should not treat an empty or unrelated document as a spec', () => {
@@ -179,45 +191,48 @@ crontab:
   });
 
   it('should throw when an inline manifest is unparseable', () => {
-    expect(() => Routes.fromURL('apiVersion: rowdy.run/v1alpha1\nkind: Routes\nspec: [')).toThrow();
+    expect(() => Routes.fromURL('apiVersion: rowdy.run/v1alpha1\nkind: Routes\nspec: [', LOG)).toThrow();
   });
 
   it('should throw when an inline manifest fails validation', () => {
-    expect(() => Routes.fromURL('apiVersion: rowdy.run/v2\nkind: Routes\n')).toThrow(
+    expect(() => Routes.fromURL('apiVersion: rowdy.run/v2\nkind: Routes\n', LOG)).toThrow(
       'Unsupported routes version: rowdy.run/v2'
     );
-    expect(() => Routes.fromURL('apiVersion: rowdy.run/v1alpha1\nkind: Ingress\n')).toThrow(
+    expect(() => Routes.fromURL('apiVersion: rowdy.run/v1alpha1\nkind: Ingress\n', LOG)).toThrow(
       'Unsupported routes kind: Ingress'
     );
   });
 
   it('should still default on an unsupported url', () => {
-    const routes = Routes.fromURL('not-a-manifest');
-    expect(routes.intoURI('/foo')!.toString()).toBe('rowdy://http:404/foo');
+    const routes = Routes.fromURL('not-a-manifest', LOG);
+    expect(routes.intoURI('/foo', LOG)!.toString()).toBe('rowdy://http:404/foo');
   });
 });
 
 describe('crontab', () => {
   it('should survive a data url round trip', () => {
     const line = '*/15 * * * * POST https://localhost:3000/tunnel/gc';
-    const routes = Routes.fromURL(`apiVersion: rowdy.run/v1alpha1
+    const routes = Routes.fromURL(
+      `apiVersion: rowdy.run/v1alpha1
 kind: Routes
 spec:
   default: "http://localhost:3000/"
   crontab:
     - "${line}"
-`);
+`,
+      LOG
+    );
     expect(routes.crontab).toEqual([line]);
 
-    const round = Routes.fromDataURL(routes.intoDataURL());
+    const round = Routes.fromDataURL(routes.intoDataURL(), LOG);
     expect(round.crontab).toEqual([line]);
-    expect(round.intoURI('/foo')!.toString()).toBe('http://localhost:3000/foo');
+    expect(round.intoURI('/foo', LOG)!.toString()).toBe('http://localhost:3000/foo');
   });
 
   it('should omit an empty crontab from the data url', () => {
     const routes = Routes.empty().withDefault('http://localhost:3000/');
     expect(routes.crontab).toEqual([]);
-    expect(Routes.fromDataURL(routes.intoDataURL()).crontab).toEqual([]);
+    expect(Routes.fromDataURL(routes.intoDataURL(), LOG).crontab).toEqual([]);
   });
 
   it('should merge crontab lines without duplicating', () => {
@@ -373,29 +388,32 @@ describe('uri', () => {
 
 describe('volumes', () => {
   it('should survive a data url round trip', () => {
-    const routes = Routes.fromURL(`apiVersion: rowdy.run/v1alpha1
+    const routes = Routes.fromURL(
+      `apiVersion: rowdy.run/v1alpha1
 kind: Routes
 spec:
   default: "http://localhost:3000/"
   volumes:
     - "file:///tmp/vfsstore:/vfs"
-`);
+`,
+      LOG
+    );
     expect(routes.volumes).toEqual(['file:///tmp/vfsstore:/vfs']);
 
-    const round = Routes.fromDataURL(routes.intoDataURL());
+    const round = Routes.fromDataURL(routes.intoDataURL(), LOG);
     expect(round.volumes).toEqual(['file:///tmp/vfsstore:/vfs']);
-    expect(round.intoURI('/foo')!.toString()).toBe('http://localhost:3000/foo');
+    expect(round.intoURI('/foo', LOG)!.toString()).toBe('http://localhost:3000/foo');
   });
 
   it('should accept a bare spec with only volumes', () => {
-    const routes = Routes.fromURL(`volumes:\n  - "s3://example-bucket:/data"\n`);
+    const routes = Routes.fromURL(`volumes:\n  - "s3://example-bucket:/data"\n`, LOG);
     expect(routes.volumes).toEqual(['s3://example-bucket:/data']);
   });
 
   it('should omit empty volumes from the data url', () => {
     const routes = Routes.empty().withDefault('http://localhost:3000/');
     expect(routes.volumes).toEqual([]);
-    expect(Routes.fromDataURL(routes.intoDataURL()).volumes).toEqual([]);
+    expect(Routes.fromDataURL(routes.intoDataURL(), LOG).volumes).toEqual([]);
   });
 
   describe('list', () => {
@@ -426,10 +444,10 @@ spec:
     });
 
     it('adds to the volumes of a manifest, deduplicating and refusing a mountpoint clash', () => {
-      const routes = Routes.fromURL('default: "http://localhost:3000/"\nvolumes:\n  - "file:///tmp/a:/a"\n');
+      const routes = Routes.fromURL('default: "http://localhost:3000/"\nvolumes:\n  - "file:///tmp/a:/a"\n', LOG);
       routes.merge(Routes.empty().withVolumes(Volume.list('file:///tmp/a:/a\ns3://bucket:/b')));
       expect(routes.volumes).toEqual(['file:///tmp/a:/a', 's3://bucket:/b']);
-      expect(routes.intoURI('/x')!.toString()).toBe('http://localhost:3000/x');
+      expect(routes.intoURI('/x', LOG)!.toString()).toBe('http://localhost:3000/x');
       expect(() => routes.merge(Routes.empty().withVolumes(Volume.list('file:///tmp/c:/b')))).toThrow(
         "Volume mountpoint '/b' is used by both"
       );
@@ -483,7 +501,7 @@ spec:
     });
 
     it('should reject a bad entry when loading a manifest', () => {
-      expect(() => Routes.fromURL(`volumes:\n  - "nope"\n`)).toThrow("Invalid volume 'nope'");
+      expect(() => Routes.fromURL(`volumes:\n  - "nope"\n`, LOG)).toThrow("Invalid volume 'nope'");
     });
   });
 });
@@ -526,24 +544,27 @@ describe('volume options', () => {
 
   it('round-trips through the manifest data url', () => {
     const routes = Routes.empty().withVolumes(['s3://example-bucket:/data:lock']);
-    expect(Routes.fromDataURL(routes.intoDataURL()).intoVolumes()[0]!.options.lock).toBe(true);
+    expect(Routes.fromDataURL(routes.intoDataURL(), LOG).intoVolumes()[0]!.options.lock).toBe(true);
   });
 });
 
 describe('hosts', () => {
   it('normalizes hosts and origins and survives a data url round trip', () => {
-    const routes = Routes.fromURL(`hosts:
+    const routes = Routes.fromURL(
+      `hosts:
   - App.Example
   - "https://app.example"
   - "http://app.example:8080/"
-`);
+`,
+      LOG
+    );
     expect(routes.hosts).toEqual(['https://app.example', 'http://app.example:8080']);
-    expect(Routes.fromDataURL(routes.intoDataURL()).hosts).toEqual(routes.hosts);
+    expect(Routes.fromDataURL(routes.intoDataURL(), LOG).hosts).toEqual(routes.hosts);
   });
 
   it('omits empty hosts from the data url', () => {
     const routes = Routes.empty().withDefault('http://localhost:3000/');
-    expect(Routes.fromDataURL(routes.intoDataURL()).hosts).toEqual([]);
+    expect(Routes.fromDataURL(routes.intoDataURL(), LOG).hosts).toEqual([]);
   });
 
   it('merges hosts without duplicating', () => {
@@ -554,13 +575,16 @@ describe('hosts', () => {
 
   it('takes a map of hosts to targets and survives a data url round trip', () => {
     const arn = 'arn:aws:cloudfront::442239336012:key-value-store/706d9bf2-5c29-4b7c-8900-89eb32d9723d';
-    const routes = Routes.fromURL(`hosts:
+    const routes = Routes.fromURL(
+      `hosts:
   oidc.to: ${arn}
   www.oidc.to:
-`);
+`,
+      LOG
+    );
     expect(routes.hosts).toEqual(['https://oidc.to', 'https://www.oidc.to']);
     expect(routes.targets).toEqual({ 'https://oidc.to': arn });
-    const parsed = Routes.fromDataURL(routes.intoDataURL());
+    const parsed = Routes.fromDataURL(routes.intoDataURL(), LOG);
     expect(parsed.hosts).toEqual(routes.hosts);
     expect(parsed.targets).toEqual(routes.targets);
   });

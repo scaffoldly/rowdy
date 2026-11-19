@@ -1,4 +1,5 @@
 import { Logger } from '@smithy/types';
+import type { Logger as RowdyLogger } from '../log';
 import { Observable } from 'rxjs';
 
 /** What a deploy wrote to a store: `written` changed, `skipped` did not fit. */
@@ -14,5 +15,5 @@ export abstract class CdnStore {
   abstract get name(): string;
 
   /** Upserts every entry that fits; entries already in the store and not in `values` are kept. */
-  abstract write(values: Record<string, string>, logger?: Logger): Observable<Written>;
+  abstract write(values: Record<string, string>, parent: RowdyLogger, logger?: Logger): Observable<Written>;
 }

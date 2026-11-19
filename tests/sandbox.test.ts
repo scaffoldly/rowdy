@@ -458,9 +458,19 @@ describe('sandbox', () => {
       });
 
       it('is warn by default', async () => {
-        await SandboxImpl.create({ runtime: 'aws.lambda' });
+        const sandbox = await SandboxImpl.create({ runtime: 'aws.lambda' });
 
-        expect(new Logger().level).toBe('warn');
+        expect(sandbox['environment'].log.level).toBe('warn');
+      });
+
+      it("is each sandbox's own, and never the process's", async () => {
+        const quiet = await SandboxImpl.create({ runtime: 'aws.lambda', logLevel: 'error' });
+        const loud = await SandboxImpl.create({ runtime: 'aws.lambda', logLevel: 'debug' });
+
+        expect(quiet['environment'].log.level).toBe('error');
+        expect(quiet['environment'].log.child('client').level).toBe('error');
+        expect(loud['environment'].log.level).toBe('debug');
+        expect(new Logger().level).toBe('info');
       });
 
       it('takes logLevel on get too, for a process that never creates', async () => {
@@ -468,45 +478,85 @@ describe('sandbox', () => {
           return of(this);
         });
 
-        await SandboxImpl.get({ sandboxId: FUNCTION_NAME, logLevel: 'error' });
+        const sandbox = await SandboxImpl.get({ sandboxId: FUNCTION_NAME, logLevel: 'error' });
 
-        expect(new Logger().level).toBe('error');
+        expect(sandbox['environment'].log.level).toBe('error');
       });
 
       it('takes logLevel over ROWDY_LOG_LEVEL', async () => {
         process.env.ROWDY_LOG_LEVEL = 'trace';
 
-        await SandboxImpl.create({ runtime: 'aws.lambda', logLevel: 'error' });
+        const sandbox = await SandboxImpl.create({ runtime: 'aws.lambda', logLevel: 'error' });
 
-        expect(new Logger().level).toBe('error');
+        expect(sandbox['environment'].log.level).toBe('error');
       });
 
       it('follows ROWDY_LOG_LEVEL', async () => {
         process.env.ROWDY_LOG_LEVEL = 'info';
 
-        await SandboxImpl.create({ runtime: 'aws.lambda' });
+        const sandbox = await SandboxImpl.create({ runtime: 'aws.lambda' });
 
-        expect(new Logger().level).toBe('info');
+        expect(sandbox['environment'].log.level).toBe('info');
       });
 
       it('follows ROWDY_DEBUG', async () => {
         process.env.ROWDY_DEBUG = 'true';
 
-        await SandboxImpl.create({ runtime: 'aws.lambda' });
+        const sandbox = await SandboxImpl.create({ runtime: 'aws.lambda' });
 
-        expect(new Logger().level).toBe('debug');
+        expect(sandbox['environment'].log.level).toBe('debug');
       });
 
-      it('leaves stdout to the host: every level goes to stderr', async () => {
+      it('leaves stdout to the host: by default a sandbox writes to process.stderr', async () => {
         const info = jest.spyOn(console, 'info').mockImplementation(() => {});
-        const error = jest.spyOn(console, 'error').mockImplementation(() => {});
+        const write = jest.spyOn(process.stderr, 'write').mockImplementation(() => true);
 
-        await SandboxImpl.create({ runtime: 'aws.lambda', logLevel: 'info' });
-        new Logger().info('hello');
-        new Logger().withSink(undefined);
+        const sandbox = await SandboxImpl.create({ runtime: 'aws.lambda', logLevel: 'info' });
+        sandbox['environment'].log.info('hello');
 
         expect(info).not.toHaveBeenCalled();
-        expect(error).toHaveBeenCalledTimes(1);
+        expect(write).toHaveBeenCalledWith('INFO Sandbox Hello\n');
+      });
+
+      it('writes to the logger it was given, its children included, and only its own', async () => {
+        const first = { error: jest.fn(), warn: jest.fn(), info: jest.fn(), debug: jest.fn() };
+        const second = { error: jest.fn(), warn: jest.fn(), info: jest.fn(), debug: jest.fn() };
+
+        const a = await SandboxImpl.create({ runtime: 'aws.lambda', logLevel: 'info', logger: first });
+        const b = await SandboxImpl.create({ runtime: 'aws.lambda', logLevel: 'info', logger: second });
+        a['environment'].log.child('deploy').warn('Slow', { step: 'push' });
+        b['environment'].log.info('Ready');
+
+        expect(first.warn).toHaveBeenCalledWith({ component: 'deploy', step: 'push' }, 'Slow');
+        expect(first.info).not.toHaveBeenCalledWith(expect.anything(), 'Ready');
+        expect(second.info).toHaveBeenCalledWith({ component: 'sandbox' }, 'Ready');
+        expect(second.warn).not.toHaveBeenCalled();
+      });
+
+      it('takes a logger on get too', async () => {
+        const logger = { error: jest.fn(), warn: jest.fn(), info: jest.fn(), debug: jest.fn() };
+        jest.spyOn(LambdaCompute.prototype, 'attach').mockImplementation(function (this: LambdaCompute) {
+          return of(this);
+        });
+
+        const sandbox = await SandboxImpl.get({ sandboxId: FUNCTION_NAME, logLevel: 'info', logger });
+        sandbox['environment'].log.info('Attached');
+
+        expect(logger.info).toHaveBeenCalledWith({ component: 'sandbox' }, 'Attached');
+      });
+
+      it("gives list's runtimes its logger", async () => {
+        const logger = { error: jest.fn(), warn: jest.fn(), info: jest.fn(), debug: jest.fn() };
+        const listed = jest.spyOn(MicrovmCompute, 'list').mockImplementation((_, log) => {
+          log.warn('Listing');
+          return EMPTY;
+        });
+        jest.spyOn(LambdaCompute, 'list').mockReturnValue(EMPTY);
+
+        await Sandbox.list({ logger });
+
+        expect(listed).toHaveBeenCalled();
+        expect(logger.warn).toHaveBeenCalledWith({ component: 'sandbox' }, 'Listing');
       });
     });
 
@@ -1375,7 +1425,7 @@ describe('sandbox', () => {
 
     it('includes what the registry does', async () => {
       const sandbox = await SandboxImpl.create({ runtime: 'aws.lambda' });
-      const registry = new AwsRegistry(sandbox['environment']);
+      const registry = new AwsRegistry(sandbox['environment'], sandbox['environment'].log);
       const send = jest.fn(async () => ({}));
       registry['ecr'].config.requestHandler = { handle: send } as never;
       const seen: SandboxEvent[] = [];
@@ -1466,14 +1516,14 @@ describe('sandbox', () => {
       const onEvent = jest.fn(() => {
         throw new Error('oops');
       });
-      const logged = jest.spyOn(console, 'error').mockImplementation(() => {});
+      const logged = jest.spyOn(process.stderr, 'write').mockImplementation(() => true);
 
       const sandbox = await Sandbox.create({ runtime: 'aws.lambda', onEvent });
       await new Promise(setImmediate);
 
       expect(sandbox).toBeInstanceOf(SandboxImpl);
       expect(onEvent).toHaveBeenCalledTimes(1);
-      expect(logged).toHaveBeenCalled();
+      expect(logged).toHaveBeenCalledWith(expect.stringContaining('Event Callback Failed'));
     });
 
     it('keeps onEvent out of the name', async () => {
@@ -2231,7 +2281,7 @@ describe('credentials', () => {
 
   it('reach the image copy and the deploy on aws.lambda', async () => {
     const environment = new SandboxEnvironment(new Logger(), { credentials });
-    const registry = new AwsRegistry(environment);
+    const registry = new AwsRegistry(environment, environment.log);
     const deployer = new LambdaFunction(
       'Sandbox',
       new LambdaImageService({
@@ -2271,7 +2321,7 @@ describe('credentials', () => {
       await expect(replayed()).resolves.toEqual(given);
     }
     expect(seen).toHaveLength(2);
-    expect(list).toHaveBeenCalledWith(credentials);
+    expect(list).toHaveBeenCalledWith(credentials, expect.any(Logger));
   });
 
   it("stay undefined without them, for the AWS SDK's own chain", () => {

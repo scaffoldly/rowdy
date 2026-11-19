@@ -26,7 +26,8 @@ import {
 import { Routes } from './routes';
 import { defaultPort, originOf } from './cdn';
 import type { Event } from './events';
-import { ILoggable, isLevel, Level, log, Logger, mask, maskEnv, maskJson, Trace } from './log';
+import { ILoggable, isLevel, Level, Logger, mask, maskEnv, maskJson, Trace } from './log';
+import { runtimeLog as log } from './runtime-log';
 import { ExitContext, ShellExit, ShellProxy, ShellRequest } from './proxy/shell';
 import { ShellPipeline } from './shell/pipeline';
 import { Pipeline, Result } from './pipeline';
@@ -413,7 +414,7 @@ export class Environment implements ILoggable {
                         lambda = lambda.withCRI();
                       }
                       if (argv.routes) {
-                        lambda = lambda.withRoutes(Routes.fromURL(argv.routes));
+                        lambda = lambda.withRoutes(Routes.fromURL(argv.routes, this.log));
                       }
                       const volumes = Volume.fromArgs(argv);
                       if (volumes.length) {
@@ -652,7 +653,7 @@ export class Environment implements ILoggable {
       this._registry = argv.registry;
     }
     if (argv.routes) {
-      this._routes = Routes.fromURL(argv.routes);
+      this._routes = Routes.fromURL(argv.routes, this.log);
     }
     this._routes.withVolumes(Volume.fromArgs(argv));
   }

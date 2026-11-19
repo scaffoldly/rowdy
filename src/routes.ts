@@ -1,9 +1,8 @@
 import parseDataURL from 'data-urls';
 import { match as pathMatch, compile as pathCompile, pathToRegexp } from 'path-to-regexp';
 import { decode, labelToName } from 'whatwg-encoding';
-import { ILoggable, log as root, maskUrl } from './log';
+import { ILoggable, Logger, maskUrl } from './log';
 
-const log = root.child('routes');
 import { CheckResult, cloudCheck, httpCheck, httpsCheck, rowdyCheck } from './util/checks';
 import { existsSync, readFileSync } from 'fs';
 import * as YAML from 'yaml';
@@ -176,32 +175,34 @@ export class URI extends URL implements ILoggable {
     return URI.from(`rowdy://${RowdyNames.ERROR}${code ? `:${code}` : ''}/`).withSearch(URI.ERROR, error.message);
   }
 
-  async health(timeoutMs?: number): Promise<URIHealth> {
+  async health(parent: Logger, timeoutMs?: number): Promise<URIHealth> {
+    const log = parent.child(this);
     if (this.protocol === 'rowdy:') {
-      return rowdyCheck(this.href, this.error);
+      return rowdyCheck(log, this.href, this.error);
     }
 
     if (this.protocol === 'cloud:') {
-      return cloudCheck(this.href, timeoutMs);
+      return cloudCheck(log, this.href, timeoutMs);
     }
 
     if (this.protocol === 'http:') {
-      return httpCheck(this.origin, timeoutMs);
+      return httpCheck(log, this.origin, timeoutMs);
     }
 
     if (this.protocol === 'https:') {
-      return httpsCheck(this.origin, timeoutMs);
+      return httpsCheck(log, this.origin, timeoutMs);
     }
 
     return { status: 'unknown', reason: `Unsupported protocol: '${this.protocol}'` };
   }
 
-  await(intervalMs = 1000): Observable<URI> {
+  await(parent: Logger, intervalMs = 1000): Observable<URI> {
     if (URI.awaits.has(this.toString())) {
       return URI.awaits.get(this.toString())!;
     }
 
-    const check$ = defer(() => this.health(intervalMs)).pipe(
+    const log = parent.child(this);
+    const check$ = defer(() => this.health(parent, intervalMs)).pipe(
       map((h) => h.status === 'ok' || h.status === 'unknown'),
       catchError(() => of(false))
     );
@@ -602,27 +603,28 @@ export class Routes implements IRoutes, ILoggable {
       .withDefault('rowdy://http:404/');
   }
 
-  static fromURL(url: string): Routes {
+  static fromURL(url: string, parent: Logger): Routes {
+    const log = parent.child(this);
     if (url.startsWith('data:')) {
-      return Routes.fromDataURL(url);
+      return Routes.fromDataURL(url, parent);
     }
 
     try {
       if (url.startsWith('file:')) {
         const path = url.replace(/^file:\/\//, '');
-        return Routes.fromPath(path);
+        return Routes.fromPath(path, parent);
       }
 
       if (existsSync(url)) {
-        return Routes.fromPath(url);
+        return Routes.fromPath(url, parent);
       }
 
       if (existsSync(join(__dirname, url))) {
-        return Routes.fromPath(join(__dirname, url));
+        return Routes.fromPath(join(__dirname, url), parent);
       }
 
       if (existsSync(join(process.cwd(), url))) {
-        return Routes.fromPath(join(process.cwd(), url));
+        return Routes.fromPath(join(process.cwd(), url), parent);
       }
     } catch (e) {
       log.warn('Routes URL Unreadable', { url, error: e instanceof Error ? e.message : String(e) });
@@ -694,7 +696,8 @@ export class Routes implements IRoutes, ILoggable {
       .withHosts(routes.spec?.hosts || []);
   }
 
-  static fromPath(path: string): Routes {
+  static fromPath(path: string, parent: Logger): Routes {
+    const log = parent.child(this);
     log.debug(`Loading routes from path`, { path });
     try {
       const content = readFileSync(path, 'utf-8');
@@ -719,7 +722,8 @@ export class Routes implements IRoutes, ILoggable {
     }
   }
 
-  static fromDataURL(dataUrl: string): Routes {
+  static fromDataURL(dataUrl: string, parent: Logger): Routes {
+    const log = parent.child(this);
     try {
       const data = parseDataURL(dataUrl);
       if (!data) {
@@ -951,7 +955,8 @@ export class Routes implements IRoutes, ILoggable {
     return pattern ? Cors.parse(pattern, this.cors[pattern]) : undefined;
   }
 
-  intoURI(path: string): URI {
+  intoURI(path: string, parent: Logger): URI {
+    const log = parent.child(this);
     const input = URI.from(`no://thing${path}`);
 
     // normalize path
@@ -1045,7 +1050,7 @@ export class Routes implements IRoutes, ILoggable {
     return this;
   }
 
-  async health(): Promise<Health> {
+  async health(parent: Logger): Promise<Health> {
     return await this.rules
       .flatMap((rule) => rule.backendRefs ?? [])
       .map((ref) => ref.uri)
@@ -1055,7 +1060,7 @@ export class Routes implements IRoutes, ILoggable {
         async (healthP, uri) => {
           const health = await healthP;
           if (uri.protocol === 'rowdy:') return health;
-          health[uri.server] = health[uri.server] || (await uri.health());
+          health[uri.server] = health[uri.server] || (await uri.health(parent));
           return health;
         },
         Promise.resolve({} as Health)
