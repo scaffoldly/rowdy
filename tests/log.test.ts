@@ -1,4 +1,5 @@
 import { Observable, of, throwError, race, timer, map, NEVER } from 'rxjs';
+import pino from 'pino';
 import { ILoggable, Logger, mask, maskEnv, maskHeaders, maskJson, maskQuery, maskUrl, Trace } from '../src/log';
 
 describe('log masking', () => {
@@ -533,6 +534,153 @@ describe('Logger', () => {
           done();
         },
       });
+    });
+  });
+});
+
+describe('Logger sinks', () => {
+  const ENV = ['ROWDY_LOG_LEVEL', 'ROWDY_LOG_FORMAT', 'ROWDY_DEBUG', 'ROWDY_TRACE'] as const;
+  const saved: Record<string, string | undefined> = {};
+  let consoled: unknown[][];
+  let spies: jest.SpyInstance[];
+
+  beforeEach(() => {
+    for (const key of ENV) {
+      saved[key] = process.env[key];
+      delete process.env[key];
+    }
+    new Logger().withLevel('debug').withFormat(undefined).withSink(undefined);
+    consoled = [];
+    spies = (['debug', 'info', 'warn', 'error'] as const).map((level) =>
+      jest.spyOn(console, level).mockImplementation((...args: unknown[]) => void consoled.push(args))
+    );
+  });
+
+  afterEach(() => {
+    spies.forEach((spy) => spy.mockRestore());
+    new Logger().withLevel(undefined).withFormat(undefined).withSink(undefined);
+    for (const key of ENV) {
+      if (saved[key] === undefined) delete process.env[key];
+      else process.env[key] = saved[key];
+    }
+  });
+
+  type Recorded = Record<'debug' | 'info' | 'warn' | 'error', (...args: unknown[]) => void>;
+  const recorder = (): { sink: Recorded; calls: Array<[string, unknown[]]> } => {
+    const calls: Array<[string, unknown[]]> = [];
+    const sink: Recorded = {
+      debug: (...args) => void calls.push(['debug', args]),
+      info: (...args) => void calls.push(['info', args]),
+      warn: (...args) => void calls.push(['warn', args]),
+      error: (...args) => void calls.push(['error', args]),
+    };
+    return { sink, calls };
+  };
+
+  it("gives a console-like sink each level's method, fields first and the message second", () => {
+    const { sink, calls } = recorder();
+    const log = new Logger('sandbox', sink);
+
+    log.info('Sandbox Ready', { sandboxId: 'box' });
+    log.warn('Slow');
+    log.trace('Hidden at debug');
+    log.debug('Seen at debug', { n: 1 });
+
+    expect(calls).toEqual([
+      ['info', [{ component: 'sandbox', sandboxId: 'box' }, 'Sandbox Ready']],
+      ['warn', [{ component: 'sandbox' }, 'Slow']],
+      ['debug', [{ component: 'sandbox', n: 1 }, 'Seen at debug']],
+    ]);
+    expect(consoled).toEqual([]);
+  });
+
+  it('writes a stream sink one formatted line at a time', () => {
+    const written: string[] = [];
+    const log = new Logger('sandbox', { write: (line: string): number => written.push(line) });
+
+    log.info('Sandbox Ready', { sandboxId: 'box' });
+
+    expect(written).toEqual(['INFO Sandbox Sandbox Ready SandboxId: box\n']);
+    expect(consoled).toEqual([]);
+  });
+
+  it("gives its children its sink, and keeps them from another logger's", () => {
+    const first = recorder();
+    const second = recorder();
+
+    new Logger('a', first.sink).child('client').info('One');
+    new Logger('b', second.sink).child('client').info('Two');
+    new Logger().child('client').info('Three');
+
+    expect(first.calls).toEqual([['info', [{ component: 'client' }, 'One']]]);
+    expect(second.calls).toEqual([['info', [{ component: 'client' }, 'Two']]]);
+    expect(consoled.map((args) => args.join(' '))).toEqual(['INFO Client Three']);
+  });
+
+  it('relays a command line to its sink', () => {
+    const { sink, calls } = recorder();
+
+    new Logger('cmd', sink).relay('error', 'oops\n');
+
+    expect(calls).toEqual([['error', [{ component: 'cmd' }, 'oops']]]);
+  });
+
+  it('keeps the process-wide sink for a logger without its own', () => {
+    new Logger().withSink('stderr');
+
+    new Logger('x').info('To stderr');
+
+    expect(spies[3]).toHaveBeenCalledWith('INFO X To Stderr');
+  });
+
+  describe('pino', () => {
+    const capture = (): { lines: Array<Record<string, unknown>>; destination: { write(line: string): void } } => {
+      const lines: Array<Record<string, unknown>> = [];
+      const destination = { write: (line: string): void => void lines.push(JSON.parse(line)) };
+      return { lines, destination };
+    };
+
+    it('plugs in as a logger, its fields merged into its own JSON', () => {
+      const { lines, destination } = capture();
+      const log = new Logger('sandbox', pino({ level: 'debug', base: undefined, timestamp: false }, destination));
+
+      log.info('Sandbox Ready', { sandboxId: 'box', error: new Error('nope') });
+      log.debug('Polling');
+
+      expect(lines).toEqual([
+        // At debug an error carries its stack, as it does for any sink.
+        {
+          level: 30,
+          component: 'sandbox',
+          sandboxId: 'box',
+          error: expect.stringMatching(/^Error: nope\n/),
+          msg: 'Sandbox Ready',
+        },
+        { level: 20, component: 'sandbox', msg: 'Polling' },
+      ]);
+    });
+
+    it("plugs in as a stream, through pino's destination", () => {
+      const written: string[] = [];
+      const destination = pino.destination({ dest: 2, sync: true });
+      const write = jest.spyOn(destination, 'write').mockImplementation((line: string) => {
+        written.push(line);
+        return true;
+      });
+
+      new Logger('sandbox', destination).info('Sandbox Ready');
+
+      expect(write).toHaveBeenCalled();
+      expect(written).toEqual(['INFO Sandbox Sandbox Ready\n']);
+    });
+
+    it('is still filtered by rowdy level first', () => {
+      const { lines, destination } = capture();
+      new Logger().withLevel('info');
+
+      new Logger('sandbox', pino({ level: 'debug', base: undefined, timestamp: false }, destination)).debug('Dropped');
+
+      expect(lines).toEqual([]);
     });
   });
 });

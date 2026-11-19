@@ -80,6 +80,7 @@
     "eslint-plugin-prettier": "^5.4.1",
     "globals": "^16.2.0",
     "jest": "^30.1.3",
+    "pino": "^10.4.0",
     "prettier": "^3.0.0",
     "promise-retry": "^2.0.1",
     "ts-jest": "^29.1.0",

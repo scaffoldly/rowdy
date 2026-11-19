@@ -133,7 +133,13 @@ const LEVELS: Record<Level, number> = { error: 0, warn: 1, info: 2, debug: 3, tr
 
 export const isLevel = (value: unknown): value is Level => typeof value === 'string' && value in LEVELS;
 
-export type Sink = 'stderr';
+/**
+ * Where lines go. `'stderr'` sends every level to `console.error`. A console-like logger, such as pino, gets each
+ * level's own method, with the line's fields first and its message second. A stream, such as `process.stderr`, is
+ * written one formatted line at a time.
+ */
+// eslint-disable-next-line no-undef
+export type Sink = 'stderr' | Pick<Console, 'error' | 'warn' | 'info' | 'debug'> | { write(line: string): unknown };
 
 // Process-wide: every Logger, children included, shares one level, format, sink and context.
 const state: { level?: Level; format?: Format; sink?: Sink; context: Record<string, Primitive> } = { context: {} };
@@ -177,15 +183,22 @@ const field = (key: string, value: Primitive): string => {
 
 export class Logger {
   private static children = new Map<string, Logger>();
+  // A logger with a sink of its own keeps its children, so another sink's never write for it.
+  private ownChildren = new Map<string, Logger>();
 
-  constructor(public readonly component?: string) {}
+  /** `own` is where this logger and its children write, in place of the process-wide sink. */
+  constructor(
+    public readonly component?: string,
+    private readonly own?: Sink
+  ) {}
 
-  /** A logger whose lines carry `component`. Shares level, format and context with every other. */
+  /** A logger whose lines carry `component`. Shares level, format and context with every other, and its sink. */
   child(component: string): Logger {
-    let child = Logger.children.get(component);
+    const children = this.own ? this.ownChildren : Logger.children;
+    let child = children.get(component);
     if (!child) {
-      child = new Logger(component);
-      Logger.children.set(component, child);
+      child = new Logger(component, this.own);
+      children.set(component, child);
     }
     return child;
   }
@@ -234,7 +247,10 @@ export class Logger {
     return this;
   }
 
-  /** Sends every level to stderr, for a host whose stdout is its own. Undefined splits them by level again. */
+  /**
+   * The process-wide sink, for every logger without one of its own: `'stderr'` for a host whose stdout is its own, a
+   * console-like logger, or a stream. Undefined goes back to `console`, split by level.
+   */
   withSink(sink: Sink | undefined): this {
     state.sink = sink;
     return this;
@@ -297,7 +313,7 @@ export class Logger {
       return;
     }
 
-    const sink = state.sink ? 'error' : level === 'trace' ? 'debug' : level;
+    const method = level === 'trace' ? 'debug' : level;
 
     try {
       // A stack is debugging detail: below debug an error is its name and message.
@@ -308,13 +324,21 @@ export class Logger {
         : Object.fromEntries(Object.entries(params).map(([key, value]) => [key, primitive(value)]));
       Object.assign(fields, state.context);
 
+      const sink = this.own ?? state.sink;
+      if (sink && sink !== 'stderr' && !('write' in sink)) {
+        const structured: Record<string, unknown> = { component: this.component };
+        for (const [key, value] of Object.entries(fields)) {
+          structured[key] = value instanceof Error ? `${value.name}: ${value.message}` : value;
+        }
+        return this.emit(method, message, structured);
+      }
+
       if (this.format === 'json') {
         const line: Record<string, unknown> = { level, component: this.component, msg: message };
         for (const [key, value] of Object.entries(fields)) {
           line[key] = value instanceof Error ? `${value.name}: ${value.message}` : value;
         }
-        // eslint-disable-next-line no-console
-        return console[sink](JSON.stringify(line));
+        return this.emit(method, JSON.stringify(line));
       }
 
       const { requestId, ...rest } = fields;
@@ -325,8 +349,7 @@ export class Logger {
         title(message),
       ];
       const tail = Object.entries(rest).map(([key, value]) => field(key, value));
-      // eslint-disable-next-line no-console
-      return console[sink]([...head, ...tail].join(' '));
+      return this.emit(method, [...head, ...tail].join(' '));
     } catch (error) {
       // eslint-disable-next-line no-console
       return console.error(`Unable to log`, { error, level, message });
@@ -341,15 +364,19 @@ export class Logger {
     if (!line.trim()) {
       return;
     }
-    const sink = state.sink ? 'error' : stream;
     const text = line.replace(/\s+$/, '');
+    const sink = this.own ?? state.sink;
+    if (sink && sink !== 'stderr' && !('write' in sink)) {
+      return this.emit(stream, text, { component: this.component, ...state.context });
+    }
     if (/^\s*\{.*\}$/.test(text)) {
-      // eslint-disable-next-line no-console
-      return console[sink](text);
+      return this.emit(stream, text);
     }
     if (this.format === 'json') {
-      // eslint-disable-next-line no-console
-      return console[sink](JSON.stringify({ level: 'info', component: this.component, msg: text, ...state.context }));
+      return this.emit(
+        stream,
+        JSON.stringify({ level: 'info', component: this.component, msg: text, ...state.context })
+      );
     }
     const { requestId } = state.context;
     const head = [
@@ -357,9 +384,27 @@ export class Logger {
       ...(requestId === undefined ? [] : [`RequestId: ${String(requestId)}`]),
       ...(this.component ? [capital(this.component)] : []),
     ];
-    // eslint-disable-next-line no-console
-    return console[sink](`${head.join(' ')} ${text}`);
+    return this.emit(stream, `${head.join(' ')} ${text}`);
   };
+
+  /** One line to this logger's sink: a console-like one gets `fields` first when there are any. */
+  private emit(level: 'error' | 'warn' | 'info' | 'debug', text: string, fields?: Record<string, unknown>): void {
+    const sink = this.own ?? state.sink;
+    if (sink === 'stderr') {
+      // eslint-disable-next-line no-console
+      return console.error(text);
+    }
+    if (sink && 'write' in sink) {
+      sink.write(`${text}\n`);
+      return;
+    }
+    const target = sink ?? console;
+    if (fields) {
+      target[level](fields, text);
+      return;
+    }
+    target[level](text);
+  }
 
   error = (message: string, params: Record<string, Loggable> = {}): void => this.log('error', message, params);
 
