@@ -23,7 +23,7 @@ export class LambdaImageService implements ILambdaImageService {
   ) {}
 
   get log(): Logger {
-    return this.environment.log.child(this.constructor.name);
+    return this.environment.log.child(this);
   }
 
   /** What its AWS clients act as, or undefined for the AWS SDK's own chain. */

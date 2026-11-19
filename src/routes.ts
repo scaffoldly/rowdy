@@ -176,7 +176,7 @@ export class URI extends URL implements ILoggable {
   }
 
   async health(parent: Logger, timeoutMs?: number): Promise<URIHealth> {
-    const log = parent.child(this.constructor.name);
+    const log = parent.child(this);
     if (this.protocol === 'rowdy:') {
       return rowdyCheck(log, this.href, this.error);
     }
@@ -201,7 +201,7 @@ export class URI extends URL implements ILoggable {
       return URI.awaits.get(this.toString())!;
     }
 
-    const log = parent.child(this.constructor.name);
+    const log = parent.child(this);
     const check$ = defer(() => this.health(parent, intervalMs)).pipe(
       map((h) => h.status === 'ok' || h.status === 'unknown'),
       catchError(() => of(false))
@@ -604,7 +604,7 @@ export class Routes implements IRoutes, ILoggable {
   }
 
   static fromURL(url: string, parent: Logger): Routes {
-    const log = parent.child(Routes.name);
+    const log = parent.child(this);
     if (url.startsWith('data:')) {
       return Routes.fromDataURL(url, parent);
     }
@@ -697,7 +697,7 @@ export class Routes implements IRoutes, ILoggable {
   }
 
   static fromPath(path: string, parent: Logger): Routes {
-    const log = parent.child(Routes.name);
+    const log = parent.child(this);
     log.debug(`Loading routes from path`, { path });
     try {
       const content = readFileSync(path, 'utf-8');
@@ -723,7 +723,7 @@ export class Routes implements IRoutes, ILoggable {
   }
 
   static fromDataURL(dataUrl: string, parent: Logger): Routes {
-    const log = parent.child(Routes.name);
+    const log = parent.child(this);
     try {
       const data = parseDataURL(dataUrl);
       if (!data) {
@@ -956,7 +956,7 @@ export class Routes implements IRoutes, ILoggable {
   }
 
   intoURI(path: string, parent: Logger): URI {
-    const log = parent.child(this.constructor.name);
+    const log = parent.child(this);
     const input = URI.from(`no://thing${path}`);
 
     // normalize path

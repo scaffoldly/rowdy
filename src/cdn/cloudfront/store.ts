@@ -44,7 +44,7 @@ export class CloudFrontStore extends CdnStore {
   }
 
   write(values: Record<string, string>, parent: RowdyLogger, logger?: Logger): Observable<Written> {
-    const log = parent.child(this.constructor.name);
+    const log = parent.child(this);
     const KvsARN = this.target;
     const client = new CloudFrontKeyValueStoreClient({ logger });
     const fits = ([key, value]: [string, string]): boolean =>

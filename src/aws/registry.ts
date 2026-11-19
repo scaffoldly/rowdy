@@ -33,7 +33,7 @@ export class AwsRegistry extends AwsClientLogger implements IRegistryApi {
   }
 
   override get log(): Logger {
-    return (this.enviornment?.log ?? this.base).child(this.constructor.name);
+    return (this.enviornment?.log ?? this.base).child(this);
   }
 
   withSlug(slug: string): MonoTypeOperatorFunction<TRegistry> {

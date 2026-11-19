@@ -248,7 +248,7 @@ export class MicrovmCompute extends AwsClientLogger implements SandboxCompute {
   }
 
   override get log(): Logger {
-    return this.environment.log.child(this.constructor.name);
+    return this.environment.log.child(this);
   }
 
   // The image's ARN has the account in it, so only its name leaves rowdy.

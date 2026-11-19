@@ -312,7 +312,7 @@ export class LambdaFunction extends AwsResource {
   }
 
   override get log(): Logger {
-    return this.imageService.log.child(this.constructor.name);
+    return this.imageService.log.child(this);
   }
 
   get signal(): AbortSignal {
