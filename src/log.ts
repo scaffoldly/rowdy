@@ -183,25 +183,29 @@ const field = (key: string, value: Primitive): string => {
 
 export class Logger {
   private static children = new Map<string, Logger>();
-  // A logger with a sink of its own keeps its children, so another sink's never write for it.
+  // A logger with a sink or level of its own keeps its children, so another's never write for it.
   private ownChildren = new Map<string, Logger>();
 
-  /** `own` is where this logger and its children write, in place of the process-wide sink. */
+  /**
+   * `own` is where this logger and its children write, in place of the process-wide sink. `ownLevel` is the level they
+   * log at, in place of the process-wide one.
+   */
   constructor(
     public readonly component?: string,
-    private readonly own?: Sink
+    private readonly own?: Sink,
+    private readonly ownLevel?: Level
   ) {}
 
   /**
    * A logger whose lines carry `of` as their component: a string as given, a class by its name, and an instance by its
-   * class's name, never by a `name` of its own. Shares level, format and context with every other, and its sink.
+   * class's name, never by a `name` of its own. Shares format and context with every other, and its sink and level.
    */
   child(of: string | object): Logger {
     const component = typeof of === 'string' ? of : typeof of === 'function' ? of.name : of.constructor.name;
-    const children = this.own ? this.ownChildren : Logger.children;
+    const children = this.own || this.ownLevel ? this.ownChildren : Logger.children;
     let child = children.get(component);
     if (!child) {
-      child = new Logger(component, this.own);
+      child = new Logger(component, this.own, this.ownLevel);
       children.set(component, child);
     }
     return child;
@@ -222,7 +226,7 @@ export class Logger {
   }
 
   get level(): Level {
-    return state.level ?? envLevel();
+    return this.ownLevel ?? state.level ?? envLevel();
   }
 
   get format(): Format {
