@@ -101,14 +101,12 @@ export class SandboxImpl implements Sandbox {
     credentials,
     signal,
   }: Pick<SandboxOptions, 'runtime' | 'logLevel' | 'logger' | 'pollInterval' | 'credentials' | 'signal'>) {
-    // A host's stdout is its own. Its terminal stays quiet unless logLevel, ROWDY_LOG_LEVEL, ROWDY_DEBUG or ROWDY_TRACE
-    // says otherwise.
-    const log = new Logger('sandbox', logger ?? DEFAULT_LOGGER);
-    if (logLevel) {
-      log.withLevel(logLevel);
-    } else if (!process.env.ROWDY_LOG_LEVEL && log.level === 'info') {
-      log.withLevel('warn');
-    }
+    // A host's stdout is its own, and its terminal stays quiet unless logLevel, ROWDY_LOG_LEVEL, ROWDY_DEBUG or
+    // ROWDY_TRACE says otherwise. Both are this sandbox's alone.
+    const { ROWDY_LOG_LEVEL, ROWDY_DEBUG, ROWDY_TRACE } = process.env;
+    const level =
+      logLevel ?? (ROWDY_LOG_LEVEL || ROWDY_DEBUG === 'true' || ROWDY_TRACE === 'true' ? undefined : 'warn');
+    const log = new Logger('sandbox', logger ?? DEFAULT_LOGGER, level);
     this.credential$ = credentials && new Credentials(credentials);
     this.environment = new SandboxEnvironment(log, { signal, pollInterval, credentials: this.credential$?.provider });
 
@@ -286,8 +284,13 @@ export class SandboxImpl implements Sandbox {
     );
   }
 
-  static list({ runtime, meta = {}, credentials, signal, logger }: SandboxListOptions = {}): Promise<SandboxStatus[]> {
-    const log = new Logger('sandbox', logger ?? DEFAULT_LOGGER);
+  static list({ runtime, meta = {}, credentials, signal, logger, logLevel }: SandboxListOptions = {}): Promise<
+    SandboxStatus[]
+  > {
+    const { ROWDY_LOG_LEVEL, ROWDY_DEBUG, ROWDY_TRACE } = process.env;
+    const level =
+      logLevel ?? (ROWDY_LOG_LEVEL || ROWDY_DEBUG === 'true' || ROWDY_TRACE === 'true' ? undefined : 'warn');
+    const log = new Logger('sandbox', logger ?? DEFAULT_LOGGER, level);
     const runtimes = runtime ? [runtime] : (Object.keys(RUNTIMES) as (keyof typeof RUNTIMES)[]);
 
     return lastValueFrom(

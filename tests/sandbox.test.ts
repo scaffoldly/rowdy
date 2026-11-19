@@ -458,9 +458,19 @@ describe('sandbox', () => {
       });
 
       it('is warn by default', async () => {
-        await SandboxImpl.create({ runtime: 'aws.lambda' });
+        const sandbox = await SandboxImpl.create({ runtime: 'aws.lambda' });
 
-        expect(new Logger().level).toBe('warn');
+        expect(sandbox['environment'].log.level).toBe('warn');
+      });
+
+      it("is each sandbox's own, and never the process's", async () => {
+        const quiet = await SandboxImpl.create({ runtime: 'aws.lambda', logLevel: 'error' });
+        const loud = await SandboxImpl.create({ runtime: 'aws.lambda', logLevel: 'debug' });
+
+        expect(quiet['environment'].log.level).toBe('error');
+        expect(quiet['environment'].log.child('client').level).toBe('error');
+        expect(loud['environment'].log.level).toBe('debug');
+        expect(new Logger().level).toBe('info');
       });
 
       it('takes logLevel on get too, for a process that never creates', async () => {
@@ -468,33 +478,33 @@ describe('sandbox', () => {
           return of(this);
         });
 
-        await SandboxImpl.get({ sandboxId: FUNCTION_NAME, logLevel: 'error' });
+        const sandbox = await SandboxImpl.get({ sandboxId: FUNCTION_NAME, logLevel: 'error' });
 
-        expect(new Logger().level).toBe('error');
+        expect(sandbox['environment'].log.level).toBe('error');
       });
 
       it('takes logLevel over ROWDY_LOG_LEVEL', async () => {
         process.env.ROWDY_LOG_LEVEL = 'trace';
 
-        await SandboxImpl.create({ runtime: 'aws.lambda', logLevel: 'error' });
+        const sandbox = await SandboxImpl.create({ runtime: 'aws.lambda', logLevel: 'error' });
 
-        expect(new Logger().level).toBe('error');
+        expect(sandbox['environment'].log.level).toBe('error');
       });
 
       it('follows ROWDY_LOG_LEVEL', async () => {
         process.env.ROWDY_LOG_LEVEL = 'info';
 
-        await SandboxImpl.create({ runtime: 'aws.lambda' });
+        const sandbox = await SandboxImpl.create({ runtime: 'aws.lambda' });
 
-        expect(new Logger().level).toBe('info');
+        expect(sandbox['environment'].log.level).toBe('info');
       });
 
       it('follows ROWDY_DEBUG', async () => {
         process.env.ROWDY_DEBUG = 'true';
 
-        await SandboxImpl.create({ runtime: 'aws.lambda' });
+        const sandbox = await SandboxImpl.create({ runtime: 'aws.lambda' });
 
-        expect(new Logger().level).toBe('debug');
+        expect(sandbox['environment'].log.level).toBe('debug');
       });
 
       it('leaves stdout to the host: by default a sandbox writes to process.stderr', async () => {

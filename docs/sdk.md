@@ -71,5 +71,5 @@ wins only when `logLevel` is left out.
 ROWDY_LOG_LEVEL=info node index.js 2>rowdy.log
 ```
 
-The level applies to the whole process, so every sandbox in it shares it, and it filters a line before the logger
-sees it: a pino logger at `debug` still needs `logLevel: 'debug'`. Where logs go is each sandbox's own.
+Both are each sandbox's own: two sandboxes in one process can log to different places at different levels. The level
+filters a line before the logger sees it, so a pino logger at `debug` still needs `logLevel: 'debug'`.

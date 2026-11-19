@@ -22,7 +22,7 @@ interface BaseSandboxOptions {
    * Only their layers go in, not their config. Different layers are a different sandbox.
    */
   layersFrom?: string[];
-  /** Applies to the whole process. Defaults to ROWDY_LOG_LEVEL, ROWDY_DEBUG or ROWDY_TRACE, then `warn`. */
+  /** This sandbox's own, never another's. Defaults to ROWDY_LOG_LEVEL, ROWDY_DEBUG or ROWDY_TRACE, then `warn`. */
   logLevel?: Level;
   /**
    * Where this sandbox logs, and only this one. A console-like logger, such as pino, gets each level's method with the
@@ -128,6 +128,8 @@ export interface SandboxListOptions extends AwsSandboxOptions {
   signal?: AbortSignal;
   /** Where the listing logs. Defaults as `create`'s does. */
   logger?: SandboxLogger;
+  /** The listing's level. Defaults as `create`'s does. */
+  logLevel?: Level;
 }
 
 export interface SandboxLookup extends Pick<SandboxOptions, 'logLevel' | 'logger' | 'pollInterval' | 'credentials'> {
