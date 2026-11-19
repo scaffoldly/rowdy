@@ -192,8 +192,12 @@ export class Logger {
     private readonly own?: Sink
   ) {}
 
-  /** A logger whose lines carry `component`. Shares level, format and context with every other, and its sink. */
-  child(component: string): Logger {
+  /**
+   * A logger whose lines carry `of` as their component: a string as given, a class by its name, and an instance by its
+   * class's name, never by a `name` of its own. Shares level, format and context with every other, and its sink.
+   */
+  child(of: string | object): Logger {
+    const component = typeof of === 'string' ? of : typeof of === 'function' ? of.name : of.constructor.name;
     const children = this.own ? this.ownChildren : Logger.children;
     let child = children.get(component);
     if (!child) {

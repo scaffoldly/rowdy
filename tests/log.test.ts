@@ -617,6 +617,32 @@ describe('Logger sinks', () => {
     expect(consoled.map((args) => args.join(' '))).toEqual(['INFO Client Three']);
   });
 
+  it("names a child for a string, a class, or an instance's class, never an instance's own name", () => {
+    const { sink, calls } = recorder();
+    const log = new Logger('root', sink);
+    class MicrovmImage {
+      readonly name = 'sandbox-bcdf2';
+      static make(): Logger {
+        return log.child(this);
+      }
+      logger(): Logger {
+        return log.child(this);
+      }
+    }
+
+    log.child('http').info('A');
+    log.child(MicrovmImage).info('B');
+    MicrovmImage.make().info('C');
+    new MicrovmImage().logger().info('D');
+
+    expect(calls.map(([, [fields]]) => (fields as { component: string }).component)).toEqual([
+      'http',
+      'MicrovmImage',
+      'MicrovmImage',
+      'MicrovmImage',
+    ]);
+  });
+
   it('relays a command line to its sink', () => {
     const { sink, calls } = recorder();
 
