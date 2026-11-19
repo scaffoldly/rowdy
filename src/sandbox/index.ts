@@ -2,7 +2,7 @@ import type { Observable } from 'rxjs';
 import type { Writable } from 'stream';
 import type { Exec, ExecFinished, ExecOutput, ExecOutputOptions } from '../api/types';
 import type { Event, EventCallback } from '../events';
-import type { Level } from '../log';
+import type { Level, Sink } from '../log';
 import type { MICROVM_MEMORY } from './internal/compute';
 import type { AwsCredentials } from '../aws/credentials';
 import { SandboxImpl } from './internal/sandbox';
@@ -24,6 +24,12 @@ interface BaseSandboxOptions {
   layersFrom?: string[];
   /** Applies to the whole process. Defaults to ROWDY_LOG_LEVEL, ROWDY_DEBUG or ROWDY_TRACE, then `warn`. */
   logLevel?: Level;
+  /**
+   * Where this sandbox logs, and only this one. A console-like logger, such as pino, gets each level's method with the
+   * line's fields first and its message second. A stream, such as `process.stderr`, gets one formatted line at a time.
+   * Defaults to `process.stderr`, so a host's stdout stays its own, or `console` where there's no `process`.
+   */
+  logger?: SandboxLogger;
   /**
    * Milliseconds between checks on a build, a starting microVM or a stopping one, each a request to AWS. Defaults to
    * 5000 for a build or a start, and 250 for a stop. Only `aws.microvm` polls.
@@ -81,6 +87,9 @@ export interface MicrovmSandboxOptions extends BaseSandboxOptions, AwsSandboxOpt
 export type SandboxOptions = LambdaSandboxOptions | MicrovmSandboxOptions;
 
 export type { Event, EventCallback } from '../events';
+
+/** A console-like logger, such as pino or `console`, or a stream with `write`, such as `process.stderr`. */
+export type SandboxLogger = Exclude<Sink, 'stderr'>;
 export type { AwsCredentials } from '../aws/credentials';
 export * from './core';
 
@@ -117,9 +126,11 @@ export interface SandboxListOptions extends AwsSandboxOptions {
   /** Only sandboxes whose `meta` has every one of these. */
   meta?: Record<string, string>;
   signal?: AbortSignal;
+  /** Where the listing logs. Defaults as `create`'s does. */
+  logger?: SandboxLogger;
 }
 
-export interface SandboxLookup extends Pick<SandboxOptions, 'logLevel' | 'pollInterval' | 'credentials'> {
+export interface SandboxLookup extends Pick<SandboxOptions, 'logLevel' | 'logger' | 'pollInterval' | 'credentials'> {
   sandboxId: string;
   /** Refuses a sandbox whose `meta` doesn't have every one of these. */
   meta?: Record<string, string>;

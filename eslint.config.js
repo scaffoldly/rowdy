@@ -73,6 +73,14 @@ module.exports = [
           },
         },
       ],
+      'no-restricted-syntax': [
+        'error',
+        {
+          selector: "NewExpression[callee.name='Logger'][arguments.length<2]",
+          message:
+            "A Logger without a sink writes wherever the process says, not where the sandbox's host asked. Take the caller's Logger, or its child().",
+        },
+      ],
       'prettier/prettier': 'error',
     },
   },

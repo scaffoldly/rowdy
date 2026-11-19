@@ -10,7 +10,7 @@ import {
   ShellRequest,
   ShellResponse,
 } from '../src/proxy/shell';
-import { log } from '../src/log';
+import { runtimeLog as log } from '../src/runtime-log';
 import { existsSync, mkdtempSync, realpathSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';

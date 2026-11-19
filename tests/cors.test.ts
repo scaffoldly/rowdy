@@ -4,6 +4,8 @@ import { HttpProxy, HttpResponse } from '../src/proxy/http';
 import { APIGatewayProxyEventV2 } from 'aws-lambda';
 import { lastValueFrom } from 'rxjs';
 
+const LOG = new Logger('test', { write: () => true });
+
 const APP = 'https://app.example';
 
 describe('cors', () => {
@@ -149,7 +151,7 @@ describe('routes cors', () => {
   });
 
   it('round-trips through the manifest data url', () => {
-    const r = Routes.fromDataURL(routes().intoDataURL());
+    const r = Routes.fromDataURL(routes().intoDataURL(), LOG);
     expect(r.cors).toEqual(routes().cors);
     expect(r.intoCors('/oauth/token')).toBeUndefined();
     expect(r.intoCors('/api/status')!.spec.credentials).toBe(true);
@@ -168,7 +170,7 @@ describe('routes cors', () => {
   });
 
   it('accepts a bare spec with only cors', () => {
-    expect(Routes.fromURL(`cors:\n  '{/*path}': none\n`).cors).toEqual({ '{/*path}': 'none' });
+    expect(Routes.fromURL(`cors:\n  '{/*path}': none\n`, LOG).cors).toEqual({ '{/*path}': 'none' });
   });
 });
 

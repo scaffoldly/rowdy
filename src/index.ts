@@ -2,7 +2,7 @@
 
 import { firstValueFrom, fromEvent, merge, take, takeUntil, tap } from 'rxjs';
 import { Environment } from './environment';
-import { log } from './log';
+import { runtimeLog as log } from './runtime-log';
 import { humanize } from './aws/errors';
 import { ABORT } from './abort';
 

@@ -18,7 +18,8 @@ import {
 } from 'rxjs';
 import { Chunk, FileDescriptors, Pipeline, Proxy, Request, Response } from '../pipeline';
 import { PassThrough, Writable } from 'stream';
-import { ILoggable, log as root, Logger, Trace } from '../log';
+import { ILoggable, Logger, Trace } from '../log';
+import { runtimeLog as root } from '../runtime-log';
 import childProcess from 'child_process';
 import { execa } from 'execa';
 import type { ExecaChildProcess, ExecaError, Options } from 'execa';

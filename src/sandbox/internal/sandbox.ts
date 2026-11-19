@@ -13,6 +13,7 @@ import type {
   SandboxListOptions,
   SandboxLookup,
   SandboxOptions,
+  SandboxLogger,
   SandboxStatus,
   SandboxUrl,
   UrlOptions,
@@ -72,6 +73,9 @@ import { isNotFound, SANDBOX_ROLE_PATH } from '../../aws/shared';
 // Kubernetes' alphabet for generated names: no vowels, so a name spells no words.
 const ALPHANUMS = 'bcdfghjklmnpqrstvwxz2456789';
 
+// A host's stdout is its own. A Worker without `process` logs to its console.
+const DEFAULT_LOGGER: SandboxLogger = globalThis.process?.stderr ?? console;
+
 /** Kubernetes' ComputeHash: FNV-1a 32 over the template, its decimal digits encoded with SafeEncodeString. */
 export const computeHash = (template: string): string => {
   const hash = Buffer.from(template).reduce((sum, byte) => Math.imul(sum ^ byte, 16777619) >>> 0, 2166136261);
@@ -92,13 +96,14 @@ export class SandboxImpl implements Sandbox {
   private constructor({
     runtime,
     logLevel,
+    logger,
     pollInterval,
     credentials,
     signal,
-  }: Pick<SandboxOptions, 'runtime' | 'logLevel' | 'pollInterval' | 'credentials' | 'signal'>) {
+  }: Pick<SandboxOptions, 'runtime' | 'logLevel' | 'logger' | 'pollInterval' | 'credentials' | 'signal'>) {
     // A host's stdout is its own. Its terminal stays quiet unless logLevel, ROWDY_LOG_LEVEL, ROWDY_DEBUG or ROWDY_TRACE
     // says otherwise.
-    const log = new Logger('sandbox').withSink('stderr');
+    const log = new Logger('sandbox', logger ?? DEFAULT_LOGGER);
     if (logLevel) {
       log.withLevel(logLevel);
     } else if (!process.env.ROWDY_LOG_LEVEL && log.level === 'info') {
@@ -116,6 +121,7 @@ export class SandboxImpl implements Sandbox {
     const sandbox = new SandboxImpl({
       runtime,
       logLevel: options?.logLevel,
+      logger: options?.logger,
       pollInterval: options?.pollInterval,
       credentials: options?.credentials,
       signal: options?.signal,
@@ -210,6 +216,7 @@ export class SandboxImpl implements Sandbox {
   static get({
     sandboxId,
     logLevel,
+    logger,
     pollInterval,
     credentials,
     signal: abort,
@@ -219,7 +226,7 @@ export class SandboxImpl implements Sandbox {
     // An id is the sandbox's name, which doesn't say its runtime, so the sandbox is whichever runtime has it.
     const runtimes = only ? [only] : (Object.keys(RUNTIMES) as (keyof typeof RUNTIMES)[]);
     const sandboxes = runtimes.map(
-      (runtime) => new SandboxImpl({ runtime, logLevel, pollInterval, credentials, signal: abort })
+      (runtime) => new SandboxImpl({ runtime, logLevel, logger, pollInterval, credentials, signal: abort })
     );
     type Tried = { found?: SandboxImpl; error?: unknown };
 
@@ -279,9 +286,8 @@ export class SandboxImpl implements Sandbox {
     );
   }
 
-  static list({ runtime, meta = {}, credentials, signal }: SandboxListOptions = {}): Promise<SandboxStatus[]> {
-    // A host's stdout is its own.
-    new Logger('sandbox').withSink('stderr');
+  static list({ runtime, meta = {}, credentials, signal, logger }: SandboxListOptions = {}): Promise<SandboxStatus[]> {
+    const log = new Logger('sandbox', logger ?? DEFAULT_LOGGER);
     const runtimes = runtime ? [runtime] : (Object.keys(RUNTIMES) as (keyof typeof RUNTIMES)[]);
 
     return lastValueFrom(
@@ -291,7 +297,7 @@ export class SandboxImpl implements Sandbox {
               switchMap(() => throwError(() => signal.reason))
             )
           : NEVER,
-        merge(...runtimes.map((each) => RUNTIMES[each].list(credentials))).pipe(
+        merge(...runtimes.map((each) => RUNTIMES[each].list(credentials, log))).pipe(
           // A value that isn't a string, like an undefined one, matches no sandbox.
           filter((found) =>
             Object.entries(meta).every(([key, value]) => typeof value === 'string' && found.meta[key] === value)

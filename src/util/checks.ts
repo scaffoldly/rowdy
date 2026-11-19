@@ -1,8 +1,6 @@
 import * as net from 'net';
 import * as tls from 'tls';
-import { log as root } from '../log';
-
-const log = root.child('health');
+import type { Logger } from '../log';
 
 export const DEFAULT_TIMEOUT = 5000;
 
@@ -10,18 +8,18 @@ export type Status = 'ok' | 'error' | 'timeout' | 'unknown';
 export type Latency = `${number}ms`;
 export type CheckResult = { status: Status; latency?: Latency; reason?: string | undefined };
 
-export const rowdyCheck = (origin: string, error?: string): Promise<CheckResult> => {
+export const rowdyCheck = (log: Logger, origin: string, error?: string): Promise<CheckResult> => {
   log.debug(`cloudCheck`, { origin });
   return Promise.resolve({ status: error ? 'error' : 'ok', reason: error });
 };
 
-export const cloudCheck = (origin: string, timeout = DEFAULT_TIMEOUT): Promise<CheckResult> => {
+export const cloudCheck = (log: Logger, origin: string, timeout = DEFAULT_TIMEOUT): Promise<CheckResult> => {
   // TODO: Implement a cloud checks
   log.debug(`cloudCheck`, { origin, timeout });
   return Promise.resolve({ status: 'unknown', latency: '0.00ms', reason: 'cloudCheck() not implemented' });
 };
 
-export const httpCheck = (origin: string, timeout = DEFAULT_TIMEOUT): Promise<CheckResult> => {
+export const httpCheck = (log: Logger, origin: string, timeout = DEFAULT_TIMEOUT): Promise<CheckResult> => {
   // eslint-disable-next-line no-restricted-globals
   const url = new URL(origin);
   const now = performance.now();
@@ -45,7 +43,7 @@ export const httpCheck = (origin: string, timeout = DEFAULT_TIMEOUT): Promise<Ch
   });
 };
 
-export const httpsCheck = (origin: string, timeout = DEFAULT_TIMEOUT): Promise<CheckResult> => {
+export const httpsCheck = (log: Logger, origin: string, timeout = DEFAULT_TIMEOUT): Promise<CheckResult> => {
   // eslint-disable-next-line no-restricted-globals
   const url = new URL(origin);
   const now = performance.now();

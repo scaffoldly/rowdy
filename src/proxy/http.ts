@@ -15,7 +15,8 @@ import {
 } from 'rxjs';
 import { Pipeline, Proxy, Request } from '../pipeline';
 import { Readable } from 'stream';
-import { ILoggable, log as root, Logger, maskHeaders, maskQuery, maskUrl, Trace } from '../log';
+import { ILoggable, Logger, maskHeaders, maskQuery, maskUrl, Trace } from '../log';
+import { runtimeLog as root } from '../runtime-log';
 import axios, { isAxiosError } from 'axios';
 import { Agent } from 'https';
 import { Agent as HttpAgent } from 'http';
@@ -286,7 +287,7 @@ class RowdyHttpResponse extends HttpResponse {
     }
 
     if (proxy.uri.host === RowdyNames.HEALTH) {
-      return from(proxy.pipeline.routes.health()).pipe(
+      return from(proxy.pipeline.routes.health(log)).pipe(
         map((backends) => {
           const health = {
             backends,
@@ -390,7 +391,7 @@ class LocalHttpResponse extends HttpResponse {
       })
     );
 
-    const forwarded$ = proxy.uri.await().pipe(
+    const forwarded$ = proxy.uri.await(log).pipe(
       switchMap((uri) => {
         const headers = proxy.headers.intoAxios();
 

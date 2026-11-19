@@ -2,7 +2,6 @@ export {
   Logger,
   Trace,
   isLevel,
-  log,
   mask,
   maskEnv,
   maskHeaders,

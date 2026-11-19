@@ -9,7 +9,7 @@ import {
 import { GetCallerIdentityCommand, STSClient } from '@aws-sdk/client-sts';
 import type { Environment } from '../environment';
 import type { AwsSandboxOptions } from '../sandbox';
-import { log, Logger } from '../log';
+import type { Logger } from '../log';
 import { AwsClientLogger } from './logger';
 
 const ECR_REGISTRY_REGEX = /\.dkr\.ecr\.[a-z0-9-]+\.amazonaws\.com?$/;
@@ -19,9 +19,12 @@ export class AwsRegistry extends AwsClientLogger implements IRegistryApi {
   private sts: STSClient = this.track(new STSClient({ logger: this, credentials: this.enviornment?.credentials }));
 
   constructor(
-    private enviornment?: Pick<Environment, 'log' | 'event$' | 'registry'> & {
-      credentials?: AwsSandboxOptions['credentials'];
-    }
+    private enviornment:
+      | (Pick<Environment, 'log' | 'event$' | 'registry'> & {
+          credentials?: AwsSandboxOptions['credentials'];
+        })
+      | undefined,
+    private base: Logger
   ) {
     super();
     if (enviornment) {
@@ -30,7 +33,7 @@ export class AwsRegistry extends AwsClientLogger implements IRegistryApi {
   }
 
   override get log(): Logger {
-    return (this.enviornment?.log ?? log).child('registry');
+    return (this.enviornment?.log ?? this.base).child(this.constructor.name);
   }
 
   withSlug(slug: string): MonoTypeOperatorFunction<TRegistry> {

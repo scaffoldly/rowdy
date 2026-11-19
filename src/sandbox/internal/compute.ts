@@ -4,6 +4,7 @@ import type { SandboxEnvironment } from './environment';
 import type { Event } from '../../events';
 import type { AwsSandboxOptions, FileRange, SandboxStatus, SandboxUrl } from '..';
 import type { ExecSchema } from '../../routes';
+import type { Logger } from '../../log';
 
 /** A sandbox can't do this, and trying again won't change that. */
 export class SandboxError extends Error {}
@@ -72,5 +73,5 @@ export interface SandboxComputeClass {
   /** Throws for a spec this compute can't run, before anything reaches AWS. */
   assert(spec: Pick<ComputeSpec, 'timeout' | 'memory' | 'env' | 'meta'>): void;
   /** Each sandbox on this compute, once. */
-  list(credentials?: AwsSandboxOptions['credentials']): Observable<SandboxStatus>;
+  list(credentials: AwsSandboxOptions['credentials'] | undefined, log: Logger): Observable<SandboxStatus>;
 }

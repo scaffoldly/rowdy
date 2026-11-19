@@ -114,7 +114,7 @@ const STARTING = new Map<string, Observable<Vm>>();
 export class MicrovmCompute extends AwsClientLogger implements SandboxCompute {
   static readonly env = {};
 
-  static list(credentials?: AwsSandboxOptions['credentials']): Observable<SandboxStatus> {
+  static list(credentials: AwsSandboxOptions['credentials'] | undefined, log: Logger): Observable<SandboxStatus> {
     // One ListTags per image, so a busy host is throttled: adaptive retries slow down until AWS lets them through.
     const microvms = new LambdaMicrovmsClient({ credentials, retryMode: 'adaptive', maxAttempts: 8 });
     const s3 = new S3Client({ credentials });
@@ -128,7 +128,7 @@ export class MicrovmCompute extends AwsClientLogger implements SandboxCompute {
         toArray()
       ),
       // Without a sandbox bucket, there are no sandboxes started from a prebuilt image.
-      ownedBucket(s3, new Logger(), BUCKET_PREFIX, BUCKET_OWNER, false).pipe(
+      ownedBucket(s3, log, BUCKET_PREFIX, BUCKET_OWNER, false).pipe(
         switchMap((Bucket) =>
           from(paginateListObjectsV2({ client: s3 }, { Bucket, Prefix: RECORDS })).pipe(
             concatMap(({ Contents = [] }) => Contents),
@@ -248,7 +248,7 @@ export class MicrovmCompute extends AwsClientLogger implements SandboxCompute {
   }
 
   override get log(): Logger {
-    return this.environment.log.child('deploy');
+    return this.environment.log.child(this.constructor.name);
   }
 
   // The image's ARN has the account in it, so only its name leaves rowdy.

@@ -1,5 +1,5 @@
 import { appendFileSync } from 'fs';
-import { log as root } from '../log';
+import { runtimeLog as root } from '../runtime-log';
 
 const log = root.child('github');
 

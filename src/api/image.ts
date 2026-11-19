@@ -18,7 +18,9 @@ export class ImageApi implements IImageApi {
   }
 
   get registry(): Observable<TRegistry> {
-    return defer(() => race([new AwsRegistry(this.api.environment).login(), new LocalRegistry().login()]));
+    return defer(() =>
+      race([new AwsRegistry(this.api.environment, this.api.log).login(), new LocalRegistry().login()])
+    );
   }
 
   pullImage(image: string, opts?: PullImageOptions): Observable<TPulledImage> {
