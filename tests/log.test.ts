@@ -643,6 +643,25 @@ describe('Logger sinks', () => {
     ]);
   });
 
+  it('logs at its own level, its children too, whatever the process-wide one', () => {
+    const quiet = recorder();
+    const loud = recorder();
+    new Logger().withLevel('info');
+
+    const a = new Logger('a', quiet.sink, 'warn');
+    const b = new Logger('b', loud.sink, 'debug');
+    a.info('Dropped');
+    a.child('client').warn('Kept');
+    b.child('client').debug('Kept too');
+    new Logger().withLevel('error');
+    b.info('Still kept');
+
+    expect(quiet.calls.map(([, [, message]]) => message)).toEqual(['Kept']);
+    expect(loud.calls.map(([, [, message]]) => message)).toEqual(['Kept too', 'Still kept']);
+    expect(a.child('client').level).toBe('warn');
+    expect(new Logger('c', quiet.sink).level).toBe('error');
+  });
+
   it('relays a command line to its sink', () => {
     const { sink, calls } = recorder();
 
