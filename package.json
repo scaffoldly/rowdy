@@ -63,13 +63,10 @@
       }
     ]
   },
-  "dependencies": {
-    "@smithy/types": "^4.20.0",
-    "rxjs": "^7.8.2"
-  },
   "devDependencies": {
     "@aws-sdk/client-sts": "^3.1164.0",
     "@eslint/js": "^9.28.0",
+    "@smithy/types": "^4.20.0",
     "@types/jest": "^30.0.0",
     "@types/node": ">=22.0.0 <25.0.0",
     "@types/promise-retry": "^1.1.6",
@@ -83,8 +80,12 @@
     "pino": "^10.4.0",
     "prettier": "^3.0.0",
     "promise-retry": "^2.0.1",
+    "rxjs": "^7.8.2",
     "ts-jest": "^29.1.0",
     "tsup": "^8.5.0",
     "typescript": "^5.0.0"
+  },
+  "peerDependencies": {
+    "rxjs": "^7.8.2"
   }
 }

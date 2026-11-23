@@ -1,4 +1,3 @@
-import type { Logger as SdkLogger } from '@smithy/types';
 import { inspect } from 'util';
 import { ClientLogger } from './client';
 import { maskJson } from './log';
@@ -6,7 +5,7 @@ import { maskJson } from './log';
 const actionOf = (commandName: unknown): string => `${commandName}`.replace(/Command$/, '');
 
 /** A `ClientLogger` for AWS SDK clients. Pass it as a client's `logger`. */
-export abstract class SmithyClientLogger extends ClientLogger implements SdkLogger {
+export abstract class SmithyClientLogger extends ClientLogger {
   debug = (..._content: unknown[]): void => {};
   info = (...content: unknown[]): void => {
     const obj = Array.isArray(content) && content.length === 1 ? content[0] : content;

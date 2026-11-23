@@ -1,3 +1,4 @@
+import type { Logger as SdkLogger } from '@smithy/types';
 import { Logger, SmithyClientLogger } from '../src';
 
 class TestLogger extends SmithyClientLogger {
@@ -19,6 +20,11 @@ class TestLogger extends SmithyClientLogger {
 }
 
 describe('SmithyClientLogger', () => {
+  it('is an AWS SDK logger', () => {
+    const sdk: SdkLogger = new TestLogger();
+    expect(typeof sdk.info).toBe('function');
+  });
+
   let client: TestLogger;
   let info: jest.SpyInstance;
   let debug: jest.SpyInstance;

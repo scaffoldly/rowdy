@@ -5,6 +5,7 @@
     "moduleResolution": "node",
     "allowSyntheticDefaultImports": true,
     "esModuleInterop": true,
+    "types": ["node", "jest"],
     "baseUrl": "..",
     "paths": {
       "@scaffoldly/rowdy-cdk": ["src/index"]
