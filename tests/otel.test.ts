@@ -217,15 +217,19 @@ describe.each([
   ['INSTRUMENTATIONS from /otel', join(ROOT, 'dist', 'otel'), 'INSTRUMENTATIONS'],
   ['INSTRUMENTATIONS from the main entry', join(ROOT, 'dist', 'index.js'), 'INSTRUMENTATIONS'],
 ])('%s in a NodeSDK', (_name, entry, exportName) => {
-  type Span = { name: string; scope: string; url?: string; rpcService?: string; parent?: string };
+  type Span = { name: string; scope: string; url?: string; rpcService?: string; parent?: string; id: string };
   let result: { spans: Span[]; rxjs: boolean[]; mergeMapParent: string };
 
   beforeAll(() => {
     result = JSON.parse(
-      execFileSync(process.execPath, [join(__dirname, 'fixtures', 'otel-sdk.js'), entry, exportName], {
-        cwd: ROOT,
-        encoding: 'utf8',
-      })
+      execFileSync(
+        process.execPath,
+        [join(__dirname, 'fixtures', 'otel-sdk.js'), entry, exportName, join(ROOT, 'dist', 'index.js')],
+        {
+          cwd: ROOT,
+          encoding: 'utf8',
+        }
+      )
     );
   });
 
@@ -248,6 +252,12 @@ describe.each([
 
   it('keeps the active span in rxjs callbacks', () => {
     expect(result.rxjs).toEqual([true]);
+  });
+
+  it('makes a @Trace span that parents the requests it makes', () => {
+    const traced = result.spans.find((s) => s.name === 'fetchTraced');
+    expect(traced?.scope).toBe('@scaffoldly/rowdy-cdk');
+    expect(client('@opentelemetry/instrumentation-http', '/traced')?.parent).toBe(traced?.id);
   });
 
   it('parents a request made in mergeMap on the span active at subscribe', () => {

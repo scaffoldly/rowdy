@@ -1,6 +1,10 @@
-import { Observable, of, throwError, race, timer, map, NEVER } from 'rxjs';
+import { context, SpanKind, SpanStatusCode, trace } from '@opentelemetry/api';
+import { AsyncLocalStorageContextManager } from '@opentelemetry/context-async-hooks';
+import { InMemorySpanExporter, SimpleSpanProcessor, TracerProvider } from '@opentelemetry/sdk-trace';
+import { defer, Observable, of, throwError, race, timer, map, NEVER } from 'rxjs';
 import pino from 'pino';
-import { ILoggable, Logger, mask, maskEnv, maskHeaders, maskJson, maskQuery, maskUrl, Trace } from '../src/log';
+import { ILoggable, Logger, mask, maskEnv, maskHeaders, maskJson, maskQuery, maskUrl } from '../src/log';
+import { Trace } from '../src/internal/trace';
 
 describe('log masking', () => {
   describe('mask', () => {
@@ -466,6 +470,11 @@ describe('Logger', () => {
       fast(): Observable<string> {
         return timer(1).pipe(map(() => 'fast'));
       }
+
+      @Trace(log)
+      unloggable(): Observable<string> {
+        return of({} as unknown as string);
+      }
     }
     const duration = expect.stringMatching(/^\d+\.\d\d ms$/);
 
@@ -533,6 +542,189 @@ describe('Logger', () => {
           });
           done();
         },
+      });
+    });
+
+    describe('spans', () => {
+      const exporter = new InMemorySpanExporter();
+      const provider = new TracerProvider({ spanProcessors: [new SimpleSpanProcessor({ exporter })] });
+
+      class Traced {
+        @Trace(log)
+        child(): Observable<string> {
+          return defer(() => {
+            trace.getTracer('test').startSpan('child').end();
+            return of('child');
+          });
+        }
+
+        @Trace(log)
+        twice(): Observable<number> {
+          return of(1, 2);
+        }
+      }
+
+      const finished = (): Array<{
+        name: string;
+        kind: SpanKind;
+        status: SpanStatusCode;
+        attributes: Record<string, unknown>;
+        events: string[];
+        parent?: string;
+        id: string;
+      }> =>
+        exporter.getFinishedSpans().map((s) => ({
+          name: s.name,
+          kind: s.kind,
+          status: s.status.code,
+          attributes: { ...s.attributes },
+          events: s.events.map((e) => e.name),
+          parent: s.parentSpanContext?.spanId,
+          id: s.spanContext().spanId,
+        }));
+
+      beforeAll(() => {
+        context.setGlobalContextManager(new AsyncLocalStorageContextManager().enable());
+        trace.setGlobalTracerProvider(provider);
+      });
+
+      afterAll(async () => {
+        await provider.shutdown();
+        trace.disable();
+        context.disable();
+      });
+
+      beforeEach(() => {
+        exporter.reset();
+        new Logger().withLevel('debug');
+      });
+
+      it('makes one span per subscription, named for the method, below trace too', (done) => {
+        new Thing().into(new Arg(1)).subscribe({
+          complete: () => {
+            expect(finished()).toEqual([
+              expect.objectContaining({
+                name: 'Thing.into',
+                kind: SpanKind.INTERNAL,
+                status: SpanStatusCode.UNSET,
+                attributes: {
+                  'code.function.name': 'Thing.into',
+                  'rowdy.observable.outcome': 'complete',
+                  'rowdy.observable.emissions': 1,
+                },
+                events: [],
+              }),
+            ]);
+            done();
+          },
+        });
+      });
+
+      it('counts every emission', (done) => {
+        new Traced().twice().subscribe({
+          complete: () => {
+            expect(finished()[0]!.attributes['rowdy.observable.emissions']).toBe(2);
+            done();
+          },
+        });
+      });
+
+      it('records the error and sets the status on failure', (done) => {
+        new Thing().fail().subscribe({
+          error: () => {
+            expect(finished()).toEqual([
+              expect.objectContaining({
+                name: 'Thing.fail',
+                status: SpanStatusCode.ERROR,
+                attributes: {
+                  'code.function.name': 'Thing.fail',
+                  'rowdy.observable.outcome': 'error',
+                  'rowdy.observable.emissions': 0,
+                  'error.type': 'Error',
+                },
+                events: ['exception'],
+              }),
+            ]);
+            done();
+          },
+        });
+      });
+
+      it('fails on an emission that is not Loggable at trace level, in the log and on the span', (done) => {
+        new Logger().withLevel('trace');
+        new Thing().unloggable().subscribe({
+          error: (error: unknown) => {
+            expect(error).toBeInstanceOf(TypeError);
+            expect(text()[1]).toMatch(
+              /^TRACE Lambda Thing.unloggable Failed Duration: \d+\.\d\d ms Emissions: 0 Error: TypeError: @Trace unloggable: emission is not Loggable/
+            );
+            expect(text()).toHaveLength(2);
+            expect(finished()).toEqual([
+              expect.objectContaining({
+                name: 'Thing.unloggable',
+                status: SpanStatusCode.ERROR,
+                attributes: expect.objectContaining({
+                  'rowdy.observable.outcome': 'error',
+                  'rowdy.observable.emissions': 0,
+                  'error.type': 'TypeError',
+                }),
+                events: ['exception'],
+              }),
+            ]);
+            done();
+          },
+        });
+      });
+
+      it('ends the loser of a race as unsubscribed, without an error', (done) => {
+        const thing = new Thing();
+        race([thing.slow(), thing.fast()]).subscribe({
+          complete: () => {
+            const slow = finished().find((s) => s.name === 'Thing.slow');
+            expect(slow).toEqual(
+              expect.objectContaining({
+                status: SpanStatusCode.UNSET,
+                attributes: expect.objectContaining({ 'rowdy.observable.outcome': 'unsubscribe' }),
+              })
+            );
+            done();
+          },
+        });
+      });
+
+      it('parents spans made while subscribing on the method span', (done) => {
+        new Traced().child().subscribe({
+          complete: () => {
+            const spans = finished();
+            const method = spans.find((s) => s.name === 'Traced.child')!;
+            expect(spans.find((s) => s.name === 'child')!.parent).toBe(method.id);
+            done();
+          },
+        });
+      });
+
+      it('parents the method span on the span active at subscribe', (done) => {
+        const outer = trace.getTracer('test').startSpan('outer');
+        context.with(trace.setSpan(context.active(), outer), () =>
+          new Thing().into(new Arg(1)).subscribe({
+            complete: () => {
+              outer.end();
+              expect(finished().find((s) => s.name === 'Thing.into')!.parent).toBe(outer.spanContext().spanId);
+              done();
+            },
+          })
+        );
+      });
+
+      it('makes a span for each subscription to the same observable', (done) => {
+        const once = new Traced().twice();
+        once.subscribe();
+        once.subscribe({
+          complete: () => {
+            expect(finished().filter((s) => s.name === 'Traced.twice')).toHaveLength(2);
+            done();
+          },
+        });
       });
     });
   });

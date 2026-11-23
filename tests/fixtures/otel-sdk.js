@@ -13,7 +13,7 @@ sdk.start();
 const http = require('http');
 const { trace, context, ROOT_CONTEXT } = require('@opentelemetry/api');
 const axios = require('axios');
-const { Subject, mergeMap, from } = require('rxjs');
+const { Subject, mergeMap, from, defer } = require('rxjs');
 const { STSClient, GetCallerIdentityCommand } = require('@aws-sdk/client-sts');
 
 const main = async () => {
@@ -52,6 +52,11 @@ const main = async () => {
     context.with(ROOT_CONTEXT, () => requests.next(1));
   });
 
+  // @Trace as the decorator applies it, from the main entry's bundled copy.
+  const { Trace } = require(process.argv[4]);
+  const fetchTraced = Trace()(() => defer(() => axios.get(`${url}/traced`)), { name: 'fetchTraced' });
+  await new Promise((resolve) => fetchTraced().subscribe({ complete: resolve }));
+
   server.close();
 
   // The in-memory exporter forgets its spans on shutdown.
@@ -61,6 +66,7 @@ const main = async () => {
     url: s.attributes['url.full'] ?? s.attributes['http.url'],
     rpcService: s.attributes['rpc.service'],
     parent: s.parentSpanContext?.spanId,
+    id: s.spanContext().spanId,
   }));
   await sdk.shutdown();
   process.stdout.write(JSON.stringify({ spans, rxjs: seen, mergeMapParent }));
