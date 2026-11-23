@@ -4,6 +4,17 @@
   "version": "0.1.0",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./otel": {
+      "types": "./dist/otel/index.d.ts",
+      "default": "./dist/otel/index.js"
+    },
+    "./package.json": "./package.json"
+  },
   "files": [
     "dist/**/*.js",
     "dist/**/*.d.ts",
@@ -28,9 +39,10 @@
   "scripts": {
     "build": "yarn build:index",
     "build:index": "tsup",
-    "test": "yarn jest -- --verbose --testTimeout=30000",
     "lint": "eslint .",
-    "lint:fix": "eslint . --fix"
+    "lint:fix": "eslint . --fix",
+    "pretest": "yarn build",
+    "test": "yarn jest -- --verbose --testTimeout=30000"
   },
   "prettier": {
     "semi": true,
@@ -58,7 +70,8 @@
           ]
         },
         "moduleNameMapper": {
-          "^@scaffoldly/rowdy-cdk$": "<rootDir>/src/index.ts"
+          "^@scaffoldly/rowdy-cdk$": "<rootDir>/src/index.ts",
+          "^@scaffoldly/rowdy-cdk/otel$": "<rootDir>/src/otel/index.ts"
         }
       }
     ]
@@ -66,12 +79,22 @@
   "devDependencies": {
     "@aws-sdk/client-sts": "^3.1164.0",
     "@eslint/js": "^9.28.0",
+    "@opentelemetry/api": "^1.10.0",
+    "@opentelemetry/auto-instrumentations-node": "^0.83.1",
+    "@opentelemetry/context-async-hooks": "^3.1.1",
+    "@opentelemetry/instrumentation": "^0.301.2",
+    "@opentelemetry/instrumentation-aws-sdk": "^0.80.0",
+    "@opentelemetry/instrumentation-http": "^0.301.2",
+    "@opentelemetry/instrumentation-undici": "^0.35.1",
+    "@opentelemetry/sdk-node": "^0.301.2",
+    "@opentelemetry/sdk-trace": "^3.1.1",
     "@smithy/types": "^4.20.0",
     "@types/jest": "^30.0.0",
     "@types/node": ">=22.0.0 <25.0.0",
     "@types/promise-retry": "^1.1.6",
     "@typescript-eslint/eslint-plugin": "^8.0.0",
     "@typescript-eslint/parser": "^8.0.0",
+    "axios": "^1.21.1",
     "eslint": "^9.0.0",
     "eslint-config-prettier": "^10.1.5",
     "eslint-plugin-prettier": "^5.4.1",

@@ -1,14 +1,15 @@
 {
   "extends": "../tsconfig.json",
   "compilerOptions": {
-    "module": "commonjs",
-    "moduleResolution": "node",
+    "module": "node16",
+    "moduleResolution": "node16",
+    "rootDir": "..",
     "allowSyntheticDefaultImports": true,
     "esModuleInterop": true,
     "types": ["node", "jest"],
-    "baseUrl": "..",
     "paths": {
-      "@scaffoldly/rowdy-cdk": ["src/index"]
+      "@scaffoldly/rowdy-cdk": ["../src/index"],
+      "@scaffoldly/rowdy-cdk/otel": ["../src/otel/index"]
     }
   },
   "include": ["**/*.ts", "../src/**/*.ts"]

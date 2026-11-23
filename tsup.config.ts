@@ -1,7 +1,7 @@
 import { defineConfig } from 'tsup';
 
 export default defineConfig({
-  entry: ['src/index.ts'],
+  entry: { index: 'src/index.ts', 'otel/index': 'src/otel/index.ts' },
   format: ['cjs'],
   target: 'esnext',
   sourcemap: 'inline',

@@ -13,3 +13,4 @@ export type { ClientLoggerOptions, CommandType } from './client';
 export { CloudResource, NotFoundException, FatalException, SkipAction } from './cdk';
 export { Logger, Trace, isLevel, log, mask, maskEnv, maskHeaders, maskJson, maskQuery, maskUrl } from './log';
 export type { Format, ILoggable, Level, Loggable, Sink } from './log';
+export { INSTRUMENTATIONS } from './otel';
