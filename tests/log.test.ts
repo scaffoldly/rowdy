@@ -4,7 +4,7 @@ import { InMemorySpanExporter, SimpleSpanProcessor, TracerProvider } from '@open
 import { defer, lastValueFrom, Observable, of, throwError, race, timer, map, NEVER, retry } from 'rxjs';
 import pino from 'pino';
 import { ILoggable, Logger, mask, maskEnv, maskHeaders, maskJson, maskQuery, maskUrl } from '../src/log';
-import { Trace } from '../src/internal/trace';
+import { Trace, type CdkOptions } from '../src/internal/trace';
 
 describe('log masking', () => {
   describe('mask', () => {
@@ -860,6 +860,87 @@ describe('Logger', () => {
       it('names a symbol method by its description', () => {
         expect(new Traced()[RUN]()).toBe(1);
         expect(finished().map((s) => s.name)).toEqual(['Traced.[run]']);
+      });
+
+      describe('with options of each call', () => {
+        interface Options extends CdkOptions {
+          name?: string;
+        }
+
+        const recorded: string[] = [];
+        const sink = { write: (line: string): number => recorded.push(line.trimEnd()) };
+
+        class Factory {
+          constructor(readonly options?: Options) {}
+
+          @Trace((lookup: Options) => lookup)
+          static async get(lookup: Options): Promise<Factory> {
+            return new Factory(lookup);
+          }
+
+          @Trace((options?: Options) => options)
+          static create(options?: Options): Factory {
+            return new Factory(options);
+          }
+
+          @Trace(function (this: Factory, _cmd: string) {
+            return this.options;
+          })
+          async run(cmd: string): Promise<string> {
+            return `ran ${cmd}`;
+          }
+        }
+
+        beforeEach(() => {
+          recorded.length = 0;
+          // The process-wide log traces too, so a line written there would show.
+          new Logger().withLevel('trace');
+        });
+
+        it('logs on the logger of a static call with a required argument, at its level', async () => {
+          await Factory.get({ name: 'box', logger: sink, logLevel: 'trace' });
+          expect(recorded).toEqual([
+            'TRACE Factory.get Called Args: [Object]',
+            expect.stringMatching(/^TRACE Factory.get Completed Duration: \d+\.\d\d ms Value: Factory$/),
+          ]);
+          expect(text()).toEqual([]);
+          expect(finished().map((s) => s.name)).toEqual(['Factory.get']);
+        });
+
+        it('logs on the logger of a static call with an optional argument', () => {
+          Factory.create({ logger: sink, logLevel: 'trace' });
+          expect(recorded).toEqual([
+            'TRACE Factory.create Called Args: [Object]',
+            expect.stringMatching(/^TRACE Factory.create Completed Duration: .* Value: Factory$/),
+          ]);
+          expect(text()).toEqual([]);
+        });
+
+        it('makes spans and logs nothing without a logger, or without options', () => {
+          Factory.create();
+          Factory.create({ name: 'box' });
+          expect(recorded).toEqual([]);
+          expect(text()).toEqual([]);
+          expect(finished().map((s) => s.name)).toEqual(['Factory.create', 'Factory.create']);
+        });
+
+        it('logs nothing below its own level', () => {
+          Factory.create({ logger: sink, logLevel: 'debug' });
+          expect(recorded).toEqual([]);
+          expect(text()).toEqual([]);
+          expect(finished()).toHaveLength(1);
+        });
+
+        it('takes options from an instance call, with its this', async () => {
+          const factory = Factory.create({ logger: sink, logLevel: 'trace' });
+          recorded.length = 0;
+          await expect(factory.run('ls')).resolves.toBe('ran ls');
+          expect(recorded).toEqual([
+            'TRACE Factory.run Called Args: [ls]',
+            expect.stringMatching(/^TRACE Factory.run Completed Duration: .* Value: ran ls$/),
+          ]);
+          expect(text()).toEqual([]);
+        });
       });
 
       it('makes a span for each attempt of a retried Observable', (done) => {
