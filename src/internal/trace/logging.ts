@@ -1,31 +1,45 @@
-import { isLoggable, type ILoggable, type Logger } from '../../log';
+import { isLoggable, type ILoggable, type Loggable, type Logger } from '../../log';
 import type { Tracker } from './tracker';
 
-const ms = (since: number): string => `${(performance.now() - since).toFixed(2)} ms`;
+const ms = (since: number, until = performance.now()): string => `${(until - since).toFixed(2)} ms`;
 
-export const logCall = (logger: Logger, method: string, args: ILoggable[]): void =>
-  logger.trace(`${method} Called`, args.length ? { args } : {});
+/** A value as logged: itself when Loggable, otherwise only its class name, never its contents. */
+const loggable = (value: unknown): Loggable =>
+  isLoggable(value)
+    ? value
+    : ({ repr: (): string => (value as object)?.constructor?.name || typeof value } satisfies ILoggable);
 
-/** Logs each emission and how the subscription ended, with the time since it was subscribed. */
-export const logSubscription = <T>(logger: Logger, method: string, name: string): Tracker<T> => {
-  const subscribed = performance.now();
-  let emissions = 0;
+export const logCall = (logger: Logger, method: string, args: unknown[]): void =>
+  logger.trace(`${method} Called`, args.length ? { args: args.map(loggable) as Loggable } : {});
+
+/** Logs how a run went, with the time since it started, or since its subscription did. */
+export const logRun = (logger: Logger, method: string): Tracker => {
+  let started = performance.now();
+  let emissions: number | undefined;
+  const counted = (): { emissions?: number } => (emissions === undefined ? {} : { emissions });
 
   return {
-    next: (emission: T): void => {
-      if (!isLoggable(emission)) {
-        throw new TypeError(`@Trace ${name}: emission is not Loggable`);
-      }
-      emissions += 1;
-      logger.trace(`${method} Emitted`, { duration: ms(subscribed), value: emission });
+    subscribe: (): void => {
+      started = performance.now();
+      emissions = 0;
     },
-    error: (error: unknown): void =>
+    emit: (emission): void => {
+      emissions = (emissions ?? 0) + 1;
+      logger.trace(`${method} Emitted`, { duration: ms(started), value: loggable(emission) });
+    },
+    complete: (...value): void =>
+      logger.trace(`${method} Completed`, {
+        duration: ms(started),
+        ...counted(),
+        ...(value.length ? { value: loggable(value[0]) } : {}),
+      }),
+    fail: (error): void =>
       logger.trace(`${method} Failed`, {
-        duration: ms(subscribed),
-        emissions,
+        duration: ms(started),
+        ...counted(),
         error: error instanceof Error ? error : String(error),
       }),
-    complete: (): void => logger.trace(`${method} Completed`, { duration: ms(subscribed), emissions }),
-    unsubscribe: (): void => logger.trace(`${method} Unsubscribed`, { duration: ms(subscribed), emissions }),
+    unsubscribe: (): void => logger.trace(`${method} Unsubscribed`, { duration: ms(started), ...counted() }),
+    returned: (at): void => logger.trace(`${method} Returned`, { duration: ms(started, at) }),
   };
 };

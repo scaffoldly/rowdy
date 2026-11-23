@@ -1,103 +1,77 @@
 import { context as otel } from '@opentelemetry/api';
-import { finalize, isObservable, Observable, tap } from 'rxjs';
-import { isLoggable, log, type ILoggable, type Loggable, type Logger } from '../../log';
-import { logCall, logSubscription } from './logging';
-import { startSpan } from './span';
-import type { Tracker } from './tracker';
+import { log, type Logger } from '../../log';
+import { logCall } from './logging';
+import { methodName } from './name';
+import { RESULTS } from './results';
+import { startRun, type Call } from './run';
+
+type Method<This, Args extends unknown[], R> = (this: This, ...args: Args) => R;
+type Decorator = <This, Args extends unknown[], R>(
+  value: Method<This, Args, R>,
+  context: ClassMethodDecoratorContext<This, Method<This, Args, R>>
+) => Method<This, Args, R>;
+
+const decorate =
+  (logger: Logger): Decorator =>
+  (value, context) =>
+    function (this, ...args) {
+      const method = methodName(this, context);
+      const logging = logger.isTracing ? logger : undefined;
+      if (logging) logCall(logging, method, args);
+
+      const parent = otel.active();
+      const call: Call = { parent, run: startRun(method, logging, parent), again: () => startRun(method, logging) };
+
+      let returned: unknown;
+      try {
+        returned = otel.with(call.run.context, () => value.apply(this, args));
+      } catch (error) {
+        call.run.tracker.fail(error);
+        throw error;
+      }
+
+      const result = RESULTS.find((r) => r.matches(returned))!;
+      return result.trace(returned as never, call) as ReturnType<typeof value>;
+    };
+
+const isDecoratorContext = (value: unknown): value is ClassMethodDecoratorContext =>
+  typeof value === 'object' && value !== null && 'kind' in value && 'name' in value;
 
 /**
- * Traces a method that returns an Observable.
+ * Traces a method, instance or static, as `@Trace` or `@Trace(logger)`.
  *
- * Each subscription is a span named for the method, a child of the span active at subscribe and
- * the parent of spans made while subscribing. It ends with `rowdy.observable.outcome` (`complete`,
- * `error` or `unsubscribe`) and `rowdy.observable.emissions`; an error is also recorded on it, with
- * an error status. Spans are made at any log level; without a tracer provider they are no-ops.
+ * A call is a span named for the method, `Owner.method`, a child of the span active at the call
+ * and the parent of spans made during it. What the method returns decides when the span ends:
+ * a value or a throw ends it with the call, and a Promise when it settles. An Observable's first
+ * subscription carries the span on when it subscribes straight away, before the next microtask,
+ * under the same active span; otherwise the span ends as `returned`, as of the call's return. Every
+ * other subscription (a retry, a second subscriber, one made later) is a span of its own, under the
+ * span active when it subscribes.
  *
- * At trace level it also logs, on `logger`, one line when it is called (with its arguments), then
- * one per emission, and one when the subscription ends, with the time since it was subscribed:
+ * The span ends with `rowdy.trace.outcome` (`complete`, `error`, `unsubscribe` or `returned`), and for an
+ * Observable `rowdy.observable.emissions`; an error is also recorded on it, with an error status
+ * and `error.type`. Spans are made at any log level; without a tracer provider they are no-ops.
+ *
+ * At trace level it also logs, on `logger` (the default `log` when bare), the call with its
+ * arguments, each emission, and how it ended, with its duration:
  *
  *     TRACE RequestId: … Lambda LambdaResponse.into Called
  *     TRACE RequestId: … Lambda LambdaResponse.into Emitted Duration: 2.12 ms Value: Result(…)
  *     TRACE RequestId: … Lambda LambdaResponse.into Completed Duration: 2.15 ms Emissions: 1
  *
- * A subscription that ends with an error logs `Failed` with the error; one that is unsubscribed
- * first (the loser of a `race`, an aborted request) logs `Unsubscribed`.
+ * A failure logs `Failed` with the error, a subscription unsubscribed first (the loser of a `race`,
+ * an aborted request) `Unsubscribed`, and an Observable left for later `Returned`. Values that are not Loggable are logged by their class
+ * name only.
  */
-export function Trace<This, Args extends ILoggable[], T extends Loggable>(
-  logger: Logger = log
-): (
-  value: (this: This, ...args: Args) => Observable<T>,
-  context: ClassMethodDecoratorContext<This, (this: This, ...args: Args) => Observable<T>>
-) => (this: This, ...args: Args) => Observable<T> {
-  return (value, context) => {
-    const name = String(context.name);
-
-    return function (this: This, ...args: Args): Observable<T> {
-      const logging = logger.isTracing;
-
-      if (logging) {
-        for (const a of args) {
-          if (!isLoggable(a)) {
-            throw new TypeError(`@Trace ${name}: argument is not Loggable`);
-          }
-        }
-      }
-
-      // The decorator output aliases a class that references itself statically as `_Name`.
-      const owner = (this as { constructor?: { name?: string } } | undefined)?.constructor?.name?.replace(/^_+/, '');
-      const method = owner ? `${owner}.${name}` : name;
-
-      if (logging) {
-        logCall(logger, method, args);
-      }
-
-      const result: unknown = value.apply(this, args);
-      if (!isObservable(result)) {
-        if (logging) {
-          throw new TypeError(`@Trace ${name}: expected Observable<Loggable>`);
-        }
-        return result as Observable<T>;
-      }
-
-      return new Observable<T>((subscriber) => {
-        const span = startSpan<T>(method, otel.active());
-        // Logging first: a non-Loggable emission throws before the span counts it.
-        const trackers: Tracker<T>[] = logging
-          ? [logSubscription<T>(logger, method, name), span.tracker]
-          : [span.tracker];
-        let settled = false;
-        const fail = (error: unknown): void => {
-          settled = true;
-          trackers.forEach((t) => t.error(error));
-        };
-
-        return otel.with(span.context, () =>
-          (result as Observable<T>)
-            .pipe(
-              // Before the outcome reaches the subscriber, so the span has ended when it does.
-              tap({
-                next: (emission: T): void => {
-                  try {
-                    trackers.forEach((t) => t.next(emission));
-                  } catch (error) {
-                    // rxjs sends a throw from `next` downstream without calling this tap's `error`.
-                    fail(error);
-                    throw error;
-                  }
-                },
-                error: fail,
-                complete: (): void => {
-                  settled = true;
-                  trackers.forEach((t) => t.complete());
-                },
-              }),
-              finalize((): void => {
-                if (!settled) trackers.forEach((t) => t.unsubscribe());
-              })
-            )
-            .subscribe(subscriber)
-        );
-      });
-    };
-  };
-}
+export const Trace: {
+  /** `@Trace`: logs on the default `log`. */
+  <This, Args extends unknown[], R>(
+    value: Method<This, Args, R>,
+    context: ClassMethodDecoratorContext<This, Method<This, Args, R>>
+  ): Method<This, Args, R>;
+  /** `@Trace(logger)`. */
+  (logger?: Logger): Decorator;
+} = ((first?: Logger | Method<unknown, unknown[], unknown>, second?: ClassMethodDecoratorContext) =>
+  isDecoratorContext(second)
+    ? decorate(log)(first as Method<unknown, unknown[], unknown>, second)
+    : decorate((first as Logger | undefined) ?? log)) as never;

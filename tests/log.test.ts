@@ -1,7 +1,7 @@
 import { context, SpanKind, SpanStatusCode, trace } from '@opentelemetry/api';
 import { AsyncLocalStorageContextManager } from '@opentelemetry/context-async-hooks';
 import { InMemorySpanExporter, SimpleSpanProcessor, TracerProvider } from '@opentelemetry/sdk-trace';
-import { defer, Observable, of, throwError, race, timer, map, NEVER } from 'rxjs';
+import { defer, lastValueFrom, Observable, of, throwError, race, timer, map, NEVER, retry } from 'rxjs';
 import pino from 'pino';
 import { ILoggable, Logger, mask, maskEnv, maskHeaders, maskJson, maskQuery, maskUrl } from '../src/log';
 import { Trace } from '../src/internal/trace';
@@ -549,7 +549,76 @@ describe('Logger', () => {
       const exporter = new InMemorySpanExporter();
       const provider = new TracerProvider({ spanProcessors: [new SimpleSpanProcessor({ exporter })] });
 
+      class Bar {
+        constructor(readonly secret: string) {}
+      }
+
+      const RUN = Symbol('run');
+
+      class Pending implements PromiseLike<string> {
+        constructor(private readonly settled: Promise<string>) {}
+        extra(): string {
+          return 'extra';
+        }
+        then<A = string, B = never>(
+          ok?: ((value: string) => A | PromiseLike<A>) | null,
+          err?: ((reason: unknown) => B | PromiseLike<B>) | null
+        ): Promise<A | B> {
+          return this.settled.then(ok, err);
+        }
+      }
+
       class Traced {
+        @Trace(log)
+        pending(fail: boolean): Pending {
+          return new Pending(fail ? Promise.reject(new Error('pending failed')) : Promise.resolve('done'));
+        }
+
+        @Trace(log)
+        [RUN](): number {
+          return 1;
+        }
+
+        @Trace
+        static async create(): Promise<Traced> {
+          await Promise.resolve();
+          return new Traced();
+        }
+
+        @Trace(log)
+        async doWork(bar: Bar): Promise<Bar> {
+          trace.getTracer('test').startSpan('before await').end();
+          await new Promise((resolve) => setTimeout(resolve, 1));
+          trace.getTracer('test').startSpan('after await').end();
+          return bar;
+        }
+
+        @Trace(log)
+        async reject(): Promise<never> {
+          throw new RangeError('nope');
+        }
+
+        @Trace(log)
+        doSyncWork(n: number): number {
+          trace.getTracer('test').startSpan('sync child').end();
+          return n * 2;
+        }
+
+        @Trace(log)
+        throwSync(): number {
+          throw new Error('sync boom');
+        }
+
+        attempts = 0;
+
+        @Trace(log)
+        flaky(): Observable<string> {
+          return defer(() => {
+            this.attempts += 1;
+            return this.attempts < 3 ? throwError(() => new Error(`attempt ${this.attempts}`)) : of('ok');
+          });
+        }
+
         @Trace(log)
         child(): Observable<string> {
           return defer(() => {
@@ -572,6 +641,7 @@ describe('Logger', () => {
         events: string[];
         parent?: string;
         id: string;
+        ms: number;
       }> =>
         exporter.getFinishedSpans().map((s) => ({
           name: s.name,
@@ -581,6 +651,7 @@ describe('Logger', () => {
           events: s.events.map((e) => e.name),
           parent: s.parentSpanContext?.spanId,
           id: s.spanContext().spanId,
+          ms: s.duration[0] * 1e3 + s.duration[1] / 1e6,
         }));
 
       beforeAll(() => {
@@ -609,7 +680,7 @@ describe('Logger', () => {
                 status: SpanStatusCode.UNSET,
                 attributes: {
                   'code.function.name': 'Thing.into',
-                  'rowdy.observable.outcome': 'complete',
+                  'rowdy.trace.outcome': 'complete',
                   'rowdy.observable.emissions': 1,
                 },
                 events: [],
@@ -638,7 +709,7 @@ describe('Logger', () => {
                 status: SpanStatusCode.ERROR,
                 attributes: {
                   'code.function.name': 'Thing.fail',
-                  'rowdy.observable.outcome': 'error',
+                  'rowdy.trace.outcome': 'error',
                   'rowdy.observable.emissions': 0,
                   'error.type': 'Error',
                 },
@@ -650,27 +721,12 @@ describe('Logger', () => {
         });
       });
 
-      it('fails on an emission that is not Loggable at trace level, in the log and on the span', (done) => {
+      it('logs an emission that is not Loggable by its class name only', (done) => {
         new Logger().withLevel('trace');
         new Thing().unloggable().subscribe({
-          error: (error: unknown) => {
-            expect(error).toBeInstanceOf(TypeError);
-            expect(text()[1]).toMatch(
-              /^TRACE Lambda Thing.unloggable Failed Duration: \d+\.\d\d ms Emissions: 0 Error: TypeError: @Trace unloggable: emission is not Loggable/
-            );
-            expect(text()).toHaveLength(2);
-            expect(finished()).toEqual([
-              expect.objectContaining({
-                name: 'Thing.unloggable',
-                status: SpanStatusCode.ERROR,
-                attributes: expect.objectContaining({
-                  'rowdy.observable.outcome': 'error',
-                  'rowdy.observable.emissions': 0,
-                  'error.type': 'TypeError',
-                }),
-                events: ['exception'],
-              }),
-            ]);
+          complete: () => {
+            expect(text()[1]).toMatch(/^TRACE Lambda Thing.unloggable Emitted Duration: \d+\.\d\d ms Value: Object$/);
+            expect(finished()[0]!.attributes['rowdy.trace.outcome']).toBe('complete');
             done();
           },
         });
@@ -684,7 +740,7 @@ describe('Logger', () => {
             expect(slow).toEqual(
               expect.objectContaining({
                 status: SpanStatusCode.UNSET,
-                attributes: expect.objectContaining({ 'rowdy.observable.outcome': 'unsubscribe' }),
+                attributes: expect.objectContaining({ 'rowdy.trace.outcome': 'unsubscribe' }),
               })
             );
             done();
@@ -714,6 +770,170 @@ describe('Logger', () => {
             },
           })
         );
+      });
+
+      it('ends an async method span when its Promise resolves, parenting spans on both sides of an await', async () => {
+        const bar = new Bar('hunter2');
+        await expect(new Traced().doWork(bar)).resolves.toBe(bar);
+        const spans = finished();
+        const method = spans.find((s) => s.name === 'Traced.doWork')!;
+        expect(method).toEqual(
+          expect.objectContaining({
+            status: SpanStatusCode.UNSET,
+            attributes: { 'code.function.name': 'Traced.doWork', 'rowdy.trace.outcome': 'complete' },
+          })
+        );
+        expect(spans.find((s) => s.name === 'before await')!.parent).toBe(method.id);
+        expect(spans.find((s) => s.name === 'after await')!.parent).toBe(method.id);
+      });
+
+      it('records a rejected Promise on the span and still rejects', async () => {
+        await expect(new Traced().reject()).rejects.toThrow('nope');
+        expect(finished()).toEqual([
+          expect.objectContaining({
+            name: 'Traced.reject',
+            status: SpanStatusCode.ERROR,
+            attributes: expect.objectContaining({ 'rowdy.trace.outcome': 'error', 'error.type': 'RangeError' }),
+            events: ['exception'],
+          }),
+        ]);
+      });
+
+      it('names a static method for its class, with the bare decorator', async () => {
+        await expect(Traced.create()).resolves.toBeInstanceOf(Traced);
+        expect(finished().map((s) => s.name)).toEqual(['Traced.create']);
+      });
+
+      it('ends a sync method span with the call, parenting spans made in it', () => {
+        expect(new Traced().doSyncWork(2)).toBe(4);
+        const spans = finished();
+        const method = spans.find((s) => s.name === 'Traced.doSyncWork')!;
+        expect(method.attributes['rowdy.trace.outcome']).toBe('complete');
+        expect(spans.find((s) => s.name === 'sync child')!.parent).toBe(method.id);
+      });
+
+      it('records a sync throw on the span and rethrows it', () => {
+        expect(() => new Traced().throwSync()).toThrow('sync boom');
+        expect(finished()).toEqual([
+          expect.objectContaining({
+            name: 'Traced.throwSync',
+            status: SpanStatusCode.ERROR,
+            attributes: expect.objectContaining({ 'rowdy.trace.outcome': 'error', 'error.type': 'Error' }),
+          }),
+        ]);
+      });
+
+      it('returns a promise-like as it is, methods and all, and ends the span when it settles', async () => {
+        const pending = new Traced().pending(false);
+        expect(pending).toBeInstanceOf(Pending);
+        expect(pending.extra()).toBe('extra');
+        await expect(pending).resolves.toBe('done');
+        await new Promise((resolve) => setImmediate(resolve));
+        expect(finished()).toEqual([
+          expect.objectContaining({
+            name: 'Traced.pending',
+            attributes: expect.objectContaining({ 'rowdy.trace.outcome': 'complete' }),
+          }),
+        ]);
+      });
+
+      it('still rejects a promise-like that fails, without an unhandled rejection of its own', async () => {
+        const unhandled: unknown[] = [];
+        const listener = (reason: unknown): void => void unhandled.push(reason);
+        process.on('unhandledRejection', listener);
+        try {
+          await expect(new Traced().pending(true)).rejects.toThrow('pending failed');
+          await new Promise((resolve) => setImmediate(resolve));
+          expect(finished()).toEqual([
+            expect.objectContaining({
+              name: 'Traced.pending',
+              status: SpanStatusCode.ERROR,
+              attributes: expect.objectContaining({ 'rowdy.trace.outcome': 'error' }),
+            }),
+          ]);
+          expect(unhandled).toEqual([]);
+        } finally {
+          process.off('unhandledRejection', listener);
+        }
+      });
+
+      it('names a symbol method by its description', () => {
+        expect(new Traced()[RUN]()).toBe(1);
+        expect(finished().map((s) => s.name)).toEqual(['Traced.[run]']);
+      });
+
+      it('makes a span for each attempt of a retried Observable', (done) => {
+        new Traced()
+          .flaky()
+          .pipe(retry(2))
+          .subscribe({
+            complete: () => {
+              expect(finished().map((s) => s.attributes['rowdy.trace.outcome'])).toEqual([
+                'error',
+                'error',
+                'complete',
+              ]);
+              done();
+            },
+          });
+      });
+
+      it('logs sync and async calls, and values that are not Loggable by class name only', async () => {
+        new Logger().withLevel('trace');
+        const traced = new Traced();
+        traced.doSyncWork(2);
+        await traced.doWork(new Bar('hunter2'));
+        expect(text()).toEqual([
+          'TRACE Lambda Traced.doSyncWork Called Args: [2]',
+          expect.stringMatching(/^TRACE Lambda Traced.doSyncWork Completed Duration: \d+\.\d\d ms Value: 4$/),
+          'TRACE Lambda Traced.doWork Called Args: [Bar]',
+          expect.stringMatching(/^TRACE Lambda Traced.doWork Completed Duration: \d+\.\d\d ms Value: Bar$/),
+        ]);
+        expect(text().join('\n')).not.toContain('hunter2');
+      });
+
+      const tick = (ms = 0): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
+
+      it('ends the call span at return for an Observable subscribed later, under the span active then', async () => {
+        const built = new Traced().twice();
+        await tick(20);
+        const request = trace.getTracer('test').startSpan('request');
+        await context.with(trace.setSpan(context.active(), request), () => lastValueFrom(built));
+        request.end();
+
+        const spans = finished().filter((s) => s.name === 'Traced.twice');
+        expect(spans.map((s) => s.attributes['rowdy.trace.outcome'])).toEqual(['returned', 'complete']);
+        expect(spans[0]!.parent).toBeUndefined();
+        expect(spans[0]!.ms).toBeLessThan(10);
+        expect(spans[1]!.parent).toBe(request.spanContext().spanId);
+        expect(spans[1]!.attributes['rowdy.observable.emissions']).toBe(2);
+      });
+
+      it('ends the call span of an Observable never subscribed, and logs that it returned', async () => {
+        new Logger().withLevel('trace');
+        new Traced().twice();
+        await tick();
+        expect(finished()).toEqual([
+          expect.objectContaining({
+            name: 'Traced.twice',
+            attributes: expect.objectContaining({ 'rowdy.trace.outcome': 'returned' }),
+          }),
+        ]);
+        expect(text()).toEqual([
+          'TRACE Lambda Traced.twice Called',
+          expect.stringMatching(/^TRACE Lambda Traced.twice Returned Duration: \d+\.\d\d ms$/),
+        ]);
+      });
+
+      it('gives a subscription under another span its own span, even straight after the call', async () => {
+        const built = new Traced().twice();
+        const other = trace.getTracer('test').startSpan('other');
+        await context.with(trace.setSpan(context.active(), other), () => lastValueFrom(built));
+        other.end();
+
+        const spans = finished().filter((s) => s.name === 'Traced.twice');
+        expect(spans.map((s) => s.attributes['rowdy.trace.outcome'])).toEqual(['returned', 'complete']);
+        expect(spans[1]!.parent).toBe(other.spanContext().spanId);
       });
 
       it('makes a span for each subscription to the same observable', (done) => {
