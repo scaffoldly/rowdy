@@ -1,57 +1,57 @@
-import { CdkEvent, ClientLogger, Logger } from '../src';
+import { ClientLogger, Logger } from '../src';
 
 type Fetch = (path: string, body: unknown) => Promise<string>;
 type OtherClient = { request: Fetch };
 
 /** An SDK with its own way in: wrapping the client's function. */
-class OtherLogger extends ClientLogger<OtherClient> {
-  log = new Logger('other');
+class OtherLogger extends ClientLogger {
+  constructor(
+    public log: Logger,
+    options: ConstructorParameters<typeof ClientLogger>[0]
+  ) {
+    super(options);
+  }
 
   track<T extends OtherClient>(client: T): T {
     const { request } = client;
-    client.request = (path, body): Promise<string> =>
-      this.around('OtherClient', path, body, () => {
-        this.changed(path, body);
-        return request(path, body);
-      });
+    client.request = async (path, body): Promise<string> => {
+      const output = await request(path, body);
+      this.changed(path, body);
+      return output;
+    };
     return client;
   }
 }
 
 describe('ClientLogger', () => {
+  let logged: string[];
   let logger: OtherLogger;
-  let events: CdkEvent[];
 
   beforeEach(() => {
-    jest.spyOn(console, 'info').mockImplementation(() => {});
-    logger = new OtherLogger({ commands: { create: /^workers\.create/ }, names: ['name'] });
-    events = [];
-    logger.events().subscribe((event) => events.push(event));
+    logged = [];
+    logger = new OtherLogger(new Logger('other', { write: (line): number => logged.push(line) }, 'info'), {
+      commands: { create: /^workers\.create/ },
+      names: ['name'],
+    });
   });
-
-  afterEach(() => jest.restoreAllMocks());
 
   it('works with any SDK a subclass can wire in', async () => {
     const client = logger.track<OtherClient>({ request: async (): Promise<string> => 'done' });
 
     expect(await client.request('workers.create', { name: 'worker' })).toBe('done');
 
-    const event = { type: 'create', client: 'OtherClient', action: 'workers.create', name: 'worker' };
-    expect(events).toEqual([
-      { ...event, lifecycle: 'creating' },
-      { ...event, lifecycle: 'created' },
-    ]);
+    expect(logged).toEqual([expect.stringContaining('workers.create: worker')]);
   });
 
-  it('runs a command with no match, and emits nothing', async () => {
+  it('runs a command with no match, and logs nothing', async () => {
     const client = logger.track<OtherClient>({ request: async (): Promise<string> => 'done' });
 
     expect(await client.request('workers.list', {})).toBe('done');
 
-    expect(events).toEqual([]);
+    expect(logged).toEqual([]);
   });
 
-  it('emits failed and rethrows', async () => {
+  it('rethrows a failed command, and logs no change', async () => {
     const denied = new Error('denied');
     const client = logger.track<OtherClient>({
       request: async (): Promise<string> => {
@@ -59,8 +59,8 @@ describe('ClientLogger', () => {
       },
     });
 
-    await expect(client.request('workers.create', {})).rejects.toBe(denied);
+    await expect(client.request('workers.create', { name: 'worker' })).rejects.toBe(denied);
 
-    expect(events.map(({ lifecycle }) => lifecycle)).toEqual(['creating', 'failed']);
+    expect(logged).toEqual([]);
   });
 });
