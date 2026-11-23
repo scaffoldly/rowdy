@@ -53,7 +53,7 @@ import {
   ReplaySubject,
   ignoreElements,
 } from 'rxjs';
-import type { AwsSandboxOptions, FileRange, SandboxStatus, SandboxUrl } from '../../sandbox';
+import type { AwsSandboxOptions, FileRange, SandboxMetadata, SandboxUrl } from '../../sandbox';
 import { Exec, ExecOutput, ExecOutputOptions } from '../../api/types';
 import type { SandboxEnvironment } from '../../sandbox/internal/environment';
 import { Logger } from '../../log';
@@ -114,7 +114,7 @@ const STARTING = new Map<string, Observable<Vm>>();
 export class MicrovmCompute extends AwsClientLogger implements SandboxCompute {
   static readonly env = {};
 
-  static list(credentials: AwsSandboxOptions['credentials'] | undefined, log: Logger): Observable<SandboxStatus> {
+  static list(credentials: AwsSandboxOptions['credentials'] | undefined, log: Logger): Observable<SandboxMetadata> {
     // One ListTags per image, so a busy host is throttled: adaptive retries slow down until AWS lets them through.
     const microvms = new LambdaMicrovmsClient({ credentials, retryMode: 'adaptive', maxAttempts: 8 });
     const s3 = new S3Client({ credentials });
@@ -148,21 +148,18 @@ export class MicrovmCompute extends AwsClientLogger implements SandboxCompute {
       switchMap(([vms, images, records]) =>
         merge(
           from(records).pipe(
-            map((record): SandboxStatus => {
+            map((record): SandboxMetadata => {
               const live = vms.find(
                 ({ microvmId, state }) => microvmId === record.microvmId && state && !DEAD.includes(state)
               );
               const startedAt = new Date(record.startedAt);
               return {
-                sandboxId: record.microvmId,
-                name: record.name,
+                name: record.microvmId,
                 runtime: 'aws.microvm',
-                running: !!live,
-                suspended: live ? ASLEEP.includes(live.state!) : undefined,
-                startedAt: live ? startedAt : undefined,
-                stopsAt: live ? new Date(startedAt.getTime() + LIFETIME * 1000) : undefined,
                 meta: record.meta,
-                state: 'ready',
+                status: !live ? 'stopped' : ASLEEP.includes(live.state!) ? 'suspended' : 'running',
+                startedAt: live ? startedAt : undefined,
+                expiresAt: live ? new Date(startedAt.getTime() + LIFETIME * 1000) : undefined,
               };
             })
           ),
@@ -174,28 +171,29 @@ export class MicrovmCompute extends AwsClientLogger implements SandboxCompute {
                 from(microvms.send(new ListTagsCommand({ Resource: imageArn }))).pipe(
                   // An image of the account's own, not a sandbox, has no compute tag.
                   filter(({ Tags }) => Tags?.[COMPUTE_TAG] === 'microvm'),
-                  map(({ Tags }): SandboxStatus => {
+                  map(({ Tags }): SandboxMetadata => {
                     const [live] = vms.filter(
                       ({ imageArn: arn, state }) => arn === imageArn && state && !DEAD.includes(state)
                     );
                     return {
-                      sandboxId: name!,
                       name: name!,
                       runtime: 'aws.microvm',
-                      running: !!live,
-                      suspended: live ? ASLEEP.includes(live.state!) : undefined,
-                      startedAt: live?.startedAt,
-                      stopsAt: live?.startedAt ? new Date(live.startedAt.getTime() + LIFETIME * 1000) : undefined,
                       meta: Object.fromEntries(
                         Object.entries(Tags ?? {})
                           .filter(([key]) => key.startsWith(META_TAG))
                           .map(([key, value]) => [key.slice(META_TAG.length), value])
                       ),
-                      state: state?.endsWith('FAILED')
+                      status: state?.endsWith('FAILED')
                         ? 'failed'
-                        : latestActiveImageVersion && !state?.endsWith('ING')
-                          ? 'ready'
-                          : 'building',
+                        : !latestActiveImageVersion || state?.endsWith('ING')
+                          ? 'pending'
+                          : !live
+                            ? 'stopped'
+                            : ASLEEP.includes(live.state!)
+                              ? 'suspended'
+                              : 'running',
+                      startedAt: live?.startedAt,
+                      expiresAt: live?.startedAt ? new Date(live.startedAt.getTime() + LIFETIME * 1000) : undefined,
                     };
                   })
                 ),
@@ -714,7 +712,7 @@ export class MicrovmCompute extends AwsClientLogger implements SandboxCompute {
     );
   }
 
-  status(): Observable<SandboxStatus> {
+  status(): Observable<SandboxMetadata> {
     // Its image was built before it started.
     if (this.record) {
       const { microvmId: microvmIdentifier } = this.record;
@@ -722,18 +720,15 @@ export class MicrovmCompute extends AwsClientLogger implements SandboxCompute {
         catchError((error) =>
           isNotFound(error) ? of({ state: undefined, startedAt: undefined }) : throwError(() => error)
         ),
-        map(({ state, startedAt }): SandboxStatus => {
+        map(({ state, startedAt }): SandboxMetadata => {
           const live = !!state && !DEAD.includes(state) && !!startedAt;
           return {
-            sandboxId: this.sandboxId,
-            name: this.record!.name,
+            name: this.sandboxId,
             runtime: 'aws.microvm',
             meta: this.record!.meta,
-            state: 'ready',
-            running: live,
-            suspended: live ? ASLEEP.includes(state!) : undefined,
+            status: !live ? 'stopped' : ASLEEP.includes(state!) ? 'suspended' : 'running',
             startedAt: live ? startedAt : undefined,
-            stopsAt: live ? new Date(startedAt!.getTime() + LIFETIME * 1000) : undefined,
+            expiresAt: live ? new Date(startedAt!.getTime() + LIFETIME * 1000) : undefined,
           };
         })
       );
@@ -748,7 +743,6 @@ export class MicrovmCompute extends AwsClientLogger implements SandboxCompute {
       switchMap(
         ({ image: { state, latestActiveImageVersion, latestFailedImageVersion: imageVersion, tags }, live }) => {
           const vm = {
-            sandboxId: this.sandboxId,
             name: this.sandboxId,
             runtime: 'aws.microvm' as const,
             meta: Object.fromEntries(
@@ -756,18 +750,23 @@ export class MicrovmCompute extends AwsClientLogger implements SandboxCompute {
                 .filter(([key]) => key.startsWith(META_TAG))
                 .map(([key, value]) => [key.slice(META_TAG.length), value])
             ),
-            running: !!live,
-            suspended: live ? ASLEEP.includes(live.state!) : undefined,
             startedAt: live?.startedAt,
-            stopsAt: live?.startedAt ? new Date(live.startedAt.getTime() + LIFETIME * 1000) : undefined,
+            expiresAt: live?.startedAt ? new Date(live.startedAt.getTime() + LIFETIME * 1000) : undefined,
           };
           if ((state === 'CREATE_FAILED' || state === 'UPDATE_FAILED') && imageVersion) {
             return from(this.microvms.send(new GetMicrovmImageVersionCommand({ imageIdentifier, imageVersion }))).pipe(
-              map(({ stateReason }): SandboxStatus => ({ state: 'failed', reason: stateReason, ...vm }))
+              map(({ stateReason }): SandboxMetadata => ({ status: 'failed', reason: stateReason, ...vm }))
             );
           }
-          return of<SandboxStatus>({
-            state: latestActiveImageVersion && !state?.endsWith('ING') ? 'ready' : 'building',
+          return of<SandboxMetadata>({
+            status:
+              !latestActiveImageVersion || state?.endsWith('ING')
+                ? 'pending'
+                : !live
+                  ? 'stopped'
+                  : ASLEEP.includes(live.state!)
+                    ? 'suspended'
+                    : 'running',
             ...vm,
           });
         }

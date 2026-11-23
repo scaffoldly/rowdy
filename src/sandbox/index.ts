@@ -39,7 +39,7 @@ interface BaseSandboxOptions {
   signal?: AbortSignal;
   /**
    * Whether `create` resolves only once the sandbox can run a command. Defaults to true. With false, an `aws.microvm`
-   * sandbox resolves as soon as AWS is building its image: `status()` says when it's ready, and a command before then
+   * sandbox resolves as soon as AWS is building its image: `refresh()` says when it's ready, and a command before then
    * rejects. `aws.lambda` always waits.
    */
   wait?: boolean;
@@ -93,53 +93,68 @@ export type SandboxLogger = Exclude<Sink, 'stderr'>;
 export type { AwsCredentials } from '../aws/credentials';
 export * from './core';
 
+/** Where a sandbox runs. */
+export type Runtime = 'aws.lambda' | 'aws.microvm';
+
 /**
- * A sandbox as AWS says it is now: what `status()` gives, each of `Sandbox.list`'s results, and what `stop()`,
- * `suspend()` and `resume()` resolve to once they're done. The VM's fields are set on `aws.microvm` only.
+ * A sandbox as AWS said it was last: each of `Sandbox.list`'s results, what `refresh()`, `stop()`, `suspend()` and
+ * `resume()` resolve to, and what a sandbox's own fields say until the next of them.
  */
-export interface SandboxStatus {
-  /** What `Sandbox.get` and `Sandbox.delete` take. A prebuilt sandbox's is its VM's id, `microvm-…`. */
-  sandboxId: string;
-  /** `{name}-{suffix}`, from `create`'s `name`. The same as `sandboxId`, except for a prebuilt sandbox. */
+export interface SandboxMetadata {
+  /**
+   * What `Sandbox.get` and `Sandbox.delete` take: `{name}-{suffix}`, from `create`'s `name`, the same as its function's
+   * or its image's. A sandbox started from a prebuilt image is its VM, and has the VM's id, `microvm-…`.
+   */
   name: string;
   /** Where it runs. */
-  runtime: NonNullable<SandboxOptions['runtime']>;
+  runtime: Runtime;
   /** What `create` was given as `meta`. */
   meta: Record<string, string>;
-  /** `building` until it can run a command, then `ready`, or `failed` if its build failed. */
-  state: 'building' | 'ready' | 'failed';
+  /**
+   * `pending` until it can run a command, or `failed` if its build failed. Then on `aws.microvm`, `running` while a VM
+   * is up, `suspended` while that VM is suspended, and `stopped` with none. An `aws.lambda` sandbox is billed only
+   * while a command runs, and is `running` from when it can run one.
+   */
+  status: 'pending' | 'running' | 'suspended' | 'stopped' | 'failed';
   /** Why the build failed, as AWS says. */
   reason?: string;
-  /** Whether a microVM is up, suspended included. Undefined on `aws.lambda`, which is billed only while a command runs. */
-  running?: boolean;
-  /** Whether the running microVM is suspended: billed for its snapshot, not compute, until something resumes it. */
-  suspended?: boolean;
-  /** When the running microVM started. */
+  /** When the microVM that's up started. */
   startedAt?: Date;
-  /** When AWS ends the running microVM, 8 hours after it started, suspended or not. */
-  stopsAt?: Date;
+  /** When AWS ends the microVM that's up, 8 hours after it started, suspended or not. */
+  expiresAt?: Date;
 }
 
-export interface SandboxListOptions extends AwsSandboxOptions {
+export interface SandboxListOptions extends Pick<SandboxOptions, 'credentials' | 'logger' | 'logLevel'> {
   /** Only sandboxes on this runtime. Defaults to every runtime. */
-  runtime?: NonNullable<SandboxOptions['runtime']>;
+  runtime?: Runtime;
   /** Only sandboxes whose `meta` has every one of these. */
   meta?: Record<string, string>;
+  /** Aborts the listing. */
   signal?: AbortSignal;
-  /** Where the listing logs. Defaults as `create`'s does. */
-  logger?: SandboxLogger;
-  /** The listing's level. Defaults as `create`'s does. */
-  logLevel?: Level;
 }
 
-export interface SandboxLookup extends Pick<SandboxOptions, 'logLevel' | 'logger' | 'pollInterval' | 'credentials'> {
-  sandboxId: string;
+/** One page of `Sandbox.list`'s results. */
+export interface SandboxPage {
+  sandboxes: SandboxMetadata[];
+  /** `next` is null on the last page. */
+  pagination: { count: number; next: string | null };
+}
+
+/** What `Sandbox.list` resolves to: its first page, and each sandbox on every page, once. */
+export type SandboxList = SandboxPage &
+  AsyncIterable<SandboxMetadata> & {
+    pages(): AsyncIterable<SandboxPage>;
+    toArray(): Promise<SandboxMetadata[]>;
+  };
+
+export interface SandboxLookup
+  extends Pick<SandboxOptions, 'logLevel' | 'logger' | 'pollInterval' | 'credentials' | 'signal'> {
+  /** The sandbox's `name`. */
+  name: string;
   /** Refuses a sandbox whose `meta` doesn't have every one of these. */
   meta?: Record<string, string>;
-  /** Aborts the sandbox's work in progress, and stops it if it can `stop`. */
-  signal?: AbortSignal;
   /** Looks only on this runtime. Defaults to every runtime. */
-  runtime?: NonNullable<SandboxOptions['runtime']>;
+  runtime?: Runtime;
 }
 
 export interface RunCommandParams {
@@ -222,12 +237,11 @@ export type CommandFinished = Omit<ExecFinished, 'frames'>;
 export type CommandOutput = ExecOutput;
 export type CommandOutputOptions = ExecOutputOptions;
 
-/** A running sandbox. */
-export interface Sandbox {
-  /** The sandbox's name, for `Sandbox.get`. It has no account ID in it, as an ARN would. */
-  readonly sandboxId: string;
-  /** What it runs on, as `Sandbox.get` found it. Its id doesn't say. */
-  readonly runtime: NonNullable<SandboxOptions['runtime']>;
+/**
+ * A running sandbox. Its metadata is as AWS said when it was made or found, or since by `refresh()`, `stop()`,
+ * `suspend()` or `resume()`. Disposing of it stops it, as `stop()` does, where it can stop.
+ */
+export interface Sandbox extends Readonly<SandboxMetadata>, AsyncDisposable {
   /** Resolves when the command exits, whatever its exit code; rejects only if it could not run. */
   runCommand(cmd: string, args?: string[], options?: RunCommandOptions): Promise<CommandFinished>;
   /** Resolves once the command has started, with its handle. `runtime: 'aws.lambda'` rejects. */
@@ -271,26 +285,26 @@ export interface Sandbox {
    * compute while suspended. A command in progress rejects. Safe to call more than once. `runtime: 'aws.lambda'`
    * rejects.
    */
-  suspend(): Promise<SandboxStatus>;
+  suspend(): Promise<SandboxMetadata>;
   /**
    * Resumes its VM, and resolves once it's running. A request to a suspended VM resumes it too, so this is for being
    * ready ahead of one. A sandbox from an image with no VM starts one, as a command would. `runtime: 'aws.lambda'`
    * rejects.
    */
-  resume(): Promise<SandboxStatus>;
+  resume(): Promise<SandboxMetadata>;
   /**
    * Ends everything running in this sandbox, including a command in progress, and everything a `Sandbox.get` of it
    * started. Safe to call more than once. The next command starts it again. `runtime: 'aws.lambda'` rejects for now.
    */
-  stop(): Promise<SandboxStatus>;
+  stop(): Promise<SandboxMetadata>;
   /**
    * Stops it, then removes it and what rowdy made for it: on `aws.microvm` its image, role, zip and log group, and on
    * `aws.lambda` its function, role and log group. Its command output goes with its log group. The images it was
    * copied from stay, for other sandboxes. Safe to call more than once.
    */
   delete(): Promise<void>;
-  /** Where its build is, as AWS says now. */
-  status(): Promise<SandboxStatus>;
+  /** Its metadata as AWS says now, which its own fields then say too. */
+  refresh(): Promise<SandboxMetadata>;
   /** Each event from now on. */
   events(): Observable<Event>;
 }
@@ -301,29 +315,15 @@ export interface Sandbox {
  */
 export interface SandboxPromise
   extends Promise<Sandbox>,
-    Pick<
-      Sandbox,
-      | 'events'
-      | 'runCommand'
-      | 'output'
-      | 'writeFiles'
-      | 'readFileToBuffer'
-      | 'mkDir'
-      | 'url'
-      | 'suspend'
-      | 'resume'
-      | 'status'
-      | 'stop'
-      | 'delete'
-    > {}
+    Omit<Sandbox, keyof SandboxMetadata | typeof Symbol.asyncDispose> {}
 
 export interface SandboxFactory {
   /** Starts a new sandbox. */
   create(options?: SandboxOptions): SandboxPromise;
   /** Connects to a sandbox that is already running. */
-  get(lookup: SandboxLookup): SandboxPromise;
+  get(lookup: SandboxLookup): Promise<Sandbox>;
   /** The sandboxes in this account and region. */
-  list(options?: SandboxListOptions): Promise<SandboxStatus[]>;
+  list(options?: SandboxListOptions): Promise<SandboxList>;
   /** Deletes a sandbox, as its own `delete` does. Refuses one whose `meta` doesn't have every entry given. */
   delete(lookup: SandboxLookup): Promise<void>;
 }

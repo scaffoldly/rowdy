@@ -9,12 +9,14 @@ import type {
   WriteFile,
   RunCommandOptions,
   RunCommandParams,
+  Runtime,
   Sandbox,
+  SandboxList,
   SandboxListOptions,
   SandboxLookup,
+  SandboxMetadata,
   SandboxOptions,
   SandboxLogger,
-  SandboxStatus,
   SandboxUrl,
   UrlOptions,
   Event,
@@ -82,16 +84,18 @@ export const computeHash = (template: string): string => {
   return [...String(hash)].map((digit) => ALPHANUMS[digit.charCodeAt(0) % ALPHANUMS.length]).join('');
 };
 
-const RUNTIMES: Record<NonNullable<SandboxOptions['runtime']>, SandboxComputeClass> = {
+const RUNTIMES: Record<Runtime, SandboxComputeClass> = {
   'aws.lambda': LambdaCompute,
   'aws.microvm': MicrovmCompute,
 };
 
 export class SandboxImpl implements Sandbox {
-  readonly runtime: NonNullable<SandboxOptions['runtime']>;
+  readonly runtime: Runtime;
   private environment: SandboxEnvironment;
   private compute: SandboxCompute;
   private credential$?: Credentials;
+  // Set once `create` or `get` has found the sandbox, and again by each call that asks AWS.
+  private metadata!: SandboxMetadata;
 
   private constructor({
     runtime,
@@ -181,7 +185,13 @@ export class SandboxImpl implements Sandbox {
           ),
           defer(() =>
             sandbox.compute.create({ image, name, timeout, memory, env, meta, layersFrom, wait: options?.wait ?? true })
-          ).pipe(map(() => sandbox.stoppingOnAbort()))
+          ).pipe(
+            switchMap(() => sandbox.compute.status()),
+            map((metadata) => {
+              sandbox.metadata = metadata;
+              return sandbox.stoppingOnAbort();
+            })
+          )
         );
       }).pipe(
         // Work starts after this returns, so `.events()` on the result sees the first step.
@@ -212,7 +222,7 @@ export class SandboxImpl implements Sandbox {
   }
 
   static get({
-    sandboxId,
+    name,
     logLevel,
     logger,
     pollInterval,
@@ -220,19 +230,19 @@ export class SandboxImpl implements Sandbox {
     signal: abort,
     meta,
     runtime: only,
-  }: SandboxLookup): SandboxPromiseImpl {
-    // An id is the sandbox's name, which doesn't say its runtime, so the sandbox is whichever runtime has it.
+  }: SandboxLookup): Promise<SandboxImpl> {
+    // A sandbox's name doesn't say its runtime, so the sandbox is whichever runtime has it.
     const runtimes = only ? [only] : (Object.keys(RUNTIMES) as (keyof typeof RUNTIMES)[]);
     const sandboxes = runtimes.map(
       (runtime) => new SandboxImpl({ runtime, logLevel, logger, pollInterval, credentials, signal: abort })
     );
     type Tried = { found?: SandboxImpl; error?: unknown };
 
-    const attached = lastValueFrom(
+    return lastValueFrom(
       iif(
         // A name, never an ARN or a path to something else in the account.
-        () => !sandboxId || /[:/]/.test(sandboxId),
-        throwError(() => new SandboxError(`Not a sandbox: ${sandboxId}`)),
+        () => !name || /[:/]/.test(name),
+        throwError(() => new SandboxError(`Not a sandbox: ${name}`)),
         from(sandboxes).pipe(
           mergeMap((sandbox) => {
             const { signal } = sandbox.environment;
@@ -240,11 +250,17 @@ export class SandboxImpl implements Sandbox {
               iif(() => signal.aborted, of(signal), fromEvent(signal, 'abort')).pipe(
                 switchMap(() => throwError(() => signal.reason))
               ),
-              defer(() => sandbox.compute.attach(sandboxId, meta)).pipe(map(() => sandbox))
+              defer(() => sandbox.compute.attach(name, meta)).pipe(
+                switchMap(() => sandbox.compute.status()),
+                map((metadata) => {
+                  sandbox.metadata = metadata;
+                  return sandbox;
+                })
+              )
             ).pipe(
               map((found): Tried => ({ found })),
               catchError((error) => {
-                sandbox.environment.log.debug('Sandbox Not Attached', { runtime: sandbox.runtime, sandboxId, error });
+                sandbox.environment.log.debug('Sandbox Not Attached', { runtime: sandbox.runtime, name, error });
                 return of<Tried>({ error });
               })
             );
@@ -265,28 +281,25 @@ export class SandboxImpl implements Sandbox {
               ) ?? errors.find((error) => !isNotFound(error));
             if (refused) throw refused;
             // AWS's own message names the ARN, and so the account.
-            throw Object.assign(new SandboxError(`No sandbox named ${sandboxId}`), {
+            throw Object.assign(new SandboxError(`No sandbox named ${name}`), {
               name: 'ResourceNotFoundException',
             });
           })
         )
-      ).pipe(
-        // Work starts after this returns, so `.events()` on the result sees the first step.
-        subscribeOn(asapScheduler)
       )
-    );
-
-    return new SandboxPromiseImpl(
-      attached.catch((error) => {
-        throw humanize(error);
-      }),
-      merge(...sandboxes.map((sandbox) => sandbox.events()))
-    );
+    ).catch((error) => {
+      throw humanize(error);
+    });
   }
 
-  static list({ runtime, meta = {}, credentials, signal, logger, logLevel }: SandboxListOptions = {}): Promise<
-    SandboxStatus[]
-  > {
+  static list({
+    runtime,
+    meta = {},
+    credentials,
+    signal,
+    logger,
+    logLevel,
+  }: SandboxListOptions = {}): Promise<SandboxList> {
     const { ROWDY_LOG_LEVEL, ROWDY_DEBUG, ROWDY_TRACE } = process.env;
     const level =
       logLevel ?? (ROWDY_LOG_LEVEL || ROWDY_DEBUG === 'true' || ROWDY_TRACE === 'true' ? undefined : 'warn');
@@ -308,13 +321,49 @@ export class SandboxImpl implements Sandbox {
           toArray()
         )
       )
-    ).catch((error) => {
-      throw humanize(error);
-    });
+    ).then(
+      // Every sandbox is on one page for now, so there's never a next.
+      (sandboxes): SandboxList => {
+        const page = { sandboxes, pagination: { count: sandboxes.length, next: null } };
+        return {
+          ...page,
+          async *[Symbol.asyncIterator]() {
+            yield* sandboxes;
+          },
+          async *pages() {
+            yield page;
+          },
+          toArray: async () => sandboxes,
+        };
+      },
+      (error) => {
+        throw humanize(error);
+      }
+    );
   }
 
-  get sandboxId(): string {
-    return this.compute.sandboxId;
+  get name(): string {
+    return this.metadata.name;
+  }
+
+  get meta(): Record<string, string> {
+    return this.metadata.meta;
+  }
+
+  get status(): SandboxMetadata['status'] {
+    return this.metadata.status;
+  }
+
+  get reason(): string | undefined {
+    return this.metadata.reason;
+  }
+
+  get startedAt(): Date | undefined {
+    return this.metadata.startedAt;
+  }
+
+  get expiresAt(): Date | undefined {
+    return this.metadata.expiresAt;
   }
 
   runCommand(cmd: string, args?: string[], options?: RunCommandOptions): Promise<CommandFinished>;
@@ -451,28 +500,48 @@ export class SandboxImpl implements Sandbox {
     });
   }
 
-  async stop(): Promise<SandboxStatus> {
-    return lastValueFrom(this.compute.stop().pipe(switchMap(() => this.compute.status()))).catch((error) => {
+  async stop(): Promise<SandboxMetadata> {
+    return lastValueFrom(
+      this.compute.stop().pipe(
+        switchMap(() => this.compute.status()),
+        tap((metadata) => (this.metadata = metadata))
+      )
+    ).catch((error) => {
       throw humanize(error);
     });
   }
 
-  async suspend(): Promise<SandboxStatus> {
-    return lastValueFrom(this.compute.suspend().pipe(switchMap(() => this.compute.status()))).catch((error) => {
+  async suspend(): Promise<SandboxMetadata> {
+    return lastValueFrom(
+      this.compute.suspend().pipe(
+        switchMap(() => this.compute.status()),
+        tap((metadata) => (this.metadata = metadata))
+      )
+    ).catch((error) => {
       throw humanize(error);
     });
   }
 
-  async resume(): Promise<SandboxStatus> {
-    return lastValueFrom(this.compute.resume().pipe(switchMap(() => this.compute.status()))).catch((error) => {
+  async resume(): Promise<SandboxMetadata> {
+    return lastValueFrom(
+      this.compute.resume().pipe(
+        switchMap(() => this.compute.status()),
+        tap((metadata) => (this.metadata = metadata))
+      )
+    ).catch((error) => {
       throw humanize(error);
     });
   }
 
-  async status(): Promise<SandboxStatus> {
-    return lastValueFrom(this.compute.status()).catch((error) => {
+  async refresh(): Promise<SandboxMetadata> {
+    return lastValueFrom(this.compute.status().pipe(tap((metadata) => (this.metadata = metadata)))).catch((error) => {
       throw humanize(error);
     });
+  }
+
+  // Nothing is left running where it can't stop.
+  async [Symbol.asyncDispose](): Promise<void> {
+    if (this.compute.stoppable) await this.stop();
   }
 
   static async delete(lookup: SandboxLookup): Promise<void> {
@@ -484,7 +553,7 @@ export class SandboxImpl implements Sandbox {
     if (sandbox) return sandbox.delete();
 
     // A create that failed before its image or function existed leaves its role, which names it at the end.
-    const name = lookup.sandboxId;
+    const { name } = lookup;
     const iam = new IAMClient({ credentials: lookup.credentials });
     const gone = (error: unknown): Observable<never> => (isNotFound(error) ? EMPTY : throwError(() => error));
     await lastValueFrom(

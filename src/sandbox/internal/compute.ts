@@ -2,7 +2,7 @@ import type { Observable } from 'rxjs';
 import type { Exec, ExecOutput, ExecOutputOptions } from '../../api/types';
 import type { SandboxEnvironment } from './environment';
 import type { Event } from '../../events';
-import type { AwsSandboxOptions, FileRange, SandboxStatus, SandboxUrl } from '..';
+import type { AwsSandboxOptions, FileRange, SandboxMetadata, SandboxUrl } from '..';
 import type { ExecSchema } from '../../routes';
 import type { Logger } from '../../log';
 
@@ -52,8 +52,8 @@ export interface SandboxCompute {
   resume(): Observable<this>;
   /** Emits once, when the sandbox and what rowdy made for it are gone. Safe to call more than once. */
   delete(): Observable<this>;
-  /** Emits once, with where its build is. */
-  status(): Observable<SandboxStatus>;
+  /** Emits once, with its metadata as AWS says now. */
+  status(): Observable<SandboxMetadata>;
   /** Emits once, when the file is written. */
   writeFile(path: string, content: Uint8Array, mode: number | undefined, signal: AbortSignal): Observable<void>;
   /** Emits the file's bytes once, or null when it isn't there. */
@@ -73,5 +73,5 @@ export interface SandboxComputeClass {
   /** Throws for a spec this compute can't run, before anything reaches AWS. */
   assert(spec: Pick<ComputeSpec, 'timeout' | 'memory' | 'env' | 'meta'>): void;
   /** Each sandbox on this compute, once. */
-  list(credentials: AwsSandboxOptions['credentials'] | undefined, log: Logger): Observable<SandboxStatus>;
+  list(credentials: AwsSandboxOptions['credentials'] | undefined, log: Logger): Observable<SandboxMetadata>;
 }

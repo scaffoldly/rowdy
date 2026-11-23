@@ -18,7 +18,7 @@ import {
 import { ROWDY_LAYERS } from '../../api/internal/layers';
 import { Exec, ExecOutput, ExecOutputOptions } from '../../api/types';
 import type { Event } from '../../events';
-import type { AwsSandboxOptions, SandboxStatus, SandboxUrl } from '../../sandbox';
+import type { AwsSandboxOptions, SandboxMetadata, SandboxUrl } from '../../sandbox';
 import type { ExecSchema } from '../../routes';
 import { ComputeSpec, SandboxCompute, SandboxError } from '../../sandbox/internal/compute';
 import { META_TAG, TAG_KEY_REGEX, TAG_VALUE_REGEX } from '../tags';
@@ -52,7 +52,7 @@ export class LambdaCompute implements SandboxCompute {
     });
   }
 
-  static list(credentials?: AwsSandboxOptions['credentials']): Observable<SandboxStatus> {
+  static list(credentials?: AwsSandboxOptions['credentials']): Observable<SandboxMetadata> {
     const lambda = new LambdaClient({ credentials });
     return from(paginateListFunctions({ client: lambda }, {})).pipe(
       concatMap(({ Functions = [] }) => Functions),
@@ -62,11 +62,10 @@ export class LambdaCompute implements SandboxCompute {
         ({ FunctionArn, FunctionName, State }) =>
           from(lambda.send(new ListTagsCommand({ Resource: FunctionArn }))).pipe(
             map(
-              ({ Tags }): SandboxStatus => ({
-                sandboxId: FunctionName!,
+              ({ Tags }): SandboxMetadata => ({
                 name: FunctionName!,
                 runtime: 'aws.lambda',
-                state: State === 'Failed' ? 'failed' : State === 'Pending' ? 'building' : 'ready',
+                status: State === 'Failed' ? 'failed' : State === 'Pending' ? 'pending' : 'running',
                 meta: Object.fromEntries(
                   Object.entries(Tags ?? {})
                     .filter(([key]) => key.startsWith(META_TAG))
@@ -203,13 +202,12 @@ export class LambdaCompute implements SandboxCompute {
     return throwError(() => new SandboxError('resume is not implemented on runtime aws.lambda'));
   }
 
-  status(): Observable<SandboxStatus> {
+  status(): Observable<SandboxMetadata> {
     return this.lambda$.pipe(
-      map((lambda): SandboxStatus => {
+      map((lambda): SandboxMetadata => {
         const { Configuration, Tags } = lambda.Status;
         const { State, StateReason } = Configuration ?? {};
         return {
-          sandboxId: this.sandboxId,
           name: this.sandboxId,
           runtime: 'aws.lambda',
           meta: Object.fromEntries(
@@ -217,7 +215,7 @@ export class LambdaCompute implements SandboxCompute {
               .filter(([key]) => key.startsWith(META_TAG))
               .map(([key, value]) => [key.slice(META_TAG.length), value])
           ),
-          state: State === 'Failed' ? 'failed' : State === 'Pending' ? 'building' : 'ready',
+          status: State === 'Failed' ? 'failed' : State === 'Pending' ? 'pending' : 'running',
           ...(State === 'Failed' ? { reason: StateReason } : {}),
         };
       })

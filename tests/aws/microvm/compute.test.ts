@@ -1045,21 +1045,21 @@ describe('aws microvm compute', () => {
       const status = (compute: MicrovmCompute) => lastValueFrom(compute.status());
 
       it.each([
-        [{ state: 'CREATING' }, { state: 'building' }],
-        [{ state: 'UPDATING', latestActiveImageVersion: '1.0' }, { state: 'building' }],
-        [{ state: 'CREATED', latestActiveImageVersion: '1.0' }, { state: 'ready' }],
-        [{ state: 'UPDATED', latestActiveImageVersion: '2.0' }, { state: 'ready' }],
-      ])('makes an image %j into %j', async (image, expected) => {
+        [{ state: 'CREATING' }, { status: 'pending' }],
+        [{ state: 'UPDATING', latestActiveImageVersion: '1.0' }, { status: 'pending' }],
+        [{ state: 'CREATED', latestActiveImageVersion: '1.0' }, { status: 'stopped' }],
+        [{ state: 'UPDATED', latestActiveImageVersion: '2.0' }, { status: 'stopped' }],
+      ])('makes an image %j with no VM into %j', async (image, expected) => {
         const { compute } = running({ GetMicrovmImageCommand: () => image });
 
-        expect(await status(compute)).toMatchObject({ ...expected, running: false });
+        expect(await status(compute)).toMatchObject(expected);
       });
 
       it.each([
-        ['RUNNING', false],
-        ['SUSPENDING', true],
-        ['SUSPENDED', true],
-      ])('says a %s VM is running, and whether it is suspended', async (state, suspended) => {
+        ['RUNNING', 'running'],
+        ['SUSPENDING', 'suspended'],
+        ['SUSPENDED', 'suspended'],
+      ])('says a %s VM is %s', async (state, expected) => {
         const { compute } = running({
           GetMicrovmImageCommand: () => ({ state: 'CREATED', latestActiveImageVersion: '1.0' }),
           ListMicrovmsCommand: () => ({
@@ -1071,15 +1071,12 @@ describe('aws microvm compute', () => {
         });
 
         expect(await status(compute)).toEqual({
-          sandboxId: 'sandbox-box',
           name: 'sandbox-box',
           runtime: 'aws.microvm',
           meta: {},
-          state: 'ready',
-          running: true,
-          suspended,
+          status: expected,
           startedAt: STARTED,
-          stopsAt: new Date(STARTED.getTime() + 28_800_000),
+          expiresAt: new Date(STARTED.getTime() + 28_800_000),
         });
       });
 
@@ -1101,11 +1098,7 @@ describe('aws microvm compute', () => {
           GetMicrovmImageVersionCommand: () => ({ state: 'FAILED', stateReason: 'ready hook timed out' }),
         });
 
-        expect(await status(compute)).toMatchObject({
-          state: 'failed',
-          reason: 'ready hook timed out',
-          running: false,
-        });
+        expect(await status(compute)).toMatchObject({ status: 'failed', reason: 'ready hook timed out' });
         expect(input(sent, 'GetMicrovmImageVersionCommand')).toEqual({
           imageIdentifier: IMAGE_ARN,
           imageVersion: '1.0',

@@ -339,16 +339,13 @@ describe('aws microvm compute from a prebuilt image', () => {
     });
 
     it.each([
-      [
-        { microvmId: MICROVM_ID, state: 'SUSPENDED', startedAt: new Date(0) },
-        { running: true, suspended: true },
-      ],
-      [{ microvmId: MICROVM_ID, state: 'TERMINATED', startedAt: new Date(0) }, { running: false }],
-    ])('says from %j whether its VM is running and suspended', async (vm, expected) => {
+      [{ microvmId: MICROVM_ID, state: 'SUSPENDED', startedAt: new Date(0) }, 'suspended'],
+      [{ microvmId: MICROVM_ID, state: 'TERMINATED', startedAt: new Date(0) }, 'stopped'],
+    ])('says from %j that it is %s', async (vm, status) => {
       const { compute } = setup({ ...stored(), GetMicrovmCommand: () => vm });
       await lastValueFrom(compute.attach(MICROVM_ID));
 
-      expect(await lastValueFrom(compute.status())).toMatchObject({ state: 'ready', ...expected });
+      expect(await lastValueFrom(compute.status())).toMatchObject({ name: MICROVM_ID, status });
     });
 
     it("can't resume once its VM has ended", async () => {
