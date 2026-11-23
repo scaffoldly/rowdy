@@ -293,3 +293,21 @@ describe('INSTRUMENTATIONS under ESM', () => {
     expect(JSON.parse(out)).toEqual([true]);
   });
 });
+
+describe('@Trace on an async method nobody awaits', () => {
+  it('leaves its failure an unhandled rejection, as it would be untraced', () => {
+    // A child process: jest reports an unhandled rejection itself, before a listener sees it.
+    const script = `
+      const { Trace } = require(${JSON.stringify(join(ROOT, 'dist', 'index.js'))});
+      const seen = [];
+      process.on('unhandledRejection', (error) => seen.push(error.message));
+      const untraced = async () => { throw new Error('untraced'); };
+      const traced = Trace()(async () => { throw new Error('traced'); }, { kind: 'method', name: 'fails', static: false });
+      untraced();
+      traced();
+      setTimeout(() => console.log(JSON.stringify(seen)), 20);
+    `;
+    const out = execFileSync(process.execPath, ['-e', script], { cwd: ROOT, encoding: 'utf8' });
+    expect(JSON.parse(out)).toEqual(['untraced', 'traced']);
+  });
+});

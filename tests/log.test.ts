@@ -857,6 +857,19 @@ describe('Logger', () => {
         }
       });
 
+      it('adds no unhandled rejection to a failed async call that is awaited', async () => {
+        const unhandled: unknown[] = [];
+        const listener = (reason: unknown): void => void unhandled.push(reason);
+        process.on('unhandledRejection', listener);
+        try {
+          await expect(new Traced().reject()).rejects.toThrow('nope');
+          await new Promise((resolve) => setTimeout(resolve, 10));
+          expect(unhandled).toEqual([]);
+        } finally {
+          process.off('unhandledRejection', listener);
+        }
+      });
+
       it('names a symbol method by its description', () => {
         expect(new Traced()[RUN]()).toBe(1);
         expect(finished().map((s) => s.name)).toEqual(['Traced.[run]']);
