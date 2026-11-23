@@ -113,9 +113,10 @@ export interface SandboxMetadata {
   /**
    * `pending` until it can run a command, or `failed` if its build failed. Then on `aws.microvm`, `running` while a VM
    * is up, `suspended` while that VM is suspended, and `stopped` with none. An `aws.lambda` sandbox is billed only
-   * while a command runs, and is `running` from when it can run one.
+   * while a command runs, and is `running` from when it can run one. `deleted` once `delete` is done, which `list`
+   * never says.
    */
-  status: 'pending' | 'running' | 'suspended' | 'stopped' | 'failed';
+  status: 'pending' | 'running' | 'suspended' | 'stopped' | 'failed' | 'deleted';
   /** Why the build failed, as AWS says. */
   reason?: string;
   /** When the microVM that's up started. */
@@ -300,9 +301,9 @@ export interface Sandbox extends Readonly<SandboxMetadata>, AsyncDisposable {
   /**
    * Stops it, then removes it and what rowdy made for it: on `aws.microvm` its image, role, zip and log group, and on
    * `aws.lambda` its function, role and log group. Its command output goes with its log group. The images it was
-   * copied from stay, for other sandboxes. Safe to call more than once.
+   * copied from stay, for other sandboxes. Safe to call more than once. Resolves to its metadata, `deleted`.
    */
-  delete(): Promise<void>;
+  delete(): Promise<SandboxMetadata>;
   /** Its metadata as AWS says now, which its own fields then say too. */
   refresh(): Promise<SandboxMetadata>;
   /** Each event from now on. */
@@ -324,8 +325,11 @@ export interface SandboxFactory {
   get(lookup: SandboxLookup): Promise<Sandbox>;
   /** The sandboxes in this account and region. */
   list(options?: SandboxListOptions): Promise<SandboxList>;
-  /** Deletes a sandbox, as its own `delete` does. Refuses one whose `meta` doesn't have every entry given. */
-  delete(lookup: SandboxLookup): Promise<void>;
+  /**
+   * Deletes a sandbox, as its own `delete` does, and resolves to its metadata, or to undefined when there was none.
+   * Refuses one whose `meta` doesn't have every entry given.
+   */
+  delete(lookup: SandboxLookup): Promise<SandboxMetadata | undefined>;
 }
 
 export const Sandbox: SandboxFactory = {

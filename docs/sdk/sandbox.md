@@ -308,6 +308,15 @@ image shares it. It's safe to call more than once, and a delete that fails partw
 `Sandbox.delete(lookup)` on a sandbox whose create failed before it had an image or function deletes the
 role that create left.
 
+Both resolve to the sandbox's [metadata](#metadata), with `status: 'deleted'`, and the sandbox's own fields say the
+same. `Sandbox.delete(lookup)` resolves to undefined when there was no sandbox to delete, a role left by a failed
+create included.
+
+```ts
+const deleted = await Sandbox.delete({ name });
+console.log(deleted ? `deleted ${deleted.name}` : 'nothing to delete');
+```
+
 ## `Sandbox.get`
 
 A sandbox's `name` is `{name}-{suffix}`, the same as its function's or its image's. It leaves the account ID in
@@ -365,7 +374,7 @@ A sandbox has its metadata as fields, as AWS said when `create` or `get` found i
 | `name`      | What `Sandbox.get` and `Sandbox.delete` take.                           |
 | `runtime`   | Where it runs.                                                          |
 | `meta`      | What `create` was given as `meta`.                                      |
-| `status`    | `pending`, `running`, `suspended`, `stopped` or `failed`.               |
+| `status`    | `pending`, `running`, `suspended`, `stopped`, `failed` or `deleted`.    |
 | `reason`    | Why its build failed, as AWS says.                                      |
 | `startedAt` | When its microVM started, while one is up.                              |
 | `expiresAt` | When AWS ends that microVM, 8 hours after it started, suspended or not. |

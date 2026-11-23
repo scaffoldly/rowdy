@@ -544,7 +544,7 @@ export class SandboxImpl implements Sandbox {
     if (this.compute.stoppable) await this.stop();
   }
 
-  static async delete(lookup: SandboxLookup): Promise<void> {
+  static async delete(lookup: SandboxLookup): Promise<SandboxMetadata | undefined> {
     const sandbox = await SandboxImpl.get(lookup).catch((error) => {
       // Deleted already, or never made. A sandbox the lookup refuses still rejects.
       if (isNotFound(error)) return undefined;
@@ -574,10 +574,20 @@ export class SandboxImpl implements Sandbox {
     ).catch((error) => {
       throw humanize(error);
     });
+    // A role left by a failed create is no sandbox.
+    return undefined;
   }
 
-  async delete(): Promise<void> {
-    await lastValueFrom(this.compute.delete()).catch((error) => {
+  async delete(): Promise<SandboxMetadata> {
+    return lastValueFrom(
+      this.compute.delete().pipe(
+        map(() => {
+          const { name, runtime, meta } = this.metadata;
+          this.metadata = { name, runtime, meta, status: 'deleted' };
+          return this.metadata;
+        })
+      )
+    ).catch((error) => {
       throw humanize(error);
     });
   }

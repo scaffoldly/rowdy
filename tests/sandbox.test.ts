@@ -2018,17 +2018,24 @@ describe('sandbox', () => {
     });
 
     const sandbox = await Sandbox.create({ runtime: 'aws.lambda' });
-    await sandbox.delete();
+    await expect(sandbox.delete()).resolves.toEqual({
+      name: 'box',
+      runtime: 'aws.microvm',
+      meta: {},
+      status: 'deleted',
+    });
 
+    expect(sandbox.status).toBe('deleted');
     expect((sandbox as SandboxImpl)['compute'].sandboxId).toBe('sandbox-bcdf2');
   });
 
   it('deletes by lookup, refusing a sandbox the lookup is refused', async () => {
-    const remove = jest.fn(async () => {});
+    const deleted = { name: 'box', runtime: 'aws.microvm', meta: { sub: 'github:1' }, status: 'deleted' };
+    const remove = jest.fn(async () => deleted);
     const get = jest.spyOn(SandboxImpl, 'get').mockReturnValue(Promise.resolve({ delete: remove }) as never);
     const lookup = { name: 'box', meta: { sub: 'github:1' } };
 
-    await Sandbox.delete(lookup);
+    await expect(Sandbox.delete(lookup)).resolves.toEqual(deleted);
 
     expect(get).toHaveBeenCalledWith(lookup);
     expect(remove).toHaveBeenCalledTimes(1);
