@@ -28,6 +28,10 @@ export const startRun = (
 ): Run => {
   const span = startSpan(method, options, parent);
   const sinks = [recordsIn(options, span.context)];
-  const trackers = [...sinks.map((sink) => logRun(sink, method)), span.tracker, measureRun(method, options)];
+  const trackers = [
+    ...sinks.map((sink) => logRun(sink, method)),
+    span.tracker,
+    measureRun(method, options, span.context),
+  ];
   return { context: span.context, sinks, tracker: all(trackers) };
 };

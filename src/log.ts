@@ -35,7 +35,13 @@ export const isLoggable = (v: unknown): v is Loggable =>
   v instanceof AbortSignal ||
   v instanceof Buffer;
 
-const SENSITIVE = /secret|token|password|passwd|credential|authorization|cookie/i;
+// A key ending `key` after something else is one, like `API_KEY` or `apiKey`; a bare `Key`, like an
+// S3 object's or a tag's, and an `accessKeyId` are not.
+const SENSITIVE = /secret|token|password|passwd|passphrase|credential|authorization|cookie|private|.key($|[-_.])/i;
+
+// Maps whose every value is masked, whatever its name: a secret's name says nothing about it.
+// Case-sensitive: Lambda's `Environment` holds `Variables`, it is not one.
+const ENV = /^(Variables|env|environment)$/;
 
 /**
  * A sensitive string as it may be logged: its length and a short prefix and suffix. At most 4
@@ -74,11 +80,11 @@ const masked = (value: unknown, key = '', above: ReadonlySet<object> = new Set()
   if (proto !== Object.prototype && proto !== null) {
     return `[${(value as object).constructor?.name || 'Object'}]`;
   }
-  const env = key === 'Variables';
+  const env = ENV.test(key);
   return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, env ? mask(v) : masked(v, k, within, hidden)]));
 };
 
-/** JSON of an arbitrary structure with `Variables` maps and credential-named strings masked. */
+/** JSON of an arbitrary structure with `Variables`, `env` and `environment` maps and credential-named strings masked. */
 export const maskJson = (value: unknown): string => JSON.stringify(masked(value));
 
 // Header and query-parameter names whose values are credentials. Wider than SENSITIVE: `auth`

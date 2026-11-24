@@ -142,6 +142,35 @@ describe('log masking', () => {
       expect(out).not.toContain('canarycanary');
     });
 
+    it('masks key-named strings, and leaves a bare Key and an access key id readable', () => {
+      const out = JSON.parse(
+        maskJson({
+          API_KEY: 'sk-live-abcdef1234567890',
+          apiKey: 'abcdef1234567890',
+          privateKey: 'pem',
+          Key: 'photos/1.png',
+          accessKeyId: 'AKIDEXAMPLE',
+        })
+      );
+      expect(out).toEqual({
+        API_KEY: 'sk-…890 (24 chars)',
+        apiKey: 'ab…90 (16 chars)',
+        privateKey: '… (3 chars)',
+        Key: 'photos/1.png',
+        accessKeyId: 'AKIDEXAMPLE',
+      });
+    });
+
+    it('masks every value of an env or environment map, whatever its name', () => {
+      const out = JSON.parse(
+        maskJson({ env: { NODE_ENV: 'production', ANYTHING: 'x' }, deep: { environment: { PORT: 8080 } } })
+      );
+      expect(out).toEqual({
+        env: { NODE_ENV: 'p…n (10 chars)', ANYTHING: '… (1 chars)' },
+        deep: { environment: { PORT: '… (4 chars)' } },
+      });
+    });
+
     it('masks credential-named strings and leaves the rest alone', () => {
       const out = maskJson({
         secrets: '{"A":"canary-secret-value-000000000000"}',
@@ -466,6 +495,9 @@ describe('Logger', () => {
   });
 
   describe('@Trace', () => {
+    // Its trace lines, without the span and metric wiretaps.
+    const only = (lines: string[]): string[] =>
+      lines.filter((line) => !/\b(Span Started|Span Ended|Metric Recorded)\b/.test(line));
     class Arg implements ILoggable {
       constructor(private readonly n: number) {}
       repr(): string {
@@ -503,14 +535,14 @@ describe('Logger', () => {
     it('is silent below trace', () => {
       new Logger().withLevel('debug');
       expect(new Thing().into(new Arg(1)).subscribe()).toBeDefined();
-      expect(text()).toEqual([]);
+      expect(only(text())).toEqual([]);
     });
 
     it('logs the call, each emission and the completion, with the component and the duration', (done) => {
       new Logger().withLevel('trace');
       new Thing().into(new Arg(1)).subscribe({
         complete: () => {
-          expect(text()).toEqual([
+          expect(only(text())).toEqual([
             'TRACE @scaffoldly/rowdy-cdk Thing.into Called Args: [Arg(1)]',
             expect.stringMatching(
               /^TRACE @scaffoldly\/rowdy-cdk Thing.into Emitted Duration: \d+\.\d\d ms Value: got Arg\(1\)$/
@@ -528,11 +560,11 @@ describe('Logger', () => {
       new Logger().withLevel('trace');
       new Thing().fail().subscribe({
         error: () => {
-          expect(text()[0]).toBe('TRACE @scaffoldly/rowdy-cdk Thing.fail Called');
-          expect(text()[1]).toMatch(
+          expect(only(text())[0]).toBe('TRACE @scaffoldly/rowdy-cdk Thing.fail Called');
+          expect(only(text())[1]).toMatch(
             /^TRACE @scaffoldly\/rowdy-cdk Thing.fail Failed Duration: \d+\.\d\d ms Emissions: 0 Error: Error: boom/
           );
-          expect(text()).toHaveLength(2);
+          expect(only(text())).toHaveLength(2);
           done();
         },
       });
@@ -543,7 +575,7 @@ describe('Logger', () => {
       const thing = new Thing();
       race([thing.slow(), thing.fast()]).subscribe({
         complete: () => {
-          expect(text()).toEqual([
+          expect(only(text())).toEqual([
             'TRACE @scaffoldly/rowdy-cdk Thing.slow Called',
             'TRACE @scaffoldly/rowdy-cdk Thing.fast Called',
             expect.stringMatching(/^TRACE @scaffoldly\/rowdy-cdk Thing.fast Emitted Duration: .* Value: fast$/),
@@ -559,7 +591,7 @@ describe('Logger', () => {
       new Logger().withLevel('trace').withFormat('json');
       new Thing().into(new Arg(2)).subscribe({
         complete: () => {
-          expect(JSON.parse(text()[1]!)).toEqual({
+          expect(JSON.parse(only(text())[1]!)).toEqual({
             level: 'trace',
             component: '@scaffoldly/rowdy-cdk',
             msg: 'Thing.into Emitted',
@@ -754,12 +786,12 @@ describe('Logger', () => {
         });
       });
 
-      it('logs an emission that is not Loggable by its class name only', (done) => {
+      it('logs an emission that is a plain object as masked JSON', (done) => {
         new Logger().withLevel('trace');
         new Thing().unloggable().subscribe({
           complete: () => {
-            expect(text()[1]).toMatch(
-              /^TRACE @scaffoldly\/rowdy-cdk Thing.unloggable Emitted Duration: \d+\.\d\d ms Value: Object$/
+            expect(only(text())[1]).toMatch(
+              /^TRACE @scaffoldly\/rowdy-cdk Thing.unloggable Emitted Duration: \d+\.\d\d ms Value: \{\}$/
             );
             expect(finished()[0]!.attributes['cdk.trace.outcome']).toBe('complete');
             done();
@@ -949,33 +981,33 @@ describe('Logger', () => {
 
         it('logs on the loggerProvider of a static call with a required argument, at its level', async () => {
           await Factory.get({ name: 'box', loggerProvider: linesAt('trace') });
-          expect(recorded).toEqual([
-            'TRACE Factory.get Called Args: [Object]',
+          expect(only(recorded)).toEqual([
+            'TRACE Factory.get Called Args: [{"name":"box","loggerProvider":{}}]',
             expect.stringMatching(/^TRACE Factory.get Completed Duration: \d+\.\d\d ms Value: Factory$/),
           ]);
-          expect(text()).toEqual([]);
+          expect(only(text())).toEqual([]);
           expect(finished().map((s) => s.name)).toEqual(['Factory.get']);
         });
 
         it('logs on the loggerProvider of a static call with an optional argument', () => {
           Factory.create({ loggerProvider: linesAt('trace') });
-          expect(recorded).toEqual([
-            'TRACE Factory.create Called Args: [Object]',
+          expect(only(recorded)).toEqual([
+            'TRACE Factory.create Called Args: [{"loggerProvider":{}}]',
             expect.stringMatching(/^TRACE Factory.create Completed Duration: .* Value: Factory$/),
           ]);
-          expect(text()).toEqual([]);
+          expect(only(text())).toEqual([]);
         });
 
         it('logs as Logger.defaults() would without a loggerProvider, or without options', () => {
           Factory.create();
           Factory.create({ name: 'box' });
-          expect(recorded).toEqual([]);
-          expect(text()).toEqual([
+          expect(only(recorded)).toEqual([]);
+          expect(only(text())).toEqual([
             'TRACE @scaffoldly/rowdy-cdk Factory.create Called',
             expect.stringMatching(
               /^TRACE @scaffoldly\/rowdy-cdk Factory.create Completed Duration: .* Value: Factory$/
             ),
-            'TRACE @scaffoldly/rowdy-cdk Factory.create Called Args: [Object]',
+            'TRACE @scaffoldly/rowdy-cdk Factory.create Called Args: [{"name":"box"}]',
             expect.stringMatching(
               /^TRACE @scaffoldly\/rowdy-cdk Factory.create Completed Duration: .* Value: Factory$/
             ),
@@ -985,8 +1017,8 @@ describe('Logger', () => {
 
         it('logs nothing below its own level', () => {
           Factory.create({ loggerProvider: linesAt('debug') });
-          expect(recorded).toEqual([]);
-          expect(text()).toEqual([]);
+          expect(only(recorded)).toEqual([]);
+          expect(only(text())).toEqual([]);
           expect(finished()).toHaveLength(1);
         });
 
@@ -1017,14 +1049,22 @@ describe('Logger', () => {
           new Logger().withLevel('info');
           await Factory.get({ loggerProvider, logLevel: 'trace' });
           const span = finished().find((s) => s.name === 'Factory.get')!;
+          // Its trace lines; the span and metric wiretaps are checked on their own.
+          records.splice(
+            0,
+            records.length,
+            ...records.filter(
+              (r) => r.severityNumber === SeverityNumber.TRACE && !/^(Span|Metric) /.test(String(r.body))
+            )
+          );
           expect(records.map((r) => [r.severityNumber, r.body])).toEqual([
             [SeverityNumber.TRACE, 'Factory.get Called'],
             [SeverityNumber.TRACE, 'Factory.get Completed'],
           ]);
-          expect(records[0]!.attributes).toEqual({ args: '[Object]' });
+          expect(records[0]!.attributes).toEqual({ args: '[{"loggerProvider":{},"logLevel":"trace"}]' });
           expect(records[1]!.attributes).toEqual({ duration: expect.stringMatching(/ ms$/), value: 'Factory' });
           expect(records.map((r) => trace.getSpan(r.context!)?.spanContext().spanId)).toEqual([span.id, span.id]);
-          expect(text()).toEqual([]);
+          expect(only(text())).toEqual([]);
         });
 
         it('emits nothing on a loggerProvider whose logger is not enabled for it', async () => {
@@ -1037,8 +1077,8 @@ describe('Logger', () => {
         it("logs where the process-wide log does at a call's logLevel, over the process-wide one", () => {
           new Logger().withLevel('info');
           Factory.create({ logLevel: 'trace' });
-          expect(text()).toEqual([
-            'TRACE @scaffoldly/rowdy-cdk Factory.create Called Args: [Object]',
+          expect(only(text())).toEqual([
+            'TRACE @scaffoldly/rowdy-cdk Factory.create Called Args: [{"logLevel":"trace"}]',
             expect.stringMatching(
               /^TRACE @scaffoldly\/rowdy-cdk Factory.create Completed Duration: .* Value: Factory$/
             ),
@@ -1047,40 +1087,130 @@ describe('Logger', () => {
 
         it("logs nothing when a call's logLevel is below trace, whatever the process-wide one", () => {
           Factory.create({ logLevel: 'debug' });
-          expect(text()).toEqual([]);
+          expect(only(text())).toEqual([]);
           expect(finished()).toHaveLength(1);
         });
 
         it("emits records on a loggerProvider only when the call's logLevel, or else the process-wide one, is trace", () => {
           Factory.create({ loggerProvider: linesAt('trace'), logLevel: 'info' });
-          expect(recorded).toEqual([]);
+          expect(only(recorded)).toEqual([]);
           Factory.create({ loggerProvider: linesAt('trace'), logLevel: 'trace' });
-          expect(recorded).toHaveLength(2);
-          expect(text()).toEqual([]);
+          expect(only(recorded)).toHaveLength(2);
+          expect(only(text())).toEqual([]);
         });
 
         it('logs through the process-wide log with Logger.defaults(), under its logger name', () => {
           Factory.create({ ...Logger.defaults() });
-          expect(text()).toEqual([
-            'TRACE @scaffoldly/rowdy-cdk Factory.create Called Args: [Object]',
+          expect(only(text())).toEqual([
+            'TRACE @scaffoldly/rowdy-cdk Factory.create Called Args: [{"loggerProvider":{},"logLevel":"trace"}]',
             expect.stringMatching(
               /^TRACE @scaffoldly\/rowdy-cdk Factory.create Completed Duration: .* Value: Factory$/
             ),
           ]);
           new Logger().withLevel('info');
           Factory.create({ ...Logger.defaults() });
-          expect(text()).toHaveLength(2);
+          expect(only(text())).toHaveLength(2);
+        });
+
+        it('shows an object argument as masked JSON, and an instance by its class only', () => {
+          class Credentials {
+            secretAccessKey = 'wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY';
+          }
+          Factory.create({
+            loggerProvider: linesAt('trace'),
+            name: 'box',
+            env: { API_KEY: 'sk-live-abcdef1234567890' },
+            credentials: new Credentials(),
+          } as Options);
+          expect(only(recorded)[0]).toBe(
+            'TRACE Factory.create Called Args: [{"loggerProvider":{},"name":"box","env":{"API_KEY":"sk-…890 (24 chars)"},"credentials":"[Credentials]"}]'
+          );
+        });
+
+        it('caps an object argument at 1024 characters', () => {
+          Factory.create({ loggerProvider: linesAt('trace'), name: 'x'.repeat(5000) } as Options);
+          expect(only(recorded)[0]).toMatch(
+            /^TRACE Factory.create Called Args: \[\{"loggerProvider":\{\},"name":"x+… \(\d+ chars\)\]$/
+          );
+          expect(only(recorded)[0]!.length).toBeLessThan(1200);
         });
 
         it('names its lines and span after the name and version CdkInstrumentation was given, not a call', () => {
           CdkInstrumentation.create({ name: '@scaffoldly/rowdy', version: '1.2.3' });
           Factory.create({ name: 'box' } as Options);
-          expect(text()[0]).toBe('TRACE @scaffoldly/rowdy Factory.create Called Args: [Object]');
+          expect(only(text())[0]).toBe('TRACE @scaffoldly/rowdy Factory.create Called Args: [{"name":"box"}]');
           const [span] = exporter.getFinishedSpans();
           expect([span!.instrumentationScope.name, span!.instrumentationScope.version]).toEqual([
             '@scaffoldly/rowdy',
             '1.2.3',
           ]);
+        });
+
+        describe('wiretaps', () => {
+          const ID = '[0-9a-f]{32}';
+          const SPAN = '[0-9a-f]{16}';
+
+          it('logs each span as it ends at info', () => {
+            Factory.create({ loggerProvider: linesAt('info') });
+            expect(recorded).toEqual([
+              expect.stringMatching(
+                new RegExp(
+                  `^INFO Span Ended Name: Factory.create Duration: \\d+\\.\\d\\d ms Outcome: complete TraceId: ${ID} SpanId: ${SPAN}$`
+                )
+              ),
+            ]);
+          });
+
+          it('also logs each span as it starts at debug, with its attributes', () => {
+            Factory.create({ loggerProvider: linesAt('debug') });
+            expect(recorded).toEqual([
+              expect.stringMatching(
+                new RegExp(
+                  `^DEBUG Span Started Name: Factory.create TraceId: ${ID} SpanId: ${SPAN} Code.function.name: Factory.create$`
+                )
+              ),
+              expect.stringMatching(/^INFO Span Ended Name: Factory.create /),
+            ]);
+          });
+
+          it('also logs its trace lines and every metric value at trace', () => {
+            Factory.create({ loggerProvider: linesAt('trace') });
+            expect(recorded.map((line) => line.split(' ').slice(0, 3).join(' '))).toEqual([
+              'DEBUG Span Started',
+              'TRACE Factory.create Called',
+              'TRACE Factory.create Completed',
+              'INFO Span Ended',
+              'TRACE Metric Recorded',
+            ]);
+            expect(recorded[4]).toMatch(
+              /^TRACE Metric Recorded Name: cdk.trace.duration Value: [\d.e-]+ s Code.function.name: Factory.create Cdk.trace.outcome: complete$/
+            );
+          });
+
+          it('gives a span that ended in error its error', async () => {
+            class Failing {
+              @Trace((options: Options) => options)
+              static async fail(_options: Options): Promise<never> {
+                throw new RangeError('nope');
+              }
+            }
+            await expect(Failing.fail({ loggerProvider: linesAt('info') })).rejects.toThrow('nope');
+            expect(recorded).toEqual([
+              expect.stringMatching(
+                /^INFO Span Ended Name: Failing.fail .* Outcome: error .* Error: RangeError: nope$/
+              ),
+            ]);
+          });
+
+          it('leaves the ids out when there is no tracer provider to record the span', () => {
+            const cdk = CdkInstrumentation as unknown as { instance?: CdkInstrumentation };
+            cdk.instance?.disable();
+            cdk.instance = undefined;
+            Factory.create({ loggerProvider: linesAt('info') });
+            expect(recorded).toEqual([
+              expect.stringMatching(/^INFO Span Ended Name: Factory.create Duration: \d+\.\d\d ms Outcome: complete$/),
+            ]);
+          });
         });
 
         it("sends a call's span to the tracerProvider in its options, not the global one", () => {
@@ -1095,11 +1225,11 @@ describe('Logger', () => {
           const factory = Factory.create({ loggerProvider: linesAt('trace') });
           recorded.length = 0;
           await expect(factory.run('ls')).resolves.toBe('ran ls');
-          expect(recorded).toEqual([
+          expect(only(recorded)).toEqual([
             'TRACE Factory.run Called Args: [ls]',
             expect.stringMatching(/^TRACE Factory.run Completed Duration: .* Value: ran ls$/),
           ]);
-          expect(text()).toEqual([]);
+          expect(only(text())).toEqual([]);
         });
       });
 
@@ -1120,7 +1250,7 @@ describe('Logger', () => {
         const traced = new Traced();
         traced.doSyncWork(2);
         await traced.doWork(new Bar('hunter2'));
-        expect(text()).toEqual([
+        expect(only(text())).toEqual([
           'TRACE @scaffoldly/rowdy-cdk Traced.doSyncWork Called Args: [2]',
           expect.stringMatching(
             /^TRACE @scaffoldly\/rowdy-cdk Traced.doSyncWork Completed Duration: \d+\.\d\d ms Value: 4$/
@@ -1130,7 +1260,7 @@ describe('Logger', () => {
             /^TRACE @scaffoldly\/rowdy-cdk Traced.doWork Completed Duration: \d+\.\d\d ms Value: Bar$/
           ),
         ]);
-        expect(text().join('\n')).not.toContain('hunter2');
+        expect(only(text()).join('\n')).not.toContain('hunter2');
       });
 
       const tick = (ms = 0): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
@@ -1160,7 +1290,7 @@ describe('Logger', () => {
             attributes: expect.objectContaining({ 'cdk.trace.outcome': 'returned' }),
           }),
         ]);
-        expect(text()).toEqual([
+        expect(only(text())).toEqual([
           'TRACE @scaffoldly/rowdy-cdk Traced.twice Called',
           expect.stringMatching(/^TRACE @scaffoldly\/rowdy-cdk Traced.twice Returned Duration: \d+\.\d\d ms$/),
         ]);

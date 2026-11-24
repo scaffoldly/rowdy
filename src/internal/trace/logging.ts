@@ -1,38 +1,58 @@
 import { SeverityNumber, type Attributes, type Context } from '@opentelemetry/api';
-import { isLoggable, Logger, type ILoggable, type Loggable } from '../../log';
+import { isLoggable, Logger, maskJson, type ILoggable, type Loggable } from '../../log';
 import type { CdkInstrumentationOptions } from '../../otel';
 import type { Tracker } from './tracker';
 
 /** Where a traced call's lines go: a Logger, or OpenTelemetry log records. */
 export type TraceSink = Pick<Logger, 'trace'>;
 
-/** Each line as an OpenTelemetry log record at TRACE, in `context`, when its logger is enabled for one. */
-export const recordsIn = (
+/** A log record at `severity`, in the run's context, when the options' logger is enabled for one. */
+export type Wiretap = (severity: SeverityNumber, message: string, attributes?: Attributes) => void;
+
+export const wiretap = (
   { loggerProvider, name, version }: Required<CdkInstrumentationOptions>,
   context: Context
-): TraceSink => {
+): Wiretap => {
   const logger = loggerProvider.getLogger(name, version);
+  return (severityNumber, body, attributes = {}) => {
+    if (!logger.enabled({ severityNumber, context })) return;
+    logger.emit({ severityNumber, severityText: SeverityNumber[severityNumber], body, attributes, context });
+  };
+};
+
+/** Each line as an OpenTelemetry log record at TRACE, in `context`. */
+export const recordsIn = (options: Required<CdkInstrumentationOptions>, context: Context): TraceSink => {
+  const tap = wiretap(options, context);
   return {
     trace: (message, params = {}): void => {
-      if (!logger.enabled({ severityNumber: SeverityNumber.TRACE, context })) return;
       const fields: Record<string, Loggable> = isLoggable(params) ? { value: params } : params;
       const attributes: Attributes = {};
       for (const [key, value] of Object.entries(fields)) {
         const primitive = Logger.asPrimitive(value);
         attributes[key] = primitive instanceof Error ? `${primitive.name}: ${primitive.message}` : primitive;
       }
-      logger.emit({ severityNumber: SeverityNumber.TRACE, severityText: 'TRACE', body: message, attributes, context });
+      tap(SeverityNumber.TRACE, message, attributes);
     },
   };
 };
 
 const ms = (since: number, until = performance.now()): string => `${(until - since).toFixed(2)} ms`;
 
-/** A value as logged: itself when Loggable, otherwise only its class name, never its contents. */
-const loggable = (value: unknown): Loggable =>
-  isLoggable(value)
-    ? value
-    : ({ repr: (): string => (value as object)?.constructor?.name || typeof value } satisfies ILoggable);
+const MAX = 1024;
+
+/**
+ * A value as logged: itself when Loggable; a plain object or array as masked JSON, capped at
+ * MAX characters; anything else only its class name, never its contents.
+ */
+const loggable = (value: unknown): Loggable => {
+  if (isLoggable(value)) return value;
+  const proto = value && typeof value === 'object' ? Object.getPrototypeOf(value) : undefined;
+  if (Array.isArray(value) || proto === Object.prototype || proto === null) {
+    const json = maskJson(value);
+    return json.length > MAX ? `${json.slice(0, MAX)}… (${json.length} chars)` : json;
+  }
+  return { repr: (): string => (value as object)?.constructor?.name || typeof value } satisfies ILoggable;
+};
 
 export const logCall = (logger: TraceSink, method: string, args: unknown[]): void =>
   logger.trace(`${method} Called`, args.length ? { args: args.map(loggable) as Loggable } : {});

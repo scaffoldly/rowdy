@@ -16,6 +16,10 @@ import type * as Otel from '../src/otel';
 import { RxJSInstrumentation } from '../src/otel/rxjs';
 
 /** A fresh copy of the module and its rxjs: create() makes its instrumentations once. */
+// Child processes print their results on stdout: keep @Trace's INFO wiretaps off it. Jest's
+// process.env is a copy of its own, so it is passed to each explicitly.
+const QUIET = { ...process.env, ROWDY_LOG_LEVEL: 'warn' };
+
 const fresh = (): { CdkInstrumentation: typeof Otel.CdkInstrumentation; rx: typeof rxjs } => {
   let loaded: ReturnType<typeof fresh> | undefined;
   jest.isolateModules(() => {
@@ -136,7 +140,11 @@ describe('CdkInstrumentation.create', () => {
         console.log(JSON.stringify(exporter.getFinishedSpans().map((s) => s.name)));
       });
     `;
-    const out = execFileSync(process.execPath, ['-e', script], { cwd: join(__dirname, '..'), encoding: 'utf8' });
+    const out = execFileSync(process.execPath, ['-e', script], {
+      cwd: join(__dirname, '..'),
+      encoding: 'utf8',
+      env: QUIET,
+    });
     expect(JSON.parse(out)).toContain('STS.GetCallerIdentity');
   });
 });
@@ -342,6 +350,7 @@ describe.each([
         {
           cwd: ROOT,
           encoding: 'utf8',
+          env: QUIET,
         }
       )
     );
@@ -393,7 +402,7 @@ describe('a host that never gives them a tracer provider', () => {
           'none',
           join(ROOT, 'dist', 'index.js'),
         ],
-        { cwd: ROOT, encoding: 'utf8' }
+        { cwd: ROOT, encoding: 'utf8', env: QUIET }
       )
     );
   });
@@ -430,7 +439,11 @@ describe('CdkInstrumentation under ESM', () => {
       await sdk.shutdown();
       console.log(JSON.stringify(seen));
     `;
-    const out = execFileSync(process.execPath, ['--input-type=module', '-e', script], { cwd: ROOT, encoding: 'utf8' });
+    const out = execFileSync(process.execPath, ['--input-type=module', '-e', script], {
+      cwd: ROOT,
+      encoding: 'utf8',
+      env: QUIET,
+    });
     expect(JSON.parse(out)).toEqual([true]);
   });
 });
@@ -448,7 +461,7 @@ describe('@Trace on an async method nobody awaits', () => {
       traced();
       setTimeout(() => console.log(JSON.stringify(seen)), 20);
     `;
-    const out = execFileSync(process.execPath, ['-e', script], { cwd: ROOT, encoding: 'utf8' });
+    const out = execFileSync(process.execPath, ['-e', script], { cwd: ROOT, encoding: 'utf8', env: QUIET });
     expect(JSON.parse(out)).toEqual(['untraced', 'traced']);
   });
 });
@@ -495,7 +508,7 @@ describe('rowdy.run passing its providers to a traced call', () => {
         console.log(JSON.stringify(spans));
       });
     `;
-    return JSON.parse(execFileSync(process.execPath, ['-e', script], { cwd: ROOT, encoding: 'utf8' }));
+    return JSON.parse(execFileSync(process.execPath, ['-e', script], { cwd: ROOT, encoding: 'utf8', env: QUIET }));
   };
 
   it('traces the call, the AWS SDK under it, and its request under that', () => {

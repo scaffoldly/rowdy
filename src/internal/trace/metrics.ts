@@ -1,5 +1,6 @@
-import type { Attributes, Histogram, MeterProvider } from '@opentelemetry/api';
+import { SeverityNumber, type Attributes, type Context, type Histogram, type MeterProvider } from '@opentelemetry/api';
 import type { CdkInstrumentationOptions } from '../../otel';
+import { wiretap } from './logging';
 import type { Tracker } from './tracker';
 
 const histograms = new WeakMap<MeterProvider, Map<string, Histogram>>();
@@ -19,14 +20,18 @@ const durationOn = (meterProvider: MeterProvider, name: string, version: string)
 };
 
 /** Records a run's duration on the options' `meterProvider`, with its method, outcome and any error's type. */
-export const measureRun = (
-  method: string,
-  { meterProvider, name, version }: Required<CdkInstrumentationOptions>
-): Tracker => {
+export const measureRun = (method: string, options: Required<CdkInstrumentationOptions>, context: Context): Tracker => {
+  const { meterProvider, name, version } = options;
   const histogram = durationOn(meterProvider, name, version);
+  const tap = wiretap(options, context);
   const started = performance.now();
-  const record = (outcome: string, extra: Attributes = {}, at = performance.now()): void =>
-    histogram.record((at - started) / 1000, { 'code.function.name': method, 'cdk.trace.outcome': outcome, ...extra });
+  // Each value is also a log record at TRACE: `Metric Recorded`.
+  const record = (outcome: string, extra: Attributes = {}, at = performance.now()): void => {
+    const value = (at - started) / 1000;
+    const attributes = { 'code.function.name': method, 'cdk.trace.outcome': outcome, ...extra };
+    histogram.record(value, attributes);
+    tap(SeverityNumber.TRACE, 'Metric Recorded', { name: 'cdk.trace.duration', value: `${value} s`, ...attributes });
+  };
 
   return {
     subscribe: (): void => {},
