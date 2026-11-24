@@ -1,13 +1,11 @@
-import type { Observable } from 'rxjs';
 import type { Writable } from 'stream';
 import type { Exec, ExecFinished, ExecOutput, ExecOutputOptions } from '../api/types';
-import type { Event, EventCallback } from '../events';
-import type { Level, Sink } from '../log';
+import type { CdkOptions, Level, Sink } from '../log';
 import type { MICROVM_MEMORY } from './internal/compute';
 import type { AwsCredentials } from '../aws/credentials';
 import { SandboxImpl } from './internal/sandbox';
 
-interface BaseSandboxOptions {
+interface BaseSandboxOptions extends CdkOptions {
   /** The container image to run. Defaults to `scaffoldly/sandbox`. */
   image?: string;
   /** The prefix of a generated name, `{name}-{suffix}`. Defaults to `sandbox`. */
@@ -43,8 +41,6 @@ interface BaseSandboxOptions {
    * rejects. `aws.lambda` always waits.
    */
   wait?: boolean;
-  /** Receives every event from the start of `create`, for as long as the sandbox is in use. */
-  onEvent?: EventCallback | PromiseLike<EventCallback>;
 }
 
 export interface AwsSandboxOptions {
@@ -85,8 +81,6 @@ export interface MicrovmSandboxOptions extends BaseSandboxOptions, AwsSandboxOpt
 }
 
 export type SandboxOptions = LambdaSandboxOptions | MicrovmSandboxOptions;
-
-export type { Event, EventCallback } from '../events';
 
 /** A console-like logger, such as pino or `console`, or a stream with `write`, such as `process.stderr`. */
 export type SandboxLogger = Exclude<Sink, 'stderr'>;
@@ -168,8 +162,6 @@ export interface RunCommandParams {
   stdout?: Writable;
   /** Receives the command's stderr as it is written. */
   stderr?: Writable;
-  /** Receives the sandbox's events while this command runs. */
-  onEvent?: EventCallback | PromiseLike<EventCallback>;
   detached?: false;
   /** Kills the command and rejects. On `runtime: 'aws.lambda'` only the waiting stops: it runs on until it exits or times out. */
   signal?: AbortSignal;
@@ -188,8 +180,6 @@ export interface DetachedRunCommandParams extends Omit<RunCommandParams, 'detach
 export interface RunCommandOptions {
   /** Kills the command and rejects. On `runtime: 'aws.lambda'` only the waiting stops: it runs on until it exits or times out. */
   signal?: AbortSignal;
-  /** Receives the sandbox's events while this command runs. */
-  onEvent?: EventCallback | PromiseLike<EventCallback>;
 }
 
 export interface WriteFile {
@@ -306,13 +296,11 @@ export interface Sandbox extends Readonly<SandboxMetadata>, AsyncDisposable {
   delete(): Promise<SandboxMetadata>;
   /** Its metadata as AWS says now, which its own fields then say too. */
   refresh(): Promise<SandboxMetadata>;
-  /** Each event from now on. */
-  events(): Observable<Event>;
 }
 
 /**
  * A sandbox on its way. Await it for the sandbox, or call its methods now: each waits for the sandbox, and a failed
- * create is each call's error. Call `events` before that to see what it takes.
+ * create is each call's error.
  */
 export interface SandboxPromise
   extends Promise<Sandbox>,

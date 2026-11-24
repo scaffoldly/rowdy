@@ -17,7 +17,6 @@ import {
 } from 'rxjs';
 import { ROWDY_LAYERS } from '../../api/internal/layers';
 import { Exec, ExecOutput, ExecOutputOptions } from '../../api/types';
-import type { Event } from '../../events';
 import type { AwsSandboxOptions, SandboxMetadata, SandboxUrl } from '../../sandbox';
 import type { ExecSchema } from '../../routes';
 import { ComputeSpec, SandboxCompute, SandboxError } from '../../sandbox/internal/compute';
@@ -184,10 +183,6 @@ export class LambdaCompute implements SandboxCompute {
         );
       })
     );
-  }
-
-  events(): Observable<Event> {
-    return this.lambda$.pipe(switchMap((lambda) => lambda.events()));
   }
 
   stop(): Observable<this> {

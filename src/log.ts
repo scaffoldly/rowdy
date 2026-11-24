@@ -9,4 +9,4 @@ export {
   maskQuery,
   maskUrl,
 } from '@scaffoldly/rowdy-cdk';
-export type { Format, ILoggable, Level, Loggable, Sink } from '@scaffoldly/rowdy-cdk';
+export type { CdkOptions, Format, ILoggable, Level, Loggable, Sink } from '@scaffoldly/rowdy-cdk';

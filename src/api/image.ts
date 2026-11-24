@@ -42,17 +42,7 @@ export class ImageApi implements IImageApi {
                 if (!digest) throw new Error(`Unable to find image for platform: ${opts.platform ?? 'linux/amd64'}`);
                 return { imageRef: `${transfer.registry.registry}/${transfer.manifest.slug}@${digest}` };
               })
-            : pipe(
-                Transfer.upload(this.log, this.http, {
-                  next: (event) =>
-                    this.api.environment?.event$.next({
-                      source: 'transfer',
-                      message: `Copying the image: ${event.summary}`,
-                      ...event,
-                    }),
-                }),
-                Transfer.denormalize(opts?.platform)
-              )
+            : pipe(Transfer.upload(this.log, this.http), Transfer.denormalize(opts?.platform))
         )
         .pipe(
           map(({ imageRef, command, entrypoint, workdir, environment }) => ({

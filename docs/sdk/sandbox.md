@@ -450,105 +450,13 @@ no VM is left running. A second Ctrl+C quits straight away, without waiting. A p
 This only applies during a command. Between commands, Ctrl+C ends the process and leaves the VM
 running until `timeout` suspends it, unless the program stops it.
 
-## Events
-
-Rowdy reports what it does. Every event has a readable `message`. Check `source` before anything else, since the rest
-depends on it. A step on AWS has `source: 'cdk'` and a
-`type`, which narrows its `lifecycle`:
-
-| `type`     | `lifecycle`               |
-| ---------- | ------------------------- |
-| `describe` | `describing`, `described` |
-| `read`     | `reading`, `read`         |
-| `create`   | `creating`, `created`     |
-| `update`   | `updating`, `updated`     |
-| `dispose`  | `disposing`, `disposed`   |
-| `tag`      | `tagging`, `tagged`       |
-
-`failed` can follow any of them.
-
-```ts
-{
-  source: 'cdk',
-  message: 'CreateRole: creating',
-  type: 'create',
-  lifecycle: 'creating',
-  client: 'IAMClient',
-  action: 'CreateRole',
-  name: 'sandbox-abc',
-}
-```
-
-Copying an image into ECR reports its progress with `source: 'transfer'`, whenever that changes:
-
-```ts
-{
-  source: 'transfer',
-  message: 'Copying the image: 4/9 transfers: 40% complete',
-  lifecycle: 'copying',
-  summary: '4/9 transfers: 40% complete',
-}
-```
-
-`lifecycle` is `copying`, `copied` or `failed`.
-
-A request that runs into something says so with `source: 'http'`, and `type` says what. A registry that rate-limits
-one is `type: 'rate-limited'`. The request waits as long as its `Retry-After`
-says, or its own backoff without one, then tries again. Requests in parallel can be limited at once, so a host that
-passes these on may want to debounce them.
-
-```ts
-{
-  source: 'http',
-  message: 'Rate limited by mirror.gcr.io pulling library/alpine, trying again in 30 seconds',
-  type: 'rate-limited',
-  summary: 'Rate limited by mirror.gcr.io pulling library/alpine, trying again in 30 seconds',
-  wait: 30000,
-  retryAfter: '30',
-}
-```
-
-`wait` is the milliseconds until it tries again. `retryAfter` is the registry's own header, and it's missing when the
-registry sent none and the wait is rowdy's backoff.
-
-Pass `onEvent` to `Sandbox.create` or `runCommand`. It can be a callback or a promise of one. Callbacks run one at a
-time, in order, and an error from one is logged and doesn't affect the sandbox.
-
-```ts
-const sandbox = await Sandbox.create({
-  runtime: 'aws.microvm',
-  onEvent: (event) => {
-    if (event.source === 'cdk' && event.type === 'create' && event.lifecycle === 'created') {
-      console.error(event.action);
-    }
-  },
-});
-
-await sandbox.runCommand({ cmd: 'npm', args: ['test'], onEvent: (event) => console.error(event) });
-```
-
-On `create`, it receives every event for as long as the sandbox is in use. On `runCommand`, it receives what happens
-while that command runs. That includes polling, so filter on `type`.
-
-For an Observable, call `.events()`. Nothing is kept, so it starts from when you subscribe: to see the build, call it on
-what `create` returns, before you await it.
-
-```ts
-const creating = Sandbox.create({ runtime: 'aws.microvm' });
-creating.events().subscribe(console.error);
-const sandbox = await creating;
-```
-
-A command's own output isn't an event.
-
 ## Prebuilt images
 
 On `aws.microvm`, `Sandbox.create` first looks for an image prebuilt by
 `rowdy create aws microvm --build` from exactly what the sandbox would build (see
 [the runtime docs](../runtime.md#prebuilt-microvm-images)). It reads only manifests to work out the
 image's name, then reads the image by that name. A match starts in seconds instead of building for about
-two minutes, and the create emits a `{ source: 'sandbox', type: 'prebuilt' }` event, "Starting from a
-prebuilt image". With no match, it builds as before.
+two minutes. With no match, it builds as before.
 
 A match needs everything that goes into the image to be the same:
 

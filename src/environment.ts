@@ -15,7 +15,6 @@ import {
   race,
   repeat,
   ReplaySubject,
-  Subject,
   Subscription,
   switchMap,
   take,
@@ -25,7 +24,6 @@ import {
 } from 'rxjs';
 import { Routes } from './routes';
 import { defaultPort, originOf } from './cdn';
-import type { Event } from './events';
 import { ILoggable, isLevel, Level, Logger, mask, maskEnv, maskJson, Trace } from './log';
 import { runtimeLog as log } from './runtime-log';
 import { ExitContext, ShellExit, ShellProxy, ShellRequest } from './proxy/shell';
@@ -184,8 +182,6 @@ export class Environment implements ILoggable {
 
   public abort: AbortController;
   public readonly signal: AbortSignal;
-  /** Events from what isn't a compute's own, such as copying an image. */
-  public readonly event$ = new Subject<Event>();
   public readonly bin = Object.keys(packageJson.bin)[0];
 
   private _pipelines: Pipeline[] = [new LambdaPipeline(this), new MicrovmPipeline(this)];
@@ -504,9 +500,6 @@ export class Environment implements ILoggable {
                       if (argv.dockerfile) image.withDockerfile(argv.dockerfile);
 
                       this._subscriptions.push(
-                        environment.event$.subscribe(
-                          (event) => event.source === 'http' && this.log.info(event.message)
-                        ),
                         image.observe().subscribe({
                           error: (error: Error) => {
                             this.log.error('MicroVM Image Build Failed', { name: error.name, error: error.message });

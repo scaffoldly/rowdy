@@ -1,21 +1,13 @@
-import type { Observable } from 'rxjs';
-import type { Event, Sandbox, SandboxPromise } from '..';
+import type { Sandbox, SandboxPromise } from '..';
 import type { SandboxImpl } from './sandbox';
 
 export class SandboxPromiseImpl implements SandboxPromise, Promise<SandboxImpl> {
   readonly [Symbol.toStringTag] = 'SandboxPromise';
 
-  constructor(
-    private created: Promise<SandboxImpl>,
-    private event$: Observable<Event>
-  ) {
+  constructor(private created: Promise<SandboxImpl>) {
     // Its methods can be called later, so a failed create isn't an unhandled rejection meanwhile. Awaiting it, or a
     // call, still rejects.
     this.created.catch(() => {});
-  }
-
-  events(): Observable<Event> {
-    return this.event$;
   }
 
   // The sandbox's own methods, each once it's there. A failed create is each call's error.

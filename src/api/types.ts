@@ -62,7 +62,7 @@ export interface ExecOutput {
 export interface IApi {
   http: AxiosInstance;
   log: Logger;
-  environment: Pick<Environment, 'log' | 'event$' | 'registry'> | undefined;
+  environment: Pick<Environment, 'log' | 'registry'> | undefined;
 }
 
 export type PullImageOptions = {

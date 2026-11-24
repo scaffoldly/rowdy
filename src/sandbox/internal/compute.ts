@@ -1,7 +1,6 @@
 import type { Observable } from 'rxjs';
 import type { Exec, ExecOutput, ExecOutputOptions } from '../../api/types';
 import type { SandboxEnvironment } from './environment';
-import type { Event } from '../../events';
 import type { AwsSandboxOptions, FileRange, SandboxMetadata, SandboxUrl } from '..';
 import type { ExecSchema } from '../../routes';
 import type { Logger } from '../../log';
@@ -62,8 +61,6 @@ export interface SandboxCompute {
   mkDir(path: string, signal: AbortSignal): Observable<void>;
   /** Emits once, with the endpoint for `port`, or the runtime's own, and a token for that port only, good for `minutes`. */
   url(port: number | undefined, minutes: number, signal: AbortSignal): Observable<SandboxUrl>;
-  /** Each step of what this compute does on its provider, from now on. */
-  events(): Observable<Event>;
 }
 
 export interface SandboxComputeClass {

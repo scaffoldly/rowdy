@@ -228,9 +228,9 @@ export class MicrovmCompute extends AwsClientLogger implements SandboxCompute {
 
   readonly stoppable = true;
 
-  private microvms = this.track(new LambdaMicrovmsClient({ logger: this, credentials: this.environment.credentials }));
-  private sts = this.track(new STSClient({ logger: this, credentials: this.environment.credentials }));
-  private s3 = this.track(new S3Client({ logger: this, credentials: this.environment.credentials }));
+  private microvms = new LambdaMicrovmsClient({ logger: this, credentials: this.environment.credentials });
+  private sts = new STSClient({ logger: this, credentials: this.environment.credentials });
+  private s3 = new S3Client({ logger: this, credentials: this.environment.credentials });
 
   // Set for a sandbox started from a prebuilt image, which is its VM rather than an image of its own.
   private record?: PrebuiltRecord;
@@ -261,10 +261,6 @@ export class MicrovmCompute extends AwsClientLogger implements SandboxCompute {
       throw new Error('Sandbox has no image');
     }
     return ImageArn;
-  }
-
-  override events(): ReturnType<AwsClientLogger['events']> {
-    return merge(super.events(), this.image.events());
   }
 
   create({ image, name, timeout, memory, env, meta, layersFrom, wait }: ComputeSpec): Observable<this> {
@@ -314,12 +310,7 @@ export class MicrovmCompute extends AwsClientLogger implements SandboxCompute {
 
         const { imageArn, imageVersion } = found;
         let started: string | undefined;
-        this.environment.event$.next({
-          source: 'sandbox',
-          type: 'prebuilt',
-          summary: 'Starting from a prebuilt image',
-          message: 'Starting from a prebuilt image',
-        });
+        this.log.info('Starting From A Prebuilt Image');
 
         return forkJoin({
           bucket: ownedBucket(this.s3, this.log, BUCKET_PREFIX, BUCKET_OWNER),

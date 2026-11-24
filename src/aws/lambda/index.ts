@@ -203,13 +203,13 @@ export class LambdaFunction extends AwsResource {
     return roleName(image, name);
   }
 
-  private iam = this.track(new IAMClient({ logger: this, credentials: this.imageService.credentials }));
-  private lambda = this.track(new LambdaClient({ logger: this, credentials: this.imageService.credentials }));
+  private iam = new IAMClient({ logger: this, credentials: this.imageService.credentials });
+  private lambda = new LambdaClient({ logger: this, credentials: this.imageService.credentials });
   // The SDK's default retries would run a command a second time, and its logger would log the event's env.
   private invoker = new LambdaClient({ maxAttempts: 1, credentials: this.imageService.credentials });
-  private scheduler = this.track(new SchedulerClient({ logger: this, credentials: this.imageService.credentials }));
-  private s3 = this.track(new S3Client({ logger: this, credentials: this.imageService.credentials }));
-  private logs = this.track(new CloudWatchLogsClient({ logger: this, credentials: this.imageService.credentials }));
+  private scheduler = new SchedulerClient({ logger: this, credentials: this.imageService.credentials });
+  private s3 = new S3Client({ logger: this, credentials: this.imageService.credentials });
+  private logs = new CloudWatchLogsClient({ logger: this, credentials: this.imageService.credentials });
 
   private type: 'Sandbox' | 'Container';
 

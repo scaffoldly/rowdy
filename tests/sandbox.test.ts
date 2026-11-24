@@ -5,11 +5,9 @@ import { InvokeWithResponseStreamResponseEvent, LambdaClient } from '@aws-sdk/cl
 import { EMPTY, from, lastValueFrom, NEVER, Observable, of, Subject, switchMap, throwError, toArray } from 'rxjs';
 import { PassThrough } from 'stream';
 import { ROWDY_LAYERS } from '../src/api/internal/layers';
-import { CreateRepositoryCommand } from '@aws-sdk/client-ecr';
 import { IAMClient } from '@aws-sdk/client-iam';
 import { LambdaCompute } from '../src/aws/lambda/compute';
 import { AwsRegistry } from '../src/aws/registry';
-import type { Event as SandboxEvent } from '../src/events';
 import { LambdaFunction } from '../src/aws/lambda/index';
 import { MicrovmCompute } from '../src/aws/microvm/compute';
 import { LambdaImageService } from '../src/aws/lambda/image';
@@ -544,6 +542,40 @@ describe('sandbox', () => {
 
         expect(listed).toHaveBeenCalled();
         expect(logger.warn).toHaveBeenCalledWith({ component: 'sandbox' }, 'Listing');
+      });
+
+      it('traces create, get, list and delete to the logger each was given', async () => {
+        const lines: string[] = [];
+        const logger = { write: (line: string): number => lines.push(line) };
+        jest.spyOn(LambdaCompute.prototype, 'attach').mockImplementation(function (this: LambdaCompute) {
+          return of(this);
+        });
+        jest.spyOn(MicrovmCompute, 'list').mockReturnValue(EMPTY);
+        jest.spyOn(LambdaCompute, 'list').mockReturnValue(EMPTY);
+
+        await SandboxImpl.create({ runtime: 'aws.lambda', logLevel: 'trace', logger });
+        await SandboxImpl.get({ name: FUNCTION_NAME, runtime: 'aws.lambda', logLevel: 'trace', logger });
+        await SandboxImpl.list({ logLevel: 'trace', logger });
+
+        expect(lines).toEqual(
+          expect.arrayContaining([
+            expect.stringContaining('SandboxImpl.create Called'),
+            expect.stringContaining('SandboxImpl.get Called'),
+            expect.stringContaining('SandboxImpl.list Called'),
+          ])
+        );
+      });
+
+      it('traces nothing of a call given no logger, whatever the process-wide level', async () => {
+        process.env.ROWDY_LOG_LEVEL = 'trace';
+        const info = jest.spyOn(console, 'info').mockImplementation(() => {});
+        const debug = jest.spyOn(console, 'debug').mockImplementation(() => {});
+        const write = jest.spyOn(process.stderr, 'write').mockImplementation(() => true);
+
+        await SandboxImpl.create({ runtime: 'aws.lambda' });
+
+        const written = [...write.mock.calls, ...info.mock.calls, ...debug.mock.calls].map(String).join('\n');
+        expect(written).not.toContain('SandboxImpl.create');
       });
     });
 
@@ -1426,34 +1458,7 @@ describe('sandbox', () => {
     });
   });
 
-  describe('events', () => {
-    const step = {
-      type: 'create',
-      lifecycle: 'creating',
-      client: 'IAMClient',
-      action: 'CreateRole',
-      name: 'role',
-    } as const;
-    const event = { source: 'cdk', message: 'CreateRole: creating', ...step };
-
-    const emitting = (): void => {
-      observe.mockImplementation(function (this: LambdaFunction) {
-        this['emitted'].next(step);
-        return of(this);
-      });
-    };
-
-    it('shows the build to a caller who subscribes before awaiting', async () => {
-      emitting();
-      const seen: unknown[] = [];
-
-      const creating = Sandbox.create({ runtime: 'aws.lambda' });
-      creating.events().subscribe((emitted) => seen.push(emitted));
-      await creating;
-
-      expect(seen).toEqual([event]);
-    });
-
+  describe('what create returns', () => {
     it('still resolves to the sandbox', async () => {
       const sandbox = await Sandbox.create({ runtime: 'aws.lambda' });
 
@@ -1462,27 +1467,6 @@ describe('sandbox', () => {
 
     it('still rejects for options out of range', async () => {
       await expect(Sandbox.create({ runtime: 'aws.lambda', memory: 1 })).rejects.toThrow(RangeError);
-    });
-
-    it('includes what the registry does', async () => {
-      const sandbox = await SandboxImpl.create({ runtime: 'aws.lambda' });
-      const registry = new AwsRegistry(sandbox['environment'], sandbox['environment'].log);
-      const send = jest.fn(async () => ({}));
-      registry['ecr'].config.requestHandler = { handle: send } as never;
-      const seen: SandboxEvent[] = [];
-      sandbox.events().subscribe((emitted) => seen.push(emitted));
-
-      await registry['ecr'].send(new CreateRepositoryCommand({ repositoryName: 'acme' })).catch(() => {});
-
-      expect(seen[0]).toEqual({
-        source: 'cdk',
-        message: 'CreateRepository: creating',
-        type: 'create',
-        lifecycle: 'creating',
-        client: 'ECRClient',
-        action: 'CreateRepository',
-        name: 'acme',
-      });
     });
 
     it('works as a promise', async () => {
@@ -1497,129 +1481,6 @@ describe('sandbox', () => {
       await expect(Sandbox.create({ runtime: 'aws.lambda' }).then(({ constructor }) => constructor)).resolves.toBe(
         SandboxImpl
       );
-    });
-
-    it('starts from now on the sandbox', async () => {
-      emitting();
-      const sandbox = await Sandbox.create({ runtime: 'aws.lambda' });
-      const seen: unknown[] = [];
-
-      sandbox.events().subscribe((emitted) => seen.push(emitted));
-      expect(seen).toEqual([]);
-
-      lambdaOf(sandbox as SandboxImpl)['emitted'].next(step);
-
-      expect(seen).toEqual([event]);
-    });
-
-    it('calls onEvent from the start of create', async () => {
-      emitting();
-      const onEvent = jest.fn();
-
-      await Sandbox.create({ runtime: 'aws.lambda', onEvent });
-      await new Promise(setImmediate);
-
-      expect(onEvent).toHaveBeenCalledWith(event);
-    });
-
-    it('takes a promise of a callback', async () => {
-      emitting();
-      const onEvent = jest.fn();
-
-      await Sandbox.create({ runtime: 'aws.lambda', onEvent: Promise.resolve(onEvent) });
-      await new Promise(setImmediate);
-
-      expect(onEvent).toHaveBeenCalledWith(event);
-    });
-
-    it('keeps order through a slow callback', async () => {
-      const seen: string[] = [];
-      let both: () => void = () => {};
-      const handled = new Promise<void>((resolve) => (both = resolve));
-      const sandbox = await SandboxImpl.create({
-        runtime: 'aws.lambda',
-        onEvent: async (emitted) => {
-          await new Promise(setImmediate);
-          seen.push(emitted.source === 'cdk' ? `${emitted.action}` : '');
-          if (seen.length === 2) both();
-        },
-      });
-
-      lambdaOf(sandbox)['emitted'].next({ ...step, action: 'First' });
-      lambdaOf(sandbox)['emitted'].next({ ...step, action: 'Second' });
-      await handled;
-
-      expect(seen).toEqual(['First', 'Second']);
-    });
-
-    it('survives a callback that throws', async () => {
-      emitting();
-      const onEvent = jest.fn(() => {
-        throw new Error('oops');
-      });
-      const logged = jest.spyOn(process.stderr, 'write').mockImplementation(() => true);
-
-      const sandbox = await Sandbox.create({ runtime: 'aws.lambda', onEvent });
-      await new Promise(setImmediate);
-
-      expect(sandbox).toBeInstanceOf(SandboxImpl);
-      expect(onEvent).toHaveBeenCalledTimes(1);
-      expect(logged).toHaveBeenCalledWith(expect.stringContaining('Event Callback Failed'));
-    });
-
-    it('keeps onEvent out of the name', async () => {
-      const name = jest.spyOn(LambdaFunction.prototype, 'withName');
-
-      await Sandbox.create({ runtime: 'aws.lambda' });
-      await Sandbox.create({ runtime: 'aws.lambda', onEvent: () => {} });
-
-      expect(name.mock.calls[1]).toEqual(name.mock.calls[0]);
-    });
-
-    describe('runCommand', () => {
-      const running = async (sandbox: SandboxImpl): Promise<void> => {
-        const exec = { cmdId: 'c', exitCode: 0, frames: EMPTY, wait: async () => exec } as unknown as ExecFinished;
-        jest.spyOn(sandbox['compute'], 'exec').mockImplementation(() => {
-          lambdaOf(sandbox)['emitted'].next(step);
-          return of(exec);
-        });
-      };
-
-      it('calls onEvent with what happens during the command only', async () => {
-        const sandbox = await SandboxImpl.create({ runtime: 'aws.lambda' });
-        lambdaOf(sandbox)['emitted'].next({ ...step, action: 'Before' });
-        await running(sandbox);
-        const onEvent = jest.fn();
-
-        await sandbox.runCommand({ cmd: 'ls', onEvent });
-        await new Promise(setImmediate);
-
-        expect(onEvent.mock.calls).toEqual([[event]]);
-      });
-
-      it('takes onEvent as an option too', async () => {
-        const sandbox = await SandboxImpl.create({ runtime: 'aws.lambda' });
-        await running(sandbox);
-        const onEvent = jest.fn();
-
-        await sandbox.runCommand('ls', [], { onEvent });
-        await new Promise(setImmediate);
-
-        expect(onEvent).toHaveBeenCalledTimes(1);
-      });
-
-      it('stops calling after the command', async () => {
-        const sandbox = await SandboxImpl.create({ runtime: 'aws.lambda' });
-        await running(sandbox);
-        const onEvent = jest.fn();
-
-        await sandbox.runCommand({ cmd: 'ls', onEvent });
-        await new Promise(setImmediate);
-        lambdaOf(sandbox)['emitted'].next(step);
-        await new Promise(setImmediate);
-
-        expect(onEvent).toHaveBeenCalledTimes(1);
-      });
     });
   });
 

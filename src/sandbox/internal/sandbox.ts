@@ -19,13 +19,11 @@ import type {
   SandboxLogger,
   SandboxUrl,
   UrlOptions,
-  Event,
 } from '..';
 import { isAxiosError } from 'axios';
 import { posix } from 'path';
 import {
   catchError,
-  asapScheduler,
   concat,
   concatWith,
   connectable,
@@ -37,7 +35,6 @@ import {
   first,
   firstValueFrom,
   from,
-  subscribeOn,
   fromEvent,
   ignoreElements,
   iif,
@@ -61,7 +58,7 @@ import {
 } from 'rxjs';
 import type { Exec, ExecFrame } from '../../api/types';
 import { SandboxEnvironment } from './environment';
-import { Logger, maskUrl } from '../../log';
+import { Logger, maskUrl, Trace } from '../../log';
 import { humanize } from '../../aws/errors';
 import { LambdaCompute } from '../../aws/lambda/compute';
 import { MicrovmCompute } from '../../aws/microvm/compute';
@@ -118,6 +115,7 @@ export class SandboxImpl implements Sandbox {
     this.compute = new RUNTIMES[this.runtime](this.environment);
   }
 
+  @Trace((options?: SandboxOptions) => options)
   static create(options?: SandboxOptions): SandboxPromiseImpl {
     const runtime = options?.runtime ?? 'aws.microvm';
     const sandbox = new SandboxImpl({
@@ -129,24 +127,6 @@ export class SandboxImpl implements Sandbox {
       signal: options?.signal,
     });
     const { signal } = sandbox.environment;
-
-    if (options?.onEvent) {
-      const onEvent = Promise.resolve(options.onEvent);
-      sandbox
-        .events()
-        .pipe(
-          // One at a time, so a slow callback still sees them in order.
-          concatMap((event) =>
-            from(onEvent.then((callback) => callback(event))).pipe(
-              catchError((error) => {
-                sandbox.environment.log.warn('Event Callback Failed', { error });
-                return EMPTY;
-              })
-            )
-          )
-        )
-        .subscribe();
-    }
 
     const created = lastValueFrom(
       defer(() => {
@@ -194,8 +174,6 @@ export class SandboxImpl implements Sandbox {
           )
         );
       }).pipe(
-        // Work starts after this returns, so `.events()` on the result sees the first step.
-        subscribeOn(asapScheduler),
         // An AxiosError carries its request headers and sockets into a caller's logs.
         catchError((error) =>
           throwError(() =>
@@ -216,12 +194,12 @@ export class SandboxImpl implements Sandbox {
     return new SandboxPromiseImpl(
       created.catch((error) => {
         throw humanize(error);
-      }),
-      sandbox.events()
+      })
     );
   }
 
-  static get({
+  @Trace((lookup: SandboxLookup) => lookup)
+  static async get({
     name,
     logLevel,
     logger,
@@ -292,7 +270,8 @@ export class SandboxImpl implements Sandbox {
     });
   }
 
-  static list({
+  @Trace((options?: SandboxListOptions) => options)
+  static async list({
     runtime,
     meta = {},
     credentials,
@@ -377,23 +356,6 @@ export class SandboxImpl implements Sandbox {
     const params = typeof command === 'string' ? { cmd: command, args, ...options } : command;
     // The sandbox's signal covers its commands too.
     const signal = params.signal ? AbortSignal.any([params.signal, this.environment.signal]) : this.environment.signal;
-    const onEvent = params.onEvent && Promise.resolve(params.onEvent);
-    const subscription =
-      onEvent &&
-      this.events()
-        .pipe(
-          // One at a time, so a slow callback still sees them in order.
-          concatMap((event) =>
-            from(onEvent.then((callback) => callback(event))).pipe(
-              catchError((error) => {
-                this.environment.log.warn('Event Callback Failed', { error });
-                return EMPTY;
-              })
-            )
-          )
-        )
-        .subscribe();
-
     const exec$ = this.compute.exec({
       apiVersion: 'rowdy.run/v1alpha1',
       kind: 'Exec',
@@ -413,8 +375,7 @@ export class SandboxImpl implements Sandbox {
       const following$ = connectable(
         exec$.pipe(
           switchMap((exec) => merge(of(exec), exec.frames.pipe(written, ignoreElements()))),
-          takeUntil(fromEvent(signal, 'abort')),
-          finalize(() => subscription?.unsubscribe())
+          takeUntil(fromEvent(signal, 'abort'))
         ),
         { connector: () => new ReplaySubject<Exec>(1), resetOnDisconnect: false }
       );
@@ -439,7 +400,7 @@ export class SandboxImpl implements Sandbox {
             )
           : NEVER,
         exec$.pipe(switchMap((exec) => merge(exec.frames.pipe(written, ignoreElements()), from(exec.wait()))))
-      ).pipe(finalize(() => subscription?.unsubscribe()))
+      )
     ).catch((error) => {
       throw humanize(error);
     });
@@ -544,6 +505,7 @@ export class SandboxImpl implements Sandbox {
     if (this.compute.stoppable) await this.stop();
   }
 
+  @Trace((lookup: SandboxLookup) => lookup)
   static async delete(lookup: SandboxLookup): Promise<SandboxMetadata | undefined> {
     const sandbox = await SandboxImpl.get(lookup).catch((error) => {
       // Deleted already, or never made. A sandbox the lookup refuses still rejects.
@@ -590,10 +552,6 @@ export class SandboxImpl implements Sandbox {
     ).catch((error) => {
       throw humanize(error);
     });
-  }
-
-  events(): Observable<Event> {
-    return merge(this.compute.events(), this.environment.event$);
   }
 
   // Only once there's a sandbox: an abort before that has nothing to stop.
