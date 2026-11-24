@@ -15,7 +15,7 @@ import {
 } from 'rxjs';
 import { Pipeline, Proxy, Request } from '../pipeline';
 import { Readable } from 'stream';
-import { ILoggable, Logger, maskHeaders, maskQuery, maskUrl, Trace } from '../log';
+import { ILoggable, Logger, maskHeaders, maskQuery, maskUrl } from '../log';
 import { runtimeLog as root } from '../runtime-log';
 import axios, { isAxiosError } from 'axios';
 import { Agent } from 'https';
@@ -79,7 +79,6 @@ export abstract class HttpProxy<P extends Pipeline> extends Proxy<P, HttpRespons
     return httpsAgent;
   }
 
-  @Trace(log)
   override invoke(): Observable<HttpResponse> {
     const cors = this.pipeline.routes.intoCors(this.source.uri.pathname);
     const origin = this.header('origin');
@@ -252,7 +251,6 @@ class RowdyHttpResponse extends HttpResponse {
     );
   }
 
-  @Trace(log)
   override handle<P extends Pipeline>(proxy: HttpProxy<P>): Observable<HttpResponse> {
     if (proxy.uri.protocol !== 'rowdy:') {
       return NEVER;
@@ -372,7 +370,6 @@ class LocalHttpResponse extends HttpResponse {
     super(environment, 404, HttpHeaders.from({}), [], Readable.from(''));
   }
 
-  @Trace(log)
   override handle<P extends Pipeline>(proxy: HttpProxy<P>): Observable<HttpResponse> {
     if (proxy.uri.protocol !== 'http:' && proxy.uri.protocol !== 'https:') {
       return NEVER;

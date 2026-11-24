@@ -28,7 +28,7 @@ import { ILoggable, isLevel, Level, Logger, mask, maskEnv, maskJson, Trace } fro
 import { runtimeLog as log } from './runtime-log';
 import { ExitContext, ShellExit, ShellProxy, ShellRequest } from './proxy/shell';
 import { ShellPipeline } from './shell/pipeline';
-import { Pipeline, Result } from './pipeline';
+import { Pipeline, Request, Result } from './pipeline';
 import { LambdaPipeline } from './aws/lambda';
 import { MicrovmPipeline } from './aws/microvm';
 import { MicrovmImage } from './aws/microvm/index';
@@ -833,7 +833,7 @@ export class Environment implements ILoggable {
     });
   }
 
-  @Trace(log)
+  @Trace
   public poll(): Observable<Result<Pipeline>> {
     let delay = 0;
 
@@ -861,17 +861,24 @@ export class Environment implements ILoggable {
         );
         log.debug('Request Detail', { request, routes: this.routes });
       }),
-      mergeMap((request) => request.into().pipe(tap(() => this._envVars.complete())), Environment.CONCURRENCY),
-      tap((proxy) => log.debug('Proxy', { proxy })),
-      mergeMap((proxy) => proxy.into(), Environment.CONCURRENCY),
-      tap((response) => log.debug('Respond', { response })),
-      mergeMap((response) => response.into(), Environment.CONCURRENCY),
+      mergeMap((request) => this.serve(request), Environment.CONCURRENCY),
       tap((result) => log.info('Result', result.brief())),
       // A stopped poll fetches no next request; it completes once the requests in flight answer.
       repeat({ delay: () => timer(delay).pipe(takeUntil(stop$)) })
     );
 
     return results$.pipe(tap({ complete: () => this.shutdown() }));
+  }
+
+  @Trace
+  private serve(request: Request<Pipeline>): Observable<Result<Pipeline>> {
+    return request.into().pipe(
+      tap(() => this._envVars.complete()),
+      tap((proxy) => log.debug('Proxy', { proxy })),
+      mergeMap((proxy) => proxy.into(), Environment.CONCURRENCY),
+      tap((response) => log.debug('Respond', { response })),
+      mergeMap((response) => response.into(), Environment.CONCURRENCY)
+    );
   }
 
   repr(): string {

@@ -503,70 +503,7 @@ describe('sandbox', () => {
         expect(write).toHaveBeenCalledWith('INFO Sandbox Hello\n');
       });
 
-      it('writes to the logger it was given, its children included, and only its own', async () => {
-        const first = { error: jest.fn(), warn: jest.fn(), info: jest.fn(), debug: jest.fn() };
-        const second = { error: jest.fn(), warn: jest.fn(), info: jest.fn(), debug: jest.fn() };
-
-        const a = await SandboxImpl.create({ runtime: 'aws.lambda', logLevel: 'info', logger: first });
-        const b = await SandboxImpl.create({ runtime: 'aws.lambda', logLevel: 'info', logger: second });
-        a['environment'].log.child('deploy').warn('Slow', { step: 'push' });
-        b['environment'].log.info('Ready');
-
-        expect(first.warn).toHaveBeenCalledWith({ component: 'deploy', step: 'push' }, 'Slow');
-        expect(first.info).not.toHaveBeenCalledWith(expect.anything(), 'Ready');
-        expect(second.info).toHaveBeenCalledWith({ component: 'sandbox' }, 'Ready');
-        expect(second.warn).not.toHaveBeenCalled();
-      });
-
-      it('takes a logger on get too', async () => {
-        const logger = { error: jest.fn(), warn: jest.fn(), info: jest.fn(), debug: jest.fn() };
-        jest.spyOn(LambdaCompute.prototype, 'attach').mockImplementation(function (this: LambdaCompute) {
-          return of(this);
-        });
-
-        const sandbox = await SandboxImpl.get({ name: FUNCTION_NAME, logLevel: 'info', logger });
-        sandbox['environment'].log.info('Attached');
-
-        expect(logger.info).toHaveBeenCalledWith({ component: 'sandbox' }, 'Attached');
-      });
-
-      it("gives list's runtimes its logger", async () => {
-        const logger = { error: jest.fn(), warn: jest.fn(), info: jest.fn(), debug: jest.fn() };
-        const listed = jest.spyOn(MicrovmCompute, 'list').mockImplementation((_, log) => {
-          log.warn('Listing');
-          return EMPTY;
-        });
-        jest.spyOn(LambdaCompute, 'list').mockReturnValue(EMPTY);
-
-        await Sandbox.list({ logger });
-
-        expect(listed).toHaveBeenCalled();
-        expect(logger.warn).toHaveBeenCalledWith({ component: 'sandbox' }, 'Listing');
-      });
-
-      it('traces create, get, list and delete to the logger each was given', async () => {
-        const lines: string[] = [];
-        const logger = { write: (line: string): number => lines.push(line) };
-        jest.spyOn(LambdaCompute.prototype, 'attach').mockImplementation(function (this: LambdaCompute) {
-          return of(this);
-        });
-        jest.spyOn(MicrovmCompute, 'list').mockReturnValue(EMPTY);
-        jest.spyOn(LambdaCompute, 'list').mockReturnValue(EMPTY);
-
-        await SandboxImpl.create({ runtime: 'aws.lambda', logLevel: 'trace', logger });
-        await SandboxImpl.get({ name: FUNCTION_NAME, runtime: 'aws.lambda', logLevel: 'trace', logger });
-        await SandboxImpl.list({ logLevel: 'trace', logger });
-
-        expect(lines).toEqual(
-          expect.arrayContaining([
-            expect.stringContaining('SandboxImpl.create Called'),
-            expect.stringContaining('SandboxImpl.get Called'),
-            expect.stringContaining('SandboxImpl.list Called'),
-          ])
-        );
-      });
-
-      it('traces nothing of a call given no logger, whatever the process-wide level', async () => {
+      it('traces nothing of a call to the process, whatever its level', async () => {
         process.env.ROWDY_LOG_LEVEL = 'trace';
         const info = jest.spyOn(console, 'info').mockImplementation(() => {});
         const debug = jest.spyOn(console, 'debug').mockImplementation(() => {});

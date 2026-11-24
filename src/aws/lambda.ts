@@ -2,7 +2,7 @@ import { AsyncSubject, defer, EMPTY, map, NEVER, Observable, of, race, switchMap
 import { Proxy, Pipeline, Request, Response, Result, Chunk } from '../pipeline';
 import type { Environment } from '../environment';
 import axios from 'axios';
-import { Logger, maskHeaders, maskQuery, maskUrl, Trace } from '../log';
+import { Logger, maskHeaders, maskQuery, maskUrl } from '../log';
 import { runtimeLog as root } from '../runtime-log';
 import { APIGatewayProxyEventV2 } from 'aws-lambda';
 import { HttpProxy, HttpHeaders, HttpResponse, Source } from '../proxy/http';
@@ -88,7 +88,6 @@ export class LambdaPipeline extends Pipeline {
     return this.constructor.name;
   }
 
-  @Trace(log)
   override into(): Observable<Request<LambdaPipeline>> {
     if (!this.runtimeApi) {
       log.debug('Lambda Pipeline: DISABLED: No AWS_LAMBDA_RUNTIME_API environment variable');
@@ -135,12 +134,10 @@ export class LambdaRequest extends Request<LambdaPipeline> {
     super(pipeline);
   }
 
-  @Trace(log)
   override into(): Observable<Proxy<LambdaPipeline, HttpResponse | ShellResponse>> {
     return race([this.intoHttp(), this.intoShell()]);
   }
 
-  @Trace(log)
   protected intoHttp(): Observable<Proxy<LambdaPipeline, HttpResponse>> {
     let data: unknown;
 
@@ -299,7 +296,6 @@ export class LambdaRequest extends Request<LambdaPipeline> {
     );
   }
 
-  @Trace(log)
   protected intoShell(): Observable<Proxy<LambdaPipeline, ShellResponse>> {
     let data: unknown;
     try {
@@ -385,7 +381,6 @@ export class LambdaRequest extends Request<LambdaPipeline> {
 }
 
 export class LambdaHttpProxy extends HttpProxy<LambdaPipeline> {
-  @Trace(log)
   override into(): Observable<Response<LambdaPipeline>> {
     return this.invoke().pipe(
       map((http) => {
@@ -412,7 +407,6 @@ export class LambdaHttpProxy extends HttpProxy<LambdaPipeline> {
 const CRON_REASON_CHARS = 512;
 
 export class LambdaCronProxy extends LambdaHttpProxy {
-  @Trace(log)
   override into(): Observable<Response<LambdaPipeline>> {
     return this.invoke().pipe(
       map((http) => {
@@ -483,7 +477,6 @@ export class LambdaRefusedProxy extends Proxy<LambdaPipeline, never> {
 }
 
 export class LambdaShellProxy extends ShellProxy<LambdaPipeline> {
-  @Trace(log)
   override into(): Observable<Response<LambdaPipeline>> {
     return this.invoke().pipe(
       map((shell) => {
@@ -522,7 +515,6 @@ export class LambdaResponse extends Response<LambdaPipeline> {
     return this;
   }
 
-  @Trace(log)
   override into(): Observable<Result<LambdaPipeline>> {
     const result = new AsyncSubject<Result<LambdaPipeline>>();
 

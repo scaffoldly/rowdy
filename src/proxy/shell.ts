@@ -18,7 +18,7 @@ import {
 } from 'rxjs';
 import { Chunk, FileDescriptors, Pipeline, Proxy, Request, Response } from '../pipeline';
 import { PassThrough, Writable } from 'stream';
-import { ILoggable, Logger, Trace } from '../log';
+import { ILoggable, Logger } from '../log';
 import { runtimeLog as root } from '../runtime-log';
 import childProcess from 'child_process';
 import { execa } from 'execa';
@@ -71,7 +71,6 @@ export class ShellProxy<P extends Pipeline> extends Proxy<P, ShellResponse> {
     return this;
   }
 
-  @Trace(log)
   override invoke(): Observable<ShellResponse> {
     const { bin, args = [] } = this;
     if (!bin) {

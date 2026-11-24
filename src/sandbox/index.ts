@@ -1,6 +1,6 @@
 import type { Writable } from 'stream';
 import type { Exec, ExecFinished, ExecOutput, ExecOutputOptions } from '../api/types';
-import type { CdkOptions, Level, Sink } from '../log';
+import type { CdkOptions } from '../log';
 import type { MICROVM_MEMORY } from './internal/compute';
 import type { AwsCredentials } from '../aws/credentials';
 import { SandboxImpl } from './internal/sandbox';
@@ -20,14 +20,6 @@ interface BaseSandboxOptions extends CdkOptions {
    * Only their layers go in, not their config. Different layers are a different sandbox.
    */
   layersFrom?: string[];
-  /** This sandbox's own, never another's. Defaults to ROWDY_LOG_LEVEL, ROWDY_DEBUG or ROWDY_TRACE, then `warn`. */
-  logLevel?: Level;
-  /**
-   * Where this sandbox logs, and only this one. A console-like logger, such as pino, gets each level's method with the
-   * line's fields first and its message second. A stream, such as `process.stderr`, gets one formatted line at a time.
-   * Defaults to `process.stderr`, so a host's stdout stays its own, or `console` where there's no `process`.
-   */
-  logger?: SandboxLogger;
   /**
    * Milliseconds between checks on a build, a starting microVM or a stopping one, each a request to AWS. Defaults to
    * 5000 for a build or a start, and 250 for a stop. Only `aws.microvm` polls.
@@ -82,8 +74,6 @@ export interface MicrovmSandboxOptions extends BaseSandboxOptions, AwsSandboxOpt
 
 export type SandboxOptions = LambdaSandboxOptions | MicrovmSandboxOptions;
 
-/** A console-like logger, such as pino or `console`, or a stream with `write`, such as `process.stderr`. */
-export type SandboxLogger = Exclude<Sink, 'stderr'>;
 export type { AwsCredentials } from '../aws/credentials';
 export * from './core';
 
@@ -119,7 +109,7 @@ export interface SandboxMetadata {
   expiresAt?: Date;
 }
 
-export interface SandboxListOptions extends Pick<SandboxOptions, 'credentials' | 'logger' | 'logLevel'> {
+export interface SandboxListOptions extends Pick<SandboxOptions, 'credentials' | keyof CdkOptions> {
   /** Only sandboxes on this runtime. Defaults to every runtime. */
   runtime?: Runtime;
   /** Only sandboxes whose `meta` has every one of these. */
@@ -143,7 +133,7 @@ export type SandboxList = SandboxPage &
   };
 
 export interface SandboxLookup
-  extends Pick<SandboxOptions, 'logLevel' | 'logger' | 'pollInterval' | 'credentials' | 'signal'> {
+  extends Pick<SandboxOptions, keyof CdkOptions | 'pollInterval' | 'credentials' | 'signal'> {
   /** The sandbox's `name`. */
   name: string;
   /** Refuses a sandbox whose `meta` doesn't have every one of these. */

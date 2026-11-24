@@ -16,7 +16,6 @@ import type {
   SandboxLookup,
   SandboxMetadata,
   SandboxOptions,
-  SandboxLogger,
   SandboxUrl,
   UrlOptions,
 } from '..';
@@ -58,7 +57,7 @@ import {
 } from 'rxjs';
 import type { Exec, ExecFrame } from '../../api/types';
 import { SandboxEnvironment } from './environment';
-import { Logger, maskUrl, Trace } from '../../log';
+import { Logger, maskUrl, Trace, type Sink } from '../../log';
 import { humanize } from '../../aws/errors';
 import { LambdaCompute } from '../../aws/lambda/compute';
 import { MicrovmCompute } from '../../aws/microvm/compute';
@@ -73,7 +72,7 @@ import { isNotFound, SANDBOX_ROLE_PATH } from '../../aws/shared';
 const ALPHANUMS = 'bcdfghjklmnpqrstvwxz2456789';
 
 // A host's stdout is its own. A Worker without `process` logs to its console.
-const DEFAULT_LOGGER: SandboxLogger = globalThis.process?.stderr ?? console;
+const DEFAULT_LOGGER: Exclude<Sink, 'stderr'> = globalThis.process?.stderr ?? console;
 
 /** Kubernetes' ComputeHash: FNV-1a 32 over the template, its decimal digits encoded with SafeEncodeString. */
 export const computeHash = (template: string): string => {
@@ -97,17 +96,16 @@ export class SandboxImpl implements Sandbox {
   private constructor({
     runtime,
     logLevel,
-    logger,
     pollInterval,
     credentials,
     signal,
-  }: Pick<SandboxOptions, 'runtime' | 'logLevel' | 'logger' | 'pollInterval' | 'credentials' | 'signal'>) {
+  }: Pick<SandboxOptions, 'runtime' | 'logLevel' | 'pollInterval' | 'credentials' | 'signal'>) {
     // A host's stdout is its own, and its terminal stays quiet unless logLevel, ROWDY_LOG_LEVEL, ROWDY_DEBUG or
     // ROWDY_TRACE says otherwise. Both are this sandbox's alone.
     const { ROWDY_LOG_LEVEL, ROWDY_DEBUG, ROWDY_TRACE } = process.env;
     const level =
       logLevel ?? (ROWDY_LOG_LEVEL || ROWDY_DEBUG === 'true' || ROWDY_TRACE === 'true' ? undefined : 'warn');
-    const log = new Logger('sandbox', logger ?? DEFAULT_LOGGER, level);
+    const log = new Logger('sandbox', DEFAULT_LOGGER, level);
     this.credential$ = credentials && new Credentials(credentials);
     this.environment = new SandboxEnvironment(log, { signal, pollInterval, credentials: this.credential$?.provider });
 
@@ -121,7 +119,6 @@ export class SandboxImpl implements Sandbox {
     const sandbox = new SandboxImpl({
       runtime,
       logLevel: options?.logLevel,
-      logger: options?.logger,
       pollInterval: options?.pollInterval,
       credentials: options?.credentials,
       signal: options?.signal,
@@ -202,7 +199,6 @@ export class SandboxImpl implements Sandbox {
   static async get({
     name,
     logLevel,
-    logger,
     pollInterval,
     credentials,
     signal: abort,
@@ -212,7 +208,7 @@ export class SandboxImpl implements Sandbox {
     // A sandbox's name doesn't say its runtime, so the sandbox is whichever runtime has it.
     const runtimes = only ? [only] : (Object.keys(RUNTIMES) as (keyof typeof RUNTIMES)[]);
     const sandboxes = runtimes.map(
-      (runtime) => new SandboxImpl({ runtime, logLevel, logger, pollInterval, credentials, signal: abort })
+      (runtime) => new SandboxImpl({ runtime, logLevel, pollInterval, credentials, signal: abort })
     );
     type Tried = { found?: SandboxImpl; error?: unknown };
 
@@ -276,13 +272,12 @@ export class SandboxImpl implements Sandbox {
     meta = {},
     credentials,
     signal,
-    logger,
     logLevel,
   }: SandboxListOptions = {}): Promise<SandboxList> {
     const { ROWDY_LOG_LEVEL, ROWDY_DEBUG, ROWDY_TRACE } = process.env;
     const level =
       logLevel ?? (ROWDY_LOG_LEVEL || ROWDY_DEBUG === 'true' || ROWDY_TRACE === 'true' ? undefined : 'warn');
-    const log = new Logger('sandbox', logger ?? DEFAULT_LOGGER, level);
+    const log = new Logger('sandbox', DEFAULT_LOGGER, level);
     const runtimes = runtime ? [runtime] : (Object.keys(RUNTIMES) as (keyof typeof RUNTIMES)[]);
 
     return lastValueFrom(

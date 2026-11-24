@@ -7,7 +7,6 @@ import { catchError, defer, from, map, NEVER, Observable, of } from 'rxjs';
 import { buffer, text } from 'stream/consumers';
 import { CRI } from '@scaffoldly/rowdy-grpc';
 import type { Environment } from '../environment';
-import { Trace } from '../log';
 import { runtimeLog as root } from '../runtime-log';
 import { Chunk, Pipeline, Proxy, Request, Response, Result } from '../pipeline';
 import { EXEC_CONTENT_TYPE, EXEC_STREAM, execFrame, ShellProxy, ShellRequest, ShellResponse } from '../proxy/shell';
@@ -36,7 +35,6 @@ export class MicrovmPipeline extends Pipeline {
     return this.constructor.name;
   }
 
-  @Trace(log)
   override into(): Observable<Request<MicrovmPipeline>> {
     const { imageArn, port } = this;
     if (!imageArn) {
@@ -90,7 +88,6 @@ export class MicrovmRequest extends Request<MicrovmPipeline> {
     return url.pathname === FILES_PATH ? url.searchParams : undefined;
   }
 
-  @Trace(log)
   override into(): Observable<Proxy<MicrovmPipeline, number | ShellResponse | MicrovmFile>> {
     const { files } = this;
     if (files) {
@@ -144,7 +141,6 @@ export class MicrovmHookProxy extends Proxy<MicrovmPipeline, number> {
     return of(this.status);
   }
 
-  @Trace(log)
   override into(): Observable<Response<MicrovmPipeline>> {
     return this.invoke().pipe(
       map((status) => {
@@ -226,7 +222,6 @@ export class MicrovmFileProxy extends Proxy<MicrovmPipeline, MicrovmFile> {
     );
   }
 
-  @Trace(log)
   override into(): Observable<Response<MicrovmPipeline>> {
     return this.invoke().pipe(
       map(({ status, body, headers }) => {
@@ -257,7 +252,6 @@ export class MicrovmShellProxy extends ShellProxy<MicrovmPipeline> {
     super(pipeline, request);
   }
 
-  @Trace(log)
   override into(): Observable<Response<MicrovmPipeline>> {
     return this.invoke().pipe(
       map((shell) => {
@@ -317,7 +311,6 @@ export class MicrovmResponse extends Response<MicrovmPipeline> {
   // Emits before the body is done: a pipeline stage held for a command's whole run would queue every other request
   // behind it on a one-CPU VM. A hook must also answer at once: AWS ends the build if its timeout passes during an
   // open request.
-  @Trace(log)
   override into(): Observable<Result<MicrovmPipeline>> {
     return defer(() => {
       const { status, headers } = this;
