@@ -21,7 +21,9 @@ const decorate =
     function (this, ...args) {
       const method = methodName(this, context);
       // Its span, duration and lines go where the one CdkInstrumentation's do.
-      const { options } = CdkInstrumentation.create(optionsOf?.(this, args) ?? {});
+      // Only a call's CdkOptions: its other options, like a sandbox's `name`, are not CdkInstrumentation's.
+      const { tracerProvider, meterProvider, loggerProvider, logLevel } = optionsOf?.(this, args) ?? {};
+      const { options } = CdkInstrumentation.create({ tracerProvider, meterProvider, loggerProvider, logLevel });
 
       const parent = otel.active();
       const call: Call = { parent, run: startRun(method, options, parent), again: () => startRun(method, options) };

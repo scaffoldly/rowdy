@@ -13,7 +13,12 @@ import { PACKAGE_NAME, PACKAGE_VERSION } from './version';
 export type CdkInstrumentationOptions = Pick<
   CdkOptions,
   'tracerProvider' | 'meterProvider' | 'loggerProvider' | 'logLevel'
->;
+> & {
+  /** What `@Trace`'s spans, durations and lines are named for; this package's name without one. */
+  name?: string;
+  /** Its version; this package's without one. */
+  version?: string;
+};
 
 /**
  * aws-sdk, axios (its http adapter through http, its fetch adapter through undici), rxjs and
@@ -51,10 +56,10 @@ export class CdkInstrumentation implements Instrumentation {
    * has: what a call leaves out, or leaves undefined, it keeps.
    */
   static create(given: CdkInstrumentationOptions = {}): CdkInstrumentation {
-    // Only its own four: a caller's options are often more, like credentials.
-    const { tracerProvider, meterProvider, loggerProvider, logLevel } = given;
+    // Only its own: a caller's options are often more, like credentials.
+    const { tracerProvider, meterProvider, loggerProvider, logLevel, name, version } = given;
     const defined = Object.fromEntries(
-      Object.entries({ tracerProvider, meterProvider, loggerProvider, logLevel }).filter(
+      Object.entries({ tracerProvider, meterProvider, loggerProvider, logLevel, name, version }).filter(
         ([, value]) => value !== undefined
       )
     ) as CdkInstrumentationOptions;
@@ -87,12 +92,14 @@ export class CdkInstrumentation implements Instrumentation {
   }
 
   /** All its options, filled in: providers that record nothing where none was given. */
-  get options(): Required<CdkOptions> {
+  get options(): Required<CdkInstrumentationOptions> {
     return {
       tracerProvider: this.tracerProvider ?? NOOP_TRACER_PROVIDER,
       meterProvider: this.meterProvider ?? NOOP_METER_PROVIDER,
       loggerProvider: this.loggerProvider,
       logLevel: this.given.logLevel ?? Logger.defaults().logLevel!,
+      name: this.given.name ?? PACKAGE_NAME,
+      version: this.given.version ?? PACKAGE_VERSION,
     };
   }
 

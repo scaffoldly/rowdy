@@ -1,6 +1,5 @@
 import { SpanKind, SpanStatusCode, trace, type Context } from '@opentelemetry/api';
-import type { CdkOptions } from '../../cdk';
-import { PACKAGE_NAME, PACKAGE_VERSION } from '../../otel/version';
+import type { CdkInstrumentationOptions } from '../../otel';
 import type { Tracker } from './tracker';
 
 type Outcome = 'complete' | 'error' | 'unsubscribe' | 'returned';
@@ -12,11 +11,11 @@ type Outcome = 'complete' | 'error' | 'unsubscribe' | 'returned';
  */
 export const startSpan = (
   method: string,
-  { tracerProvider }: Required<CdkOptions>,
+  { tracerProvider, name, version }: Required<CdkInstrumentationOptions>,
   parent: Context
 ): { context: Context; tracker: Tracker } => {
   const span = tracerProvider
-    .getTracer(PACKAGE_NAME, PACKAGE_VERSION)
+    .getTracer(name, version)
     .startSpan(method, { kind: SpanKind.INTERNAL, attributes: { 'code.function.name': method } }, parent);
   let emissions: number | undefined;
 

@@ -1072,6 +1072,17 @@ describe('Logger', () => {
           expect(text()).toHaveLength(2);
         });
 
+        it('names its lines and span after the name and version CdkInstrumentation was given, not a call', () => {
+          CdkInstrumentation.create({ name: '@scaffoldly/rowdy', version: '1.2.3' });
+          Factory.create({ name: 'box' } as Options);
+          expect(text()[0]).toBe('TRACE @scaffoldly/rowdy Factory.create Called Args: [Object]');
+          const [span] = exporter.getFinishedSpans();
+          expect([span!.instrumentationScope.name, span!.instrumentationScope.version]).toEqual([
+            '@scaffoldly/rowdy',
+            '1.2.3',
+          ]);
+        });
+
         it("sends a call's span to the tracerProvider in its options, not the global one", () => {
           const own = new InMemorySpanExporter();
           const tracerProvider = new TracerProvider({ spanProcessors: [new SimpleSpanProcessor({ exporter: own })] });
