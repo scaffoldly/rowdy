@@ -1,22 +1,21 @@
-import { SpanKind, SpanStatusCode, trace, type Context, type TracerProvider } from '@opentelemetry/api';
+import { SpanKind, SpanStatusCode, trace, type Context } from '@opentelemetry/api';
+import type { CdkOptions } from '../../cdk';
 import { PACKAGE_NAME, PACKAGE_VERSION } from '../../otel/version';
 import type { Tracker } from './tracker';
 
 type Outcome = 'complete' | 'error' | 'unsubscribe' | 'returned';
 
 /**
- * Starts a span for one run, as a child of `parent`, from `tracerProvider` or else the global one.
- * The returned context makes it the parent of
- * spans made during the run; the tracker ends it with the outcome, and for an Observable the
- * emission count.
+ * Starts a span for one run, as a child of `parent`, from the options' `tracerProvider`. The returned
+ * context makes the span the parent of spans made
+ * during the run; the tracker ends it with the outcome, and for an Observable the emission count.
  */
 export const startSpan = (
   method: string,
-  parent: Context,
-  tracerProvider?: TracerProvider
+  { tracerProvider }: Required<CdkOptions>,
+  parent: Context
 ): { context: Context; tracker: Tracker } => {
-  // Per run: a tracer taken before a provider is registered stays a no-op.
-  const span = (tracerProvider ?? trace.getTracerProvider())
+  const span = tracerProvider
     .getTracer(PACKAGE_NAME, PACKAGE_VERSION)
     .startSpan(method, { kind: SpanKind.INTERNAL, attributes: { 'code.function.name': method } }, parent);
   let emissions: number | undefined;

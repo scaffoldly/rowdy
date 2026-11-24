@@ -1,12 +1,14 @@
-import { context as otel, type Context, type TracerProvider } from '@opentelemetry/api';
-import type { Logger } from '../../log';
-import { logRun } from './logging';
+import { context as otel, type Context } from '@opentelemetry/api';
+import type { CdkOptions } from '../../cdk';
+import { logRun, recordsIn, type TraceSink } from './logging';
+import { measureRun } from './metrics';
 import { startSpan } from './span';
 import { all, type Tracker } from './tracker';
 
-/** One run of a traced method: its span's context, and what follows it. */
+/** One run of a traced method: its span's context, where its lines go, and what follows it. */
 export interface Run {
   readonly context: Context;
+  readonly sinks: TraceSink[];
   readonly tracker: Tracker;
 }
 
@@ -18,17 +20,10 @@ export interface Call {
   again(): Run;
 }
 
-/** How a traced call is followed: `logger` only when it logs at trace level. */
-export interface Tracing {
-  logger?: Logger;
-  tracerProvider?: TracerProvider;
-}
-
-/** Starts a run under `parent`, its span from the call's `tracerProvider` or else the global one. */
-export const startRun = (method: string, { logger, tracerProvider }: Tracing, parent: Context = otel.active()): Run => {
-  const span = startSpan(method, parent, tracerProvider);
-  return {
-    context: span.context,
-    tracker: logger ? all([logRun(logger, method), span.tracker]) : span.tracker,
-  };
+/** Starts a run under `parent`: its span, its lines as log records, and its duration. */
+export const startRun = (method: string, options: Required<CdkOptions>, parent: Context = otel.active()): Run => {
+  const span = startSpan(method, options, parent);
+  const sinks = [recordsIn(options.loggerProvider, span.context)];
+  const trackers = [...sinks.map((sink) => logRun(sink, method)), span.tracker, measureRun(method, options)];
+  return { context: span.context, sinks, tracker: all(trackers) };
 };

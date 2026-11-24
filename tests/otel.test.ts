@@ -1,4 +1,12 @@
-import { context, createContextKey, createNoopLogger, createNoopMeter, ROOT_CONTEXT, trace } from '@opentelemetry/api';
+import {
+  context,
+  createContextKey,
+  createNoopLogger,
+  createNoopMeter,
+  ROOT_CONTEXT,
+  SeverityNumber,
+  trace,
+} from '@opentelemetry/api';
 import { AsyncLocalStorageContextManager } from '@opentelemetry/context-async-hooks';
 import { execFileSync } from 'child_process';
 import { join } from 'path';
@@ -66,6 +74,40 @@ describe('CdkInstrumentation.create', () => {
       expect(first.every((n) => n >= 4)).toBe(true);
       CdkInstrumentation.create({ tracerProvider, meterProvider, loggerProvider });
       expect(calls()).toEqual(first);
+    } finally {
+      cdk.disable();
+    }
+  });
+
+  it('merges each call over the options it has: what a call leaves out or undefined, it keeps', () => {
+    const { CdkInstrumentation } = fresh();
+    const first = { getTracer: jest.fn(() => trace.getTracer('noop')) };
+    const second = { getTracer: jest.fn(() => trace.getTracer('noop')) };
+    const cdk = CdkInstrumentation.create({ tracerProvider: first });
+    try {
+      CdkInstrumentation.create({ logLevel: 'warn' });
+      CdkInstrumentation.create({ tracerProvider: undefined });
+      expect(cdk.tracerProvider).toBe(first);
+      CdkInstrumentation.create({ tracerProvider: second });
+      expect(cdk.tracerProvider).toBe(second);
+      expect(cdk.loggerProvider.getLogger('x').enabled({ severityNumber: SeverityNumber.INFO })).toBe(false);
+    } finally {
+      cdk.disable();
+    }
+  });
+
+  it("filters the members' log records at its logLevel", () => {
+    const { CdkInstrumentation } = fresh();
+    const emit = jest.fn();
+    const loggerProvider = {
+      getLogger: (): { emit: jest.Mock; enabled: () => boolean } => ({ emit, enabled: (): boolean => true }),
+    };
+    const cdk = CdkInstrumentation.create({ loggerProvider, logLevel: 'warn' });
+    try {
+      const { logger } = members(cdk)[1] as unknown as { logger: { emit(record: object): void } };
+      logger.emit({ severityNumber: SeverityNumber.INFO, body: 'dropped' });
+      logger.emit({ severityNumber: SeverityNumber.ERROR, body: 'kept' });
+      expect(emit.mock.calls.map(([record]) => record.body)).toEqual(['kept']);
     } finally {
       cdk.disable();
     }
@@ -287,7 +329,6 @@ describe('RxJSInstrumentation', () => {
 const ROOT = join(__dirname, '..');
 
 describe.each([
-  ['CdkInstrumentation.create() from /otel, given to the SDK', join(ROOT, 'dist', 'otel'), 'pass'],
   ['CdkInstrumentation.create() from the main entry, given to the SDK', join(ROOT, 'dist', 'index.js'), 'pass'],
 ])('%s', (_name, entry, exportName) => {
   type Span = { name: string; scope: string; url?: string; rpcService?: string; parent?: string; id: string };
@@ -361,8 +402,8 @@ describe('a host that never gives them a tracer provider', () => {
     expect(result.spans.filter((s) => s.scope.startsWith('@opentelemetry/instrumentation-'))).toEqual([]);
   });
 
-  it('leaves @Trace spans to the global provider', () => {
-    expect(result.spans.map((s) => s.name)).toContain('fetchTraced');
+  it('makes no @Trace span either: without a tracer provider, nothing is recorded', () => {
+    expect(result.spans.map((s) => s.name)).not.toContain('fetchTraced');
   });
 });
 
@@ -467,8 +508,7 @@ describe('rowdy.run passing its providers to a traced call', () => {
     );
   });
 
-  it('records nothing from the libraries when the call carries no providers', () => {
-    const spans = run(false);
-    expect(spans.map((s) => s.name)).toEqual(['SandboxImpl.create']);
+  it('records nothing when the call carries no providers', () => {
+    expect(run(false)).toEqual([]);
   });
 });

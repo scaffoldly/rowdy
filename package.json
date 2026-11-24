@@ -9,10 +9,6 @@
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
     },
-    "./otel": {
-      "types": "./dist/otel/index.d.ts",
-      "default": "./dist/otel/index.js"
-    },
     "./package.json": "./package.json"
   },
   "files": [
@@ -70,8 +66,7 @@
           ]
         },
         "moduleNameMapper": {
-          "^@scaffoldly/rowdy-cdk$": "<rootDir>/src/index.ts",
-          "^@scaffoldly/rowdy-cdk/otel$": "<rootDir>/src/otel/index.ts"
+          "^@scaffoldly/rowdy-cdk$": "<rootDir>/src/index.ts"
         }
       }
     ]

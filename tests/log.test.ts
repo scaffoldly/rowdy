@@ -1,10 +1,33 @@
-import { context, SpanKind, SpanStatusCode, trace } from '@opentelemetry/api';
+import {
+  context,
+  SeverityNumber,
+  SpanKind,
+  SpanStatusCode,
+  trace,
+  type Logger as OtelLogger,
+  type LoggerProvider,
+  type LogRecord,
+  type MeterProvider,
+} from '@opentelemetry/api';
 import { AsyncLocalStorageContextManager } from '@opentelemetry/context-async-hooks';
 import { InMemorySpanExporter, SimpleSpanProcessor, TracerProvider } from '@opentelemetry/sdk-trace';
 import { defer, lastValueFrom, Observable, of, throwError, race, timer, map, NEVER, retry } from 'rxjs';
 import pino from 'pino';
-import { ILoggable, Logger, mask, maskEnv, maskHeaders, maskJson, maskQuery, maskUrl } from '../src/log';
-import { Trace, type CdkOptions } from '../src/internal/trace';
+import {
+  ILoggable,
+  log,
+  Logger,
+  mask,
+  maskEnv,
+  maskHeaders,
+  maskJson,
+  maskQuery,
+  maskUrl,
+  type Level,
+} from '../src/log';
+import type { CdkOptions } from '../src/cdk';
+import { Trace } from '../src/internal/trace';
+import { CdkInstrumentation } from '../src/otel';
 
 describe('log masking', () => {
   describe('mask', () => {
@@ -443,7 +466,6 @@ describe('Logger', () => {
   });
 
   describe('@Trace', () => {
-    const log = new Logger().child('lambda');
     class Arg implements ILoggable {
       constructor(private readonly n: number) {}
       repr(): string {
@@ -451,27 +473,27 @@ describe('Logger', () => {
       }
     }
     class Thing {
-      @Trace(log)
+      @Trace
       into(arg: Arg): Observable<string> {
         return of(`got ${arg.repr()}`);
       }
 
-      @Trace(log)
+      @Trace
       fail(): Observable<string> {
         return throwError(() => new Error('boom'));
       }
 
-      @Trace(log)
+      @Trace
       slow(): Observable<string> {
         return NEVER;
       }
 
-      @Trace(log)
+      @Trace
       fast(): Observable<string> {
         return timer(1).pipe(map(() => 'fast'));
       }
 
-      @Trace(log)
+      @Trace
       unloggable(): Observable<string> {
         return of({} as unknown as string);
       }
@@ -489,9 +511,13 @@ describe('Logger', () => {
       new Thing().into(new Arg(1)).subscribe({
         complete: () => {
           expect(text()).toEqual([
-            'TRACE Lambda Thing.into Called Args: [Arg(1)]',
-            expect.stringMatching(/^TRACE Lambda Thing.into Emitted Duration: \d+\.\d\d ms Value: got Arg\(1\)$/),
-            expect.stringMatching(/^TRACE Lambda Thing.into Completed Duration: \d+\.\d\d ms Emissions: 1$/),
+            'TRACE @scaffoldly/rowdy-cdk Thing.into Called Args: [Arg(1)]',
+            expect.stringMatching(
+              /^TRACE @scaffoldly\/rowdy-cdk Thing.into Emitted Duration: \d+\.\d\d ms Value: got Arg\(1\)$/
+            ),
+            expect.stringMatching(
+              /^TRACE @scaffoldly\/rowdy-cdk Thing.into Completed Duration: \d+\.\d\d ms Emissions: 1$/
+            ),
           ]);
           done();
         },
@@ -502,9 +528,9 @@ describe('Logger', () => {
       new Logger().withLevel('trace');
       new Thing().fail().subscribe({
         error: () => {
-          expect(text()[0]).toBe('TRACE Lambda Thing.fail Called');
+          expect(text()[0]).toBe('TRACE @scaffoldly/rowdy-cdk Thing.fail Called');
           expect(text()[1]).toMatch(
-            /^TRACE Lambda Thing.fail Failed Duration: \d+\.\d\d ms Emissions: 0 Error: Error: boom/
+            /^TRACE @scaffoldly\/rowdy-cdk Thing.fail Failed Duration: \d+\.\d\d ms Emissions: 0 Error: Error: boom/
           );
           expect(text()).toHaveLength(2);
           done();
@@ -518,11 +544,11 @@ describe('Logger', () => {
       race([thing.slow(), thing.fast()]).subscribe({
         complete: () => {
           expect(text()).toEqual([
-            'TRACE Lambda Thing.slow Called',
-            'TRACE Lambda Thing.fast Called',
-            expect.stringMatching(/^TRACE Lambda Thing.fast Emitted Duration: .* Value: fast$/),
-            expect.stringMatching(/^TRACE Lambda Thing.slow Unsubscribed Duration: .* Emissions: 0$/),
-            expect.stringMatching(/^TRACE Lambda Thing.fast Completed Duration: .* Emissions: 1$/),
+            'TRACE @scaffoldly/rowdy-cdk Thing.slow Called',
+            'TRACE @scaffoldly/rowdy-cdk Thing.fast Called',
+            expect.stringMatching(/^TRACE @scaffoldly\/rowdy-cdk Thing.fast Emitted Duration: .* Value: fast$/),
+            expect.stringMatching(/^TRACE @scaffoldly\/rowdy-cdk Thing.slow Unsubscribed Duration: .* Emissions: 0$/),
+            expect.stringMatching(/^TRACE @scaffoldly\/rowdy-cdk Thing.fast Completed Duration: .* Emissions: 1$/),
           ]);
           done();
         },
@@ -535,7 +561,7 @@ describe('Logger', () => {
         complete: () => {
           expect(JSON.parse(text()[1]!)).toEqual({
             level: 'trace',
-            component: 'lambda',
+            component: '@scaffoldly/rowdy-cdk',
             msg: 'Thing.into Emitted',
             duration,
             value: 'got Arg(2)',
@@ -569,12 +595,12 @@ describe('Logger', () => {
       }
 
       class Traced {
-        @Trace(log)
+        @Trace
         pending(fail: boolean): Pending {
           return new Pending(fail ? Promise.reject(new Error('pending failed')) : Promise.resolve('done'));
         }
 
-        @Trace(log)
+        @Trace
         [RUN](): number {
           return 1;
         }
@@ -585,7 +611,7 @@ describe('Logger', () => {
           return new Traced();
         }
 
-        @Trace(log)
+        @Trace
         async doWork(bar: Bar): Promise<Bar> {
           trace.getTracer('test').startSpan('before await').end();
           await new Promise((resolve) => setTimeout(resolve, 1));
@@ -593,25 +619,25 @@ describe('Logger', () => {
           return bar;
         }
 
-        @Trace(log)
+        @Trace
         async reject(): Promise<never> {
           throw new RangeError('nope');
         }
 
-        @Trace(log)
+        @Trace
         doSyncWork(n: number): number {
           trace.getTracer('test').startSpan('sync child').end();
           return n * 2;
         }
 
-        @Trace(log)
+        @Trace
         throwSync(): number {
           throw new Error('sync boom');
         }
 
         attempts = 0;
 
-        @Trace(log)
+        @Trace
         flaky(): Observable<string> {
           return defer(() => {
             this.attempts += 1;
@@ -619,7 +645,7 @@ describe('Logger', () => {
           });
         }
 
-        @Trace(log)
+        @Trace
         child(): Observable<string> {
           return defer(() => {
             trace.getTracer('test').startSpan('child').end();
@@ -627,7 +653,7 @@ describe('Logger', () => {
           });
         }
 
-        @Trace(log)
+        @Trace
         twice(): Observable<number> {
           return of(1, 2);
         }
@@ -656,7 +682,9 @@ describe('Logger', () => {
 
       beforeAll(() => {
         context.setGlobalContextManager(new AsyncLocalStorageContextManager().enable());
+        // The test's own spans come from the global provider; @Trace's, from CdkInstrumentation's.
         trace.setGlobalTracerProvider(provider);
+        CdkInstrumentation.create({ tracerProvider: provider });
       });
 
       afterAll(async () => {
@@ -668,6 +696,11 @@ describe('Logger', () => {
       beforeEach(() => {
         exporter.reset();
         new Logger().withLevel('debug');
+        // Options are merged into the one CdkInstrumentation: each test starts from the test provider only.
+        const cdk = CdkInstrumentation as unknown as { instance?: CdkInstrumentation };
+        cdk.instance?.disable();
+        cdk.instance = undefined;
+        CdkInstrumentation.create({ tracerProvider: provider });
       });
 
       it('makes one span per subscription, named for the method, below trace too', (done) => {
@@ -725,7 +758,9 @@ describe('Logger', () => {
         new Logger().withLevel('trace');
         new Thing().unloggable().subscribe({
           complete: () => {
-            expect(text()[1]).toMatch(/^TRACE Lambda Thing.unloggable Emitted Duration: \d+\.\d\d ms Value: Object$/);
+            expect(text()[1]).toMatch(
+              /^TRACE @scaffoldly\/rowdy-cdk Thing.unloggable Emitted Duration: \d+\.\d\d ms Value: Object$/
+            );
             expect(finished()[0]!.attributes['rowdy.trace.outcome']).toBe('complete');
             done();
           },
@@ -882,6 +917,8 @@ describe('Logger', () => {
 
         const recorded: string[] = [];
         const sink = { write: (line: string): number => recorded.push(line.trimEnd()) };
+        // Records into one of our Loggers, so they read as its lines.
+        const linesAt = (level: Level): LoggerProvider => ({ getLogger: () => new Logger(undefined, sink, level) });
 
         class Factory {
           constructor(readonly options?: Options) {}
@@ -910,8 +947,8 @@ describe('Logger', () => {
           new Logger().withLevel('trace');
         });
 
-        it('logs on the logger of a static call with a required argument, at its level', async () => {
-          await Factory.get({ name: 'box', logger: sink, logLevel: 'trace' });
+        it('logs on the loggerProvider of a static call with a required argument, at its level', async () => {
+          await Factory.get({ name: 'box', loggerProvider: linesAt('trace') });
           expect(recorded).toEqual([
             'TRACE Factory.get Called Args: [Object]',
             expect.stringMatching(/^TRACE Factory.get Completed Duration: \d+\.\d\d ms Value: Factory$/),
@@ -920,8 +957,8 @@ describe('Logger', () => {
           expect(finished().map((s) => s.name)).toEqual(['Factory.get']);
         });
 
-        it('logs on the logger of a static call with an optional argument', () => {
-          Factory.create({ logger: sink, logLevel: 'trace' });
+        it('logs on the loggerProvider of a static call with an optional argument', () => {
+          Factory.create({ loggerProvider: linesAt('trace') });
           expect(recorded).toEqual([
             'TRACE Factory.create Called Args: [Object]',
             expect.stringMatching(/^TRACE Factory.create Completed Duration: .* Value: Factory$/),
@@ -929,19 +966,110 @@ describe('Logger', () => {
           expect(text()).toEqual([]);
         });
 
-        it('makes spans and logs nothing without a logger, or without options', () => {
+        it('logs as Logger.defaults() would without a loggerProvider, or without options', () => {
           Factory.create();
           Factory.create({ name: 'box' });
           expect(recorded).toEqual([]);
-          expect(text()).toEqual([]);
+          expect(text()).toEqual([
+            'TRACE @scaffoldly/rowdy-cdk Factory.create Called',
+            expect.stringMatching(
+              /^TRACE @scaffoldly\/rowdy-cdk Factory.create Completed Duration: .* Value: Factory$/
+            ),
+            'TRACE @scaffoldly/rowdy-cdk Factory.create Called Args: [Object]',
+            expect.stringMatching(
+              /^TRACE @scaffoldly\/rowdy-cdk Factory.create Completed Duration: .* Value: Factory$/
+            ),
+          ]);
           expect(finished().map((s) => s.name)).toEqual(['Factory.create', 'Factory.create']);
         });
 
         it('logs nothing below its own level', () => {
-          Factory.create({ logger: sink, logLevel: 'debug' });
+          Factory.create({ loggerProvider: linesAt('debug') });
           expect(recorded).toEqual([]);
           expect(text()).toEqual([]);
           expect(finished()).toHaveLength(1);
+        });
+
+        it('records each run on the meterProvider in its options', async () => {
+          const recorded: Array<[number, unknown]> = [];
+          const histogram = {
+            record: (value: number, attributes: unknown): number => recorded.push([value, attributes]),
+          };
+          const meter = { createHistogram: jest.fn(() => histogram) };
+          const meterProvider = { getMeter: jest.fn(() => meter) } as unknown as MeterProvider;
+          await Factory.get({ meterProvider });
+          expect(meter.createHistogram).toHaveBeenCalledWith(
+            'rowdy.trace.duration',
+            expect.objectContaining({ unit: 's' })
+          );
+          expect(recorded).toEqual([
+            [expect.any(Number), { 'code.function.name': 'Factory.get', 'rowdy.trace.outcome': 'complete' }],
+          ]);
+        });
+
+        it("emits each trace line on the loggerProvider in its options, in its span, at the call's logLevel", async () => {
+          const records: LogRecord[] = [];
+          const otelLogger = {
+            emit: (record: LogRecord): number => records.push(record),
+            enabled: (): boolean => true,
+          };
+          const loggerProvider = { getLogger: jest.fn(() => otelLogger) } as unknown as LoggerProvider;
+          new Logger().withLevel('info');
+          await Factory.get({ loggerProvider, logLevel: 'trace' });
+          const span = finished().find((s) => s.name === 'Factory.get')!;
+          expect(records.map((r) => [r.severityNumber, r.body])).toEqual([
+            [SeverityNumber.TRACE, 'Factory.get Called'],
+            [SeverityNumber.TRACE, 'Factory.get Completed'],
+          ]);
+          expect(records[0]!.attributes).toEqual({ args: '[Object]' });
+          expect(records[1]!.attributes).toEqual({ duration: expect.stringMatching(/ ms$/), value: 'Factory' });
+          expect(records.map((r) => trace.getSpan(r.context!)?.spanContext().spanId)).toEqual([span.id, span.id]);
+          expect(text()).toEqual([]);
+        });
+
+        it('emits nothing on a loggerProvider whose logger is not enabled for it', async () => {
+          const otelLogger = { emit: jest.fn(), enabled: (): boolean => false };
+          const loggerProvider = { getLogger: () => otelLogger } as unknown as LoggerProvider;
+          await Factory.get({ loggerProvider });
+          expect(otelLogger.emit).not.toHaveBeenCalled();
+        });
+
+        it("logs where the process-wide log does at a call's logLevel, over the process-wide one", () => {
+          new Logger().withLevel('info');
+          Factory.create({ logLevel: 'trace' });
+          expect(text()).toEqual([
+            'TRACE @scaffoldly/rowdy-cdk Factory.create Called Args: [Object]',
+            expect.stringMatching(
+              /^TRACE @scaffoldly\/rowdy-cdk Factory.create Completed Duration: .* Value: Factory$/
+            ),
+          ]);
+        });
+
+        it("logs nothing when a call's logLevel is below trace, whatever the process-wide one", () => {
+          Factory.create({ logLevel: 'debug' });
+          expect(text()).toEqual([]);
+          expect(finished()).toHaveLength(1);
+        });
+
+        it("emits records on a loggerProvider only when the call's logLevel, or else the process-wide one, is trace", () => {
+          Factory.create({ loggerProvider: linesAt('trace'), logLevel: 'info' });
+          expect(recorded).toEqual([]);
+          Factory.create({ loggerProvider: linesAt('trace'), logLevel: 'trace' });
+          expect(recorded).toHaveLength(2);
+          expect(text()).toEqual([]);
+        });
+
+        it('logs through the process-wide log with Logger.defaults(), under its logger name', () => {
+          Factory.create({ ...Logger.defaults() });
+          expect(text()).toEqual([
+            'TRACE @scaffoldly/rowdy-cdk Factory.create Called Args: [Object]',
+            expect.stringMatching(
+              /^TRACE @scaffoldly\/rowdy-cdk Factory.create Completed Duration: .* Value: Factory$/
+            ),
+          ]);
+          new Logger().withLevel('info');
+          Factory.create({ ...Logger.defaults() });
+          expect(text()).toHaveLength(2);
         });
 
         it("sends a call's span to the tracerProvider in its options, not the global one", () => {
@@ -953,7 +1081,7 @@ describe('Logger', () => {
         });
 
         it('takes options from an instance call, with its this', async () => {
-          const factory = Factory.create({ logger: sink, logLevel: 'trace' });
+          const factory = Factory.create({ loggerProvider: linesAt('trace') });
           recorded.length = 0;
           await expect(factory.run('ls')).resolves.toBe('ran ls');
           expect(recorded).toEqual([
@@ -986,10 +1114,14 @@ describe('Logger', () => {
         traced.doSyncWork(2);
         await traced.doWork(new Bar('hunter2'));
         expect(text()).toEqual([
-          'TRACE Lambda Traced.doSyncWork Called Args: [2]',
-          expect.stringMatching(/^TRACE Lambda Traced.doSyncWork Completed Duration: \d+\.\d\d ms Value: 4$/),
-          'TRACE Lambda Traced.doWork Called Args: [Bar]',
-          expect.stringMatching(/^TRACE Lambda Traced.doWork Completed Duration: \d+\.\d\d ms Value: Bar$/),
+          'TRACE @scaffoldly/rowdy-cdk Traced.doSyncWork Called Args: [2]',
+          expect.stringMatching(
+            /^TRACE @scaffoldly\/rowdy-cdk Traced.doSyncWork Completed Duration: \d+\.\d\d ms Value: 4$/
+          ),
+          'TRACE @scaffoldly/rowdy-cdk Traced.doWork Called Args: [Bar]',
+          expect.stringMatching(
+            /^TRACE @scaffoldly\/rowdy-cdk Traced.doWork Completed Duration: \d+\.\d\d ms Value: Bar$/
+          ),
         ]);
         expect(text().join('\n')).not.toContain('hunter2');
       });
@@ -1022,8 +1154,8 @@ describe('Logger', () => {
           }),
         ]);
         expect(text()).toEqual([
-          'TRACE Lambda Traced.twice Called',
-          expect.stringMatching(/^TRACE Lambda Traced.twice Returned Duration: \d+\.\d\d ms$/),
+          'TRACE @scaffoldly/rowdy-cdk Traced.twice Called',
+          expect.stringMatching(/^TRACE @scaffoldly\/rowdy-cdk Traced.twice Returned Duration: \d+\.\d\d ms$/),
         ]);
       });
 
@@ -1049,6 +1181,138 @@ describe('Logger', () => {
         });
       });
     });
+  });
+});
+
+describe('Logger as a sink', () => {
+  const lines: string[] = [];
+  const stream = { write: (line: string): number => lines.push(line.trimEnd()) };
+
+  beforeEach(() => {
+    lines.length = 0;
+  });
+
+  it('takes the call, writing it under the logger that made it', () => {
+    new Logger('outer', new Logger('inner', stream, 'trace'), 'trace').info('sandbox ready', { sandboxId: 'box' });
+    expect(lines).toEqual(['INFO Outer Sandbox Ready SandboxId: box']);
+  });
+
+  it('applies both levels', () => {
+    new Logger('outer', new Logger('inner', stream, 'trace'), 'warn').info('dropped by outer');
+    new Logger('outer', new Logger('inner', stream, 'warn'), 'trace').info('dropped by inner');
+    new Logger('outer', new Logger('inner', stream, 'warn'), 'trace').warn('kept');
+    expect(lines).toEqual(['WARN Outer Kept']);
+  });
+
+  it('relays through it', () => {
+    new Logger('outer', new Logger('inner', stream, 'trace')).relay('info', 'from the command');
+    expect(lines).toEqual(['INFO Outer from the command']);
+  });
+});
+
+describe('Logger.defaults', () => {
+  afterEach(() => {
+    new Logger().withLevel(undefined);
+  });
+
+  it('is a logger provider of the process-wide log, at the process-wide level', () => {
+    new Logger().withLevel('debug');
+    const defaults = Logger.defaults();
+    expect(defaults.logLevel).toBe('debug');
+    const sandbox = defaults.loggerProvider!.getLogger('sandbox');
+    expect(sandbox).toBe(defaults.loggerProvider!.getLogger('sandbox'));
+    expect(sandbox).toBe(log.child('sandbox'));
+    expect(Logger.defaults().loggerProvider).toBe(defaults.loggerProvider);
+  });
+
+  it('filters a logger provider at a level, or live at the process-wide one', () => {
+    const emit = jest.fn();
+    const provider = { getLogger: (): OtelLogger => ({ emit, enabled: (): boolean => true }) };
+    const warn = Logger.filter(provider, 'warn').getLogger('x');
+    warn.emit({ severityNumber: SeverityNumber.INFO, body: 'dropped' });
+    warn.emit({ severityNumber: SeverityNumber.ERROR, body: 'kept' });
+    expect(emit.mock.calls.map(([record]) => record.body)).toEqual(['kept']);
+    expect(warn.enabled({ severityNumber: SeverityNumber.INFO })).toBe(false);
+    expect(warn.enabled({ severityNumber: SeverityNumber.WARN })).toBe(true);
+    expect(Logger.filter(provider, 'warn')).toBe(Logger.filter(provider, 'warn'));
+
+    const live = Logger.filter(provider).getLogger('x');
+    new Logger().withLevel('info');
+    expect(live.enabled({ severityNumber: SeverityNumber.DEBUG })).toBe(false);
+    new Logger().withLevel('debug');
+    expect(live.enabled({ severityNumber: SeverityNumber.DEBUG })).toBe(true);
+  });
+
+  it('gives a logger provider at a level of its own, the same one for the same level', () => {
+    const provider = Logger.at('trace');
+    expect(Logger.at('trace')).toBe(provider);
+    const logger = provider.getLogger('sandbox') as Logger;
+    expect(logger).toBe(provider.getLogger('sandbox'));
+    expect(logger.level).toBe('trace');
+  });
+});
+
+describe('Logger as an OpenTelemetry Logger', () => {
+  const lines: string[] = [];
+  const sink = { write: (line: string): number => lines.push(line.trimEnd()) };
+
+  beforeEach(() => {
+    lines.length = 0;
+  });
+
+  it('is one', () => {
+    const otel: OtelLogger = new Logger('otel', sink, 'trace');
+    expect(typeof otel.emit).toBe('function');
+  });
+
+  it('writes a log record as a line, at the level its severity falls in', () => {
+    const log = new Logger('otel', sink, 'trace');
+    for (const [severityNumber, body] of [
+      [SeverityNumber.TRACE, 'trace line'],
+      [SeverityNumber.DEBUG3, 'debug line'],
+      [SeverityNumber.INFO, 'info line'],
+      [SeverityNumber.WARN4, 'warn line'],
+      [SeverityNumber.ERROR2, 'error line'],
+      [SeverityNumber.FATAL, 'fatal line'],
+    ] as const) {
+      log.emit({ severityNumber, body });
+    }
+    expect(lines).toEqual([
+      'TRACE Otel Trace Line',
+      'DEBUG Otel Debug Line',
+      'INFO Otel Info Line',
+      'WARN Otel Warn Line',
+      'ERROR Otel Error Line',
+      'ERROR Otel Fatal Line',
+    ]);
+  });
+
+  it('writes its attributes and exception as fields', () => {
+    new Logger('otel', sink, 'info').emit({
+      severityNumber: SeverityNumber.WARN,
+      body: 'request done',
+      attributes: { status: 503, path: '/sandbox', retried: true },
+      exception: new Error('boom'),
+    });
+    expect(lines).toEqual(['WARN Otel Request Done Status: 503 Path: /sandbox Retried: true Error: boom']);
+  });
+
+  it('logs an unspecified severity at info, and a body that is not a string as JSON', () => {
+    const log = new Logger('otel', sink, 'info');
+    log.emit({ body: { id: 1, tags: ['a'] } });
+    log.emit({ eventName: 'sandbox.ready' });
+    expect(lines).toEqual(['INFO Otel {"id":1,"tags":["a"]}', 'INFO Otel sandbox.ready']);
+  });
+
+  it('writes nothing below its level, and says so through enabled()', () => {
+    const log = new Logger('otel', sink, 'info');
+    log.emit({ severityNumber: SeverityNumber.DEBUG, body: 'hidden' });
+    expect(lines).toEqual([]);
+    expect(log.enabled({ severityNumber: SeverityNumber.DEBUG })).toBe(false);
+    expect(log.enabled({ severityNumber: SeverityNumber.WARN })).toBe(true);
+    expect(log.enabled()).toBe(true);
+    expect(log.enabled('debug')).toBe(false);
+    expect(log.enabled('error')).toBe(true);
   });
 });
 

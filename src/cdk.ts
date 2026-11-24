@@ -1,7 +1,27 @@
+import type { LoggerProvider, MeterProvider, TracerProvider } from '@opentelemetry/api';
 import promiseRetry from 'promise-retry';
 import { getDifferences } from './internal/diff';
-import { log as root } from './log';
+import { log as root, type Level } from './log';
 import packageJson from '../package.json';
+
+/** Options a call to a method traced as `@Trace(options)` carries. */
+export interface CdkOptions {
+  /** Where this call's spans go, and those of the libraries it uses. Without one, the global provider's. */
+  tracerProvider?: TracerProvider;
+  /** Where this call's duration is recorded, and the metrics of the libraries it uses. */
+  meterProvider?: MeterProvider;
+  /**
+   * Where this call's trace lines go, as log records, and those of the libraries it uses. Without
+   * one, `Logger.defaults()`'s: the process-wide log's, or at this call's `logLevel` when it has one.
+   */
+  loggerProvider?: LoggerProvider;
+  /**
+   * The level this call's trace lines are written at or above: they are written only at `trace`.
+   * Without one, `Logger.defaults()`'s: the process-wide level.
+   */
+  logLevel?: Level;
+}
+
 const VERSION = packageJson.version;
 const NAME = packageJson.name;
 

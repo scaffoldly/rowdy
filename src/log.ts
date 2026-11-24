@@ -1,3 +1,6 @@
+import { SeverityNumber, type LoggerProvider, type LogRecord, type Logger as OtelLogger } from '@opentelemetry/api';
+import type { CdkOptions } from './cdk';
+
 export interface ILoggable {
   repr(): string;
 }
@@ -131,6 +134,16 @@ const LEVELS: Record<Level, number> = { error: 0, warn: 1, info: 2, debug: 3, tr
 
 export const isLevel = (value: unknown): value is Level => typeof value === 'string' && value in LEVELS;
 
+/** An OpenTelemetry severity's level; FATAL is an error, and an unspecified one info. */
+const levelOf = (severity: SeverityNumber | undefined): Level => {
+  if (!severity) return 'info';
+  if (severity >= SeverityNumber.ERROR) return 'error';
+  if (severity >= SeverityNumber.WARN) return 'warn';
+  if (severity >= SeverityNumber.INFO) return 'info';
+  if (severity >= SeverityNumber.DEBUG) return 'debug';
+  return 'trace';
+};
+
 /**
  * Where lines go. `'stderr'` sends every level to `console.error`. A console-like logger, such as pino, gets each
  * level's own method, with the line's fields first and its message second. A stream, such as `process.stderr`, is
@@ -179,7 +192,7 @@ const field = (key: string, value: Primitive): string => {
   return `${capital(key)}: ${oneLine(text) || '""'}`;
 };
 
-export class Logger {
+export class Logger implements OtelLogger {
   private static children = new Map<string, Logger>();
   // A logger with a sink or level of its own keeps its children, so another's never write for it.
   private ownChildren = new Map<string, Logger>();
@@ -193,6 +206,56 @@ export class Logger {
     private readonly own?: Sink,
     private readonly ownLevel?: Level
   ) {}
+
+  /**
+   * CdkOptions for the process-wide `log`: its children as the logger provider, so a traced call's
+   * lines arrive as records under its logger's name, and the process-wide level, as it is now.
+   */
+  static defaults(): Pick<CdkOptions, 'loggerProvider' | 'logLevel'> {
+    return { loggerProvider: DEFAULT_LOGGER_PROVIDER, logLevel: log.level };
+  }
+
+  /**
+   * `provider`, its records below `level` dropped and its loggers' `enabled()` saying so; without a
+   * `level`, the process-wide one, read at each record. The same one for the same provider and level.
+   */
+  static filter(provider: LoggerProvider, level?: Level): LoggerProvider {
+    let byLevel = filters.get(provider);
+    if (!byLevel) filters.set(provider, (byLevel = new Map()));
+    let filtered = byLevel.get(level);
+    if (!filtered) {
+      const passes = (severity: SeverityNumber | undefined): boolean =>
+        LEVELS[levelOf(severity)] <= LEVELS[level ?? log.level];
+      filtered = {
+        getLogger: (name, version, options): OtelLogger => {
+          const logger = provider.getLogger(name, version, options);
+          return {
+            enabled: (of): boolean => (of?.severityNumber ? passes(of.severityNumber) : true) && logger.enabled(of),
+            emit: (record): void => (passes(record.severityNumber) ? logger.emit(record) : undefined),
+          };
+        },
+      };
+      byLevel.set(level, filtered);
+    }
+    return filtered;
+  }
+
+  /** A logger provider of loggers that write where the process-wide `log` does, at `level`. */
+  static at(level: Level): LoggerProvider {
+    let provider = providers.get(level);
+    if (!provider) {
+      const loggers = new Map<string, Logger>();
+      provider = {
+        getLogger: (name: string): Logger => {
+          let logger = loggers.get(name);
+          if (!logger) loggers.set(name, (logger = new Logger(name, undefined, level)));
+          return logger;
+        },
+      };
+      providers.set(level, provider);
+    }
+    return provider;
+  }
 
   /**
    * A logger whose lines carry `of` as their component: a string as given, a class by its name, and an instance by its
@@ -231,7 +294,14 @@ export class Logger {
     return state.format ?? envFormat();
   }
 
-  enabled(level: Level): boolean {
+  /**
+   * Whether a line at `level`, or an OpenTelemetry record of `severityNumber`, is written. Without a
+   * severity, whether any is: always, as errors always are.
+   */
+  enabled(level: Level): boolean;
+  enabled(options?: { severityNumber?: SeverityNumber }): boolean;
+  enabled(of?: Level | { severityNumber?: SeverityNumber }): boolean {
+    const level = typeof of === 'string' ? of : of?.severityNumber ? levelOf(of.severityNumber) : 'error';
     return LEVELS[level] <= LEVELS[this.level];
   }
 
@@ -319,6 +389,11 @@ export class Logger {
       return;
     }
 
+    // A Logger of its own takes the call, under this one's component, at its own level too.
+    if (this.own instanceof Logger) {
+      return (this.component ? this.own.child(this.component) : this.own).log(level, message, params);
+    }
+
     const method = level === 'trace' ? 'debug' : level;
 
     try {
@@ -336,7 +411,7 @@ export class Logger {
         for (const [key, value] of Object.entries(fields)) {
           structured[key] = value instanceof Error ? `${value.name}: ${value.message}` : value;
         }
-        return this.emit(method, message, structured);
+        return this.send(method, message, structured);
       }
 
       if (this.format === 'json') {
@@ -344,7 +419,7 @@ export class Logger {
         for (const [key, value] of Object.entries(fields)) {
           line[key] = value instanceof Error ? `${value.name}: ${value.message}` : value;
         }
-        return this.emit(method, JSON.stringify(line));
+        return this.send(method, JSON.stringify(line));
       }
 
       const { requestId, ...rest } = fields;
@@ -355,7 +430,7 @@ export class Logger {
         title(message),
       ];
       const tail = Object.entries(rest).map(([key, value]) => field(key, value));
-      return this.emit(method, [...head, ...tail].join(' '));
+      return this.send(method, [...head, ...tail].join(' '));
     } catch (error) {
       // eslint-disable-next-line no-console
       return console.error(`Unable to log`, { error, level, message });
@@ -370,16 +445,19 @@ export class Logger {
     if (!line.trim()) {
       return;
     }
+    if (this.own instanceof Logger) {
+      return (this.component ? this.own.child(this.component) : this.own).relay(stream, line);
+    }
     const text = line.replace(/\s+$/, '');
     const sink = this.own ?? state.sink;
     if (sink && sink !== 'stderr' && !('write' in sink)) {
-      return this.emit(stream, text, { component: this.component, ...state.context });
+      return this.send(stream, text, { component: this.component, ...state.context });
     }
     if (/^\s*\{.*\}$/.test(text)) {
-      return this.emit(stream, text);
+      return this.send(stream, text);
     }
     if (this.format === 'json') {
-      return this.emit(
+      return this.send(
         stream,
         JSON.stringify({ level: 'info', component: this.component, msg: text, ...state.context })
       );
@@ -390,11 +468,12 @@ export class Logger {
       ...(requestId === undefined ? [] : [`RequestId: ${String(requestId)}`]),
       ...(this.component ? [capital(this.component)] : []),
     ];
-    return this.emit(stream, `${head.join(' ')} ${text}`);
+    return this.send(stream, `${head.join(' ')} ${text}`);
   };
 
   /** One line to this logger's sink: a console-like one gets `fields` first when there are any. */
-  private emit(level: 'error' | 'warn' | 'info' | 'debug', text: string, fields?: Record<string, unknown>): void {
+  // Not `write`: a sink with one is taken for a stream.
+  private send(level: 'error' | 'warn' | 'info' | 'debug', text: string, fields?: Record<string, unknown>): void {
     const sink = this.own ?? state.sink;
     if (sink === 'stderr') {
       // eslint-disable-next-line no-console
@@ -423,6 +502,28 @@ export class Logger {
 
   trace = (message: string, params: Loggable | Record<string, Loggable> = {}): void =>
     this.log('trace', message, params);
+
+  /**
+   * An OpenTelemetry log record, as a line at its severity's level: its body the message (a string as
+   * is, anything else as JSON, or else its event name), its attributes and exception the fields.
+   */
+  emit(record: LogRecord): void {
+    const { body, eventName, attributes = {}, exception } = record;
+    const message = typeof body === 'string' ? body : body === undefined ? (eventName ?? '') : JSON.stringify(body);
+    const params: Record<string, Loggable> = {};
+    for (const [key, value] of Object.entries(attributes)) {
+      params[key] = isLoggable(value) ? value : JSON.stringify(value);
+    }
+    if (exception !== undefined) {
+      params.error = exception instanceof Error ? exception : String(exception);
+    }
+    this.log(levelOf(record.severityNumber), message, params);
+  }
 }
 
 export const log = new Logger();
+
+// One object, so a provider handed over again is seen as the same one.
+const DEFAULT_LOGGER_PROVIDER: LoggerProvider = { getLogger: (name: string) => log.child(name) };
+const providers = new Map<Level, LoggerProvider>();
+const filters = new WeakMap<LoggerProvider, Map<Level | undefined, LoggerProvider>>();
