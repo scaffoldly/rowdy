@@ -153,10 +153,29 @@ const levelOf = (severity: SeverityNumber | undefined): Level => {
 /**
  * Where lines go. `'stderr'` sends every level to `console.error`. A console-like logger, such as pino, gets each
  * level's own method, with the line's fields first and its message second. A stream, such as `process.stderr`, is
- * written one formatted line at a time.
+ * written one formatted line at a time. An OpenTelemetry logs Logger gets each line as a record.
  */
-// eslint-disable-next-line no-undef
-export type Sink = 'stderr' | Pick<Console, 'error' | 'warn' | 'info' | 'debug'> | { write(line: string): unknown };
+export type Sink =
+  | 'stderr'
+  // eslint-disable-next-line no-undef
+  | Pick<Console, 'error' | 'warn' | 'info' | 'debug'>
+  | { write(line: string): unknown }
+  | OtelSink;
+
+/** An OpenTelemetry logs Logger: each line a record on it. */
+export type OtelSink = Pick<OtelLogger, 'emit'> & Partial<Pick<OtelLogger, 'enabled'>>;
+
+/** An OpenTelemetry logger, told apart from a stream (`write`) or a console (`info`), which it has neither of. */
+const isOtel = (sink: Sink | undefined): sink is OtelSink =>
+  typeof sink === 'object' && 'emit' in sink && !('write' in sink) && !('info' in sink);
+
+const SEVERITY: Record<Level, SeverityNumber> = {
+  error: SeverityNumber.ERROR,
+  warn: SeverityNumber.WARN,
+  info: SeverityNumber.INFO,
+  debug: SeverityNumber.DEBUG,
+  trace: SeverityNumber.TRACE,
+};
 
 // Process-wide: every Logger, children included, shares one level, format, sink and context.
 const state: { level?: Level; format?: Format; sink?: Sink; context: Record<string, Primitive> } = { context: {} };
@@ -412,6 +431,14 @@ export class Logger implements OtelLogger {
       Object.assign(fields, state.context);
 
       const sink = this.own ?? state.sink;
+      if (isOtel(sink)) {
+        // Its own fields: an error is the record's exception, never a line's text of it.
+        const own = isLoggable(params) ? { value: params } : params;
+        const values = Object.fromEntries(
+          Object.entries(own).map(([key, value]) => [key, value instanceof Error ? value : Logger.asPrimitive(value)])
+        );
+        return this.record(sink, level, message, { ...values, ...state.context });
+      }
       if (sink && sink !== 'stderr' && !('write' in sink)) {
         const structured: Record<string, unknown> = { component: this.component };
         for (const [key, value] of Object.entries(fields)) {
@@ -456,6 +483,9 @@ export class Logger implements OtelLogger {
     }
     const text = line.replace(/\s+$/, '');
     const sink = this.own ?? state.sink;
+    if (isOtel(sink)) {
+      return this.record(sink, stream, text, { ...state.context });
+    }
     if (sink && sink !== 'stderr' && !('write' in sink)) {
       return this.send(stream, text, { component: this.component, ...state.context });
     }
@@ -477,6 +507,29 @@ export class Logger implements OtelLogger {
     return this.send(stream, `${head.join(' ')} ${text}`);
   };
 
+  /**
+   * One line as a record on an OpenTelemetry logger: its severity, the message as the body, the
+   * component and fields as attributes, and an error as the exception. The logger is asked too, when
+   * it says whether it is enabled.
+   */
+  private record(sink: OtelSink, level: Level, message: string, fields: Record<string, Primitive>): void {
+    const severityNumber = SEVERITY[level];
+    if (sink.enabled && !sink.enabled({ severityNumber })) return;
+    const attributes: Record<string, string | number | boolean> = this.component ? { component: this.component } : {};
+    let exception: Error | undefined;
+    for (const [key, value] of Object.entries(fields)) {
+      if (value instanceof Error) exception ??= value;
+      else if (value !== undefined && value !== null) attributes[key] = value;
+    }
+    sink.emit({
+      severityNumber,
+      severityText: level.toUpperCase(),
+      body: message,
+      attributes,
+      ...(exception ? { exception } : {}),
+    });
+  }
+
   /** One line to this logger's sink: a console-like one gets `fields` first when there are any. */
   // Not `write`: a sink with one is taken for a stream.
   private send(level: 'error' | 'warn' | 'info' | 'debug', text: string, fields?: Record<string, unknown>): void {
@@ -489,7 +542,8 @@ export class Logger implements OtelLogger {
       sink.write(`${text}\n`);
       return;
     }
-    const target = sink ?? console;
+    // An OpenTelemetry logger takes records, never lines: log() and relay() send it its own.
+    const target = sink && !isOtel(sink) ? sink : console;
     if (fields) {
       target[level](fields, text);
       return;

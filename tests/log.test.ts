@@ -24,6 +24,7 @@ import {
   maskQuery,
   maskUrl,
   type Level,
+  type Sink,
 } from '../src/log';
 import type { CdkOptions } from '../src/cdk';
 import { Trace } from '../src/internal/trace';
@@ -1450,6 +1451,98 @@ describe('Logger as an OpenTelemetry Logger', () => {
     expect(log.enabled()).toBe(true);
     expect(log.enabled('debug')).toBe(false);
     expect(log.enabled('error')).toBe(true);
+  });
+});
+
+describe('Logger with an OpenTelemetry logger as its sink', () => {
+  const otel = (
+    enabled?: (options?: { severityNumber?: SeverityNumber }) => boolean
+  ): {
+    records: LogRecord[];
+    emit(record: LogRecord): void;
+    enabled?: (options?: { severityNumber?: SeverityNumber }) => boolean;
+  } => {
+    const records: LogRecord[] = [];
+    return { records, emit: (record): number => records.push(record), ...(enabled ? { enabled } : {}) };
+  };
+
+  it('is a Sink', () => {
+    const sink: Sink = otel();
+    expect(new Logger('sandbox', sink)).toBeInstanceOf(Logger);
+  });
+
+  it('writes each line as a record: its severity, the message as the body, its component and fields as attributes', () => {
+    const logger = otel();
+    const log = new Logger('sandbox', logger, 'debug');
+    log.info('Sandbox Ready', { sandboxId: 'box', bytes: 12 });
+    log.warn('slow');
+    log.debug('detail', { n: 1 });
+    log.trace('dropped below its level');
+    expect(logger.records).toEqual([
+      {
+        severityNumber: SeverityNumber.INFO,
+        severityText: 'INFO',
+        body: 'Sandbox Ready',
+        attributes: { component: 'sandbox', sandboxId: 'box', bytes: 12 },
+      },
+      { severityNumber: SeverityNumber.WARN, severityText: 'WARN', body: 'slow', attributes: { component: 'sandbox' } },
+      {
+        severityNumber: SeverityNumber.DEBUG,
+        severityText: 'DEBUG',
+        body: 'detail',
+        attributes: { component: 'sandbox', n: 1 },
+      },
+    ]);
+  });
+
+  it('puts an error in the exception', () => {
+    const logger = otel();
+    const boom = new Error('boom');
+    new Logger('sandbox', logger, 'info').error('Failed', { error: boom, sandboxId: 'box' });
+    expect(logger.records).toEqual([
+      {
+        severityNumber: SeverityNumber.ERROR,
+        severityText: 'ERROR',
+        body: 'Failed',
+        attributes: { component: 'sandbox', sandboxId: 'box' },
+        exception: boom,
+      },
+    ]);
+  });
+
+  it('puts an error in the exception at debug too, where a line would show its stack', () => {
+    const logger = otel();
+    const boom = new Error('boom');
+    new Logger('sandbox', logger, 'debug').error('Failed', { error: boom });
+    expect(logger.records[0]!.exception).toBe(boom);
+    expect(logger.records[0]!.attributes).toEqual({ component: 'sandbox' });
+  });
+
+  it('gives a child the same logger, under its own component', () => {
+    const logger = otel();
+    new Logger('sandbox', logger, 'info').child('lambda').info('Invoked');
+    expect(logger.records.map((r) => [r.body, r.attributes?.component])).toEqual([['Invoked', 'lambda']]);
+  });
+
+  it('asks the logger too, when it says whether it is enabled', () => {
+    const logger = otel((options) => (options?.severityNumber ?? 0) >= SeverityNumber.WARN);
+    const log = new Logger('sandbox', logger, 'trace');
+    log.info('asked and dropped');
+    log.warn('kept');
+    expect(logger.records.map((r) => r.body)).toEqual(['kept']);
+  });
+
+  it('relays a line as a record', () => {
+    const logger = otel();
+    new Logger('sandbox', logger, 'info').relay('error', 'from the command\n');
+    expect(logger.records).toEqual([
+      {
+        severityNumber: SeverityNumber.ERROR,
+        severityText: 'ERROR',
+        body: 'from the command',
+        attributes: { component: 'sandbox' },
+      },
+    ]);
   });
 });
 
