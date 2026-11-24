@@ -1,9 +1,11 @@
+import type { MeterProvider, TracerProvider, LoggerProvider } from '@opentelemetry/api';
 import { context as otel } from '@opentelemetry/api';
 import { log, Logger, type Level, type Sink } from '../../log';
+import { CdkInstrumentation } from '../../otel';
 import { logCall } from './logging';
 import { methodName } from './name';
 import { RESULTS } from './results';
-import { startRun, type Call } from './run';
+import { startRun, type Call, type Tracing } from './run';
 
 type Method<This, Args extends unknown[], R> = (this: This, ...args: Args) => R;
 type Decorator = <This, Args extends unknown[], R>(
@@ -16,30 +18,40 @@ export interface CdkOptions {
   /** Where this call's trace lines go. Without one, a traced call makes spans and logs nothing. */
   logger?: Exclude<Sink, 'stderr'>;
   logLevel?: Level;
+  /** Where this call's spans go, and those of the libraries it uses. Without one, the global provider's. */
+  tracerProvider?: TracerProvider;
+  /** Where the libraries a call uses record metrics; @Trace makes none of its own. */
+  meterProvider?: MeterProvider;
+  /** Where the libraries a call uses emit log records; @Trace emits none of its own. */
+  loggerProvider?: LoggerProvider;
 }
 
-/** The logger one call logs on, or none. */
-type LoggerOf = (self: unknown, args: unknown[]) => Logger | undefined;
+/** The logger and tracer provider one call is followed with; the logger, any level. */
+type TracingOf = (self: unknown, args: unknown[]) => Tracing;
 
 const fromOptions =
-  (options: (this: unknown, ...args: unknown[]) => CdkOptions | undefined): LoggerOf =>
+  (options: (this: unknown, ...args: unknown[]) => CdkOptions | undefined): TracingOf =>
   (self, args) => {
     // Never the process-wide log: a call without a logger of its own logs nothing.
-    const { logger, logLevel } = options.apply(self, args) ?? {};
-    return logger ? new Logger(undefined, logger, logLevel) : undefined;
+    const { logger, logLevel, tracerProvider, meterProvider, loggerProvider } = options.apply(self, args) ?? {};
+    // A call's providers are where the libraries it uses record too.
+    if (tracerProvider || meterProvider || loggerProvider) {
+      CdkInstrumentation.create({ tracerProvider, meterProvider, loggerProvider });
+    }
+    return { logger: logger ? new Logger(undefined, logger, logLevel) : undefined, tracerProvider };
   };
 
 const decorate =
-  (loggerOf: LoggerOf): Decorator =>
+  (tracingOf: TracingOf): Decorator =>
   (value, context) =>
     function (this, ...args) {
       const method = methodName(this, context);
-      const logger = loggerOf(this, args);
-      const logging = logger?.isTracing ? logger : undefined;
-      if (logging) logCall(logging, method, args);
+      const { logger, tracerProvider } = tracingOf(this, args);
+      const tracing: Tracing = { logger: logger?.isTracing ? logger : undefined, tracerProvider };
+      if (tracing.logger) logCall(tracing.logger, method, args);
 
       const parent = otel.active();
-      const call: Call = { parent, run: startRun(method, logging, parent), again: () => startRun(method, logging) };
+      const call: Call = { parent, run: startRun(method, tracing, parent), again: () => startRun(method, tracing) };
 
       let returned: unknown;
       try {
@@ -69,7 +81,8 @@ const isDecoratorContext = (value: unknown): value is ClassMethodDecoratorContex
  *
  * The span ends with `rowdy.trace.outcome` (`complete`, `error`, `unsubscribe` or `returned`), and for an
  * Observable `rowdy.observable.emissions`; an error is also recorded on it, with an error status
- * and `error.type`. Spans are made at any log level; without a tracer provider they are no-ops.
+ * and `error.type`. Spans are made at any log level, from the global tracer provider, or with
+ * `options`, the `tracerProvider` it returns; without a provider they are no-ops.
  *
  * At trace level it also logs the call with its arguments, each emission, and how it ended, with
  * its duration. Bare, on the default `log`; with `logger`, on it; with `options`, a function of each
@@ -107,11 +120,11 @@ export const Trace: {
   second?: ClassMethodDecoratorContext
 ): Decorator | Method<unknown, unknown[], unknown> => {
   if (isDecoratorContext(second)) {
-    return decorate(() => log)(first as Method<unknown, unknown[], unknown>, second);
+    return decorate(() => ({ logger: log }))(first as Method<unknown, unknown[], unknown>, second);
   }
   if (typeof first === 'function') {
     return decorate(fromOptions(first as (this: unknown, ...args: unknown[]) => CdkOptions | undefined));
   }
   const logger = first ?? log;
-  return decorate(() => logger);
+  return decorate(() => ({ logger }));
 }) as never;

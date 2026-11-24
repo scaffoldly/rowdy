@@ -1,4 +1,4 @@
-import { context as otel, type Context } from '@opentelemetry/api';
+import { context as otel, type Context, type TracerProvider } from '@opentelemetry/api';
 import type { Logger } from '../../log';
 import { logRun } from './logging';
 import { startSpan } from './span';
@@ -18,9 +18,15 @@ export interface Call {
   again(): Run;
 }
 
-/** Starts a run under `parent`. `logger` is set only when it logs at trace level. */
-export const startRun = (method: string, logger: Logger | undefined, parent: Context = otel.active()): Run => {
-  const span = startSpan(method, parent);
+/** How a traced call is followed: `logger` only when it logs at trace level. */
+export interface Tracing {
+  logger?: Logger;
+  tracerProvider?: TracerProvider;
+}
+
+/** Starts a run under `parent`, its span from the call's `tracerProvider` or else the global one. */
+export const startRun = (method: string, { logger, tracerProvider }: Tracing, parent: Context = otel.active()): Run => {
+  const span = startSpan(method, parent, tracerProvider);
   return {
     context: span.context,
     tracker: logger ? all([logRun(logger, method), span.tracker]) : span.tracker,

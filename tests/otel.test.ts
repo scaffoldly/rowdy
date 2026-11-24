@@ -1,28 +1,101 @@
-import { context, createContextKey, ROOT_CONTEXT } from '@opentelemetry/api';
+import { context, createContextKey, createNoopLogger, createNoopMeter, ROOT_CONTEXT, trace } from '@opentelemetry/api';
 import { AsyncLocalStorageContextManager } from '@opentelemetry/context-async-hooks';
-import { AwsInstrumentation } from '@opentelemetry/instrumentation-aws-sdk';
-import { HttpInstrumentation } from '@opentelemetry/instrumentation-http';
-import { UndiciInstrumentation } from '@opentelemetry/instrumentation-undici';
 import { execFileSync } from 'child_process';
 import { join } from 'path';
 import * as rxjs from 'rxjs';
-import { isWrapped } from '@opentelemetry/instrumentation';
-import { INSTRUMENTATIONS } from '@scaffoldly/rowdy-cdk';
-import { RxJSInstrumentation } from '@scaffoldly/rowdy-cdk/otel';
+import { type InstrumentationBase, isWrapped } from '@opentelemetry/instrumentation';
+import type * as Otel from '../src/otel';
+import { RxJSInstrumentation } from '../src/otel/rxjs';
 
-describe('INSTRUMENTATIONS', () => {
-  it('lists aws-sdk, http, undici and rxjs', () => {
-    expect(INSTRUMENTATIONS.map((i) => i.constructor)).toEqual([
-      AwsInstrumentation,
-      HttpInstrumentation,
-      UndiciInstrumentation,
-      RxJSInstrumentation,
-    ]);
+/** A fresh copy of the module and its rxjs: create() makes its instrumentations once. */
+const fresh = (): { CdkInstrumentation: typeof Otel.CdkInstrumentation; rx: typeof rxjs } => {
+  let loaded: ReturnType<typeof fresh> | undefined;
+  jest.isolateModules(() => {
+    loaded = {
+      CdkInstrumentation: (require('../src/otel') as typeof Otel).CdkInstrumentation,
+      rx: require('rxjs'),
+    };
+  });
+  return loaded!;
+};
+
+describe('CdkInstrumentation.create', () => {
+  const members = (cdk: Otel.CdkInstrumentation): InstrumentationBase[] =>
+    (cdk as unknown as { members: InstrumentationBase[] }).members;
+
+  it('holds aws-sdk, http, undici and rxjs, each enabled', () => {
+    const { CdkInstrumentation, rx } = fresh();
+    const cdk = CdkInstrumentation.create();
+    try {
+      expect(members(cdk).map((i) => i.constructor.name)).toEqual([
+        'AwsInstrumentation',
+        'HttpInstrumentation',
+        'UndiciInstrumentation',
+        'RxJSInstrumentation',
+      ]);
+      expect(members(cdk).map((i) => i.isEnabled())).toEqual([true, true, true, true]);
+      expect(cdk.getConfig().enabled).toBe(true);
+      expect(isWrapped(rx.Observable.prototype.subscribe)).toBe(true);
+    } finally {
+      cdk.disable();
+    }
+    expect(members(cdk).map((i) => i.isEnabled())).toEqual([false, false, false, false]);
+    expect(isWrapped(rx.Observable.prototype.subscribe)).toBe(false);
   });
 
-  it('is enabled on import and patches rxjs', () => {
-    expect(INSTRUMENTATIONS.map((i) => i.getConfig().enabled)).toEqual([true, true, true, true]);
-    expect(isWrapped(rxjs.Observable.prototype.subscribe)).toBe(true);
+  it('makes one per process: a later call returns the same one', () => {
+    const { CdkInstrumentation } = fresh();
+    const cdk = CdkInstrumentation.create();
+    try {
+      expect(CdkInstrumentation.create()).toBe(cdk);
+    } finally {
+      cdk.disable();
+    }
+  });
+
+  it('hands its tracer, meter and logger providers to every member, and the same ones only once', () => {
+    const { CdkInstrumentation } = fresh();
+    const tracerProvider = { getTracer: jest.fn(() => trace.getTracer('noop')) };
+    const meterProvider = { getMeter: jest.fn(() => createNoopMeter()) };
+    const loggerProvider = { getLogger: jest.fn(() => createNoopLogger()) };
+    const cdk = CdkInstrumentation.create({ tracerProvider, meterProvider, loggerProvider });
+    try {
+      const calls = (): number[] =>
+        [tracerProvider, meterProvider, loggerProvider].map((p) => Object.values(p)[0]!.mock.calls.length);
+      const first = calls();
+      expect(first.every((n) => n >= 4)).toBe(true);
+      CdkInstrumentation.create({ tracerProvider, meterProvider, loggerProvider });
+      expect(calls()).toEqual(first);
+    } finally {
+      cdk.disable();
+    }
+  });
+
+  it('sends spans to the tracerProvider passed to create, with no SDK', () => {
+    // A child process: the aws-sdk instrumentation patches through Node's real require, which jest bypasses.
+    const script = `
+      const { InMemorySpanExporter, SimpleSpanProcessor, TracerProvider } = require('@opentelemetry/sdk-trace');
+      const { CdkInstrumentation } = require(${JSON.stringify(join(__dirname, '..', 'dist', 'index.js'))});
+      const exporter = new InMemorySpanExporter();
+      const tracerProvider = new TracerProvider({ spanProcessors: [new SimpleSpanProcessor({ exporter })] });
+      CdkInstrumentation.create({ tracerProvider });
+      const { STSClient, GetCallerIdentityCommand } = require('@aws-sdk/client-sts');
+      const server = require('http').createServer((_req, res) => res.end('<x/>'));
+      server.listen(0, '127.0.0.1', async () => {
+        const sts = new STSClient({
+          region: 'us-east-1',
+          endpoint: 'http://127.0.0.1:' + server.address().port,
+          credentials: { accessKeyId: 'AKIDEXAMPLE', secretAccessKey: 'secret' },
+          maxAttempts: 1,
+        });
+        await sts.send(new GetCallerIdentityCommand({})).catch(() => undefined);
+        server.close();
+        await tracerProvider.forceFlush();
+        console.log(JSON.stringify(exporter.getFinishedSpans().map((s) => s.name)));
+      });
+    `;
+    const out = execFileSync(process.execPath, ['-e', script], { cwd: join(__dirname, '..'), encoding: 'utf8' });
+    expect(JSON.parse(out)).toContain('STS.GetCallerIdentity');
   });
 });
 
@@ -214,9 +287,9 @@ describe('RxJSInstrumentation', () => {
 const ROOT = join(__dirname, '..');
 
 describe.each([
-  ['INSTRUMENTATIONS from /otel', join(ROOT, 'dist', 'otel'), 'INSTRUMENTATIONS'],
-  ['INSTRUMENTATIONS from the main entry', join(ROOT, 'dist', 'index.js'), 'INSTRUMENTATIONS'],
-])('%s in a NodeSDK', (_name, entry, exportName) => {
+  ['CdkInstrumentation.create() from /otel, given to the SDK', join(ROOT, 'dist', 'otel'), 'pass'],
+  ['CdkInstrumentation.create() from the main entry, given to the SDK', join(ROOT, 'dist', 'index.js'), 'pass'],
+])('%s', (_name, entry, exportName) => {
   type Span = { name: string; scope: string; url?: string; rpcService?: string; parent?: string; id: string };
   let result: { spans: Span[]; rxjs: boolean[]; mergeMapParent: string };
 
@@ -266,17 +339,44 @@ describe.each([
   });
 });
 
-describe('INSTRUMENTATIONS under ESM', () => {
+describe('a host that never gives them a tracer provider', () => {
+  let result: { spans: Array<{ name: string; scope: string }> };
+
+  beforeAll(() => {
+    result = JSON.parse(
+      execFileSync(
+        process.execPath,
+        [
+          join(__dirname, 'fixtures', 'otel-sdk.js'),
+          join(ROOT, 'dist', 'index.js'),
+          'none',
+          join(ROOT, 'dist', 'index.js'),
+        ],
+        { cwd: ROOT, encoding: 'utf8' }
+      )
+    );
+  });
+
+  it('records nothing from aws-sdk, http or undici', () => {
+    expect(result.spans.filter((s) => s.scope.startsWith('@opentelemetry/instrumentation-'))).toEqual([]);
+  });
+
+  it('leaves @Trace spans to the global provider', () => {
+    expect(result.spans.map((s) => s.name)).toContain('fetchTraced');
+  });
+});
+
+describe('CdkInstrumentation under ESM', () => {
   it('patches rxjs that was statically imported first', () => {
     const script = `
       import { Subject } from 'rxjs';
       import { NodeSDK } from '@opentelemetry/sdk-node';
       import { InMemorySpanExporter, SimpleSpanProcessor } from '@opentelemetry/sdk-trace';
       import { trace } from '@opentelemetry/api';
-      import { INSTRUMENTATIONS } from ${JSON.stringify(join(ROOT, 'dist', 'index.js'))};
+      import { CdkInstrumentation } from ${JSON.stringify(join(ROOT, 'dist', 'index.js'))};
       const sdk = new NodeSDK({
         spanProcessors: [new SimpleSpanProcessor({ exporter: new InMemorySpanExporter() })],
-        instrumentations: INSTRUMENTATIONS,
+        instrumentations: [CdkInstrumentation.create()],
       });
       sdk.start();
       const subject = new Subject();
@@ -309,5 +409,66 @@ describe('@Trace on an async method nobody awaits', () => {
     `;
     const out = execFileSync(process.execPath, ['-e', script], { cwd: ROOT, encoding: 'utf8' });
     expect(JSON.parse(out)).toEqual(['untraced', 'traced']);
+  });
+});
+
+describe('rowdy.run passing its providers to a traced call', () => {
+  type Span = { name: string; scope: string; parent?: string; id: string };
+
+  // rowdy loads rowdy-cdk, then its AWS clients; rowdy.run starts its own SDK, registering nothing.
+  const run = (passes: boolean): Span[] => {
+    const script = `
+      const { NodeSDK } = require('@opentelemetry/sdk-node');
+      const { SimpleSpanProcessor } = require('@opentelemetry/sdk-trace');
+      const { logs, metrics, trace } = require('@opentelemetry/api');
+      const { Trace } = require(${JSON.stringify(join(ROOT, 'dist', 'index.js'))});
+      const { STSClient, GetCallerIdentityCommand } = require('@aws-sdk/client-sts');
+
+      const exported = [];
+      const exporter = { export: (spans, done) => done({ code: 0 }, exported.push(...spans)), shutdown: async () => {} };
+      const sdk = new NodeSDK({ spanProcessors: [new SimpleSpanProcessor({ exporter })] });
+      sdk.start();
+
+      const server = require('http').createServer((_req, res) => res.end('<x/>'));
+      server.listen(0, '127.0.0.1', async () => {
+        const sts = new STSClient({
+          region: 'us-east-1',
+          endpoint: 'http://127.0.0.1:' + server.address().port,
+          credentials: { accessKeyId: 'AKIDEXAMPLE', secretAccessKey: 'secret' },
+          maxAttempts: 1,
+        });
+        // SandboxImpl.create, as @Trace((options) => options) decorates it.
+        const create = Trace((options) => options)(
+          async function () { await sts.send(new GetCallerIdentityCommand({})).catch(() => undefined); },
+          { kind: 'method', name: 'create', static: true }
+        );
+        const options = ${passes}
+          ? { tracerProvider: trace.getTracerProvider(), meterProvider: metrics.getMeterProvider(), loggerProvider: logs.getLoggerProvider() }
+          : {};
+        await create.call({ name: 'SandboxImpl' }, options);
+        server.close();
+        await sdk.shutdown();
+        const spans = exported.map((s) => ({
+          name: s.name, scope: s.instrumentationScope.name, parent: s.parentSpanContext?.spanId, id: s.spanContext().spanId,
+        }));
+        console.log(JSON.stringify(spans));
+      });
+    `;
+    return JSON.parse(execFileSync(process.execPath, ['-e', script], { cwd: ROOT, encoding: 'utf8' }));
+  };
+
+  it('traces the call, the AWS SDK under it, and its request under that', () => {
+    const spans = run(true);
+    const create = spans.find((s) => s.name === 'SandboxImpl.create');
+    const aws = spans.find((s) => s.name === 'STS.GetCallerIdentity');
+    expect(aws?.parent).toBe(create?.id);
+    expect(spans).toContainEqual(
+      expect.objectContaining({ scope: '@opentelemetry/instrumentation-http', parent: aws?.id })
+    );
+  });
+
+  it('records nothing from the libraries when the call carries no providers', () => {
+    const spans = run(false);
+    expect(spans.map((s) => s.name)).toEqual(['SandboxImpl.create']);
   });
 });

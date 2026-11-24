@@ -1,13 +1,12 @@
 // Runs in a child process: instrumentations patch modules through Node's real require, which jest bypasses.
 const { NodeSDK } = require('@opentelemetry/sdk-node');
 const { InMemorySpanExporter, SimpleSpanProcessor } = require('@opentelemetry/sdk-trace');
-const exported = require(process.argv[2])[process.argv[3]];
+// rowdy-cdk's instrumentations, made and given to the SDK, or not made at all.
+const rowdy = require(process.argv[2]);
+const passed = process.argv[3] === 'pass' ? { instrumentations: [rowdy.CdkInstrumentation.create()] } : {};
 
 const exporter = new InMemorySpanExporter();
-const sdk = new NodeSDK({
-  spanProcessors: [new SimpleSpanProcessor({ exporter })],
-  instrumentations: exported,
-});
+const sdk = new NodeSDK({ spanProcessors: [new SimpleSpanProcessor({ exporter })], ...passed });
 sdk.start();
 
 const http = require('http');

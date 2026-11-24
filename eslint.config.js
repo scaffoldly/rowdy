@@ -53,5 +53,11 @@ module.exports = [
     plugins: { prettier },
     rules: { ...prettierConfig.rules, 'prettier/prettier': 'error' },
   },
+  {
+    files: ['tests/**/*.mjs'],
+    languageOptions: { ecmaVersion: 2022, sourceType: 'module', globals: globals.node },
+    plugins: { prettier },
+    rules: { ...prettierConfig.rules, 'prettier/prettier': 'error' },
+  },
   createTsConfig(['tests/**/*.ts'], './tests/tsconfig.json', globals.jest, { 'no-console': 'off' }),
 ];

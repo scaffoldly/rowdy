@@ -944,6 +944,14 @@ describe('Logger', () => {
           expect(finished()).toHaveLength(1);
         });
 
+        it("sends a call's span to the tracerProvider in its options, not the global one", () => {
+          const own = new InMemorySpanExporter();
+          const tracerProvider = new TracerProvider({ spanProcessors: [new SimpleSpanProcessor({ exporter: own })] });
+          Factory.create({ tracerProvider });
+          expect(own.getFinishedSpans().map((s) => s.name)).toEqual(['Factory.create']);
+          expect(finished()).toEqual([]);
+        });
+
         it('takes options from an instance call, with its this', async () => {
           const factory = Factory.create({ logger: sink, logLevel: 'trace' });
           recorded.length = 0;
