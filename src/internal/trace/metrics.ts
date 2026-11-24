@@ -8,7 +8,7 @@ const histograms = new WeakMap<MeterProvider, Histogram>();
 const durationOn = (meterProvider: MeterProvider): Histogram => {
   let histogram = histograms.get(meterProvider);
   if (!histogram) {
-    histogram = meterProvider.getMeter(PACKAGE_NAME, PACKAGE_VERSION).createHistogram('rowdy.trace.duration', {
+    histogram = meterProvider.getMeter(PACKAGE_NAME, PACKAGE_VERSION).createHistogram('cdk.trace.duration', {
       unit: 's',
       description: 'How long each run of a traced method took.',
     });
@@ -22,7 +22,7 @@ export const measureRun = (method: string, { meterProvider }: Required<CdkOption
   const histogram = durationOn(meterProvider);
   const started = performance.now();
   const record = (outcome: string, extra: Attributes = {}, at = performance.now()): void =>
-    histogram.record((at - started) / 1000, { 'code.function.name': method, 'rowdy.trace.outcome': outcome, ...extra });
+    histogram.record((at - started) / 1000, { 'code.function.name': method, 'cdk.trace.outcome': outcome, ...extra });
 
   return {
     subscribe: (): void => {},

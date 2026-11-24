@@ -21,8 +21,8 @@ export const startSpan = (
   let emissions: number | undefined;
 
   const end = (outcome: Outcome, at?: number): void => {
-    span.setAttribute('rowdy.trace.outcome', outcome);
-    if (emissions !== undefined) span.setAttribute('rowdy.observable.emissions', emissions);
+    span.setAttribute('cdk.trace.outcome', outcome);
+    if (emissions !== undefined) span.setAttribute('cdk.observable.emissions', emissions);
     span.end(at);
   };
 

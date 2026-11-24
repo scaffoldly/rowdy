@@ -44,7 +44,7 @@ const isDecoratorContext = (value: unknown): value is ClassMethodDecoratorContex
 
 /**
  * Traces a method, instance or static, as `@Trace` or `@Trace(options)`, through the one
- * CdkInstrumentation: its span goes to that tracer provider, its duration (`rowdy.trace.duration`)
+ * CdkInstrumentation: its span goes to that tracer provider, its duration (`cdk.trace.duration`)
  * to that meter provider, and its lines, as TRACE log records, to that logger provider, filtered at
  * its logLevel. Without a tracer or meter provider, no span or duration is recorded.
  *
@@ -56,8 +56,8 @@ const isDecoratorContext = (value: unknown): value is ClassMethodDecoratorContex
  * other subscription (a retry, a second subscriber, one made later) is a span of its own, under the
  * span active when it subscribes.
  *
- * The span ends with `rowdy.trace.outcome` (`complete`, `error`, `unsubscribe` or `returned`), and
- * for an Observable `rowdy.observable.emissions`; an error is also recorded on it, with an error
+ * The span ends with `cdk.trace.outcome` (`complete`, `error`, `unsubscribe` or `returned`), and
+ * for an Observable `cdk.observable.emissions`; an error is also recorded on it, with an error
  * status and `error.type`.
  *
  * Its lines are the call with its arguments, each emission, and how it ended, with its duration:

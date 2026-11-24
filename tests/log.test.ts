@@ -713,8 +713,8 @@ describe('Logger', () => {
                 status: SpanStatusCode.UNSET,
                 attributes: {
                   'code.function.name': 'Thing.into',
-                  'rowdy.trace.outcome': 'complete',
-                  'rowdy.observable.emissions': 1,
+                  'cdk.trace.outcome': 'complete',
+                  'cdk.observable.emissions': 1,
                 },
                 events: [],
               }),
@@ -727,7 +727,7 @@ describe('Logger', () => {
       it('counts every emission', (done) => {
         new Traced().twice().subscribe({
           complete: () => {
-            expect(finished()[0]!.attributes['rowdy.observable.emissions']).toBe(2);
+            expect(finished()[0]!.attributes['cdk.observable.emissions']).toBe(2);
             done();
           },
         });
@@ -742,8 +742,8 @@ describe('Logger', () => {
                 status: SpanStatusCode.ERROR,
                 attributes: {
                   'code.function.name': 'Thing.fail',
-                  'rowdy.trace.outcome': 'error',
-                  'rowdy.observable.emissions': 0,
+                  'cdk.trace.outcome': 'error',
+                  'cdk.observable.emissions': 0,
                   'error.type': 'Error',
                 },
                 events: ['exception'],
@@ -761,7 +761,7 @@ describe('Logger', () => {
             expect(text()[1]).toMatch(
               /^TRACE @scaffoldly\/rowdy-cdk Thing.unloggable Emitted Duration: \d+\.\d\d ms Value: Object$/
             );
-            expect(finished()[0]!.attributes['rowdy.trace.outcome']).toBe('complete');
+            expect(finished()[0]!.attributes['cdk.trace.outcome']).toBe('complete');
             done();
           },
         });
@@ -775,7 +775,7 @@ describe('Logger', () => {
             expect(slow).toEqual(
               expect.objectContaining({
                 status: SpanStatusCode.UNSET,
-                attributes: expect.objectContaining({ 'rowdy.trace.outcome': 'unsubscribe' }),
+                attributes: expect.objectContaining({ 'cdk.trace.outcome': 'unsubscribe' }),
               })
             );
             done();
@@ -815,7 +815,7 @@ describe('Logger', () => {
         expect(method).toEqual(
           expect.objectContaining({
             status: SpanStatusCode.UNSET,
-            attributes: { 'code.function.name': 'Traced.doWork', 'rowdy.trace.outcome': 'complete' },
+            attributes: { 'code.function.name': 'Traced.doWork', 'cdk.trace.outcome': 'complete' },
           })
         );
         expect(spans.find((s) => s.name === 'before await')!.parent).toBe(method.id);
@@ -828,7 +828,7 @@ describe('Logger', () => {
           expect.objectContaining({
             name: 'Traced.reject',
             status: SpanStatusCode.ERROR,
-            attributes: expect.objectContaining({ 'rowdy.trace.outcome': 'error', 'error.type': 'RangeError' }),
+            attributes: expect.objectContaining({ 'cdk.trace.outcome': 'error', 'error.type': 'RangeError' }),
             events: ['exception'],
           }),
         ]);
@@ -843,7 +843,7 @@ describe('Logger', () => {
         expect(new Traced().doSyncWork(2)).toBe(4);
         const spans = finished();
         const method = spans.find((s) => s.name === 'Traced.doSyncWork')!;
-        expect(method.attributes['rowdy.trace.outcome']).toBe('complete');
+        expect(method.attributes['cdk.trace.outcome']).toBe('complete');
         expect(spans.find((s) => s.name === 'sync child')!.parent).toBe(method.id);
       });
 
@@ -853,7 +853,7 @@ describe('Logger', () => {
           expect.objectContaining({
             name: 'Traced.throwSync',
             status: SpanStatusCode.ERROR,
-            attributes: expect.objectContaining({ 'rowdy.trace.outcome': 'error', 'error.type': 'Error' }),
+            attributes: expect.objectContaining({ 'cdk.trace.outcome': 'error', 'error.type': 'Error' }),
           }),
         ]);
       });
@@ -867,7 +867,7 @@ describe('Logger', () => {
         expect(finished()).toEqual([
           expect.objectContaining({
             name: 'Traced.pending',
-            attributes: expect.objectContaining({ 'rowdy.trace.outcome': 'complete' }),
+            attributes: expect.objectContaining({ 'cdk.trace.outcome': 'complete' }),
           }),
         ]);
       });
@@ -883,7 +883,7 @@ describe('Logger', () => {
             expect.objectContaining({
               name: 'Traced.pending',
               status: SpanStatusCode.ERROR,
-              attributes: expect.objectContaining({ 'rowdy.trace.outcome': 'error' }),
+              attributes: expect.objectContaining({ 'cdk.trace.outcome': 'error' }),
             }),
           ]);
           expect(unhandled).toEqual([]);
@@ -999,11 +999,11 @@ describe('Logger', () => {
           const meterProvider = { getMeter: jest.fn(() => meter) } as unknown as MeterProvider;
           await Factory.get({ meterProvider });
           expect(meter.createHistogram).toHaveBeenCalledWith(
-            'rowdy.trace.duration',
+            'cdk.trace.duration',
             expect.objectContaining({ unit: 's' })
           );
           expect(recorded).toEqual([
-            [expect.any(Number), { 'code.function.name': 'Factory.get', 'rowdy.trace.outcome': 'complete' }],
+            [expect.any(Number), { 'code.function.name': 'Factory.get', 'cdk.trace.outcome': 'complete' }],
           ]);
         });
 
@@ -1098,11 +1098,7 @@ describe('Logger', () => {
           .pipe(retry(2))
           .subscribe({
             complete: () => {
-              expect(finished().map((s) => s.attributes['rowdy.trace.outcome'])).toEqual([
-                'error',
-                'error',
-                'complete',
-              ]);
+              expect(finished().map((s) => s.attributes['cdk.trace.outcome'])).toEqual(['error', 'error', 'complete']);
               done();
             },
           });
@@ -1136,11 +1132,11 @@ describe('Logger', () => {
         request.end();
 
         const spans = finished().filter((s) => s.name === 'Traced.twice');
-        expect(spans.map((s) => s.attributes['rowdy.trace.outcome'])).toEqual(['returned', 'complete']);
+        expect(spans.map((s) => s.attributes['cdk.trace.outcome'])).toEqual(['returned', 'complete']);
         expect(spans[0]!.parent).toBeUndefined();
         expect(spans[0]!.ms).toBeLessThan(10);
         expect(spans[1]!.parent).toBe(request.spanContext().spanId);
-        expect(spans[1]!.attributes['rowdy.observable.emissions']).toBe(2);
+        expect(spans[1]!.attributes['cdk.observable.emissions']).toBe(2);
       });
 
       it('ends the call span of an Observable never subscribed, and logs that it returned', async () => {
@@ -1150,7 +1146,7 @@ describe('Logger', () => {
         expect(finished()).toEqual([
           expect.objectContaining({
             name: 'Traced.twice',
-            attributes: expect.objectContaining({ 'rowdy.trace.outcome': 'returned' }),
+            attributes: expect.objectContaining({ 'cdk.trace.outcome': 'returned' }),
           }),
         ]);
         expect(text()).toEqual([
@@ -1166,7 +1162,7 @@ describe('Logger', () => {
         other.end();
 
         const spans = finished().filter((s) => s.name === 'Traced.twice');
-        expect(spans.map((s) => s.attributes['rowdy.trace.outcome'])).toEqual(['returned', 'complete']);
+        expect(spans.map((s) => s.attributes['cdk.trace.outcome'])).toEqual(['returned', 'complete']);
         expect(spans[1]!.parent).toBe(other.spanContext().spanId);
       });
 
