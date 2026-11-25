@@ -1,5 +1,6 @@
 import { Logger } from '@scaffoldly/rowdy';
 import { CdkInstrumentation } from '../src/log';
+import { BasicTracerProvider, InMemorySpanExporter, SimpleSpanProcessor } from '@opentelemetry/sdk-trace-base';
 import { CommandFinished, RowdyInstrumentation, Sandbox, SandboxOptions } from '@scaffoldly/rowdy/sandbox';
 import { AxiosError, AxiosHeaders, InternalAxiosRequestConfig } from 'axios';
 import { InvokeWithResponseStreamResponseEvent, LambdaClient } from '@aws-sdk/client-lambda';
@@ -1950,6 +1951,68 @@ describe('sandbox', () => {
     controller.abort('stop');
 
     expect(sandbox['environment'].signal.reason).toBe('stop');
+  });
+
+  describe('span attributes', () => {
+    const spans = new InMemorySpanExporter();
+    beforeAll(() =>
+      CdkInstrumentation.create({
+        tracerProvider: new BasicTracerProvider({ spanProcessors: [new SimpleSpanProcessor(spans)] }),
+      })
+    );
+    afterAll(() => CdkInstrumentation.create({ tracerProvider: new BasicTracerProvider() }));
+    beforeEach(() => spans.reset());
+
+    const attributes = async (name: string): Promise<Record<string, unknown> | undefined> => {
+      await new Promise(setImmediate);
+      return spans.getFinishedSpans().find((span) => span.name === name)?.attributes;
+    };
+
+    it('names the sandbox create made, from what it resolved to', async () => {
+      await SandboxImpl.create({ runtime: 'aws.lambda' });
+
+      expect(await attributes('SandboxImpl.create')).toMatchObject({
+        'rowdy.sandbox.name': 'box',
+        'rowdy.sandbox.runtime': 'aws.lambda',
+        'rowdy.sandbox.status': 'running',
+      });
+    });
+
+    it('names the sandbox get looked up, and says what it found', async () => {
+      jest.spyOn(MicrovmCompute.prototype, 'attach').mockImplementation(function (this: MicrovmCompute) {
+        return of(this);
+      });
+      jest.spyOn(LambdaFunction.prototype, 'withArn').mockImplementation(missing);
+
+      await Sandbox.get({ name: 'sandbox-box' });
+
+      expect(await attributes('SandboxImpl.get')).toMatchObject({
+        'rowdy.sandbox.name': 'sandbox-box',
+        'rowdy.sandbox.runtime': 'aws.microvm',
+        'rowdy.sandbox.status': 'running',
+      });
+    });
+
+    it('says the status a call left the sandbox in, not the one it found', async () => {
+      jest.spyOn(MicrovmCompute.prototype, 'create').mockImplementation(function (this: MicrovmCompute) {
+        return of(this);
+      });
+      jest.spyOn(MicrovmCompute.prototype, 'stop').mockImplementation(function (this: MicrovmCompute) {
+        return of(this);
+      });
+      const sandbox = await SandboxImpl.create({ runtime: 'aws.microvm' });
+      jest
+        .spyOn(MicrovmCompute.prototype, 'status')
+        .mockReturnValue(of({ name: 'box', runtime: 'aws.microvm', meta: {}, status: 'stopped' }));
+
+      await sandbox.stop();
+
+      expect(await attributes('SandboxImpl.stop')).toMatchObject({
+        'rowdy.sandbox.name': 'box',
+        'rowdy.sandbox.runtime': 'aws.microvm',
+        'rowdy.sandbox.status': 'stopped',
+      });
+    });
   });
 
   describe('get', () => {
