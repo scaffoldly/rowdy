@@ -32,8 +32,9 @@ const host = async (): Promise<Seen> => {
       logLevel: 'silent',
       external: [
         '@opentelemetry/api',
+        '@opentelemetry/api-logs',
         '@opentelemetry/sdk-node',
-        '@opentelemetry/sdk-trace',
+        '@opentelemetry/sdk-trace-base',
         '@opentelemetry/sdk-metrics',
         '@opentelemetry/sdk-logs',
       ],

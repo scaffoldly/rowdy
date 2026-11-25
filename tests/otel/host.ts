@@ -3,9 +3,11 @@
 import { createServer } from 'http';
 import type { AddressInfo } from 'net';
 import { Subscriber } from 'rxjs';
-import { logs, metrics, trace } from '@opentelemetry/api';
+// The 1.9 line, the oldest whose span parents rowdy keeps: rowdy-cdk bundles api 1.9.
+import { metrics, trace } from '@opentelemetry/api';
+import { logs } from '@opentelemetry/api-logs';
 import { NodeSDK } from '@opentelemetry/sdk-node';
-import { InMemorySpanExporter, SimpleSpanProcessor } from '@opentelemetry/sdk-trace';
+import { InMemorySpanExporter, SimpleSpanProcessor } from '@opentelemetry/sdk-trace-base';
 import {
   AggregationTemporality,
   InMemoryMetricExporter,
@@ -20,7 +22,7 @@ const main = async (): Promise<void> => {
   const reader = new PeriodicExportingMetricReader({ exporter: metricExporter, exportIntervalMillis: 60_000 });
   const records = new InMemoryLogRecordExporter();
   const sdk = new NodeSDK({
-    spanProcessors: [new SimpleSpanProcessor({ exporter: spans })],
+    spanProcessors: [new SimpleSpanProcessor(spans)],
     metricReaders: [reader],
     logRecordProcessors: [new SimpleLogRecordProcessor({ exporter: records })],
     // rowdy-cdk brings its own.
