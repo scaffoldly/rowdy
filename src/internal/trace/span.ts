@@ -1,10 +1,16 @@
 import { SpanKind, SpanStatusCode, trace, type Attributes, type Context } from '@opentelemetry/api';
 import { SeverityNumber } from '@opentelemetry/api-logs';
+import type { Unsubscribable } from 'rxjs';
+import type { Annotated } from './attributes';
 import type { ResolvedOptions } from '../../otel';
 import { wiretap } from './logging';
 import type { Tracker } from './tracker';
 
 type Outcome = 'complete' | 'error' | 'unsubscribe' | 'returned';
+
+// After the current microtasks; a Worker has no setImmediate.
+const later = (fn: () => void): void =>
+  void (typeof setImmediate === 'function' ? setImmediate(fn) : setTimeout(fn, 0));
 
 /**
  * Starts a span for one run, as a child of `parent`, from the options' `tracerProvider`. The returned
@@ -16,7 +22,7 @@ export const startSpan = (
   method: string,
   { tracerProvider, name, version, ...rest }: ResolvedOptions,
   parent: Context
-): { context: Context; tracker: Tracker } => {
+): { context: Context; tracker: Tracker; annotated: Annotated } => {
   const attributes = { 'code.function.name': method };
   const span = tracerProvider
     .getTracer(name, version)
@@ -35,9 +41,40 @@ export const startSpan = (
   })();
   tap(SeverityNumber.DEBUG, 'Span Started', { name: method, ...ids, ...attributes });
 
+  // Attributes from @Attributes: ones not yet complete, which its end waits for and stops.
+  let pending = 0;
+  const owned: Unsubscribable[] = [];
+  let open = true;
+  const annotated: Annotated = {
+    span,
+    isOpen: () => open,
+    hold: () => {
+      pending += 1;
+      let released = false;
+      return () => {
+        if (released) return;
+        released = true;
+        pending -= 1;
+      };
+    },
+    own: (subscription) => (open ? owned.push(subscription) : subscription.unsubscribe()),
+  };
+
   const end = (outcome: Outcome, at?: number, error?: unknown): void => {
     span.setAttribute('cdk.trace.outcome', outcome);
     if (emissions !== undefined) span.setAttribute('cdk.observable.emissions', emissions);
+    if (pending) {
+      // Values derived from the result settle within microtasks; the span still ends as of now.
+      const endedAt = at ?? performance.now();
+      later(() => finish(outcome, endedAt, error));
+    } else {
+      finish(outcome, at, error);
+    }
+  };
+
+  const finish = (outcome: Outcome, at?: number, error?: unknown): void => {
+    open = false;
+    owned.splice(0).forEach((subscription) => subscription.unsubscribe());
     span.end(at);
     tap(outcome === 'error' ? SeverityNumber.WARN : SeverityNumber.DEBUG, 'Span Ended', {
       name: method,
@@ -53,6 +90,7 @@ export const startSpan = (
 
   return {
     context,
+    annotated,
     tracker: {
       subscribe: (): void => {
         emissions = 0;

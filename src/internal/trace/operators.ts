@@ -6,6 +6,7 @@ import {
   Observable,
   repeat,
   retry,
+  Subject,
   take,
   takeUntil,
   tap,
@@ -16,7 +17,7 @@ import {
 import { CdkInstrumentation } from '../../otel';
 import { logCall } from './logging';
 import type { Redactor } from './redact';
-import { startRun } from './run';
+import { startRun, type Run } from './run';
 
 type Ending = 'complete' | 'error' | 'unsubscribe';
 
@@ -30,7 +31,16 @@ export type TracedOptions = { attributes?: Attributes };
  */
 export const traced = <T>(
   name: string,
-  { attributes: given, args, redactor }: TracedOptions & { args?: unknown[]; redactor?: Redactor },
+  {
+    attributes: given,
+    args,
+    redactor,
+    annotate,
+  }: TracedOptions & {
+    args?: unknown[];
+    redactor?: Redactor;
+    annotate?: (run: Run, emissions: Observable<unknown>) => void;
+  },
   make: (span: Span | undefined) => { source: Observable<T>; attributes: (ending: Ending) => Attributes }
 ): Observable<T> =>
   new Observable<T>((subscriber) => {
@@ -40,9 +50,12 @@ export const traced = <T>(
     if (given) span?.setAttributes(given);
     const { source, attributes } = make(span);
     run.tracker.subscribe();
+    const emissions = annotate ? new Subject<unknown>() : undefined;
+    if (emissions) annotate!(run, emissions.asObservable());
     let settled = false;
     const ending = (how: Ending): void => {
       settled = true;
+      emissions?.complete();
       span?.setAttributes(attributes(how));
     };
 
@@ -50,7 +63,10 @@ export const traced = <T>(
       source
         .pipe(
           tap({
-            next: (value) => run.tracker.emit(value),
+            next: (value) => {
+              emissions?.next(value);
+              run.tracker.emit(value);
+            },
             error: (error: unknown) => {
               ending('error');
               run.tracker.fail(error);

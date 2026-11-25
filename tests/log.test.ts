@@ -23,7 +23,7 @@ import {
   type Sink,
 } from '../src/log';
 import type { CdkOptions } from '../src/cdk';
-import { poll, Redact, retrying, Trace } from '../src/internal/trace';
+import { Attributes, poll, Redact, retrying, Trace } from '../src/internal/trace';
 import { CdkInstrumentation } from '../src/otel';
 
 describe('log masking', () => {
@@ -1472,6 +1472,141 @@ describe('Logger', () => {
           expect(finished().map((s) => s.name)).toEqual(['Sandbox.before', 'Sandbox.after']);
           expect(records.filter((r) => r.includes('[redacted]'))).toHaveLength(2);
           expect(everything()).not.toContain('secret');
+        });
+      });
+
+      describe('with @Attributes', () => {
+        // A span with attribute Promises pending ends once the current microtasks drain.
+        const drained = (): Promise<void> => new Promise((resolve) => setImmediate(resolve));
+        const span = (name: string): Record<string, unknown> => finished().find((s) => s.name === name)!.attributes;
+        let subscriptions = 0;
+
+        @Trace
+        class Box {
+          constructor(readonly name: string) {}
+
+          @Attributes(function (this: typeof Box, call: { args: [string]; result: Promise<Box> }) {
+            return { 'box.class': this.name, 'box.arg': call.args[0], 'box.name': call.result.then((b) => b.name) };
+          })
+          static async create(name: string): Promise<Box> {
+            return new Box(name);
+          }
+
+          @Attributes(function (this: Box, call: { args: []; result: Observable<string> }) {
+            return { 'box.name': this.name, 'box.status': call.result };
+          })
+          statuses(): Observable<string> {
+            return defer(() => {
+              subscriptions += 1;
+              return of('PENDING', 'RUNNING');
+            });
+          }
+
+          @Trace
+          @Attributes((call: { args: []; result: number }) => ({ 'box.size': call.result }))
+          size(): number {
+            return 3;
+          }
+
+          @Attributes((call: { args: []; result: number }) => ({ 'box.size': call.result }))
+          @Trace
+          size2(): number {
+            return 4;
+          }
+
+          @Attributes(() => ({ 'box.late': new Promise((resolve) => setTimeout(() => resolve('late'), 20)) }))
+          async late(): Promise<number> {
+            return 1;
+          }
+
+          @Attributes(() => {
+            throw new Error('bad hook');
+          })
+          async throwing(): Promise<number> {
+            return 2;
+          }
+
+          @Attributes(() => ({
+            'box.error': new Error('not a value') as never,
+            'box.missing': undefined,
+            'box.ok': true,
+          }))
+          async odd(): Promise<number> {
+            return 3;
+          }
+
+          @Redact(() => '[redacted]')
+          @Attributes((call: { args: []; result: Promise<string> }) => ({
+            'box.length': call.result.then((s) => s.length),
+          }))
+          async secret(): Promise<string> {
+            return 'secret';
+          }
+        }
+
+        beforeEach(() => {
+          subscriptions = 0;
+        });
+
+        it("sets a static method's value and Promise attributes, with the class as this", async () => {
+          await expect(Box.create('b1')).resolves.toEqual(new Box('b1'));
+          await drained();
+          expect(span('Box.create')).toEqual(
+            expect.objectContaining({ 'box.class': 'Box', 'box.arg': 'b1', 'box.name': 'b1' })
+          );
+        });
+
+        it("sets an Observable's attribute on each emission, the last winning, without subscribing twice", async () => {
+          await expect(lastValueFrom(new Box('b2').statuses().pipe(toArray()))).resolves.toEqual([
+            'PENDING',
+            'RUNNING',
+          ]);
+          expect(subscriptions).toBe(1);
+          expect(span('Box.statuses')).toEqual(expect.objectContaining({ 'box.name': 'b2', 'box.status': 'RUNNING' }));
+        });
+
+        it('makes one set of attributes for each subscription', async () => {
+          const statuses = new Box('b3').statuses();
+          await lastValueFrom(statuses);
+          await lastValueFrom(statuses);
+          expect(subscriptions).toBe(2);
+          expect(
+            finished()
+              .filter((s) => s.name === 'Box.statuses')
+              .map((s) => s.attributes['box.status'])
+          ).toEqual(['RUNNING', 'RUNNING']);
+        });
+
+        it('works with a method-level @Trace in either order', () => {
+          expect(new Box('b4').size()).toBe(3);
+          expect(new Box('b4').size2()).toBe(4);
+          expect(span('Box.size')['box.size']).toBe(3);
+          expect(span('Box.size2')['box.size']).toBe(4);
+        });
+
+        it('drops a value that arrives after its span ended', async () => {
+          await new Box('b5').late();
+          await new Promise((resolve) => setTimeout(resolve, 40));
+          expect(Object.keys(span('Box.late'))).not.toContain('box.late');
+        });
+
+        it('sets nothing for a hook that throws, and the call goes on', async () => {
+          await expect(new Box('b6').throwing()).resolves.toBe(2);
+          expect(Object.keys(span('Box.throwing')).filter((k) => k.startsWith('box.'))).toEqual([]);
+        });
+
+        it('sets nothing for an Error or undefined value', async () => {
+          await new Box('b7').odd();
+          const attributes = span('Box.odd');
+          expect(attributes['box.ok']).toBe(true);
+          expect(Object.keys(attributes)).not.toContain('box.error');
+          expect(Object.keys(attributes)).not.toContain('box.missing');
+        });
+
+        it('works next to @Redact, its hook seeing the real result', async () => {
+          await expect(new Box('b8').secret()).resolves.toBe('secret');
+          await drained();
+          expect(span('Box.secret')['box.length']).toBe(6);
         });
       });
 

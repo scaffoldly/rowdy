@@ -5,6 +5,8 @@ import { traceClass } from './class';
 import { logCall } from './logging';
 import { methodName } from './name';
 import { RESULTS } from './results';
+import { isObservable } from 'rxjs';
+import { attributesOf, callHook } from './attributes';
 import { redactorOf } from './redact';
 import { startRun, type Call } from './run';
 
@@ -28,6 +30,7 @@ export const decorate =
         const method = methodName(this, context);
         // @Redact may have marked the method as written or, decorating after @Trace, this wrapper.
         const redactor = redactorOf(value, wrapper);
+        const hook = attributesOf(value, wrapper);
         // Its span, duration and lines go where the one CdkInstrumentation's do.
         // Only a call's CdkOptions: its other options, like a sandbox's `name`, are not CdkInstrumentation's.
         const { tracerProvider, meterProvider, loggerProvider, logLevel } = optionsOf?.(this, args) ?? {};
@@ -38,6 +41,7 @@ export const decorate =
           parent,
           run: startRun(method, options, parent, redactor),
           again: () => startRun(method, options, otel.active(), redactor),
+          annotate: hook ? (run, result): void => run.annotate(callHook(hook, this, { args, result })) : undefined,
         };
         call.run.sinks.forEach((sink) => logCall(sink, method, args, redactor));
 
@@ -49,6 +53,8 @@ export const decorate =
           throw error;
         }
 
+        // An Observable's hook is called for each run, with its emissions, as it subscribes.
+        if (!isObservable(returned)) call.annotate?.(call.run, returned);
         const result = RESULTS.find((r) => r.matches(returned))!;
         return result.trace(returned as never, call) as ReturnType<typeof value>;
       },
@@ -134,3 +140,4 @@ export const Trace: {
 
 export { poll, retrying, type TracedOptions } from './operators';
 export { Redact, type Redactor } from './redact';
+export { Attributes, type AttributeCall, type AttributeInput } from './attributes';

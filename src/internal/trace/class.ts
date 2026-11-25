@@ -1,6 +1,8 @@
 import { isObservable } from 'rxjs';
 import { methodName } from './name';
 import { traced } from './operators';
+import type { Run } from './run';
+import { attributesOf, callHook } from './attributes';
 import { redactorOf } from './redact';
 
 type Fn = (this: unknown, ...args: unknown[]) => unknown;
@@ -21,7 +23,11 @@ const wrap = (
     : function (this: unknown, ...args: unknown[]): unknown {
         const returned = value.apply(this, args);
         if (!isObservable(returned)) return returned;
-        return traced(methodName(this, context), { args, redactor: redactorOf(value) }, () => ({
+        const hook = attributesOf(value);
+        const annotate = hook
+          ? (run: Run, emissions: unknown): void => run.annotate(callHook(hook, this, { args, result: emissions }))
+          : undefined;
+        return traced(methodName(this, context), { args, redactor: redactorOf(value), annotate }, () => ({
           source: returned,
           attributes: () => ({}),
         }));
