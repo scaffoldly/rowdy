@@ -11,7 +11,7 @@ import {
 } from '@opentelemetry/api';
 import { AsyncLocalStorageContextManager } from '@opentelemetry/context-async-hooks';
 import { InMemorySpanExporter, SimpleSpanProcessor, TracerProvider } from '@opentelemetry/sdk-trace';
-import { defer, lastValueFrom, Observable, of, throwError, race, timer, map, NEVER, retry } from 'rxjs';
+import { defer, lastValueFrom, Observable, of, throwError, race, timer, map, NEVER, retry, tap } from 'rxjs';
 import pino from 'pino';
 import {
   ILoggable,
@@ -27,7 +27,7 @@ import {
   type Sink,
 } from '../src/log';
 import type { CdkOptions } from '../src/cdk';
-import { Trace } from '../src/internal/trace';
+import { poll, retrying, Trace } from '../src/internal/trace';
 import { CdkInstrumentation } from '../src/otel';
 
 describe('log masking', () => {
@@ -1261,6 +1261,190 @@ describe('Logger', () => {
             expect.stringMatching(/^TRACE Factory.run Completed Duration: .* Value: ran ls$/),
           ]);
           expect(only(text())).toEqual([]);
+        });
+      });
+
+      describe('on a class', () => {
+        const aws = (value: string): Observable<string> =>
+          defer(() => {
+            trace.getTracer('test').startSpan('aws').end();
+            return of(value);
+          });
+
+        @Trace
+        class Compute {
+          static list(): Observable<string> {
+            return aws('vm-1');
+          }
+
+          status(): Observable<string> {
+            return aws('RUNNING');
+          }
+
+          async stop(): Promise<string> {
+            return lastValueFrom(this.status());
+          }
+
+          @Trace
+          async own(): Promise<number> {
+            return 1;
+          }
+
+          meta(): string {
+            return 'plain';
+          }
+
+          get state(): string {
+            return 'got';
+          }
+        }
+
+        it('traces an async method from its call, and an Observable a method returns as subscribed, nested', async () => {
+          await expect(new Compute().stop()).resolves.toBe('RUNNING');
+          const spans = finished();
+          const stop = spans.find((s) => s.name === 'Compute.stop')!;
+          const status = spans.find((s) => s.name === 'Compute.status')!;
+          expect(stop.parent).toBeUndefined();
+          expect(status.parent).toBe(stop.id);
+          expect(spans.find((s) => s.name === 'aws')!.parent).toBe(status.id);
+          expect(status.attributes).toEqual(
+            expect.objectContaining({ 'cdk.trace.outcome': 'complete', 'cdk.observable.emissions': 1 })
+          );
+        });
+
+        it('traces a static method', async () => {
+          await expect(lastValueFrom(Compute.list())).resolves.toBe('vm-1');
+          expect(finished().map((s) => s.name)).toEqual(['aws', 'Compute.list']);
+        });
+
+        it('makes a span for each subscription', async () => {
+          const status = new Compute().status();
+          await lastValueFrom(status);
+          await lastValueFrom(status);
+          expect(finished().filter((s) => s.name === 'Compute.status')).toHaveLength(2);
+        });
+
+        it('leaves methods that return a plain value, and getters, as they are', () => {
+          const compute = new Compute();
+          expect(compute.meta()).toBe('plain');
+          expect(compute.state).toBe('got');
+          expect(finished()).toEqual([]);
+        });
+
+        it('leaves a method with a @Trace of its own to it', async () => {
+          await expect(new Compute().own()).resolves.toBe(1);
+          expect(finished().map((s) => s.name)).toEqual(['Compute.own']);
+        });
+      });
+
+      describe('poll', () => {
+        const states = (...seq: string[]): Observable<string> => {
+          let i = 0;
+          return defer(() => {
+            trace.getTracer('test').startSpan('get').end();
+            return of(seq[Math.min(i++, seq.length - 1)]!);
+          });
+        };
+
+        it('resubscribes until a value matches, emits it, and makes a span of the wait', async () => {
+          const value = await lastValueFrom(
+            states('PENDING', 'PENDING', 'RUNNING').pipe(poll('wait for running', (s) => s !== 'PENDING', { delay: 1 }))
+          );
+          expect(value).toBe('RUNNING');
+          const spans = finished();
+          const wait = spans.find((s) => s.name === 'wait for running')!;
+          expect(wait.attributes).toEqual(
+            expect.objectContaining({
+              'cdk.poll.attempts': 3,
+              'cdk.poll.outcome': 'satisfied',
+              'cdk.trace.outcome': 'complete',
+            })
+          );
+          expect(spans.filter((s) => s.name === 'get').map((s) => s.parent)).toEqual([wait.id, wait.id, wait.id]);
+        });
+
+        it('completes without a value once its timeout is up', async () => {
+          const seen: string[] = [];
+          await lastValueFrom(
+            states('PENDING').pipe(
+              poll('never', () => false, { delay: 5, timeout: 30 }),
+              tap((s) => seen.push(s))
+            ),
+            { defaultValue: undefined }
+          );
+          expect(seen).toEqual([]);
+          const span = finished().find((s) => s.name === 'never')!;
+          expect(span.attributes['cdk.poll.outcome']).toBe('timeout');
+          expect(span.attributes['cdk.poll.attempts']).toBeGreaterThan(1);
+        });
+
+        it('sets the attributes it is given on its span', async () => {
+          await lastValueFrom(
+            states('RUNNING').pipe(
+              poll('wait for microvm', () => true, { delay: 1, attributes: { 'aws.microvm.id': 'vm-1' } })
+            )
+          );
+          expect(finished().find((s) => s.name === 'wait for microvm')!.attributes['aws.microvm.id']).toBe('vm-1');
+        });
+
+        it('fails with the source', async () => {
+          await expect(
+            lastValueFrom(throwError(() => new Error('gone')).pipe(poll('broken', () => true, { delay: 1 })))
+          ).rejects.toThrow('gone');
+          expect(finished()).toEqual([
+            expect.objectContaining({
+              name: 'broken',
+              status: SpanStatusCode.ERROR,
+              attributes: expect.objectContaining({ 'cdk.poll.outcome': 'error', 'cdk.poll.attempts': 1 }),
+            }),
+          ]);
+        });
+      });
+
+      describe('retrying', () => {
+        const failing = (times: number, value = 'ok'): Observable<string> => {
+          let calls = 0;
+          return defer(() => (++calls <= times ? throwError(() => new Error(`attempt ${calls}`)) : of(value)));
+        };
+
+        it('retries after each delay, and makes a span of the attempts, an exception event for each failure', async () => {
+          await expect(lastValueFrom(failing(2).pipe(retrying('create role', () => timer(1))))).resolves.toBe('ok');
+          const span = finished().find((s) => s.name === 'create role')!;
+          expect(span.attributes).toEqual(
+            expect.objectContaining({ 'cdk.retry.attempts': 3, 'cdk.trace.outcome': 'complete' })
+          );
+          expect(span.events).toEqual(['exception', 'exception']);
+        });
+
+        it('stops when the delay throws, and fails with that error', async () => {
+          const delay = (error: unknown): Observable<number> => {
+            throw error;
+          };
+          await expect(lastValueFrom(failing(5).pipe(retrying('fatal', delay)))).rejects.toThrow('attempt 1');
+          expect(finished()).toEqual([
+            expect.objectContaining({
+              name: 'fatal',
+              status: SpanStatusCode.ERROR,
+              attributes: expect.objectContaining({ 'cdk.retry.attempts': 1 }),
+            }),
+          ]);
+        });
+
+        it('retries once a Promise its delay returns settles, and sets the attributes it is given', async () => {
+          const written: string[] = [];
+          const write = (): Promise<void> => Promise.resolve(void written.push('role'));
+          await expect(
+            lastValueFrom(failing(1).pipe(retrying('create role', write, { attributes: { 'aws.iam.role': 'r' } })))
+          ).resolves.toBe('ok');
+          expect(written).toEqual(['role']);
+          expect(finished().find((s) => s.name === 'create role')!.attributes['aws.iam.role']).toBe('r');
+        });
+
+        it('stops after count retries', async () => {
+          await expect(
+            lastValueFrom(failing(5).pipe(retrying('limited', () => timer(1), { count: 2 })))
+          ).rejects.toThrow('attempt 3');
+          expect(finished().find((s) => s.name === 'limited')!.attributes['cdk.retry.attempts']).toBe(3);
         });
       });
 

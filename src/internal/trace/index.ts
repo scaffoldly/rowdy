@@ -1,6 +1,7 @@
 import { context as otel } from '@opentelemetry/api';
 import type { CdkOptions } from '../../cdk';
 import { CdkInstrumentation } from '../../otel';
+import { traceClass } from './class';
 import { logCall } from './logging';
 import { methodName } from './name';
 import { RESULTS } from './results';
@@ -15,33 +16,39 @@ type Decorator = <This, Args extends unknown[], R>(
 /** A traced call's options, given to the one CdkInstrumentation before it runs. */
 type OptionsOf = (self: unknown, args: unknown[]) => CdkOptions | undefined;
 
-const decorate =
+/** Marks a method `@Trace` wrapped, so a traced class leaves it to its own options. */
+export const TRACED = Symbol.for('@scaffoldly/rowdy-cdk/trace.traced');
+
+export const decorate =
   (optionsOf?: OptionsOf): Decorator =>
   (value, context) =>
-    function (this, ...args) {
-      const method = methodName(this, context);
-      // Its span, duration and lines go where the one CdkInstrumentation's do.
-      // Only a call's CdkOptions: its other options, like a sandbox's `name`, are not CdkInstrumentation's.
-      const { tracerProvider, meterProvider, loggerProvider, logLevel } = optionsOf?.(this, args) ?? {};
-      const { options } = CdkInstrumentation.create({ tracerProvider, meterProvider, loggerProvider, logLevel });
+    Object.assign(
+      function (this: ThisParameterType<typeof value>, ...args: Parameters<typeof value>) {
+        const method = methodName(this, context);
+        // Its span, duration and lines go where the one CdkInstrumentation's do.
+        // Only a call's CdkOptions: its other options, like a sandbox's `name`, are not CdkInstrumentation's.
+        const { tracerProvider, meterProvider, loggerProvider, logLevel } = optionsOf?.(this, args) ?? {};
+        const { options } = CdkInstrumentation.create({ tracerProvider, meterProvider, loggerProvider, logLevel });
 
-      const parent = otel.active();
-      const call: Call = { parent, run: startRun(method, options, parent), again: () => startRun(method, options) };
-      call.run.sinks.forEach((sink) => logCall(sink, method, args));
+        const parent = otel.active();
+        const call: Call = { parent, run: startRun(method, options, parent), again: () => startRun(method, options) };
+        call.run.sinks.forEach((sink) => logCall(sink, method, args));
 
-      let returned: unknown;
-      try {
-        returned = otel.with(call.run.context, () => value.apply(this, args));
-      } catch (error) {
-        call.run.tracker.fail(error);
-        throw error;
-      }
+        let returned: unknown;
+        try {
+          returned = otel.with(call.run.context, () => value.apply(this, args));
+        } catch (error) {
+          call.run.tracker.fail(error);
+          throw error;
+        }
 
-      const result = RESULTS.find((r) => r.matches(returned))!;
-      return result.trace(returned as never, call) as ReturnType<typeof value>;
-    };
+        const result = RESULTS.find((r) => r.matches(returned))!;
+        return result.trace(returned as never, call) as ReturnType<typeof value>;
+      },
+      { [TRACED]: true }
+    );
 
-const isDecoratorContext = (value: unknown): value is ClassMethodDecoratorContext =>
+const isDecoratorContext = (value: unknown): value is ClassMethodDecoratorContext | ClassDecoratorContext =>
   typeof value === 'object' && value !== null && 'kind' in value && 'name' in value;
 
 /**
@@ -73,6 +80,14 @@ const isDecoratorContext = (value: unknown): value is ClassMethodDecoratorContex
  * not Loggable are logged by their class name only.
  */
 export const Trace: {
+  /**
+   * `@Trace` on a class: each method it defines, instance or static, that is async or returns an
+   * Observable. An async method is traced from its call, as `@Trace` on it would; an Observable a
+   * method returns, a run for each subscription, as of the subscription. A method that returns
+   * anything else, a getter or setter, and a method with a `@Trace` of its own are left as they are.
+   * Methods a subclass inherits are traced as the class that defines them is.
+   */
+  <C extends abstract new (...args: never) => unknown>(value: C, context: ClassDecoratorContext<C>): void;
   /** `@Trace`. */
   <This, Args extends unknown[], R>(
     value: Method<This, Args, R>,
@@ -93,8 +108,12 @@ export const Trace: {
   ) => Method<T, Args, R>;
 } = ((
   first?: Method<unknown, unknown[], unknown>,
-  second?: ClassMethodDecoratorContext
+  second?: ClassMethodDecoratorContext | ClassDecoratorContext
 ): Decorator | Method<unknown, unknown[], unknown> => {
+  if (isDecoratorContext(second) && second.kind === 'class') {
+    traceClass(first as never, TRACED, decorate() as never);
+    return undefined as never;
+  }
   if (isDecoratorContext(second)) return decorate()(first!, second);
   if (typeof first === 'function') {
     const options = first as (this: unknown, ...args: unknown[]) => CdkOptions | undefined;
@@ -102,3 +121,5 @@ export const Trace: {
   }
   return decorate();
 }) as never;
+
+export { poll, retrying, type TracedOptions } from './operators';
