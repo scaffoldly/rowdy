@@ -99,6 +99,26 @@ describe('CdkInstrumentation.create', () => {
     }
   });
 
+  it('keeps its loggerProvider through calls that leave it out or undefined, until a null unsets it', () => {
+    const { CdkInstrumentation } = fresh();
+    const getLogger = jest.fn(() => createNoopLogger());
+    const probes = (): number => {
+      CdkInstrumentation.create().loggerProvider.getLogger('probe');
+      return getLogger.mock.calls.filter(([name]: unknown[]) => name === 'probe').length;
+    };
+    const cdk = CdkInstrumentation.create({ loggerProvider: { getLogger } });
+    try {
+      CdkInstrumentation.create({ logLevel: undefined });
+      CdkInstrumentation.create({ loggerProvider: undefined });
+      expect(probes()).toBe(1);
+      CdkInstrumentation.create({ loggerProvider: null });
+      CdkInstrumentation.create({});
+      expect(probes()).toBe(1);
+    } finally {
+      cdk.disable();
+    }
+  });
+
   it("filters the members' log records at its logLevel", () => {
     const { CdkInstrumentation } = fresh();
     const emit = jest.fn();

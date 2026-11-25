@@ -32,8 +32,8 @@ export type ResolvedOptions = Omit<Required<CdkInstrumentationOptions>, 'loggerP
  *
  *     new NodeSDK({ serviceName: 'my-service', instrumentations: [CdkInstrumentation.create()] });
  *
- * rxjs is patched as this package imports it too, so a bundle that inlines it is covered; the AWS
- * SDK is patched only when required, so a bundle that inlines it gets no aws-sdk spans.
+ * rxjs and the AWS SDK's client are patched as this package imports them too, so a bundle that
+ * inlines them is covered.
  */
 export class CdkInstrumentation implements Instrumentation {
   private static instance?: CdkInstrumentation;
@@ -56,7 +56,7 @@ export class CdkInstrumentation implements Instrumentation {
   /**
    * The one CdkInstrumentation, made by the first call and returned by every later one, so its
    * instrumentations are never registered twice. Each call's options are merged over the ones it
-   * has: what a call leaves out, or leaves undefined, it keeps.
+   * has: what a call leaves out, or leaves undefined, it keeps. A null loggerProvider unsets it.
    */
   static create(given: CdkInstrumentationOptions = {}): CdkInstrumentation {
     // Only its own: a caller's options are often more, like credentials.
@@ -84,7 +84,7 @@ export class CdkInstrumentation implements Instrumentation {
   }
 
   /**
-   * Where log records go: the logger provider it was last given, or else `Logger.defaults()`'s,
+   * Where log records go: the logger provider it was last given, unless null, or else `Logger.defaults()`'s,
    * filtered at its logLevel, or else at the process-wide level.
    */
   get loggerProvider(): LoggerProvider {
