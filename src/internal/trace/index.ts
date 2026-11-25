@@ -30,7 +30,7 @@ export const decorate =
         const method = methodName(this, context);
         // @Redact may have marked the method as written or, decorating after @Trace, this wrapper.
         const redactor = redactorOf(value, wrapper);
-        const hook = attributesOf(value, wrapper);
+        const { hooks = [], parts = [] } = attributesOf(value, wrapper) ?? {};
         // Its span, duration and lines go where the one CdkInstrumentation's do.
         // Only a call's CdkOptions: its other options, like a sandbox's `name`, are not CdkInstrumentation's.
         const { tracerProvider, meterProvider, loggerProvider, logLevel } = optionsOf?.(this, args) ?? {};
@@ -39,9 +39,11 @@ export const decorate =
         const parent = otel.active();
         const call: Call = {
           parent,
-          run: startRun(method, options, parent, redactor),
-          again: () => startRun(method, options, otel.active(), redactor),
-          annotate: hook ? (run): void => run.annotate(callHook(hook, this)) : undefined,
+          run: startRun(method, options, parent, { redactor, args, parts }),
+          again: () => startRun(method, options, otel.active(), { redactor, args, parts }),
+          annotate: hooks.length
+            ? (run): void => hooks.forEach((hook) => run.annotate(callHook(hook, this)))
+            : undefined,
         };
         call.run.sinks.forEach((sink) => logCall(sink, method, args, redactor));
 
@@ -140,4 +142,4 @@ export const Trace: {
 
 export { poll, retrying, type TracedOptions } from './operators';
 export { Redact, type Redactor } from './redact';
-export { Attributes, type AttributeInput } from './attributes';
+export { Attributes, type AttributeInput, type AttributeParts } from './attributes';

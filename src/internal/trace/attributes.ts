@@ -1,5 +1,6 @@
 import type { AttributeValue, Span } from '@opentelemetry/api';
-import { EMPTY, from, Observable, of, type Unsubscribable } from 'rxjs';
+import { EMPTY, from, Observable, of, type Subscribable, type Unsubscribable } from 'rxjs';
+import type { Tracker } from './tracker';
 
 /**
  * An attribute as a hook gives it: known now, when a Promise resolves, or on each emission of a
@@ -13,11 +14,61 @@ export type AttributeInput =
 
 type Hook = (this: unknown, self: unknown) => Record<string, AttributeInput> | undefined;
 
-const HOOKS = new WeakMap<object, Hook>();
+type Plain = Record<string, AttributeValue | undefined> | undefined;
 
-/** The hook `@Attributes` set on any of `methods`: the method as written, or a wrapper of it. */
-export const attributesOf = (...methods: object[]): Hook | undefined =>
-  methods.map((method) => HOOKS.get(method)).find(Boolean);
+/** `@Attributes({ args, result })`: from a call's arguments, and from what it returns, resolves to or emits. */
+export interface AttributeParts {
+  args?: (...args: never[]) => Plain;
+  result?: (value: never) => Plain;
+}
+
+/** What `@Attributes` set on a method: hooks of the instance, and parts of the call. */
+export interface MethodAttributes {
+  hooks: Hook[];
+  parts: AttributeParts[];
+}
+
+const ATTRIBUTES = new WeakMap<object, MethodAttributes>();
+
+/** What `@Attributes` set on any of `methods`, the method as written or a wrapper of it, together. */
+export const attributesOf = (...methods: object[]): MethodAttributes | undefined => {
+  const found = methods.flatMap((method) => ATTRIBUTES.get(method) ?? []);
+  if (!found.length) return undefined;
+  return { hooks: found.flatMap(({ hooks }) => hooks), parts: found.flatMap(({ parts }) => parts) };
+};
+
+/** What a part gives for its arguments; nothing when it throws. */
+const callPart = (part: (...args: unknown[]) => Plain, args: unknown[]): Plain => {
+  try {
+    const values = part(...args);
+    return values && typeof values === 'object' ? values : undefined;
+  } catch {
+    return undefined;
+  }
+};
+
+/** Sets each part's `args` attributes for a call's `args`. */
+export const annotateArgs = (parts: AttributeParts[], args: unknown[], annotate: (values: Plain) => void): void =>
+  parts.forEach(({ args: of }) => of && annotate(callPart(of as (...args: unknown[]) => Plain, args)));
+
+/**
+ * Sets each part's `result` attributes as a run's result is known: the value a call returns or its
+ * Promise resolves to, or each emission of an Observable's run. First among a run's trackers, so the
+ * span is still open.
+ */
+export const resultTracker = (parts: AttributeParts[], annotate: (values: Plain) => void): Tracker => {
+  const results = parts.flatMap(({ result }) => (result ? [result as (value: unknown) => Plain] : []));
+  const set = (value: unknown): void => results.forEach((result) => annotate(callPart(result, [value])));
+  return {
+    subscribe: () => undefined,
+    emit: set,
+    // An Observable's run completes with no value.
+    complete: (...value) => (value.length ? set(value[0]) : undefined),
+    fail: () => undefined,
+    unsubscribe: () => undefined,
+    returned: () => undefined,
+  };
+};
 
 /** What a hook gives for `self`, the instance or, for a static method, the class; nothing when it throws. */
 export const callHook = (hook: Hook, self: unknown): Record<string, AttributeInput> | undefined => {
@@ -101,26 +152,49 @@ export const follow = ({ span, isOpen, hold, own }: Annotated, values: Record<st
 
 type Method<This, Args extends unknown[], R> = (this: This, ...args: Args) => R;
 
+const add = (method: object, entry: Partial<MethodAttributes>): void => {
+  const found = ATTRIBUTES.get(method) ?? { hooks: [], parts: [] };
+  ATTRIBUTES.set(method, {
+    hooks: [...found.hooks, ...(entry.hooks ?? [])],
+    parts: [...found.parts, ...(entry.parts ?? [])],
+  });
+};
+
 /**
- * Attributes on each traced call's span, from `hook`, given the instance, or for a static method the
- * class, as `this` and as its argument: `(self: Sandbox) => ({ 'rowdy.sandbox.name': self.name })`.
- * It is called once a call returns, or, for a method that returns an Observable, as each of its
- * subscriptions starts.
- *
- * Each value is a primitive, a Promise, or a Subject (or its asObservable()), state that subscribing
- * only listens to, followed as an Observable (a primitive of one emission, a Promise of its value)
- * and set on each emission, the last winning, only while the span is open; one that comes after is
- * dropped. Any other Observable, which may do work on each subscription, is never subscribed. A span with an attribute not yet complete ends
- * once the current microtasks drain, as of when its call ended, and stops following it.
- * undefined, an Error, a rejection, or a hook that throws sets nothing. Under `@Trace` on the method
- * or its class, in either order.
+ * Attributes on each traced call's span. Under `@Trace` on the method or its class, in either
+ * order; any number on one method, of either form. A function that throws, undefined, an Error or a
+ * rejection sets nothing, and the call goes on. Each value is set only while the span is open; one
+ * that comes after is dropped.
  */
-export const Attributes =
-  <This>(hook: (this: This, self: This) => Record<string, AttributeInput> | undefined) =>
-  <T extends This, Args extends unknown[], R>(
+export const Attributes: {
+  /**
+   * `@Attributes((self) => ({ … }))`: from the instance, or for a static method the class, given as
+   * `this` and as its argument, called once a call returns, or as each subscription of an Observable
+   * method starts. Each value is a primitive, a Promise, or a Subject (or its asObservable()), state
+   * that subscribing only listens to, set on each emission, the last winning. Any other Observable,
+   * which may do work on each subscription, is never subscribed. A span with an attribute not yet
+   * complete ends once the current microtasks drain, as of when its call ended.
+   */
+  <This>(
+    hook: (this: This, self: This) => Record<string, AttributeInput> | undefined
+  ): <T extends This, Args extends unknown[], R>(
     value: Method<T, Args, R>,
-    _context: ClassMethodDecoratorContext<T, Method<T, Args, R>>
-  ): Method<T, Args, R> => {
-    HOOKS.set(value, hook as Hook);
+    context: ClassMethodDecoratorContext<T, Method<T, Args, R>>
+  ) => Method<T, Args, R>;
+  /**
+   * `@Attributes({ args, result })`: `args` from each call's arguments, set at once; `result` from
+   * what it returns, what its Promise or thenable resolves to, or each emission of an Observable's
+   * traced run, never subscribed again, the last winning. Plain values: rowdy-cdk does the waiting.
+   */
+  <V = unknown, Args extends unknown[] = never[]>(parts: {
+    args?: (...args: Args) => Plain;
+    result?: (value: V) => Plain;
+  }): <This, A extends unknown[], R extends V | PromiseLike<V> | Subscribable<V>>(
+    value: Method<This, A, R>,
+    context: ClassMethodDecoratorContext<This, Method<This, A, R>>
+  ) => Method<This, A, R>;
+} = ((given: Hook | AttributeParts) =>
+  (value: object): object => {
+    add(value, typeof given === 'function' ? { hooks: [given] } : { parts: [given] });
     return value;
-  };
+  }) as never;

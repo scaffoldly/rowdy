@@ -1664,6 +1664,139 @@ describe('Logger', () => {
         });
       });
 
+      describe('with @Attributes({ args, result })', () => {
+        const span = (name: string): Record<string, unknown> => finished().find((s) => s.name === name)!.attributes;
+        let subscriptions = 0;
+
+        // As rowdy's SandboxPromiseImpl: a thenable that is not a Promise.
+        class Pending<T> implements PromiseLike<T> {
+          constructor(private readonly promise: Promise<T>) {}
+
+          then<A = T, B = never>(
+            onfulfilled?: ((value: T) => A | PromiseLike<A>) | null,
+            onrejected?: ((reason: unknown) => B | PromiseLike<B>) | null
+          ): PromiseLike<A | B> {
+            return this.promise.then(onfulfilled, onrejected);
+          }
+        }
+
+        @Trace
+        class Sandbox {
+          constructor(
+            readonly name: string,
+            readonly status = 'RUNNING'
+          ) {}
+
+          @Attributes({
+            args: (name: string) => ({ 'sandbox.name': name }),
+            result: (sandbox: Sandbox) => ({ 'sandbox.status': sandbox.status }),
+          })
+          static async get(name: string): Promise<Sandbox> {
+            return new Sandbox(name, 'SUSPENDED');
+          }
+
+          @Trace
+          @Attributes({
+            result: (sandbox: Sandbox) => ({ 'sandbox.name': sandbox.name, 'sandbox.status': sandbox.status }),
+          })
+          static create(name: string): Pending<Sandbox> {
+            return new Pending(Promise.resolve(new Sandbox(name)));
+          }
+
+          @Attributes({ result: ({ status }: { status: string }) => ({ 'sandbox.status': status }) })
+          async stop(): Promise<{ status: string }> {
+            return { status: 'STOPPED' };
+          }
+
+          @Attributes({ result: (status: string) => ({ 'sandbox.status': status }) })
+          statuses(): Observable<string> {
+            return defer(() => {
+              subscriptions += 1;
+              return of('PENDING', 'RUNNING');
+            });
+          }
+
+          @Attributes({
+            args: (): Record<string, string> => {
+              throw new Error('bad args');
+            },
+            result: (): Record<string, string> => {
+              throw new Error('bad result');
+            },
+          })
+          async broken(n: number): Promise<number> {
+            return n;
+          }
+
+          @Attributes({ result: (n: number) => ({ 'sandbox.n': n }) })
+          @Trace
+          one(): number {
+            return 1;
+          }
+
+          @Trace
+          @Attributes({ result: (n: number) => ({ 'sandbox.n': n }) })
+          two(): number {
+            return 2;
+          }
+
+          @Attributes((self: Sandbox) => ({ 'sandbox.self': self.name }))
+          @Attributes({ result: (n: number) => ({ 'sandbox.n': n }) })
+          async both(): Promise<number> {
+            return 5;
+          }
+        }
+
+        beforeEach(() => {
+          subscriptions = 0;
+        });
+
+        it("sets a static call's args at once, and its result's when its Promise resolves", async () => {
+          await expect(Sandbox.get('s1')).resolves.toHaveProperty('status', 'SUSPENDED');
+          expect(span('Sandbox.get')).toEqual(
+            expect.objectContaining({ 'sandbox.name': 's1', 'sandbox.status': 'SUSPENDED' })
+          );
+        });
+
+        it('sets a result from a thenable that is not a Promise', async () => {
+          await expect(Sandbox.create('s2')).resolves.toHaveProperty('name', 's2');
+          expect(span('Sandbox.create')).toEqual(
+            expect.objectContaining({ 'sandbox.name': 's2', 'sandbox.status': 'RUNNING' })
+          );
+        });
+
+        it("sets an instance method's result from what it resolves to", async () => {
+          await new Sandbox('s3').stop();
+          expect(span('Sandbox.stop')['sandbox.status']).toBe('STOPPED');
+        });
+
+        it("sets an Observable's result on each emission of its one subscription, the last winning", async () => {
+          await expect(lastValueFrom(new Sandbox('s4').statuses().pipe(toArray()))).resolves.toEqual([
+            'PENDING',
+            'RUNNING',
+          ]);
+          expect(subscriptions).toBe(1);
+          expect(span('Sandbox.statuses')['sandbox.status']).toBe('RUNNING');
+        });
+
+        it('sets nothing for args or result functions that throw, and the call goes on', async () => {
+          await expect(new Sandbox('s5').broken(7)).resolves.toBe(7);
+          expect(Object.keys(span('Sandbox.broken')).filter((k) => k.startsWith('sandbox.'))).toEqual([]);
+        });
+
+        it('works with a method-level @Trace in either order', () => {
+          expect(new Sandbox('s6').one()).toBe(1);
+          expect(new Sandbox('s6').two()).toBe(2);
+          expect(span('Sandbox.one')['sandbox.n']).toBe(1);
+          expect(span('Sandbox.two')['sandbox.n']).toBe(2);
+        });
+
+        it('sits beside the function form on one method', async () => {
+          await new Sandbox('s7').both();
+          expect(span('Sandbox.both')).toEqual(expect.objectContaining({ 'sandbox.self': 's7', 'sandbox.n': 5 }));
+        });
+      });
+
       describe('poll', () => {
         const states = (...seq: string[]): Observable<string> => {
           let i = 0;

@@ -16,7 +16,7 @@ import {
 import { CdkInstrumentation } from '../../otel';
 import { logCall } from './logging';
 import type { Redactor } from './redact';
-import { startRun, type Run } from './run';
+import { startRun, type Run, type RunOf } from './run';
 
 type Ending = 'complete' | 'error' | 'unsubscribe';
 
@@ -35,15 +35,17 @@ export const traced = <T>(
     args,
     redactor,
     annotate,
+    parts,
   }: TracedOptions & {
     args?: unknown[];
     redactor?: Redactor;
     annotate?: (run: Run) => void;
+    parts?: RunOf['parts'];
   },
   make: (span: Span | undefined) => { source: Observable<T>; attributes: (ending: Ending) => Attributes }
 ): Observable<T> =>
   new Observable<T>((subscriber) => {
-    const run = startRun(name, CdkInstrumentation.create().options, otel.active(), redactor);
+    const run = startRun(name, CdkInstrumentation.create().options, otel.active(), { redactor, args, parts });
     if (args) run.sinks.forEach((sink) => logCall(sink, name, args, redactor));
     const span = trace.getSpan(run.context);
     if (given) span?.setAttributes(given);
