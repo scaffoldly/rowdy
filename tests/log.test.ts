@@ -7,7 +7,21 @@ import {
 } from '@opentelemetry/api-logs';
 import { AsyncLocalStorageContextManager } from '@opentelemetry/context-async-hooks';
 import { InMemorySpanExporter, SimpleSpanProcessor, TracerProvider } from '@opentelemetry/sdk-trace';
-import { defer, lastValueFrom, Observable, of, throwError, race, timer, map, NEVER, retry, tap, toArray } from 'rxjs';
+import {
+  BehaviorSubject,
+  defer,
+  lastValueFrom,
+  Observable,
+  of,
+  throwError,
+  race,
+  timer,
+  map,
+  NEVER,
+  retry,
+  tap,
+  toArray,
+} from 'rxjs';
 import pino from 'pino';
 import {
   ILoggable,
@@ -1476,24 +1490,44 @@ describe('Logger', () => {
       });
 
       describe('with @Attributes', () => {
-        // A span with attribute Promises pending ends once the current microtasks drain.
+        // A span with attributes not yet complete ends once the current microtasks drain.
         const drained = (): Promise<void> => new Promise((resolve) => setImmediate(resolve));
         const span = (name: string): Record<string, unknown> => finished().find((s) => s.name === name)!.attributes;
         let subscriptions = 0;
+        let hooks = 0;
+        let colds = 0;
 
         @Trace
         class Box {
+          readonly status$ = new BehaviorSubject('PENDING');
+          readonly ready = Promise.resolve('ready');
+
           constructor(readonly name: string) {}
 
-          @Attributes(function (this: typeof Box, call: { args: [string]; result: Promise<Box> }) {
-            return { 'box.class': this.name, 'box.arg': call.args[0], 'box.name': call.result.then((b) => b.name) };
+          // Settles a few microtasks after a call that reads it ends.
+          get readySoon(): Promise<string> {
+            return this.ready.then((r) => r).then((r) => r);
+          }
+
+          @Attributes(function (this: typeof Box) {
+            return { 'box.class': this.name };
           })
           static async create(name: string): Promise<Box> {
             return new Box(name);
           }
 
-          @Attributes(function (this: Box, call: { args: []; result: Observable<string> }) {
-            return { 'box.name': this.name, 'box.status': call.result };
+          @Attributes((self: Box) => ({
+            'box.name': self.name,
+            'box.ready': self.readySoon,
+            'box.status': self.status$,
+          }))
+          async start(): Promise<void> {
+            this.status$.next('RUNNING');
+          }
+
+          @Attributes((self: Box) => {
+            hooks += 1;
+            return { 'box.name': self.name };
           })
           statuses(): Observable<string> {
             return defer(() => {
@@ -1503,12 +1537,12 @@ describe('Logger', () => {
           }
 
           @Trace
-          @Attributes((call: { args: []; result: number }) => ({ 'box.size': call.result }))
+          @Attributes((self: Box) => ({ 'box.name': self.name }))
           size(): number {
             return 3;
           }
 
-          @Attributes((call: { args: []; result: number }) => ({ 'box.size': call.result }))
+          @Attributes((self: Box) => ({ 'box.name': self.name }))
           @Trace
           size2(): number {
             return 4;
@@ -1535,10 +1569,21 @@ describe('Logger', () => {
             return 3;
           }
 
-          @Redact(() => '[redacted]')
-          @Attributes((call: { args: []; result: Promise<string> }) => ({
-            'box.length': call.result.then((s) => s.length),
+          @Attributes((self: Box) => ({
+            'box.cold': defer(() => {
+              colds += 1;
+              return of('cold');
+            }),
+            'box.piped': self.status$.pipe(map((status) => status)),
+            'box.view': self.status$.asObservable(),
+            'box.subject': self.status$,
           }))
+          async observed(): Promise<void> {
+            return undefined;
+          }
+
+          @Redact(() => '[redacted]')
+          @Attributes((self: Box) => ({ 'box.name': self.name }))
           async secret(): Promise<string> {
             return 'secret';
           }
@@ -1546,67 +1591,76 @@ describe('Logger', () => {
 
         beforeEach(() => {
           subscriptions = 0;
+          hooks = 0;
+          colds = 0;
         });
 
-        it("sets a static method's value and Promise attributes, with the class as this", async () => {
-          await expect(Box.create('b1')).resolves.toEqual(new Box('b1'));
+        it('follows only a Subject or its asObservable(), never subscribing to any other Observable', async () => {
+          await new Box('b10').observed();
           await drained();
-          expect(span('Box.create')).toEqual(
-            expect.objectContaining({ 'box.class': 'Box', 'box.arg': 'b1', 'box.name': 'b1' })
+          const attributes = span('Box.observed');
+          expect(colds).toBe(0);
+          expect(attributes['box.subject']).toBe('PENDING');
+          expect(attributes['box.view']).toBe('PENDING');
+          expect(Object.keys(attributes)).not.toContain('box.cold');
+          expect(Object.keys(attributes)).not.toContain('box.piped');
+        });
+
+        it("sets a primitive, a Promise's value and an Observable's last emission from the instance", async () => {
+          await new Box('b1').start();
+          await drained();
+          expect(span('Box.start')).toEqual(
+            expect.objectContaining({ 'box.name': 'b1', 'box.ready': 'ready', 'box.status': 'RUNNING' })
           );
         });
 
-        it("sets an Observable's attribute on each emission, the last winning, without subscribing twice", async () => {
-          await expect(lastValueFrom(new Box('b2').statuses().pipe(toArray()))).resolves.toEqual([
-            'PENDING',
-            'RUNNING',
-          ]);
-          expect(subscriptions).toBe(1);
-          expect(span('Box.statuses')).toEqual(expect.objectContaining({ 'box.name': 'b2', 'box.status': 'RUNNING' }));
+        it('gives a static method its class as this', async () => {
+          await expect(Box.create('b2')).resolves.toEqual(new Box('b2'));
+          expect(span('Box.create')['box.class']).toBe('Box');
         });
 
-        it('makes one set of attributes for each subscription', async () => {
+        it('calls the hook for each subscription of an Observable method, subscribing to it only once each', async () => {
           const statuses = new Box('b3').statuses();
-          await lastValueFrom(statuses);
+          await expect(lastValueFrom(statuses.pipe(toArray()))).resolves.toEqual(['PENDING', 'RUNNING']);
           await lastValueFrom(statuses);
           expect(subscriptions).toBe(2);
+          expect(hooks).toBe(2);
           expect(
             finished()
               .filter((s) => s.name === 'Box.statuses')
-              .map((s) => s.attributes['box.status'])
-          ).toEqual(['RUNNING', 'RUNNING']);
+              .map((s) => s.attributes['box.name'])
+          ).toEqual(['b3', 'b3']);
         });
 
         it('works with a method-level @Trace in either order', () => {
           expect(new Box('b4').size()).toBe(3);
-          expect(new Box('b4').size2()).toBe(4);
-          expect(span('Box.size')['box.size']).toBe(3);
-          expect(span('Box.size2')['box.size']).toBe(4);
+          expect(new Box('b5').size2()).toBe(4);
+          expect(span('Box.size')['box.name']).toBe('b4');
+          expect(span('Box.size2')['box.name']).toBe('b5');
         });
 
         it('drops a value that arrives after its span ended', async () => {
-          await new Box('b5').late();
+          await new Box('b6').late();
           await new Promise((resolve) => setTimeout(resolve, 40));
           expect(Object.keys(span('Box.late'))).not.toContain('box.late');
         });
 
         it('sets nothing for a hook that throws, and the call goes on', async () => {
-          await expect(new Box('b6').throwing()).resolves.toBe(2);
+          await expect(new Box('b7').throwing()).resolves.toBe(2);
           expect(Object.keys(span('Box.throwing')).filter((k) => k.startsWith('box.'))).toEqual([]);
         });
 
         it('sets nothing for an Error or undefined value', async () => {
-          await new Box('b7').odd();
+          await new Box('b8').odd();
           const attributes = span('Box.odd');
           expect(attributes['box.ok']).toBe(true);
           expect(Object.keys(attributes)).not.toContain('box.error');
           expect(Object.keys(attributes)).not.toContain('box.missing');
         });
 
-        it('works next to @Redact, its hook seeing the real result', async () => {
-          await expect(new Box('b8').secret()).resolves.toBe('secret');
-          await drained();
-          expect(span('Box.secret')['box.length']).toBe(6);
+        it('works next to @Redact', async () => {
+          await expect(new Box('b9').secret()).resolves.toBe('secret');
+          expect(span('Box.secret')['box.name']).toBe('b9');
         });
       });
 

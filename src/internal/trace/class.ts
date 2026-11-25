@@ -24,9 +24,7 @@ const wrap = (
         const returned = value.apply(this, args);
         if (!isObservable(returned)) return returned;
         const hook = attributesOf(value);
-        const annotate = hook
-          ? (run: Run, emissions: unknown): void => run.annotate(callHook(hook, this, { args, result: emissions }))
-          : undefined;
+        const annotate = hook ? (run: Run): void => run.annotate(callHook(hook, this)) : undefined;
         return traced(methodName(this, context), { args, redactor: redactorOf(value), annotate }, () => ({
           source: returned,
           attributes: () => ({}),

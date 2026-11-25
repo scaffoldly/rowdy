@@ -41,7 +41,7 @@ export const decorate =
           parent,
           run: startRun(method, options, parent, redactor),
           again: () => startRun(method, options, otel.active(), redactor),
-          annotate: hook ? (run, result): void => run.annotate(callHook(hook, this, { args, result })) : undefined,
+          annotate: hook ? (run): void => run.annotate(callHook(hook, this)) : undefined,
         };
         call.run.sinks.forEach((sink) => logCall(sink, method, args, redactor));
 
@@ -53,8 +53,8 @@ export const decorate =
           throw error;
         }
 
-        // An Observable's hook is called for each run, with its emissions, as it subscribes.
-        if (!isObservable(returned)) call.annotate?.(call.run, returned);
+        // An Observable's are set on each run as it subscribes.
+        if (!isObservable(returned)) call.annotate?.(call.run);
         const result = RESULTS.find((r) => r.matches(returned))!;
         return result.trace(returned as never, call) as ReturnType<typeof value>;
       },
@@ -140,4 +140,4 @@ export const Trace: {
 
 export { poll, retrying, type TracedOptions } from './operators';
 export { Redact, type Redactor } from './redact';
-export { Attributes, type AttributeCall, type AttributeInput } from './attributes';
+export { Attributes, type AttributeInput } from './attributes';

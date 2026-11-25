@@ -6,7 +6,6 @@ import {
   Observable,
   repeat,
   retry,
-  Subject,
   take,
   takeUntil,
   tap,
@@ -39,7 +38,7 @@ export const traced = <T>(
   }: TracedOptions & {
     args?: unknown[];
     redactor?: Redactor;
-    annotate?: (run: Run, emissions: Observable<unknown>) => void;
+    annotate?: (run: Run) => void;
   },
   make: (span: Span | undefined) => { source: Observable<T>; attributes: (ending: Ending) => Attributes }
 ): Observable<T> =>
@@ -50,12 +49,10 @@ export const traced = <T>(
     if (given) span?.setAttributes(given);
     const { source, attributes } = make(span);
     run.tracker.subscribe();
-    const emissions = annotate ? new Subject<unknown>() : undefined;
-    if (emissions) annotate!(run, emissions.asObservable());
+    annotate?.(run);
     let settled = false;
     const ending = (how: Ending): void => {
       settled = true;
-      emissions?.complete();
       span?.setAttributes(attributes(how));
     };
 
@@ -63,10 +60,7 @@ export const traced = <T>(
       source
         .pipe(
           tap({
-            next: (value) => {
-              emissions?.next(value);
-              run.tracker.emit(value);
-            },
+            next: (value) => run.tracker.emit(value),
             error: (error: unknown) => {
               ending('error');
               run.tracker.fail(error);

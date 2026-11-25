@@ -1,5 +1,5 @@
 import { context as otel, trace } from '@opentelemetry/api';
-import { finalize, isObservable, Observable, Subject, tap } from 'rxjs';
+import { finalize, isObservable, Observable, tap } from 'rxjs';
 import type { Run } from '../run';
 import type { Result } from '.';
 
@@ -27,9 +27,7 @@ export const observable: Result<Observable<unknown>> = {
       else release();
       const run = taken ?? call.again();
       run.tracker.subscribe();
-      // This run's own emissions, for its @Attributes hook: never the source subscribed again.
-      const emissions = call.annotate ? new Subject<unknown>() : undefined;
-      if (emissions) call.annotate!(run, emissions.asObservable());
+      call.annotate?.(run);
       let settled = false;
 
       return otel.with(run.context, () =>
@@ -37,25 +35,18 @@ export const observable: Result<Observable<unknown>> = {
           .pipe(
             // Before the outcome reaches the subscriber, so the span has ended when it does.
             tap({
-              next: (emission) => {
-                emissions?.next(emission);
-                run.tracker.emit(emission);
-              },
+              next: (emission) => run.tracker.emit(emission),
               error: (error: unknown) => {
                 settled = true;
-                emissions?.complete();
                 run.tracker.fail(error);
               },
               complete: () => {
                 settled = true;
-                emissions?.complete();
                 run.tracker.complete();
               },
             }),
             finalize(() => {
-              if (settled) return;
-              emissions?.complete();
-              run.tracker.unsubscribe();
+              if (!settled) run.tracker.unsubscribe();
             })
           )
           .subscribe(subscriber)

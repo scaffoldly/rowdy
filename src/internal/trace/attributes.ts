@@ -1,17 +1,17 @@
 import type { AttributeValue, Span } from '@opentelemetry/api';
-import { from, isObservable, Observable, of, type Subscribable, type Unsubscribable } from 'rxjs';
+import { EMPTY, from, Observable, of, type Unsubscribable } from 'rxjs';
 
-/** An attribute as a hook gives it: known now, when a Promise resolves, or on each emission. */
+/**
+ * An attribute as a hook gives it: known now, when a Promise resolves, or on each emission of a
+ * Subject, or a Subject's asObservable(). Any other Observable is never subscribed and sets nothing.
+ */
 export type AttributeInput =
   | AttributeValue
   | undefined
   | PromiseLike<AttributeValue | undefined>
-  | Subscribable<AttributeValue | undefined>;
+  | Observable<AttributeValue | undefined>;
 
-/** A call, as a hook sees it: an Observable method's `result` is the emissions of its own run. */
-export type AttributeCall<Args extends unknown[], R> = { args: Args; result: R };
-
-type Hook = (this: unknown, call: AttributeCall<unknown[], unknown>) => Record<string, AttributeInput> | undefined;
+type Hook = (this: unknown, self: unknown) => Record<string, AttributeInput> | undefined;
 
 const HOOKS = new WeakMap<object, Hook>();
 
@@ -19,14 +19,10 @@ const HOOKS = new WeakMap<object, Hook>();
 export const attributesOf = (...methods: object[]): Hook | undefined =>
   methods.map((method) => HOOKS.get(method)).find(Boolean);
 
-/** What a hook gives for a call, or nothing when it throws. */
-export const callHook = (
-  hook: Hook,
-  self: unknown,
-  call: AttributeCall<unknown[], unknown>
-): Record<string, AttributeInput> | undefined => {
+/** What a hook gives for `self`, the instance or, for a static method, the class; nothing when it throws. */
+export const callHook = (hook: Hook, self: unknown): Record<string, AttributeInput> | undefined => {
   try {
-    const values = hook.call(self, call);
+    const values = hook.call(self, self);
     return values && typeof values === 'object' ? values : undefined;
   } catch {
     return undefined;
@@ -49,12 +45,30 @@ export interface Annotated {
   own(subscription: Unsubscribable): void;
 }
 
-/** Any input as an Observable: a value of one emission, a Promise's value, or the Observable itself. */
+type Piped = { source?: unknown; operator?: unknown };
+
+// A Subject by its shape, so one from another copy of rxjs counts. A piped Subject is one too, with an operator.
+const isSubject = (value: unknown): boolean => {
+  const subject = value as Partial<{ next: unknown; subscribe: unknown; observers: unknown }> & Piped;
+  return (
+    typeof subject?.next === 'function' &&
+    typeof subject.subscribe === 'function' &&
+    Array.isArray(subject.observers) &&
+    !subject.operator
+  );
+};
+
+/**
+ * Whether subscribing to `value` only listens: a Subject, or a Subject's asObservable(). Anything
+ * else may do work on each subscription, which no Observable says, so it is never subscribed.
+ */
+const isHot = (value: Piped): boolean => isSubject(value) || (!value.operator && isSubject(value.source));
+
+/** Any input as an Observable: a value of one emission, a Promise's value, or a hot Observable itself. */
 const observe = (value: AttributeInput): Observable<unknown> => {
-  if (isObservable(value)) return value;
-  const subscribable = value as Partial<Subscribable<unknown>> | undefined;
+  const subscribable = value as (Partial<{ subscribe: unknown }> & Piped) | undefined;
   if (typeof subscribable?.subscribe === 'function') {
-    return new Observable((subscriber) => subscribable.subscribe!(subscriber));
+    return isHot(subscribable) ? (subscribable as Observable<unknown>) : EMPTY;
   }
   if (typeof (value as Partial<PromiseLike<unknown>> | undefined)?.then === 'function') {
     return from(value as PromiseLike<unknown>);
@@ -88,22 +102,22 @@ export const follow = ({ span, isOpen, hold, own }: Annotated, values: Record<st
 type Method<This, Args extends unknown[], R> = (this: This, ...args: Args) => R;
 
 /**
- * Attributes on each traced call's span, from `hook`, called with the call's `this`, its arguments
- * and its result: a method's value, the same Promise, or, for an Observable, the emissions of the
- * traced run, one hook call per subscription, never the method's Observable subscribed again.
+ * Attributes on each traced call's span, from `hook`, given the instance, or for a static method the
+ * class, as `this` and as its argument: `(self: Sandbox) => ({ 'rowdy.sandbox.name': self.name })`.
+ * It is called once a call returns, or, for a method that returns an Observable, as each of its
+ * subscriptions starts.
  *
- * Each value is followed as an Observable, a plain value of one emission and a Promise of its value,
+ * Each value is a primitive, a Promise, or a Subject (or its asObservable()), state that subscribing
+ * only listens to, followed as an Observable (a primitive of one emission, a Promise of its value)
  * and set on each emission, the last winning, only while the span is open; one that comes after is
- * dropped. A span with an attribute not yet complete ends once the current microtasks drain, as of
- * when its call ended.
+ * dropped. Any other Observable, which may do work on each subscription, is never subscribed. A span with an attribute not yet complete ends
+ * once the current microtasks drain, as of when its call ended, and stops following it.
  * undefined, an Error, a rejection, or a hook that throws sets nothing. Under `@Trace` on the method
  * or its class, in either order.
  */
 export const Attributes =
-  <This, Args extends unknown[], R>(
-    hook: (this: This, call: AttributeCall<Args, R>) => Record<string, AttributeInput> | undefined
-  ) =>
-  <T extends This>(
+  <This>(hook: (this: This, self: This) => Record<string, AttributeInput> | undefined) =>
+  <T extends This, Args extends unknown[], R>(
     value: Method<T, Args, R>,
     _context: ClassMethodDecoratorContext<T, Method<T, Args, R>>
   ): Method<T, Args, R> => {

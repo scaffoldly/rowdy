@@ -14,7 +14,6 @@ export type { ClientLoggerOptions, CommandType } from './client';
 export { CloudResource, NotFoundException, FatalException, SkipAction } from './cdk';
 export { Logger, isLevel, log, mask, maskEnv, maskHeaders, maskJson, maskQuery, maskUrl } from './log';
 export {
-  type AttributeCall,
   type AttributeInput,
   Attributes,
   poll,

@@ -22,8 +22,8 @@ export interface Call {
   readonly parent: Context;
   readonly run: Run;
   again(): Run;
-  /** Calls the method's @Attributes hook for `run`, with what it returned: an Observable's, the run's emissions. */
-  readonly annotate?: (run: Run, result: unknown) => void;
+  /** Sets the method's @Attributes on `run`'s span. */
+  readonly annotate?: (run: Run) => void;
 }
 
 /** Starts a run under `parent`: its span, its lines as log records, and its duration. */
