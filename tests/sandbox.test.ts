@@ -1993,6 +1993,34 @@ describe('sandbox', () => {
       });
     });
 
+    it("counts what list found, and says each runtime's list is for its runtime", async () => {
+      jest.spyOn(LambdaClient.prototype, 'send').mockImplementation((async (command: object) =>
+        command.constructor.name === 'ListFunctionsCommand'
+          ? {
+              Functions: [
+                {
+                  FunctionName: 'sandbox-a',
+                  FunctionArn: 'arn:a',
+                  Environment: { Variables: { ROWDY_SANDBOX: 'true' } },
+                },
+                {
+                  FunctionName: 'sandbox-b',
+                  FunctionArn: 'arn:b',
+                  Environment: { Variables: { ROWDY_SANDBOX: 'true' } },
+                },
+              ],
+            }
+          : { Tags: {} }) as never);
+
+      await Sandbox.list({ runtime: 'aws.lambda' });
+
+      expect(await attributes('SandboxImpl.list')).toMatchObject({
+        'rowdy.sandbox.runtime': 'aws.lambda',
+        'rowdy.sandbox.count': 2,
+      });
+      expect(await attributes('LambdaCompute.list')).toMatchObject({ 'rowdy.sandbox.runtime': 'aws.lambda' });
+    });
+
     it('says the status a call left the sandbox in, not the one it found', async () => {
       jest.spyOn(MicrovmCompute.prototype, 'create').mockImplementation(function (this: MicrovmCompute) {
         return of(this);
