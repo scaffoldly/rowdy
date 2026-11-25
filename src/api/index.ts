@@ -23,13 +23,10 @@ export class Rowdy extends RowdyNames implements IApi {
     public readonly signal: AbortSignal
   ) {
     super();
-    this.http = RowdyHttp.from(axios.create(), signal);
+    this.http = RowdyHttp.from(axios.create(), signal, this.log);
     const auth = authenticator(this.http, this.log);
     this.http.interceptors.request.use(...auth.request);
     this.http.interceptors.response.use(...auth.response);
-    this.http
-      .events()
-      .subscribe((event) => this.environment?.event$.next({ source: 'http', message: event.summary, ...event }));
   }
 
   get images(): IImageApi {

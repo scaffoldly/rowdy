@@ -1,5 +1,4 @@
 import { lastValueFrom, map, Observable, OperatorFunction } from 'rxjs';
-import { Logger } from '../../src';
 import { SandboxEnvironment } from '../../src/sandbox/internal/environment';
 import { ImageManifest, Transfer } from '../../src/api/internal/transfer';
 
@@ -25,7 +24,7 @@ describe('pullImage', () => {
     jest
       .spyOn(Transfer, 'denormalize')
       .mockReturnValue(map(() => ({ imageRef: '123456789012.dkr.ecr.us-east-1.amazonaws.com/x@sha256:ecr' })) as never);
-    return lastValueFrom(new SandboxEnvironment(new Logger()).images.pullImage('ghcr.io/tunneld-it/ubuntu:latest'));
+    return lastValueFrom(new SandboxEnvironment().images.pullImage('ghcr.io/tunneld-it/ubuntu:latest'));
   };
 
   it('says where its image came from, and the digest of the platform it pulled', async () => {
@@ -71,7 +70,7 @@ describe('pullImage', () => {
     const denormalize = jest.spyOn(Transfer, 'denormalize');
 
     const pulled = await lastValueFrom(
-      new SandboxEnvironment(new Logger()).images.pullImage('ghcr.io/tunneld-it/ubuntu:latest', { upload: false })
+      new SandboxEnvironment().images.pullImage('ghcr.io/tunneld-it/ubuntu:latest', { upload: false })
     );
 
     expect(pulled.ImageUri).toBe('123456789012.dkr.ecr.us-east-1.amazonaws.com/tunneld-it/ubuntu@sha256:rewritten');
@@ -98,7 +97,7 @@ describe('pullImage', () => {
     );
 
     const pulled = await lastValueFrom(
-      new SandboxEnvironment(new Logger()).images.pullImage('ghcr.io/tunneld-it/prebuild/sandbox:latest', {
+      new SandboxEnvironment().images.pullImage('ghcr.io/tunneld-it/prebuild/sandbox:latest', {
         upload: false,
       })
     );

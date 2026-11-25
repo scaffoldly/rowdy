@@ -142,11 +142,11 @@ export type Prebuilt = {
  * `delete` takes them down, the image last.
  */
 export class MicrovmImage extends AwsResource {
-  private iam = this.track(new IAMClient({ logger: this, credentials: this.environment.credentials }));
-  private logs = this.track(new CloudWatchLogsClient({ logger: this, credentials: this.environment.credentials }));
-  private microvms = this.track(new LambdaMicrovmsClient({ logger: this, credentials: this.environment.credentials }));
-  private s3 = this.track(new S3Client({ logger: this, credentials: this.environment.credentials }));
-  private sts = this.track(new STSClient({ logger: this, credentials: this.environment.credentials }));
+  private iam = new IAMClient({ logger: this, credentials: this.environment.credentials });
+  private logs = new CloudWatchLogsClient({ logger: this, credentials: this.environment.credentials });
+  private microvms = new LambdaMicrovmsClient({ logger: this, credentials: this.environment.credentials });
+  private s3 = new S3Client({ logger: this, credentials: this.environment.credentials });
+  private sts = new STSClient({ logger: this, credentials: this.environment.credentials });
 
   // Reactive Properties
   private Name = new BehaviorSubject<string>('sandbox');

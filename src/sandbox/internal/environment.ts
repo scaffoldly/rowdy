@@ -1,10 +1,8 @@
 import axios, { AxiosError, AxiosHeaders } from 'axios';
-import { Subject } from 'rxjs';
 import packageJson from '../../../package.json';
 import { ImageApi } from '../../api/image';
 import type { IApi, IImageApi } from '../../api/types';
-import type { Event } from '../../events';
-import type { Logger } from '../../log';
+import { CdkInstrumentation, Logger, type CdkOptions } from '../../log';
 import type { AwsSandboxOptions } from '..';
 import { authenticator, RowdyHttp } from '../../util/axios';
 
@@ -15,9 +13,9 @@ import { authenticator, RowdyHttp } from '../../util/axios';
 export class SandboxEnvironment implements IApi {
   readonly abort: AbortController = new AbortController();
   readonly signal: AbortSignal = this.abort.signal;
-  /** Events from what isn't a compute's own, such as copying an image. */
-  readonly event$ = new Subject<Event>();
-  readonly http: RowdyHttp = RowdyHttp.from(axios.create(), this.signal);
+  /** The logger for rowdy of the loggerProvider @Trace uses, at its `logLevel`. */
+  readonly log: Logger;
+  readonly http: RowdyHttp;
   readonly images: IImageApi = new ImageApi(this);
   readonly name = packageJson.name;
   readonly version = packageJson.version;
@@ -27,14 +25,22 @@ export class SandboxEnvironment implements IApi {
   /** What its AWS clients act as, or undefined for the AWS SDK's own chain. */
   readonly credentials: AwsSandboxOptions['credentials'];
 
-  constructor(
-    public readonly log: Logger,
-    {
-      signal,
-      pollInterval,
-      credentials,
-    }: { signal?: AbortSignal; pollInterval?: number; credentials?: AwsSandboxOptions['credentials'] } = {}
-  ) {
+  constructor({
+    signal,
+    pollInterval,
+    credentials,
+    loggerProvider,
+    logLevel,
+  }: Pick<CdkOptions, 'loggerProvider' | 'logLevel'> & {
+    signal?: AbortSignal;
+    pollInterval?: number;
+    credentials?: AwsSandboxOptions['credentials'];
+  } = {}) {
+    // Where @Trace's lines go, so a sandbox's own go there too: a loggerProvider given now or before, 'stderr' and null
+    // resolved, at logLevel.
+    const { loggerProvider: provider } = CdkInstrumentation.create({ loggerProvider, logLevel });
+    this.log = new Logger('sandbox', provider.getLogger(this.name, this.version), logLevel);
+    this.http = RowdyHttp.from(axios.create(), this.signal, this.log);
     this.pollInterval = pollInterval;
     this.credentials = credentials;
     if (signal?.aborted) {
@@ -45,8 +51,6 @@ export class SandboxEnvironment implements IApi {
     const auth = authenticator(this.http, this.log, this.credentials);
     this.http.interceptors.request.use(...auth.request);
     this.http.interceptors.response.use(...auth.response);
-    // What its requests run into, like a registry's rate limit, is the sandbox's to say.
-    this.http.events().subscribe((event) => this.event$.next({ source: 'http', message: event.summary, ...event }));
 
     // follow-redirects breaks on a Cloudflare Worker's node:http, so redirects are followed here.
     this.http.defaults.maxRedirects = 0;
@@ -74,7 +78,7 @@ export class SandboxEnvironment implements IApi {
     });
   }
 
-  /** Where the image API sends its events. */
+  /** Where the image API logs, and what credentials its registry uses. */
   get environment(): this {
     return this;
   }

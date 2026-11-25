@@ -1,6 +1,4 @@
 import { SmithyClientLogger } from '@scaffoldly/rowdy-cdk';
-import { map, Observable } from 'rxjs';
-import type { Event } from '../events';
 
 const COMMANDS = {
   describe: /^Describe/,
@@ -27,11 +25,5 @@ const NAMES = [
 export abstract class AwsClientLogger extends SmithyClientLogger {
   constructor() {
     super({ commands: COMMANDS, names: NAMES });
-  }
-
-  override events(): Observable<Extract<Event, { source: 'cdk' }>> {
-    return super
-      .events()
-      .pipe(map((event) => ({ source: 'cdk', message: `${event.action}: ${event.lifecycle}`, ...event })));
   }
 }

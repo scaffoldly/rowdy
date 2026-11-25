@@ -1,8 +1,8 @@
 import { createHash } from 'crypto';
 import { strFromU8, unzipSync } from 'fflate';
 import { lastValueFrom, Observable, of } from 'rxjs';
-import { Logger } from '../../../src';
 import { SandboxEnvironment } from '../../../src/sandbox/internal/environment';
+import { CdkInstrumentation, Logger } from '../../../src/log';
 import { ExecFinished } from '../../../src/api/types';
 import { MicrovmCompute, POLL, TERMINATE_POLL } from '../../../src/aws/microvm/compute';
 import { EXEC_STREAM, execFrame } from '../../../src/proxy/shell';
@@ -49,7 +49,7 @@ describe('aws microvm compute', () => {
 
   const setup = (
     handlers: Record<string, Handler> = {},
-    environment = new SandboxEnvironment(new Logger())
+    environment = new SandboxEnvironment()
   ): { compute: MicrovmCompute; sent: Sent[] } => {
     const compute = new MicrovmCompute(environment);
     const sent: Sent[] = [];
@@ -137,7 +137,7 @@ describe('aws microvm compute', () => {
             return { state: at.length < 2 ? 'BUILDING' : 'SUCCESSFUL' };
           },
         },
-        new SandboxEnvironment(new Logger(), { pollInterval: 60 })
+        new SandboxEnvironment({ pollInterval: 60 })
       );
 
       await create(compute);
@@ -899,6 +899,29 @@ describe('aws microvm compute', () => {
     describe('url', () => {
       const { signal } = new AbortController();
 
+      it('never logs its token, at any level', async () => {
+        const lines: string[] = [];
+        CdkInstrumentation.create({
+          loggerProvider: Logger.to({ write: (line: string): number => lines.push(line) }, 'trace'),
+          logLevel: 'trace',
+        });
+        try {
+          const { compute } = running({
+            CreateMicrovmAuthTokenCommand: () => ({ authToken: { 'X-aws-proxy-auth': 'sekrit-token-1' } }),
+          });
+
+          const url = await lastValueFrom(compute.url(undefined, 30, signal));
+
+          expect(url.headers['X-aws-proxy-auth']).toBe('sekrit-token-1');
+          expect(lines.join('')).toContain('MicrovmCompute.url Completed');
+          expect(lines.join('')).not.toContain('sekrit-token-1');
+          // Redacted, not only masked: @Redact is the guarantee.
+          expect(lines.join('')).toContain('[redacted]');
+        } finally {
+          CdkInstrumentation.create({ loggerProvider: 'stderr', logLevel: 'info' });
+        }
+      });
+
       it("gives the VM's endpoint and a token for the one port", async () => {
         const { compute, sent } = running();
         const before = Date.now();
@@ -1045,21 +1068,21 @@ describe('aws microvm compute', () => {
       const status = (compute: MicrovmCompute) => lastValueFrom(compute.status());
 
       it.each([
-        [{ state: 'CREATING' }, { state: 'building' }],
-        [{ state: 'UPDATING', latestActiveImageVersion: '1.0' }, { state: 'building' }],
-        [{ state: 'CREATED', latestActiveImageVersion: '1.0' }, { state: 'ready' }],
-        [{ state: 'UPDATED', latestActiveImageVersion: '2.0' }, { state: 'ready' }],
-      ])('makes an image %j into %j', async (image, expected) => {
+        [{ state: 'CREATING' }, { status: 'pending' }],
+        [{ state: 'UPDATING', latestActiveImageVersion: '1.0' }, { status: 'pending' }],
+        [{ state: 'CREATED', latestActiveImageVersion: '1.0' }, { status: 'stopped' }],
+        [{ state: 'UPDATED', latestActiveImageVersion: '2.0' }, { status: 'stopped' }],
+      ])('makes an image %j with no VM into %j', async (image, expected) => {
         const { compute } = running({ GetMicrovmImageCommand: () => image });
 
-        expect(await status(compute)).toMatchObject({ ...expected, running: false });
+        expect(await status(compute)).toMatchObject(expected);
       });
 
       it.each([
-        ['RUNNING', false],
-        ['SUSPENDING', true],
-        ['SUSPENDED', true],
-      ])('says a %s VM is running, and whether it is suspended', async (state, suspended) => {
+        ['RUNNING', 'running'],
+        ['SUSPENDING', 'suspended'],
+        ['SUSPENDED', 'suspended'],
+      ])('says a %s VM is %s', async (state, expected) => {
         const { compute } = running({
           GetMicrovmImageCommand: () => ({ state: 'CREATED', latestActiveImageVersion: '1.0' }),
           ListMicrovmsCommand: () => ({
@@ -1071,15 +1094,12 @@ describe('aws microvm compute', () => {
         });
 
         expect(await status(compute)).toEqual({
-          sandboxId: 'sandbox-box',
           name: 'sandbox-box',
           runtime: 'aws.microvm',
           meta: {},
-          state: 'ready',
-          running: true,
-          suspended,
+          status: expected,
           startedAt: STARTED,
-          stopsAt: new Date(STARTED.getTime() + 28_800_000),
+          expiresAt: new Date(STARTED.getTime() + 28_800_000),
         });
       });
 
@@ -1101,11 +1121,7 @@ describe('aws microvm compute', () => {
           GetMicrovmImageVersionCommand: () => ({ state: 'FAILED', stateReason: 'ready hook timed out' }),
         });
 
-        expect(await status(compute)).toMatchObject({
-          state: 'failed',
-          reason: 'ready hook timed out',
-          running: false,
-        });
+        expect(await status(compute)).toMatchObject({ status: 'failed', reason: 'ready hook timed out' });
         expect(input(sent, 'GetMicrovmImageVersionCommand')).toEqual({
           imageIdentifier: IMAGE_ARN,
           imageVersion: '1.0',

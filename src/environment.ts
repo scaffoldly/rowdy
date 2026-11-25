@@ -15,7 +15,6 @@ import {
   race,
   repeat,
   ReplaySubject,
-  Subject,
   Subscription,
   switchMap,
   take,
@@ -25,12 +24,11 @@ import {
 } from 'rxjs';
 import { Routes } from './routes';
 import { defaultPort, originOf } from './cdn';
-import type { Event } from './events';
 import { ILoggable, isLevel, Level, Logger, mask, maskEnv, maskJson, Trace } from './log';
 import { runtimeLog as log } from './runtime-log';
 import { ExitContext, ShellExit, ShellProxy, ShellRequest } from './proxy/shell';
 import { ShellPipeline } from './shell/pipeline';
-import { Pipeline, Result } from './pipeline';
+import { Pipeline, Request, Result } from './pipeline';
 import { LambdaPipeline } from './aws/lambda';
 import { MicrovmPipeline } from './aws/microvm';
 import { MicrovmImage } from './aws/microvm/index';
@@ -184,8 +182,6 @@ export class Environment implements ILoggable {
 
   public abort: AbortController;
   public readonly signal: AbortSignal;
-  /** Events from what isn't a compute's own, such as copying an image. */
-  public readonly event$ = new Subject<Event>();
   public readonly bin = Object.keys(packageJson.bin)[0];
 
   private _pipelines: Pipeline[] = [new LambdaPipeline(this), new MicrovmPipeline(this)];
@@ -495,7 +491,11 @@ export class Environment implements ILoggable {
                           default: 'linux/amd64' as const,
                         }),
                     handler: (argv) => {
-                      const environment = new SandboxEnvironment(this.log, { signal: this.signal });
+                      const environment = new SandboxEnvironment({
+                        signal: this.signal,
+                        loggerProvider: { getLogger: () => this.log },
+                        logLevel: this.log.level,
+                      });
                       const image = new MicrovmImage(environment)
                         .withImage(argv.image, layerSources(argv['layers-from']))
                         .withPlatform(argv.platform)
@@ -504,9 +504,6 @@ export class Environment implements ILoggable {
                       if (argv.dockerfile) image.withDockerfile(argv.dockerfile);
 
                       this._subscriptions.push(
-                        environment.event$.subscribe(
-                          (event) => event.source === 'http' && this.log.info(event.message)
-                        ),
                         image.observe().subscribe({
                           error: (error: Error) => {
                             this.log.error('MicroVM Image Build Failed', { name: error.name, error: error.message });
@@ -840,7 +837,7 @@ export class Environment implements ILoggable {
     });
   }
 
-  @Trace(log)
+  @Trace
   public poll(): Observable<Result<Pipeline>> {
     let delay = 0;
 
@@ -868,17 +865,24 @@ export class Environment implements ILoggable {
         );
         log.debug('Request Detail', { request, routes: this.routes });
       }),
-      mergeMap((request) => request.into().pipe(tap(() => this._envVars.complete())), Environment.CONCURRENCY),
-      tap((proxy) => log.debug('Proxy', { proxy })),
-      mergeMap((proxy) => proxy.into(), Environment.CONCURRENCY),
-      tap((response) => log.debug('Respond', { response })),
-      mergeMap((response) => response.into(), Environment.CONCURRENCY),
+      mergeMap((request) => this.serve(request), Environment.CONCURRENCY),
       tap((result) => log.info('Result', result.brief())),
       // A stopped poll fetches no next request; it completes once the requests in flight answer.
       repeat({ delay: () => timer(delay).pipe(takeUntil(stop$)) })
     );
 
     return results$.pipe(tap({ complete: () => this.shutdown() }));
+  }
+
+  @Trace
+  private serve(request: Request<Pipeline>): Observable<Result<Pipeline>> {
+    return request.into().pipe(
+      tap(() => this._envVars.complete()),
+      tap((proxy) => log.debug('Proxy', { proxy })),
+      mergeMap((proxy) => proxy.into(), Environment.CONCURRENCY),
+      tap((response) => log.debug('Respond', { response })),
+      mergeMap((response) => response.into(), Environment.CONCURRENCY)
+    );
   }
 
   repr(): string {

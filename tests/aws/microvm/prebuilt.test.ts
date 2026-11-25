@@ -4,7 +4,6 @@ import { SandboxEnvironment } from '../../../src/sandbox/internal/environment';
 import { EXEC_FILE_POLL, MicrovmCompute, POLL, PrebuiltRecord, TERMINATE_POLL } from '../../../src/aws/microvm/compute';
 import { ComputeSpec, SandboxError } from '../../../src/sandbox/internal/compute';
 import type { TPulledImage } from '../../../src/api/types';
-import type { Event } from '../../../src/events';
 import * as exec from '../../../src/aws/exec';
 
 type Sent = { name: string; input: Record<string, unknown> };
@@ -59,8 +58,12 @@ describe('aws microvm compute from a prebuilt image', () => {
 
   const setup = (
     handlers: Record<string, Handler> = {}
-  ): { compute: MicrovmCompute; sent: Sent[]; events: Event[] } => {
-    const environment = new SandboxEnvironment(new Logger());
+  ): { compute: MicrovmCompute; sent: Sent[]; logged: string[] } => {
+    const logged: string[] = [];
+    const environment = new SandboxEnvironment({
+      loggerProvider: { getLogger: () => new Logger('test', { write: (line) => logged.push(line) }, 'info') },
+      logLevel: 'info',
+    });
     const compute = new MicrovmCompute(environment);
     const sent: Sent[] = [];
     const vms: Record<string, string> = {};
@@ -131,9 +134,7 @@ describe('aws microvm compute from a prebuilt image', () => {
     jest.spyOn(compute['s3'].config, 'region').mockResolvedValue('us-east-1');
     jest.spyOn(compute['image']['s3'].config, 'region').mockResolvedValue('us-east-1');
     jest.spyOn(environment.images, 'pullImage').mockReturnValue(of(PULLED));
-    const events: Event[] = [];
-    environment.event$.subscribe((event) => events.push(event));
-    return { compute, sent, events };
+    return { compute, sent, logged };
   };
 
   const input = (sent: Sent[], name: string): Record<string, unknown> => sent.find((s) => s.name === name)!.input;
@@ -164,7 +165,7 @@ describe('aws microvm compute from a prebuilt image', () => {
     });
 
     it('starts the sandbox as a VM of the prebuilt image, named for it, building nothing', async () => {
-      const { compute, sent, events } = setup(await built());
+      const { compute, sent, logged } = setup(await built());
 
       await lastValueFrom(compute.create(SPEC));
 
@@ -176,7 +177,7 @@ describe('aws microvm compute from a prebuilt image', () => {
         maximumDurationInSeconds: 28_800,
         idlePolicy: { maxIdleDurationSeconds: 300, suspendedDurationSeconds: 28_800, autoResumeEnabled: true },
       });
-      expect(events).toContainEqual(expect.objectContaining({ source: 'sandbox', type: 'prebuilt' }));
+      expect(logged).toContainEqual(expect.stringContaining('Starting From A Prebuilt Image'));
     });
 
     it('runs its VM with no role, so code in it has no credentials, and makes no role or log group', async () => {
@@ -339,16 +340,13 @@ describe('aws microvm compute from a prebuilt image', () => {
     });
 
     it.each([
-      [
-        { microvmId: MICROVM_ID, state: 'SUSPENDED', startedAt: new Date(0) },
-        { running: true, suspended: true },
-      ],
-      [{ microvmId: MICROVM_ID, state: 'TERMINATED', startedAt: new Date(0) }, { running: false }],
-    ])('says from %j whether its VM is running and suspended', async (vm, expected) => {
+      [{ microvmId: MICROVM_ID, state: 'SUSPENDED', startedAt: new Date(0) }, 'suspended'],
+      [{ microvmId: MICROVM_ID, state: 'TERMINATED', startedAt: new Date(0) }, 'stopped'],
+    ])('says from %j that it is %s', async (vm, status) => {
       const { compute } = setup({ ...stored(), GetMicrovmCommand: () => vm });
       await lastValueFrom(compute.attach(MICROVM_ID));
 
-      expect(await lastValueFrom(compute.status())).toMatchObject({ state: 'ready', ...expected });
+      expect(await lastValueFrom(compute.status())).toMatchObject({ name: MICROVM_ID, status });
     });
 
     it("can't resume once its VM has ended", async () => {

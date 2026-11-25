@@ -123,7 +123,13 @@
     "@bufbuild/protobuf": "^2.10.0",
     "@connectrpc/connect": "^2.1.0",
     "@eslint/js": "^9.28.0",
-    "@scaffoldly/rowdy-cdk": "0.1.0-beta.20261119155818.916e9b5",
+    "@opentelemetry/api": "1.9.1",
+    "@opentelemetry/api-logs": "0.223.2",
+    "@opentelemetry/sdk-logs": "0.223.2",
+    "@opentelemetry/sdk-metrics": "2.12.1",
+    "@opentelemetry/sdk-node": "0.223.2",
+    "@opentelemetry/sdk-trace-base": "2.12.1",
+    "@scaffoldly/rowdy-cdk": "0.1.0-beta.20261125034822.303e7fc",
     "@scaffoldly/rowdy-grpc": "^0.1.0-beta.20261015173030.c8f7cb7",
     "@scaffoldly/rowdy-vfs": "^0.1.0-beta.20261025040757.7c82f24",
     "@smithy/core": "^3.35.0",
@@ -187,5 +193,9 @@
     "rxjs": {
       "optional": true
     }
+  },
+  "resolutions": {
+    "**/@smithy/core": "3.41.1",
+    "**/@opentelemetry/api": "~1.9.0"
   }
 }

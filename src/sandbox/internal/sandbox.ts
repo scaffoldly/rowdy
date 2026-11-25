@@ -9,21 +9,20 @@ import type {
   WriteFile,
   RunCommandOptions,
   RunCommandParams,
+  Runtime,
   Sandbox,
+  SandboxList,
   SandboxListOptions,
   SandboxLookup,
+  SandboxMetadata,
   SandboxOptions,
-  SandboxLogger,
-  SandboxStatus,
   SandboxUrl,
   UrlOptions,
-  Event,
 } from '..';
 import { isAxiosError } from 'axios';
 import { posix } from 'path';
 import {
   catchError,
-  asapScheduler,
   concat,
   concatWith,
   connectable,
@@ -35,7 +34,6 @@ import {
   first,
   firstValueFrom,
   from,
-  subscribeOn,
   fromEvent,
   ignoreElements,
   iif,
@@ -59,7 +57,7 @@ import {
 } from 'rxjs';
 import type { Exec, ExecFrame } from '../../api/types';
 import { SandboxEnvironment } from './environment';
-import { Logger, maskUrl } from '../../log';
+import { maskUrl, Redact, Trace } from '../../log';
 import { humanize } from '../../aws/errors';
 import { LambdaCompute } from '../../aws/lambda/compute';
 import { MicrovmCompute } from '../../aws/microvm/compute';
@@ -73,76 +71,59 @@ import { isNotFound, SANDBOX_ROLE_PATH } from '../../aws/shared';
 // Kubernetes' alphabet for generated names: no vowels, so a name spells no words.
 const ALPHANUMS = 'bcdfghjklmnpqrstvwxz2456789';
 
-// A host's stdout is its own. A Worker without `process` logs to its console.
-const DEFAULT_LOGGER: SandboxLogger = globalThis.process?.stderr ?? console;
-
 /** Kubernetes' ComputeHash: FNV-1a 32 over the template, its decimal digits encoded with SafeEncodeString. */
 export const computeHash = (template: string): string => {
   const hash = Buffer.from(template).reduce((sum, byte) => Math.imul(sum ^ byte, 16777619) >>> 0, 2166136261);
   return [...String(hash)].map((digit) => ALPHANUMS[digit.charCodeAt(0) % ALPHANUMS.length]).join('');
 };
 
-const RUNTIMES: Record<NonNullable<SandboxOptions['runtime']>, SandboxComputeClass> = {
+const RUNTIMES: Record<Runtime, SandboxComputeClass> = {
   'aws.lambda': LambdaCompute,
   'aws.microvm': MicrovmCompute,
 };
 
+@Trace
 export class SandboxImpl implements Sandbox {
-  readonly runtime: NonNullable<SandboxOptions['runtime']>;
+  readonly runtime: Runtime;
   private environment: SandboxEnvironment;
   private compute: SandboxCompute;
   private credential$?: Credentials;
+  // Set once `create` or `get` has found the sandbox, and again by each call that asks AWS.
+  private metadata!: SandboxMetadata;
 
   private constructor({
     runtime,
     logLevel,
-    logger,
+    loggerProvider,
     pollInterval,
     credentials,
     signal,
-  }: Pick<SandboxOptions, 'runtime' | 'logLevel' | 'logger' | 'pollInterval' | 'credentials' | 'signal'>) {
-    // A host's stdout is its own, and its terminal stays quiet unless logLevel, ROWDY_LOG_LEVEL, ROWDY_DEBUG or
-    // ROWDY_TRACE says otherwise. Both are this sandbox's alone.
-    const { ROWDY_LOG_LEVEL, ROWDY_DEBUG, ROWDY_TRACE } = process.env;
-    const level =
-      logLevel ?? (ROWDY_LOG_LEVEL || ROWDY_DEBUG === 'true' || ROWDY_TRACE === 'true' ? undefined : 'warn');
-    const log = new Logger('sandbox', logger ?? DEFAULT_LOGGER, level);
+  }: Pick<SandboxOptions, 'runtime' | 'logLevel' | 'loggerProvider' | 'pollInterval' | 'credentials' | 'signal'>) {
     this.credential$ = credentials && new Credentials(credentials);
-    this.environment = new SandboxEnvironment(log, { signal, pollInterval, credentials: this.credential$?.provider });
+    this.environment = new SandboxEnvironment({
+      signal,
+      pollInterval,
+      credentials: this.credential$?.provider,
+      loggerProvider,
+      logLevel,
+    });
 
     this.runtime = runtime ?? 'aws.microvm';
     this.compute = new RUNTIMES[this.runtime](this.environment);
   }
 
+  @Trace((options?: SandboxOptions) => options)
   static create(options?: SandboxOptions): SandboxPromiseImpl {
     const runtime = options?.runtime ?? 'aws.microvm';
     const sandbox = new SandboxImpl({
       runtime,
       logLevel: options?.logLevel,
-      logger: options?.logger,
+      loggerProvider: options?.loggerProvider,
       pollInterval: options?.pollInterval,
       credentials: options?.credentials,
       signal: options?.signal,
     });
     const { signal } = sandbox.environment;
-
-    if (options?.onEvent) {
-      const onEvent = Promise.resolve(options.onEvent);
-      sandbox
-        .events()
-        .pipe(
-          // One at a time, so a slow callback still sees them in order.
-          concatMap((event) =>
-            from(onEvent.then((callback) => callback(event))).pipe(
-              catchError((error) => {
-                sandbox.environment.log.warn('Event Callback Failed', { error });
-                return EMPTY;
-              })
-            )
-          )
-        )
-        .subscribe();
-    }
 
     const created = lastValueFrom(
       defer(() => {
@@ -181,11 +162,15 @@ export class SandboxImpl implements Sandbox {
           ),
           defer(() =>
             sandbox.compute.create({ image, name, timeout, memory, env, meta, layersFrom, wait: options?.wait ?? true })
-          ).pipe(map(() => sandbox.stoppingOnAbort()))
+          ).pipe(
+            switchMap(() => sandbox.compute.status()),
+            map((metadata) => {
+              sandbox.metadata = metadata;
+              return sandbox.stoppingOnAbort();
+            })
+          )
         );
       }).pipe(
-        // Work starts after this returns, so `.events()` on the result sees the first step.
-        subscribeOn(asapScheduler),
         // An AxiosError carries its request headers and sockets into a caller's logs.
         catchError((error) =>
           throwError(() =>
@@ -206,33 +191,33 @@ export class SandboxImpl implements Sandbox {
     return new SandboxPromiseImpl(
       created.catch((error) => {
         throw humanize(error);
-      }),
-      sandbox.events()
+      })
     );
   }
 
-  static get({
-    sandboxId,
+  @Trace((lookup: SandboxLookup) => lookup)
+  static async get({
+    name,
     logLevel,
-    logger,
+    loggerProvider,
     pollInterval,
     credentials,
     signal: abort,
     meta,
     runtime: only,
-  }: SandboxLookup): SandboxPromiseImpl {
-    // An id is the sandbox's name, which doesn't say its runtime, so the sandbox is whichever runtime has it.
+  }: SandboxLookup): Promise<SandboxImpl> {
+    // A sandbox's name doesn't say its runtime, so the sandbox is whichever runtime has it.
     const runtimes = only ? [only] : (Object.keys(RUNTIMES) as (keyof typeof RUNTIMES)[]);
     const sandboxes = runtimes.map(
-      (runtime) => new SandboxImpl({ runtime, logLevel, logger, pollInterval, credentials, signal: abort })
+      (runtime) => new SandboxImpl({ runtime, logLevel, loggerProvider, pollInterval, credentials, signal: abort })
     );
     type Tried = { found?: SandboxImpl; error?: unknown };
 
-    const attached = lastValueFrom(
+    return lastValueFrom(
       iif(
         // A name, never an ARN or a path to something else in the account.
-        () => !sandboxId || /[:/]/.test(sandboxId),
-        throwError(() => new SandboxError(`Not a sandbox: ${sandboxId}`)),
+        () => !name || /[:/]/.test(name),
+        throwError(() => new SandboxError(`Not a sandbox: ${name}`)),
         from(sandboxes).pipe(
           mergeMap((sandbox) => {
             const { signal } = sandbox.environment;
@@ -240,11 +225,17 @@ export class SandboxImpl implements Sandbox {
               iif(() => signal.aborted, of(signal), fromEvent(signal, 'abort')).pipe(
                 switchMap(() => throwError(() => signal.reason))
               ),
-              defer(() => sandbox.compute.attach(sandboxId, meta)).pipe(map(() => sandbox))
+              defer(() => sandbox.compute.attach(name, meta)).pipe(
+                switchMap(() => sandbox.compute.status()),
+                map((metadata) => {
+                  sandbox.metadata = metadata;
+                  return sandbox;
+                })
+              )
             ).pipe(
               map((found): Tried => ({ found })),
               catchError((error) => {
-                sandbox.environment.log.debug('Sandbox Not Attached', { runtime: sandbox.runtime, sandboxId, error });
+                sandbox.environment.log.debug('Sandbox Not Attached', { runtime: sandbox.runtime, name, error });
                 return of<Tried>({ error });
               })
             );
@@ -265,32 +256,27 @@ export class SandboxImpl implements Sandbox {
               ) ?? errors.find((error) => !isNotFound(error));
             if (refused) throw refused;
             // AWS's own message names the ARN, and so the account.
-            throw Object.assign(new SandboxError(`No sandbox named ${sandboxId}`), {
+            throw Object.assign(new SandboxError(`No sandbox named ${name}`), {
               name: 'ResourceNotFoundException',
             });
           })
         )
-      ).pipe(
-        // Work starts after this returns, so `.events()` on the result sees the first step.
-        subscribeOn(asapScheduler)
       )
-    );
-
-    return new SandboxPromiseImpl(
-      attached.catch((error) => {
-        throw humanize(error);
-      }),
-      merge(...sandboxes.map((sandbox) => sandbox.events()))
-    );
+    ).catch((error) => {
+      throw humanize(error);
+    });
   }
 
-  static list({ runtime, meta = {}, credentials, signal, logger, logLevel }: SandboxListOptions = {}): Promise<
-    SandboxStatus[]
-  > {
-    const { ROWDY_LOG_LEVEL, ROWDY_DEBUG, ROWDY_TRACE } = process.env;
-    const level =
-      logLevel ?? (ROWDY_LOG_LEVEL || ROWDY_DEBUG === 'true' || ROWDY_TRACE === 'true' ? undefined : 'warn');
-    const log = new Logger('sandbox', logger ?? DEFAULT_LOGGER, level);
+  @Trace((options?: SandboxListOptions) => options)
+  static async list({
+    runtime,
+    meta = {},
+    credentials,
+    signal,
+    logLevel,
+    loggerProvider,
+  }: SandboxListOptions = {}): Promise<SandboxList> {
+    const { log } = new SandboxEnvironment({ loggerProvider, logLevel });
     const runtimes = runtime ? [runtime] : (Object.keys(RUNTIMES) as (keyof typeof RUNTIMES)[]);
 
     return lastValueFrom(
@@ -308,18 +294,61 @@ export class SandboxImpl implements Sandbox {
           toArray()
         )
       )
-    ).catch((error) => {
-      throw humanize(error);
-    });
+    ).then(
+      // Every sandbox is on one page for now, so there's never a next.
+      (sandboxes): SandboxList => {
+        const page = { sandboxes, pagination: { count: sandboxes.length, next: null } };
+        return {
+          ...page,
+          async *[Symbol.asyncIterator]() {
+            yield* sandboxes;
+          },
+          async *pages() {
+            yield page;
+          },
+          toArray: async () => sandboxes,
+        };
+      },
+      (error) => {
+        throw humanize(error);
+      }
+    );
   }
 
-  get sandboxId(): string {
-    return this.compute.sandboxId;
+  get name(): string {
+    return this.metadata.name;
+  }
+
+  get meta(): Record<string, string> {
+    return this.metadata.meta;
+  }
+
+  get status(): SandboxMetadata['status'] {
+    return this.metadata.status;
+  }
+
+  get reason(): string | undefined {
+    return this.metadata.reason;
+  }
+
+  get startedAt(): Date | undefined {
+    return this.metadata.startedAt;
+  }
+
+  get expiresAt(): Date | undefined {
+    return this.metadata.expiresAt;
   }
 
   runCommand(cmd: string, args?: string[], options?: RunCommandOptions): Promise<CommandFinished>;
   runCommand(params: DetachedRunCommandParams): Promise<Command>;
   runCommand(params: RunCommandParams): Promise<CommandFinished>;
+  @Redact({
+    args: (
+      command: string | RunCommandParams | DetachedRunCommandParams,
+      args?: string[],
+      options?: RunCommandOptions
+    ) => [typeof command === 'string' ? command : { ...command, env: command.env && '[env]' }, args, options],
+  })
   async runCommand(
     command: string | RunCommandParams | DetachedRunCommandParams,
     args?: string[],
@@ -328,23 +357,6 @@ export class SandboxImpl implements Sandbox {
     const params = typeof command === 'string' ? { cmd: command, args, ...options } : command;
     // The sandbox's signal covers its commands too.
     const signal = params.signal ? AbortSignal.any([params.signal, this.environment.signal]) : this.environment.signal;
-    const onEvent = params.onEvent && Promise.resolve(params.onEvent);
-    const subscription =
-      onEvent &&
-      this.events()
-        .pipe(
-          // One at a time, so a slow callback still sees them in order.
-          concatMap((event) =>
-            from(onEvent.then((callback) => callback(event))).pipe(
-              catchError((error) => {
-                this.environment.log.warn('Event Callback Failed', { error });
-                return EMPTY;
-              })
-            )
-          )
-        )
-        .subscribe();
-
     const exec$ = this.compute.exec({
       apiVersion: 'rowdy.run/v1alpha1',
       kind: 'Exec',
@@ -364,8 +376,7 @@ export class SandboxImpl implements Sandbox {
       const following$ = connectable(
         exec$.pipe(
           switchMap((exec) => merge(of(exec), exec.frames.pipe(written, ignoreElements()))),
-          takeUntil(fromEvent(signal, 'abort')),
-          finalize(() => subscription?.unsubscribe())
+          takeUntil(fromEvent(signal, 'abort'))
         ),
         { connector: () => new ReplaySubject<Exec>(1), resetOnDisconnect: false }
       );
@@ -390,12 +401,15 @@ export class SandboxImpl implements Sandbox {
             )
           : NEVER,
         exec$.pipe(switchMap((exec) => merge(exec.frames.pipe(written, ignoreElements()), from(exec.wait()))))
-      ).pipe(finalize(() => subscription?.unsubscribe()))
+      )
     ).catch((error) => {
       throw humanize(error);
     });
   }
 
+  @Redact({
+    args: (files: WriteFile[], options?: FileOptions) => [files.map(({ path, mode }) => ({ path, mode })), options],
+  })
   async writeFiles(files: WriteFile[], options?: FileOptions): Promise<void> {
     const signal = options?.signal
       ? AbortSignal.any([options.signal, this.environment.signal])
@@ -433,6 +447,8 @@ export class SandboxImpl implements Sandbox {
     });
   }
 
+  // A token for the port, the hooks port's runs any command as root.
+  @Redact((url: SandboxUrl) => ({ ...url, headers: '[redacted]' }))
   async url(port?: number, options?: UrlOptions): Promise<SandboxUrl> {
     const signal = options?.signal
       ? AbortSignal.any([options.signal, this.environment.signal])
@@ -442,6 +458,8 @@ export class SandboxImpl implements Sandbox {
     });
   }
 
+  // A command's output is the sandbox's, and can be anything.
+  @Redact(() => '[output]')
   async output(cmdId: string, options?: CommandOutputOptions): Promise<CommandOutput> {
     const signal = options?.signal
       ? AbortSignal.any([options.signal, this.environment.signal])
@@ -451,31 +469,52 @@ export class SandboxImpl implements Sandbox {
     });
   }
 
-  async stop(): Promise<SandboxStatus> {
-    return lastValueFrom(this.compute.stop().pipe(switchMap(() => this.compute.status()))).catch((error) => {
+  async stop(): Promise<SandboxMetadata> {
+    return lastValueFrom(
+      this.compute.stop().pipe(
+        switchMap(() => this.compute.status()),
+        tap((metadata) => (this.metadata = metadata))
+      )
+    ).catch((error) => {
       throw humanize(error);
     });
   }
 
-  async suspend(): Promise<SandboxStatus> {
-    return lastValueFrom(this.compute.suspend().pipe(switchMap(() => this.compute.status()))).catch((error) => {
+  async suspend(): Promise<SandboxMetadata> {
+    return lastValueFrom(
+      this.compute.suspend().pipe(
+        switchMap(() => this.compute.status()),
+        tap((metadata) => (this.metadata = metadata))
+      )
+    ).catch((error) => {
       throw humanize(error);
     });
   }
 
-  async resume(): Promise<SandboxStatus> {
-    return lastValueFrom(this.compute.resume().pipe(switchMap(() => this.compute.status()))).catch((error) => {
+  async resume(): Promise<SandboxMetadata> {
+    return lastValueFrom(
+      this.compute.resume().pipe(
+        switchMap(() => this.compute.status()),
+        tap((metadata) => (this.metadata = metadata))
+      )
+    ).catch((error) => {
       throw humanize(error);
     });
   }
 
-  async status(): Promise<SandboxStatus> {
-    return lastValueFrom(this.compute.status()).catch((error) => {
+  async refresh(): Promise<SandboxMetadata> {
+    return lastValueFrom(this.compute.status().pipe(tap((metadata) => (this.metadata = metadata)))).catch((error) => {
       throw humanize(error);
     });
   }
 
-  static async delete(lookup: SandboxLookup): Promise<void> {
+  // Nothing is left running where it can't stop.
+  async [Symbol.asyncDispose](): Promise<void> {
+    if (this.compute.stoppable) await this.stop();
+  }
+
+  @Trace((lookup: SandboxLookup) => lookup)
+  static async delete(lookup: SandboxLookup): Promise<SandboxMetadata | undefined> {
     const sandbox = await SandboxImpl.get(lookup).catch((error) => {
       // Deleted already, or never made. A sandbox the lookup refuses still rejects.
       if (isNotFound(error)) return undefined;
@@ -484,7 +523,7 @@ export class SandboxImpl implements Sandbox {
     if (sandbox) return sandbox.delete();
 
     // A create that failed before its image or function existed leaves its role, which names it at the end.
-    const name = lookup.sandboxId;
+    const { name } = lookup;
     const iam = new IAMClient({ credentials: lookup.credentials });
     const gone = (error: unknown): Observable<never> => (isNotFound(error) ? EMPTY : throwError(() => error));
     await lastValueFrom(
@@ -505,16 +544,22 @@ export class SandboxImpl implements Sandbox {
     ).catch((error) => {
       throw humanize(error);
     });
+    // A role left by a failed create is no sandbox.
+    return undefined;
   }
 
-  async delete(): Promise<void> {
-    await lastValueFrom(this.compute.delete()).catch((error) => {
+  async delete(): Promise<SandboxMetadata> {
+    return lastValueFrom(
+      this.compute.delete().pipe(
+        map(() => {
+          const { name, runtime, meta } = this.metadata;
+          this.metadata = { name, runtime, meta, status: 'deleted' };
+          return this.metadata;
+        })
+      )
+    ).catch((error) => {
       throw humanize(error);
     });
-  }
-
-  events(): Observable<Event> {
-    return merge(this.compute.events(), this.environment.event$);
   }
 
   // Only once there's a sandbox: an abort before that has nothing to stop.

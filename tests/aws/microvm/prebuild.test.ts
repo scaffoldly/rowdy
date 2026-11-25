@@ -1,7 +1,6 @@
 import { createHash } from 'crypto';
 import { strFromU8, unzipSync, zipSync } from 'fflate';
 import { lastValueFrom, map, of } from 'rxjs';
-import { Logger } from '../../../src';
 import { SandboxEnvironment } from '../../../src/sandbox/internal/environment';
 import { MicrovmImage, POLL } from '../../../src/aws/microvm/index';
 import { COMPUTE_TAG } from '../../../src/aws/microvm/index';
@@ -57,7 +56,7 @@ describe('aws microvm prebuild', () => {
     pulled: TPulledImage = PULLED,
     platform: 'linux/amd64' | 'linux/arm64' = 'linux/amd64'
   ): { image: MicrovmImage; sent: Sent[]; environment: SandboxEnvironment } => {
-    const environment = new SandboxEnvironment(new Logger());
+    const environment = new SandboxEnvironment();
     const image = new MicrovmImage(environment)
       .withImage('ghcr.io/tunneld-it/ubuntu:latest', ['ghcr.io/tunneld-it/tunneld:latest'])
       .withPlatform(platform)

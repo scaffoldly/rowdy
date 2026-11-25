@@ -73,8 +73,7 @@ const sandbox = await Sandbox.create({
 | `env`          |                      | Environment variables for every command.                                                                  |
 | `meta`         |                      | Kept with the sandbox, for `list` and `get` to match. See [Meta](#meta).                                  |
 | `layersFrom`   |                      | Images whose layer goes into the sandbox's image. See [Layers](#layers).                                  |
-| `logLevel`     | `warn`               | See [Logging](../sdk.md#logging).                                                                         |
-| `logger`       | `process.stderr`     | Where this sandbox logs: a stream or a console-like logger. See [Logging](../sdk.md#logging).             |
+| `logLevel`     | `info`               | See [Logging](../sdk.md#logging).                                                                         |
 | `pollInterval` | 5000, 250 to stop    | Milliseconds between checks on a microVM sandbox as it builds, starts or stops. Each is a request to AWS. |
 | `credentials`  | the AWS SDK's chain  | What its AWS clients act as. See [AWS credentials](../sdk.md#aws-credentials).                            |
 | `signal`       |                      | See [Aborting](#aborting).                                                                                |
@@ -94,13 +93,19 @@ first build takes about two minutes, and a repeat takes seconds. A new rowdy rel
 image, so the next `create` builds again.
 
 With `wait: false`, an `aws.microvm` sandbox resolves as soon as AWS is building its image, which suits a host
-that can't hold a request open for two minutes. `status()` says where the build is: `building`, `ready`, or
-`failed` with AWS's `reason`. A command before it's ready rejects. `aws.lambda` always waits. On `aws.microvm`,
-`status()` also says whether its VM is `running` and `suspended`, with `startedAt` and `stopsAt` while it's up.
+that can't hold a request open for two minutes. Its `status` is `pending` until the build is done, and `refresh()`
+asks AWS again. A command before it's ready rejects. `aws.lambda` always waits.
 
 ```ts
 const sandbox = await Sandbox.create({ image: 'node:24', wait: false });
-while ((await sandbox.status()).state === 'building') await new Promise((r) => setTimeout(r, 10_000));
+while ((await sandbox.refresh()).status === 'pending') await new Promise((r) => setTimeout(r, 10_000));
+```
+
+A sandbox disposed of with `await using` is stopped, as `stop()` does. On `aws.lambda`, which can't stop and has
+nothing running between commands, disposing of it does nothing.
+
+```ts
+await using sandbox = await Sandbox.create();
 ```
 
 What `create` returns has the sandbox's methods before it resolves. Each waits for the sandbox, then calls it,
@@ -264,7 +269,7 @@ resumes it. A sandbox from an image gets a new VM, and a new URL, once its VM ha
 
 On `aws.microvm`, `suspend()` suspends the sandbox's VM and resolves once it's suspended. Its memory, files and
 running processes are kept, and it isn't billed for compute, only for its snapshot. `resume()` resolves once it's
-running again. Both resolve to the sandbox's `status()` afterwards, as `stop()` does.
+running again. Both resolve to the sandbox's [metadata](#metadata) afterwards, as `stop()` does.
 
 ```ts
 await sandbox.suspend();
@@ -287,7 +292,7 @@ Both are safe to call more than once. On `aws.lambda`, they reject.
 
 `stop()` ends everything running in the sandbox, including a command in progress, whose `runCommand`
 rejects. That covers anything started through a `Sandbox.get` of it, in any process. It's safe to call
-more than once. It resolves to the sandbox's `status()` afterwards, with `running: false`.
+more than once. It resolves to the sandbox's [metadata](#metadata) afterwards, with `status: 'stopped'`.
 
 The sandbox itself stays. The next command starts a new VM from the image, without the old one's files.
 
@@ -302,17 +307,27 @@ image shares it. It's safe to call more than once, and a delete that fails partw
 `Sandbox.delete(lookup)` on a sandbox whose create failed before it had an image or function deletes the
 role that create left.
 
-## `Sandbox.get`
-
-`sandboxId` is the sandbox's name, `{name}-{suffix}`, the same as the function's or the image's. It leaves the
-account ID in their ARNs out, so it's safe to show. Another process can use it to connect to the same sandbox:
-`get` looks the name up on every runtime, in the account and region its credentials are for. The sandbox's `runtime` says
-which one it found it on.
+Both resolve to the sandbox's [metadata](#metadata), with `status: 'deleted'`, and the sandbox's own fields say the
+same. `Sandbox.delete(lookup)` resolves to undefined when there was no sandbox to delete, a role left by a failed
+create included.
 
 ```ts
-const { sandboxId } = sandbox;
+const deleted = await Sandbox.delete({ name });
+console.log(deleted ? `deleted ${deleted.name}` : 'nothing to delete');
+```
 
-const again = await Sandbox.get({ sandboxId });
+## `Sandbox.get`
+
+A sandbox's `name` is `{name}-{suffix}`, the same as its function's or its image's. It leaves the account ID in
+their ARNs out, so it's safe to show. Another process can use it to connect to the same sandbox: `get` looks the
+name up on every runtime, in the account and region its credentials are for. It resolves to the sandbox, with its
+[metadata](#metadata) as AWS says now, and its `runtime` says which one it found it on. Unlike `create`'s, what it
+returns is only a promise, so await it before calling the sandbox's methods.
+
+```ts
+const { name } = sandbox;
+
+const again = await Sandbox.get({ name });
 await again.runCommand('ls');
 ```
 
@@ -326,15 +341,20 @@ when no other runtime said something else, since credentials that may not use a 
 it. Pass `runtime` to look on one runtime only; `Sandbox.delete` takes it too. Each runtime's answer is logged at
 `debug`.
 
-It takes a `signal`, a `logLevel`, a `logger`, a `pollInterval` and `credentials`, and logs at the level described in
+It takes a `signal`, a `logLevel`, a `pollInterval` and `credentials`, and logs at the level described in
 [Logging](../sdk.md#logging).
 
 ## `Sandbox.list`
 
-Lists the sandboxes in the account and region, on every runtime, to find a lost `sandboxId` or see what's billed.
+Lists the sandboxes in the account and region, on every runtime, to find a lost `name` or see what's billed. It
+resolves to its first page, `sandboxes` and `pagination`, as Vercel's does, and each sandbox's
+[metadata](#metadata) on every page for `for await`, `pages()` or `toArray()`. For now every sandbox is on the one
+page, so `pagination.next` is null.
 
 ```ts
-const running = (await Sandbox.list({ runtime: 'aws.microvm' })).filter(({ running }) => running);
+for await (const { name, status } of await Sandbox.list({ runtime: 'aws.microvm' })) {
+  if (status === 'running') console.log(name);
+}
 ```
 
 | Option    | What it does                                                |
@@ -343,7 +363,24 @@ const running = (await Sandbox.list({ runtime: 'aws.microvm' })).filter(({ runni
 | `meta`    | Only sandboxes whose `meta` has every one of these entries. |
 | `signal`  | Rejects the listing.                                        |
 
-Each is a `SandboxStatus`, the same as `status()` gives: its `sandboxId`, `name`, `runtime`, `meta` and `state`, with a `reason` when it failed. A microVM sandbox also says whether it's `running`, which a suspended one is, and if it is, whether it's `suspended`, `startedAt`, and `stopsAt`, 8 hours later, when AWS ends it. A Lambda sandbox is billed only while a command runs, so it has neither.
+## Metadata
+
+A sandbox has its metadata as fields, as AWS said when `create` or `get` found it, or since by `refresh()`, `stop()`,
+`suspend()` or `resume()`, which each resolve to it too. Each of `Sandbox.list`'s results is the same.
+
+| Field       | What it says                                                            |
+| ----------- | ----------------------------------------------------------------------- |
+| `name`      | What `Sandbox.get` and `Sandbox.delete` take.                           |
+| `runtime`   | Where it runs.                                                          |
+| `meta`      | What `create` was given as `meta`.                                      |
+| `status`    | `pending`, `running`, `suspended`, `stopped`, `failed` or `deleted`.    |
+| `reason`    | Why its build failed, as AWS says.                                      |
+| `startedAt` | When its microVM started, while one is up.                              |
+| `expiresAt` | When AWS ends that microVM, 8 hours after it started, suspended or not. |
+
+A microVM sandbox is `running` while a VM is up, `suspended` while that VM is suspended, and `stopped` with none. A
+Lambda sandbox is billed only while a command runs, so it's `running` from when it can run one, and has no
+`startedAt` or `expiresAt`.
 
 ## Meta
 
@@ -354,7 +391,7 @@ Each is a `SandboxStatus`, the same as `status()` gives: its `sandboxId`, `name`
 const sandbox = await Sandbox.create({ meta: { sub: 'github:1' } });
 
 const ours = await Sandbox.list({ meta: { sub: 'github:1' } });
-const again = await Sandbox.get({ sandboxId, meta: { sub: 'github:1' } });
+const again = await Sandbox.get({ name: sandbox.name, meta: { sub: 'github:1' } });
 ```
 
 `get` refuses a sandbox whose `meta` doesn't have every entry given, as it does one that isn't a sandbox.
@@ -412,105 +449,13 @@ no VM is left running. A second Ctrl+C quits straight away, without waiting. A p
 This only applies during a command. Between commands, Ctrl+C ends the process and leaves the VM
 running until `timeout` suspends it, unless the program stops it.
 
-## Events
-
-Rowdy reports what it does. Every event has a readable `message`. Check `source` before anything else, since the rest
-depends on it. A step on AWS has `source: 'cdk'` and a
-`type`, which narrows its `lifecycle`:
-
-| `type`     | `lifecycle`               |
-| ---------- | ------------------------- |
-| `describe` | `describing`, `described` |
-| `read`     | `reading`, `read`         |
-| `create`   | `creating`, `created`     |
-| `update`   | `updating`, `updated`     |
-| `dispose`  | `disposing`, `disposed`   |
-| `tag`      | `tagging`, `tagged`       |
-
-`failed` can follow any of them.
-
-```ts
-{
-  source: 'cdk',
-  message: 'CreateRole: creating',
-  type: 'create',
-  lifecycle: 'creating',
-  client: 'IAMClient',
-  action: 'CreateRole',
-  name: 'sandbox-abc',
-}
-```
-
-Copying an image into ECR reports its progress with `source: 'transfer'`, whenever that changes:
-
-```ts
-{
-  source: 'transfer',
-  message: 'Copying the image: 4/9 transfers: 40% complete',
-  lifecycle: 'copying',
-  summary: '4/9 transfers: 40% complete',
-}
-```
-
-`lifecycle` is `copying`, `copied` or `failed`.
-
-A request that runs into something says so with `source: 'http'`, and `type` says what. A registry that rate-limits
-one is `type: 'rate-limited'`. The request waits as long as its `Retry-After`
-says, or its own backoff without one, then tries again. Requests in parallel can be limited at once, so a host that
-passes these on may want to debounce them.
-
-```ts
-{
-  source: 'http',
-  message: 'Rate limited by mirror.gcr.io pulling library/alpine, trying again in 30 seconds',
-  type: 'rate-limited',
-  summary: 'Rate limited by mirror.gcr.io pulling library/alpine, trying again in 30 seconds',
-  wait: 30000,
-  retryAfter: '30',
-}
-```
-
-`wait` is the milliseconds until it tries again. `retryAfter` is the registry's own header, and it's missing when the
-registry sent none and the wait is rowdy's backoff.
-
-Pass `onEvent` to `Sandbox.create` or `runCommand`. It can be a callback or a promise of one. Callbacks run one at a
-time, in order, and an error from one is logged and doesn't affect the sandbox.
-
-```ts
-const sandbox = await Sandbox.create({
-  runtime: 'aws.microvm',
-  onEvent: (event) => {
-    if (event.source === 'cdk' && event.type === 'create' && event.lifecycle === 'created') {
-      console.error(event.action);
-    }
-  },
-});
-
-await sandbox.runCommand({ cmd: 'npm', args: ['test'], onEvent: (event) => console.error(event) });
-```
-
-On `create`, it receives every event for as long as the sandbox is in use. On `runCommand`, it receives what happens
-while that command runs. That includes polling, so filter on `type`.
-
-For an Observable, call `.events()`. Nothing is kept, so it starts from when you subscribe: to see the build, call it on
-what `create` returns, before you await it.
-
-```ts
-const creating = Sandbox.create({ runtime: 'aws.microvm' });
-creating.events().subscribe(console.error);
-const sandbox = await creating;
-```
-
-A command's own output isn't an event.
-
 ## Prebuilt images
 
 On `aws.microvm`, `Sandbox.create` first looks for an image prebuilt by
 `rowdy create aws microvm --build` from exactly what the sandbox would build (see
 [the runtime docs](../runtime.md#prebuilt-microvm-images)). It reads only manifests to work out the
 image's name, then reads the image by that name. A match starts in seconds instead of building for about
-two minutes, and the create emits a `{ source: 'sandbox', type: 'prebuilt' }` event, "Starting from a
-prebuilt image". With no match, it builds as before.
+two minutes. With no match, it builds as before.
 
 A match needs everything that goes into the image to be the same:
 
@@ -524,7 +469,7 @@ The `timeout` and `meta` don't count, since they're set when the VM starts.
 
 A sandbox started from a prebuilt image is its one VM, so it differs from other microVM sandboxes:
 
-- **`sandboxId`** is the VM's id, like `microvm-ee6ef309-…`. `Sandbox.get` and `Sandbox.list` find it
+- **Its `name`** is the VM's id, like `microvm-ee6ef309-…`. `Sandbox.get` and `Sandbox.list` find it
   by that.
 - **It starts on `create`**, and is billed from then until `stop()` or it suspends.
 - **`stop()` ends it.** A later command doesn't start a new VM: it rejects, and you create another
