@@ -1,4 +1,5 @@
-import { SeverityNumber, type Attributes, type Context, type Histogram, type MeterProvider } from '@opentelemetry/api';
+import type { Attributes, Context, Histogram, MeterProvider } from '@opentelemetry/api';
+import { SeverityNumber } from '@opentelemetry/api-logs';
 import type { ResolvedOptions } from '../../otel';
 import { wiretap } from './logging';
 import type { Tracker } from './tracker';

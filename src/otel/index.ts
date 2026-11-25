@@ -1,4 +1,5 @@
-import type { LoggerProvider, MeterProvider, TracerProvider } from '@opentelemetry/api';
+import type { MeterProvider, TracerProvider } from '@opentelemetry/api';
+import type { LoggerProvider } from '@opentelemetry/api-logs';
 import type { Instrumentation, InstrumentationConfig } from '@opentelemetry/instrumentation';
 import type { CdkOptions } from '../cdk';
 import { Logger } from '../log';

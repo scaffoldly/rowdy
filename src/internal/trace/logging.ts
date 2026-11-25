@@ -1,4 +1,5 @@
-import { SeverityNumber, type Attributes, type Context } from '@opentelemetry/api';
+import type { Context } from '@opentelemetry/api';
+import { SeverityNumber, type LogAttributes } from '@opentelemetry/api-logs';
 import { isLoggable, Logger, maskJson, type ILoggable, type Loggable } from '../../log';
 import type { ResolvedOptions } from '../../otel';
 import { redactArgs, redactResult, type Redactor } from './redact';
@@ -8,7 +9,7 @@ import type { Tracker } from './tracker';
 export type TraceSink = Pick<Logger, 'trace'>;
 
 /** A log record at `severity`, in the run's context, when the options' logger is enabled for one. */
-export type Wiretap = (severity: SeverityNumber, message: string, attributes?: Attributes) => void;
+export type Wiretap = (severity: SeverityNumber, message: string, attributes?: LogAttributes) => void;
 
 export const wiretap = ({ loggerProvider, name, version }: ResolvedOptions, context: Context): Wiretap => {
   const logger = loggerProvider.getLogger(name, version);
@@ -24,7 +25,7 @@ export const recordsIn = (options: ResolvedOptions, context: Context): TraceSink
   return {
     trace: (message, params = {}): void => {
       const fields: Record<string, Loggable> = isLoggable(params) ? { value: params } : params;
-      const attributes: Attributes = {};
+      const attributes: LogAttributes = {};
       for (const [key, value] of Object.entries(fields)) {
         const primitive = Logger.asPrimitive(value);
         attributes[key] = primitive instanceof Error ? `${primitive.name}: ${primitive.message}` : primitive;

@@ -1,4 +1,5 @@
-import type { LoggerProvider, MeterProvider, TracerProvider } from '@opentelemetry/api';
+import type { MeterProvider, TracerProvider } from '@opentelemetry/api';
+import type { LoggerProvider } from '@opentelemetry/api-logs';
 import promiseRetry from 'promise-retry';
 import { getDifferences } from './internal/diff';
 import { log as root, type Level } from './log';

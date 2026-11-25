@@ -1,14 +1,10 @@
+import { context, SpanKind, SpanStatusCode, trace, type MeterProvider } from '@opentelemetry/api';
 import {
-  context,
   SeverityNumber,
-  SpanKind,
-  SpanStatusCode,
-  trace,
   type Logger as OtelLogger,
   type LoggerProvider,
   type LogRecord,
-  type MeterProvider,
-} from '@opentelemetry/api';
+} from '@opentelemetry/api-logs';
 import { AsyncLocalStorageContextManager } from '@opentelemetry/context-async-hooks';
 import { InMemorySpanExporter, SimpleSpanProcessor, TracerProvider } from '@opentelemetry/sdk-trace';
 import { defer, lastValueFrom, Observable, of, throwError, race, timer, map, NEVER, retry, tap, toArray } from 'rxjs';

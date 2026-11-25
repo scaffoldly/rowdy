@@ -1,4 +1,5 @@
-import type { LoggerProvider, MeterProvider, TracerProvider } from '@opentelemetry/api';
+import type { MeterProvider, TracerProvider } from '@opentelemetry/api';
+import type { LoggerProvider } from '@opentelemetry/api-logs';
 import { InstrumentationBase, type Instrumentation, type InstrumentationConfig } from '@opentelemetry/instrumentation';
 import { HttpInstrumentation } from '@opentelemetry/instrumentation-http';
 import { UndiciInstrumentation } from '@opentelemetry/instrumentation-undici';

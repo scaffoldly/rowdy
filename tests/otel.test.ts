@@ -1,12 +1,5 @@
-import {
-  context,
-  createContextKey,
-  createNoopLogger,
-  createNoopMeter,
-  ROOT_CONTEXT,
-  SeverityNumber,
-  trace,
-} from '@opentelemetry/api';
+import { context, createContextKey, createNoopMeter, ROOT_CONTEXT, trace } from '@opentelemetry/api';
+import { createNoopLogger, SeverityNumber } from '@opentelemetry/api-logs';
 import { AsyncLocalStorageContextManager } from '@opentelemetry/context-async-hooks';
 import { execFileSync } from 'child_process';
 import { join } from 'path';
@@ -493,7 +486,8 @@ describe('rowdy.run passing its providers to a traced call', () => {
     const script = `
       const { NodeSDK } = require('@opentelemetry/sdk-node');
       const { SimpleSpanProcessor } = require('@opentelemetry/sdk-trace');
-      const { logs, metrics, trace } = require('@opentelemetry/api');
+      const { metrics, trace } = require('@opentelemetry/api');
+      const { logs } = require('@opentelemetry/api-logs');
       const { Trace } = require(${JSON.stringify(join(ROOT, 'dist', 'index.js'))});
       const { STSClient, GetCallerIdentityCommand } = require('@aws-sdk/client-sts');
 
@@ -542,5 +536,46 @@ describe('rowdy.run passing its providers to a traced call', () => {
 
   it('records nothing when the call carries no providers', () => {
     expect(run(false)).toEqual([]);
+  });
+});
+
+describe('a host on its own @opentelemetry/api', () => {
+  // The host registers through its copy; the bundle reads them through its own, 1.9.
+  const run = (api: string): { traced?: string; parent?: string; scope?: string } => {
+    const script = `
+      const api = require(${JSON.stringify(api)});
+      const { AsyncLocalStorageContextManager } = require('@opentelemetry/context-async-hooks');
+      const { InMemorySpanExporter, SimpleSpanProcessor, TracerProvider } = require('@opentelemetry/sdk-trace');
+      const { CdkInstrumentation, Trace } = require(${JSON.stringify(join(ROOT, 'dist', 'index.js'))});
+      const exporter = new InMemorySpanExporter();
+      api.context.setGlobalContextManager(new AsyncLocalStorageContextManager().enable());
+      api.trace.setGlobalTracerProvider(new TracerProvider({ spanProcessors: [new SimpleSpanProcessor({ exporter })] }));
+      CdkInstrumentation.create({ tracerProvider: api.trace.getTracerProvider() });
+      const list = Trace(
+        async function () {
+          await new Promise((resolve) => setTimeout(resolve, 1));
+          api.trace.getTracer('host').startSpan('child').end();
+        },
+        { kind: 'method', name: 'list', static: true }
+      );
+      list.call({ name: 'SandboxImpl' }).then(() => {
+        const spans = exporter.getFinishedSpans();
+        const traced = spans.find((s) => s.name === 'SandboxImpl.list');
+        const child = spans.find((s) => s.name === 'child');
+        console.log(JSON.stringify({
+          traced: traced && traced.spanContext().spanId,
+          parent: child && child.parentSpanContext && child.parentSpanContext.spanId,
+          scope: traced && traced.instrumentationScope.name,
+        }));
+      });
+    `;
+    return JSON.parse(execFileSync(process.execPath, ['-e', script], { cwd: ROOT, encoding: 'utf8', env: QUIET }));
+  };
+
+  it.each(['otel-api-1.9.0', 'otel-api-1.10.0'])('keeps a child span under the traced call with %s', (api) => {
+    const { traced, parent, scope } = run(api);
+    expect(scope).toBe('@scaffoldly/rowdy-cdk');
+    expect(traced).toEqual(expect.any(String));
+    expect(parent).toBe(traced);
   });
 });

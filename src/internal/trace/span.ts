@@ -1,4 +1,5 @@
-import { SeverityNumber, SpanKind, SpanStatusCode, trace, type Attributes, type Context } from '@opentelemetry/api';
+import { SpanKind, SpanStatusCode, trace, type Attributes, type Context } from '@opentelemetry/api';
+import { SeverityNumber } from '@opentelemetry/api-logs';
 import type { ResolvedOptions } from '../../otel';
 import { wiretap } from './logging';
 import type { Tracker } from './tracker';

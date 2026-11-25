@@ -1,4 +1,9 @@
-import { SeverityNumber, type LoggerProvider, type LogRecord, type Logger as OtelLogger } from '@opentelemetry/api';
+import {
+  SeverityNumber,
+  type LoggerProvider,
+  type LogRecord,
+  type Logger as OtelLogger,
+} from '@opentelemetry/api-logs';
 
 export interface ILoggable {
   repr(): string;
