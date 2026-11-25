@@ -1314,6 +1314,27 @@ describe('Logger', () => {
           }
         }
 
+        // A private constructor, made only through its statics, as rowdy's SandboxImpl.
+        @Trace
+        class Made {
+          private constructor(readonly options?: CdkOptions) {}
+
+          @Trace((options?: CdkOptions) => options)
+          static async create(options?: CdkOptions): Promise<Made> {
+            return new Made(options);
+          }
+
+          async stop(): Promise<string> {
+            return 'stopped';
+          }
+        }
+
+        it('traces a class with a private constructor, leaving its statics their own @Trace', async () => {
+          const made = await Made.create();
+          await expect(made.stop()).resolves.toBe('stopped');
+          expect(finished().map((s) => s.name)).toEqual(['Made.create', 'Made.stop']);
+        });
+
         it('traces an async method from its call, and an Observable a method returns as subscribed, nested', async () => {
           await expect(new Compute().stop()).resolves.toBe('RUNNING');
           const spans = finished();

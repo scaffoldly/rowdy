@@ -96,7 +96,8 @@ export const Trace: {
    * anything else, a getter or setter, and a method with a `@Trace` of its own are left as they are.
    * Methods a subclass inherits are traced as the class that defines them is.
    */
-  <C extends abstract new (...args: never) => unknown>(value: C, context: ClassDecoratorContext<C>): void;
+  // Any class: one with a private or protected constructor is not newable from outside it.
+  (value: { prototype: object }, context: ClassDecoratorContext<never>): void;
   /** `@Trace`. */
   <This, Args extends unknown[], R>(
     value: Method<This, Args, R>,
