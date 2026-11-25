@@ -1,6 +1,6 @@
 import { SeverityNumber, type Attributes, type Context } from '@opentelemetry/api';
 import { isLoggable, Logger, maskJson, type ILoggable, type Loggable } from '../../log';
-import type { CdkInstrumentationOptions } from '../../otel';
+import type { ResolvedOptions } from '../../otel';
 import type { Tracker } from './tracker';
 
 /** Where a traced call's lines go: a Logger, or OpenTelemetry log records. */
@@ -9,10 +9,7 @@ export type TraceSink = Pick<Logger, 'trace'>;
 /** A log record at `severity`, in the run's context, when the options' logger is enabled for one. */
 export type Wiretap = (severity: SeverityNumber, message: string, attributes?: Attributes) => void;
 
-export const wiretap = (
-  { loggerProvider, name, version }: Required<CdkInstrumentationOptions>,
-  context: Context
-): Wiretap => {
+export const wiretap = ({ loggerProvider, name, version }: ResolvedOptions, context: Context): Wiretap => {
   const logger = loggerProvider.getLogger(name, version);
   return (severityNumber, body, attributes = {}) => {
     if (!(logger.enabled?.({ severityNumber, context }) ?? true)) return;
@@ -21,7 +18,7 @@ export const wiretap = (
 };
 
 /** Each line as an OpenTelemetry log record at TRACE, in `context`. */
-export const recordsIn = (options: Required<CdkInstrumentationOptions>, context: Context): TraceSink => {
+export const recordsIn = (options: ResolvedOptions, context: Context): TraceSink => {
   const tap = wiretap(options, context);
   return {
     trace: (message, params = {}): void => {

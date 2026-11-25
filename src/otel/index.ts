@@ -20,6 +20,11 @@ export type CdkInstrumentationOptions = Pick<
   version?: string;
 };
 
+/** Options with everything filled in, and the logger provider a provider, never `'stderr'`. */
+export type ResolvedOptions = Omit<Required<CdkInstrumentationOptions>, 'loggerProvider'> & {
+  loggerProvider: LoggerProvider;
+};
+
 /**
  * aws-sdk, axios (its http adapter through http, its fetch adapter through undici), rxjs and
  * `@Trace`, controlled as one. Made when this package loads, so its hooks are in before the
@@ -87,17 +92,20 @@ export class CdkInstrumentation implements Instrumentation {
   get loggerProvider(): LoggerProvider {
     const { loggerProvider, logLevel } = this.given;
     // The default loggers filter at the process-wide level: a given logLevel needs loggers of its own.
-    const base = loggerProvider ?? (logLevel ? Logger.at(logLevel) : Logger.defaults().loggerProvider!);
+    const base =
+      loggerProvider === 'stderr'
+        ? Logger.to('stderr', logLevel)
+        : (loggerProvider ?? (logLevel ? Logger.at(logLevel) : Logger.defaults().loggerProvider));
     return Logger.filter(base, logLevel);
   }
 
   /** All its options, filled in: providers that record nothing where none was given. */
-  get options(): Required<CdkInstrumentationOptions> {
+  get options(): ResolvedOptions {
     return {
       tracerProvider: this.tracerProvider ?? NOOP_TRACER_PROVIDER,
       meterProvider: this.meterProvider ?? NOOP_METER_PROVIDER,
       loggerProvider: this.loggerProvider,
-      logLevel: this.given.logLevel ?? Logger.defaults().logLevel!,
+      logLevel: this.given.logLevel ?? Logger.defaults().logLevel,
       name: this.given.name ?? PACKAGE_NAME,
       version: this.given.version ?? PACKAGE_VERSION,
     };

@@ -1198,7 +1198,7 @@ describe('Logger', () => {
             await expect(Failing.fail({ loggerProvider: linesAt('info') })).rejects.toThrow('nope');
             expect(recorded).toEqual([
               expect.stringMatching(
-                /^INFO Span Ended Name: Failing.fail .* Outcome: error .* Error: RangeError: nope$/
+                /^INFO Span Ended Name: Failing.fail .* Outcome: error .* Exception: RangeError: nope$/
               ),
             ]);
           });
@@ -1212,6 +1212,27 @@ describe('Logger', () => {
               expect.stringMatching(/^INFO Span Ended Name: Factory.create Duration: \d+\.\d\d ms Outcome: complete$/),
             ]);
           });
+        });
+
+        it("writes its lines to stderr with loggerProvider: 'stderr', at its logLevel", () => {
+          new Logger().withLevel('info');
+          Factory.create({ loggerProvider: 'stderr', logLevel: 'trace' });
+          const errors = lines.filter((line) => line.sink === 'error').map((line) => line.text);
+          expect(only(errors)).toEqual([
+            'TRACE @scaffoldly/rowdy-cdk Factory.create Called Args: [{"loggerProvider":"stderr","logLevel":"trace"}]',
+            expect.stringMatching(
+              /^TRACE @scaffoldly\/rowdy-cdk Factory.create Completed Duration: .* Value: Factory$/
+            ),
+          ]);
+          expect(errors).toContainEqual(
+            expect.stringMatching(/^INFO @scaffoldly\/rowdy-cdk Span Ended Name: Factory.create /)
+          );
+          expect(lines.filter((line) => line.sink !== 'error')).toEqual([]);
+        });
+
+        it('writes nothing to stderr below its logLevel', () => {
+          Factory.create({ loggerProvider: 'stderr', logLevel: 'warn' });
+          expect(lines).toEqual([]);
         });
 
         it('traces through a loggerProvider whose loggers have only emit', () => {
@@ -1398,6 +1419,15 @@ describe('Logger.defaults', () => {
     expect(info.enabled({ severityNumber: SeverityNumber.DEBUG })).toBe(false);
     info.emit({ severityNumber: SeverityNumber.INFO, body: 'kept' });
     expect(emit).toHaveBeenCalledTimes(1);
+  });
+
+  it('gives a logger provider that writes to a sink, the same one for the same sink and level', () => {
+    const provider = Logger.to('stderr', 'debug');
+    expect(Logger.to('stderr', 'debug')).toBe(provider);
+    const logger = provider.getLogger('sandbox') as Logger;
+    expect(logger).toBe(provider.getLogger('sandbox'));
+    expect(logger.level).toBe('debug');
+    expect(logger.component).toBe('sandbox');
   });
 
   it('gives a logger provider at a level of its own, the same one for the same level', () => {

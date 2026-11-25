@@ -1,5 +1,5 @@
 import { context as otel, type Context } from '@opentelemetry/api';
-import type { CdkInstrumentationOptions } from '../../otel';
+import type { ResolvedOptions } from '../../otel';
 import { logRun, recordsIn, type TraceSink } from './logging';
 import { measureRun } from './metrics';
 import { startSpan } from './span';
@@ -21,11 +21,7 @@ export interface Call {
 }
 
 /** Starts a run under `parent`: its span, its lines as log records, and its duration. */
-export const startRun = (
-  method: string,
-  options: Required<CdkInstrumentationOptions>,
-  parent: Context = otel.active()
-): Run => {
+export const startRun = (method: string, options: ResolvedOptions, parent: Context = otel.active()): Run => {
   const span = startSpan(method, options, parent);
   const sinks = [recordsIn(options, span.context)];
   const trackers = [

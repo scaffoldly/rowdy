@@ -14,7 +14,7 @@ export interface CdkOptions {
    * Where this call's trace lines go, as log records, and those of the libraries it uses. Without
    * one, `Logger.defaults()`'s: the process-wide log's, or at this call's `logLevel` when it has one.
    */
-  loggerProvider?: LoggerProvider;
+  loggerProvider?: LoggerProvider | 'stderr';
   /**
    * The level this call's trace lines are written at or above: they are written only at `trace`.
    * Without one, `Logger.defaults()`'s: the process-wide level.

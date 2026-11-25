@@ -1,5 +1,5 @@
 import { SeverityNumber, SpanKind, SpanStatusCode, trace, type Attributes, type Context } from '@opentelemetry/api';
-import type { CdkInstrumentationOptions } from '../../otel';
+import type { ResolvedOptions } from '../../otel';
 import { wiretap } from './logging';
 import type { Tracker } from './tracker';
 
@@ -13,7 +13,7 @@ type Outcome = 'complete' | 'error' | 'unsubscribe' | 'returned';
  */
 export const startSpan = (
   method: string,
-  { tracerProvider, name, version, ...rest }: Required<CdkInstrumentationOptions>,
+  { tracerProvider, name, version, ...rest }: ResolvedOptions,
   parent: Context
 ): { context: Context; tracker: Tracker } => {
   const attributes = { 'code.function.name': method };
@@ -46,7 +46,7 @@ export const startSpan = (
       ...(emissions === undefined ? {} : { emissions }),
       ...(error === undefined
         ? {}
-        : { error: error instanceof Error ? `${error.name}: ${error.message}` : String(error) }),
+        : { exception: error instanceof Error ? `${error.name}: ${error.message}` : String(error) }),
     });
   };
 

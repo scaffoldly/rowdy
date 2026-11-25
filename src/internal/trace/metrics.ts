@@ -1,5 +1,5 @@
 import { SeverityNumber, type Attributes, type Context, type Histogram, type MeterProvider } from '@opentelemetry/api';
-import type { CdkInstrumentationOptions } from '../../otel';
+import type { ResolvedOptions } from '../../otel';
 import { wiretap } from './logging';
 import type { Tracker } from './tracker';
 
@@ -20,7 +20,7 @@ const durationOn = (meterProvider: MeterProvider, name: string, version: string)
 };
 
 /** Records a run's duration on the options' `meterProvider`, with its method, outcome and any error's type. */
-export const measureRun = (method: string, options: Required<CdkInstrumentationOptions>, context: Context): Tracker => {
+export const measureRun = (method: string, options: ResolvedOptions, context: Context): Tracker => {
   const { meterProvider, name, version } = options;
   const histogram = durationOn(meterProvider, name, version);
   const tap = wiretap(options, context);

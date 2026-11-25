@@ -1,5 +1,4 @@
 import { SeverityNumber, type LoggerProvider, type LogRecord, type Logger as OtelLogger } from '@opentelemetry/api';
-import type { CdkOptions } from './cdk';
 
 export interface ILoggable {
   repr(): string;
@@ -236,7 +235,7 @@ export class Logger implements OtelLogger {
    * CdkOptions for the process-wide `log`: its children as the logger provider, so a traced call's
    * lines arrive as records under its logger's name, and the process-wide level, as it is now.
    */
-  static defaults(): Pick<CdkOptions, 'loggerProvider' | 'logLevel'> {
+  static defaults(): { loggerProvider: LoggerProvider; logLevel: Level } {
     return { loggerProvider: DEFAULT_LOGGER_PROVIDER, logLevel: log.level };
   }
 
@@ -265,6 +264,28 @@ export class Logger implements OtelLogger {
       byLevel.set(level, filtered);
     }
     return filtered;
+  }
+
+  /**
+   * A logger provider of loggers that write to `sink`, at `level` or else the process-wide one. The
+   * same one for the same sink and level, and the same logger for the same name.
+   */
+  static to(sink: Sink, level?: Level): LoggerProvider {
+    let byLevel = sinks.get(sink);
+    if (!byLevel) sinks.set(sink, (byLevel = new Map()));
+    let provider = byLevel.get(level);
+    if (!provider) {
+      const loggers = new Map<string, Logger>();
+      provider = {
+        getLogger: (name: string): Logger => {
+          let logger = loggers.get(name);
+          if (!logger) loggers.set(name, (logger = new Logger(name, sink, level)));
+          return logger;
+        },
+      };
+      byLevel.set(level, provider);
+    }
+    return provider;
   }
 
   /** A logger provider of loggers that write where the process-wide `log` does, at `level`. */
@@ -589,3 +610,4 @@ export const log = new Logger();
 const DEFAULT_LOGGER_PROVIDER: LoggerProvider = { getLogger: (name: string) => log.child(name) };
 const providers = new Map<Level, LoggerProvider>();
 const filters = new WeakMap<LoggerProvider, Map<Level | undefined, LoggerProvider>>();
+const sinks = new Map<Sink, Map<Level | undefined, LoggerProvider>>();
