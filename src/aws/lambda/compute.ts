@@ -1,7 +1,9 @@
 import { LambdaClient, ListTagsCommand, paginateListFunctions } from '@aws-sdk/client-lambda';
 import {
+  catchError,
   concatMap,
   defer,
+  EMPTY,
   filter,
   finalize,
   from,
@@ -26,6 +28,7 @@ import type { SandboxEnvironment } from '../../sandbox/internal/environment';
 import { CmdId, execOutput } from '../exec';
 import type { LambdaFunction } from './index';
 import { Redact, Trace } from '../../log';
+import { isNotFound } from '../shared';
 
 @Trace
 export class LambdaCompute implements SandboxCompute {
@@ -149,6 +152,7 @@ export class LambdaCompute implements SandboxCompute {
   attach(sandboxId: string, meta: Record<string, string> = {}): Observable<this> {
     return this.lambda$.pipe(
       switchMap((lambda) => lambda.withArn(sandboxId)),
+      catchError((error) => (isNotFound(error) ? EMPTY : throwError(() => error))),
       map((lambda) => {
         const { Configuration, Tags } = lambda.Status;
         // A value that isn't a string, like an undefined one, matches no sandbox.

@@ -234,6 +234,8 @@ export class SandboxImpl implements Sandbox {
               )
             ).pipe(
               map((found): Tried => ({ found })),
+              // This runtime has no sandbox by that name.
+              defaultIfEmpty({} as Tried),
               catchError((error) => {
                 sandbox.environment.log.debug('Sandbox Not Attached', { runtime: sandbox.runtime, name, error });
                 return of<Tried>({ error });
@@ -245,7 +247,8 @@ export class SandboxImpl implements Sandbox {
           map((tried) => {
             const found = tried.find(({ found }) => found)?.found;
             if (found) return found.stoppingOnAbort();
-            const errors = tried.map(({ error }) => error);
+            // A runtime without it has no error: only another runtime's failure is worth saying.
+            const errors = tried.flatMap(({ error }) => (error === undefined ? [] : [error]));
             // Anything but missing is what to say. A runtime the caller may not use denies every id, so another
             // runtime's error says more.
             const refused =

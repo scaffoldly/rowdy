@@ -46,7 +46,6 @@ import {
   takeUntil,
   tap,
   throwError,
-  throwIfEmpty,
   timer,
   toArray,
   EMPTY,
@@ -382,15 +381,13 @@ export class MicrovmCompute extends AwsClientLogger implements SandboxCompute {
   }
 
   attach(sandboxId: string, meta: Record<string, string> = {}): Observable<this> {
-    const missing = () =>
-      Object.assign(new SandboxError(`No sandbox named ${sandboxId}`), { name: 'ResourceNotFoundException' });
     if (MICROVM_ID.test(sandboxId)) {
       return ownedBucket(this.s3, this.log, BUCKET_PREFIX, BUCKET_OWNER, false).pipe(
         switchMap((Bucket) => this.s3.send(new GetObjectCommand({ Bucket, Key: `${RECORDS}${sandboxId}.json` }))),
         switchMap(({ Body }) => Body!.transformToString()),
         map((text) => JSON.parse(text) as PrebuiltRecord),
-        catchError((error) => throwError(() => (error?.name === 'NoSuchKey' ? missing() : error))),
-        throwIfEmpty(missing),
+        // No record, or no sandbox bucket at all, is no sandbox here.
+        catchError((error) => (error?.name === 'NoSuchKey' ? EMPTY : throwError(() => error))),
         map((record) => {
           // A value that isn't a string, like an undefined one, matches no sandbox.
           const matches = Object.entries(meta).every(
@@ -410,7 +407,8 @@ export class MicrovmCompute extends AwsClientLogger implements SandboxCompute {
       map(({ Region, Identity: { Account } }) => `arn:aws:lambda:${Region}:${Account}:microvm-image:${sandboxId}`),
       switchMap((imageArn) =>
         from(this.microvms.send(new ListTagsCommand({ Resource: imageArn }))).pipe(
-          map(({ Tags }) => ({ imageArn, Tags }))
+          map(({ Tags }) => ({ imageArn, Tags })),
+          catchError((error) => (isNotFound(error) ? EMPTY : throwError(() => error)))
         )
       ),
       map(({ imageArn, Tags }) => {

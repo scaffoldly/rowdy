@@ -291,12 +291,10 @@ describe('aws microvm compute from a prebuilt image', () => {
       await expect(lastValueFrom(compute.attach(MICROVM_ID, { sub: 'github:2' }))).rejects.toBeInstanceOf(SandboxError);
     });
 
-    it('is not found once its record is gone', async () => {
+    it('completes without a sandbox once its record is gone, a miss rather than an error', async () => {
       const { compute } = setup(stored(null));
 
-      await expect(lastValueFrom(compute.attach(MICROVM_ID))).rejects.toMatchObject({
-        name: 'ResourceNotFoundException',
-      });
+      await expect(lastValueFrom(compute.attach(MICROVM_ID), { defaultValue: 'none' })).resolves.toBe('none');
     });
 
     it('stops by ending only its VM', async () => {
