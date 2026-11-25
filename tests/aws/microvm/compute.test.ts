@@ -1,7 +1,6 @@
 import { createHash } from 'crypto';
 import { strFromU8, unzipSync } from 'fflate';
 import { lastValueFrom, Observable, of } from 'rxjs';
-import { Logger } from '../../../src';
 import { SandboxEnvironment } from '../../../src/sandbox/internal/environment';
 import { ExecFinished } from '../../../src/api/types';
 import { MicrovmCompute, POLL, TERMINATE_POLL } from '../../../src/aws/microvm/compute';
@@ -49,7 +48,7 @@ describe('aws microvm compute', () => {
 
   const setup = (
     handlers: Record<string, Handler> = {},
-    environment = new SandboxEnvironment(new Logger())
+    environment = new SandboxEnvironment()
   ): { compute: MicrovmCompute; sent: Sent[] } => {
     const compute = new MicrovmCompute(environment);
     const sent: Sent[] = [];
@@ -137,7 +136,7 @@ describe('aws microvm compute', () => {
             return { state: at.length < 2 ? 'BUILDING' : 'SUCCESSFUL' };
           },
         },
-        new SandboxEnvironment(new Logger(), { pollInterval: 60 })
+        new SandboxEnvironment({ pollInterval: 60 })
       );
 
       await create(compute);

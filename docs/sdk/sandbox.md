@@ -73,7 +73,7 @@ const sandbox = await Sandbox.create({
 | `env`          |                      | Environment variables for every command.                                                                  |
 | `meta`         |                      | Kept with the sandbox, for `list` and `get` to match. See [Meta](#meta).                                  |
 | `layersFrom`   |                      | Images whose layer goes into the sandbox's image. See [Layers](#layers).                                  |
-| `logLevel`     | `warn`               | See [Logging](../sdk.md#logging).                                                                         |
+| `logLevel`     | `info`               | See [Logging](../sdk.md#logging).                                                                         |
 | `pollInterval` | 5000, 250 to stop    | Milliseconds between checks on a microVM sandbox as it builds, starts or stops. Each is a request to AWS. |
 | `credentials`  | the AWS SDK's chain  | What its AWS clients act as. See [AWS credentials](../sdk.md#aws-credentials).                            |
 | `signal`       |                      | See [Aborting](#aborting).                                                                                |

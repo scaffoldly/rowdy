@@ -9,7 +9,10 @@ import { SandboxEnvironment } from '../src/sandbox/internal/environment';
 // Both of rowdy's http instances, for a sandbox and for the CLI, retry as one from RowdyHttp does.
 describe.each([
   ['RowdyHttp', (log: Logger) => RowdyHttp.from(axios.create(), undefined, log)],
-  ['a sandbox', (log: Logger) => new SandboxEnvironment(log).http],
+  [
+    'a sandbox',
+    (log: Logger) => new SandboxEnvironment({ loggerProvider: { getLogger: () => log }, logLevel: 'info' }).http,
+  ],
   ['the CLI', (log: Logger) => new Rowdy(log, new AbortController().signal).http],
 ])("%s's http retries", (_name, made) => {
   const timing = { ...RETRY };
@@ -185,7 +188,7 @@ describe.each([
 // An http instance ends with what it's for: a request waiting out a registry's Retry-After included.
 describe.each([
   ['RowdyHttp', (signal: AbortSignal) => RowdyHttp.from(axios.create(), signal)],
-  ['a sandbox', (signal: AbortSignal) => new SandboxEnvironment(new Logger(), { signal }).http],
+  ['a sandbox', (signal: AbortSignal) => new SandboxEnvironment({ signal }).http],
   ['the CLI', (signal: AbortSignal) => new Rowdy(new Logger(), signal).http],
 ])("%s's http", (_name, made) => {
   it('ends with its signal, a wait for a retry included', async () => {

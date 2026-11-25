@@ -1,7 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it } from '@jest/globals';
 import { createServer, IncomingHttpHeaders, Server } from 'http';
 import { AddressInfo } from 'net';
-import { Logger } from '../../../src/log';
 import { SandboxEnvironment } from '../../../src/sandbox/internal/environment';
 
 describe('sandbox environment http', () => {
@@ -40,7 +39,7 @@ describe('sandbox environment http', () => {
     store.close();
   });
 
-  const environment = (): SandboxEnvironment => new SandboxEnvironment(new Logger());
+  const environment = (): SandboxEnvironment => new SandboxEnvironment();
 
   it("leaves redirects out of axios's own adapter, which breaks on a Cloudflare Worker", () => {
     expect(environment().http.defaults.maxRedirects).toBe(0);

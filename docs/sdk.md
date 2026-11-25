@@ -48,13 +48,13 @@ const sandbox = await Sandbox.create({ image: 'node:24', credentials });
 Your program's stdout stays yours: by default, a sandbox writes its logs to `process.stderr`, at every level, or to
 `console` where there's no `process`, like a Worker without `nodejs_compat`.
 
-The level defaults to `warn`, not the `info` of the CLI, so a program's terminal stays quiet unless
-something is wrong. The `logLevel` option of `Sandbox.create` sets it, and otherwise the variables in
+The level defaults to `info`, as the CLI's does, and each call of `Sandbox.create`, `get`, `list` and `delete`
+logs a `Span Ended` line at that level. The `logLevel` option sets it, and otherwise the variables in
 [Logging](../README.md#logging) do: `ROWDY_LOG_LEVEL`, `ROWDY_DEBUG` and `ROWDY_TRACE`. A variable
 wins only when `logLevel` is left out.
 
 ```sh
-ROWDY_LOG_LEVEL=info node index.js 2>rowdy.log
+ROWDY_LOG_LEVEL=warn node index.js 2>rowdy.log
 ```
 
 Each line's `component` is the class that wrote it.

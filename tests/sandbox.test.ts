@@ -442,10 +442,10 @@ describe('sandbox', () => {
         new Logger().withLevel(undefined);
       });
 
-      it('is warn by default', async () => {
+      it('is info by default, as its traces are', async () => {
         const sandbox = await SandboxImpl.create({ runtime: 'aws.lambda' });
 
-        expect(sandbox['environment'].log.level).toBe('warn');
+        expect(sandbox['environment'].log.level).toBe('info');
       });
 
       it("is each sandbox's own, and never the process's", async () => {
@@ -501,6 +501,37 @@ describe('sandbox', () => {
 
         expect(info).not.toHaveBeenCalled();
         expect(write).toHaveBeenCalledWith('INFO Sandbox Hello\n');
+      });
+
+      it('logs to its loggerProvider, at its level', async () => {
+        const emit = jest.fn();
+        const getLogger = jest.fn(() => ({ emit }));
+
+        const sandbox = await SandboxImpl.create({
+          runtime: 'aws.lambda',
+          loggerProvider: { getLogger },
+          logLevel: 'info',
+        });
+        sandbox['environment'].log.info('hello');
+        sandbox['environment'].log.debug('hidden');
+
+        expect(getLogger).toHaveBeenCalledWith('@scaffoldly/rowdy', expect.any(String));
+        expect(emit).toHaveBeenCalledWith(
+          expect.objectContaining({
+            body: expect.stringMatching(/hello/i),
+            attributes: expect.objectContaining({ component: 'sandbox' }),
+          })
+        );
+        expect(emit).not.toHaveBeenCalledWith(expect.objectContaining({ body: expect.stringMatching(/hidden/i) }));
+      });
+
+      it("logs to console.error with loggerProvider 'stderr'", async () => {
+        const error = jest.spyOn(console, 'error').mockImplementation(() => {});
+
+        const sandbox = await SandboxImpl.create({ runtime: 'aws.lambda', loggerProvider: 'stderr', logLevel: 'info' });
+        sandbox['environment'].log.info('hello');
+
+        expect(error).toHaveBeenCalledWith(expect.stringMatching(/hello/i));
       });
 
       it('traces nothing of a call to the process, whatever its level', async () => {
@@ -2132,7 +2163,7 @@ describe('credentials', () => {
   });
 
   it('reach the image copy and the deploy on aws.lambda', async () => {
-    const environment = new SandboxEnvironment(new Logger(), { credentials });
+    const environment = new SandboxEnvironment({ credentials });
     const registry = new AwsRegistry(environment, environment.log);
     const deployer = new LambdaFunction(
       'Sandbox',
@@ -2177,6 +2208,6 @@ describe('credentials', () => {
   });
 
   it("stay undefined without them, for the AWS SDK's own chain", () => {
-    expect(new SandboxEnvironment(new Logger()).credentials).toBeUndefined();
+    expect(new SandboxEnvironment().credentials).toBeUndefined();
   });
 });

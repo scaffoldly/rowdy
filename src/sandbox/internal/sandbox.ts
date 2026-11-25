@@ -57,7 +57,7 @@ import {
 } from 'rxjs';
 import type { Exec, ExecFrame } from '../../api/types';
 import { SandboxEnvironment } from './environment';
-import { Logger, maskUrl, Trace, type Sink } from '../../log';
+import { maskUrl, Trace } from '../../log';
 import { humanize } from '../../aws/errors';
 import { LambdaCompute } from '../../aws/lambda/compute';
 import { MicrovmCompute } from '../../aws/microvm/compute';
@@ -70,9 +70,6 @@ import { isNotFound, SANDBOX_ROLE_PATH } from '../../aws/shared';
 
 // Kubernetes' alphabet for generated names: no vowels, so a name spells no words.
 const ALPHANUMS = 'bcdfghjklmnpqrstvwxz2456789';
-
-// A host's stdout is its own. A Worker without `process` logs to its console.
-const DEFAULT_LOGGER: Exclude<Sink, 'stderr'> = globalThis.process?.stderr ?? console;
 
 /** Kubernetes' ComputeHash: FNV-1a 32 over the template, its decimal digits encoded with SafeEncodeString. */
 export const computeHash = (template: string): string => {
@@ -96,29 +93,31 @@ export class SandboxImpl implements Sandbox {
   private constructor({
     runtime,
     logLevel,
+    loggerProvider,
     pollInterval,
     credentials,
     signal,
-  }: Pick<SandboxOptions, 'runtime' | 'logLevel' | 'pollInterval' | 'credentials' | 'signal'>) {
-    // A host's stdout is its own, and its terminal stays quiet unless logLevel, ROWDY_LOG_LEVEL, ROWDY_DEBUG or
-    // ROWDY_TRACE says otherwise. Both are this sandbox's alone.
-    const { ROWDY_LOG_LEVEL, ROWDY_DEBUG, ROWDY_TRACE } = process.env;
-    const level =
-      logLevel ?? (ROWDY_LOG_LEVEL || ROWDY_DEBUG === 'true' || ROWDY_TRACE === 'true' ? undefined : 'warn');
-    const log = new Logger('sandbox', DEFAULT_LOGGER, level);
+  }: Pick<SandboxOptions, 'runtime' | 'logLevel' | 'loggerProvider' | 'pollInterval' | 'credentials' | 'signal'>) {
     this.credential$ = credentials && new Credentials(credentials);
-    this.environment = new SandboxEnvironment(log, { signal, pollInterval, credentials: this.credential$?.provider });
+    this.environment = new SandboxEnvironment({
+      signal,
+      pollInterval,
+      credentials: this.credential$?.provider,
+      loggerProvider,
+      logLevel,
+    });
 
     this.runtime = runtime ?? 'aws.microvm';
     this.compute = new RUNTIMES[this.runtime](this.environment);
   }
 
-  @Trace((options?: SandboxOptions) => options)
+  @Trace((options?: SandboxOptions) => ({ ...options, loggerProvider: options?.loggerProvider ?? 'stderr' }))
   static create(options?: SandboxOptions): SandboxPromiseImpl {
     const runtime = options?.runtime ?? 'aws.microvm';
     const sandbox = new SandboxImpl({
       runtime,
       logLevel: options?.logLevel,
+      loggerProvider: options?.loggerProvider,
       pollInterval: options?.pollInterval,
       credentials: options?.credentials,
       signal: options?.signal,
@@ -195,10 +194,11 @@ export class SandboxImpl implements Sandbox {
     );
   }
 
-  @Trace((lookup: SandboxLookup) => lookup)
+  @Trace((lookup: SandboxLookup) => ({ ...lookup, loggerProvider: lookup.loggerProvider ?? 'stderr' }))
   static async get({
     name,
     logLevel,
+    loggerProvider,
     pollInterval,
     credentials,
     signal: abort,
@@ -208,7 +208,7 @@ export class SandboxImpl implements Sandbox {
     // A sandbox's name doesn't say its runtime, so the sandbox is whichever runtime has it.
     const runtimes = only ? [only] : (Object.keys(RUNTIMES) as (keyof typeof RUNTIMES)[]);
     const sandboxes = runtimes.map(
-      (runtime) => new SandboxImpl({ runtime, logLevel, pollInterval, credentials, signal: abort })
+      (runtime) => new SandboxImpl({ runtime, logLevel, loggerProvider, pollInterval, credentials, signal: abort })
     );
     type Tried = { found?: SandboxImpl; error?: unknown };
 
@@ -266,18 +266,16 @@ export class SandboxImpl implements Sandbox {
     });
   }
 
-  @Trace((options?: SandboxListOptions) => options)
+  @Trace((options?: SandboxListOptions) => ({ ...options, loggerProvider: options?.loggerProvider ?? 'stderr' }))
   static async list({
     runtime,
     meta = {},
     credentials,
     signal,
     logLevel,
+    loggerProvider,
   }: SandboxListOptions = {}): Promise<SandboxList> {
-    const { ROWDY_LOG_LEVEL, ROWDY_DEBUG, ROWDY_TRACE } = process.env;
-    const level =
-      logLevel ?? (ROWDY_LOG_LEVEL || ROWDY_DEBUG === 'true' || ROWDY_TRACE === 'true' ? undefined : 'warn');
-    const log = new Logger('sandbox', DEFAULT_LOGGER, level);
+    const { log } = new SandboxEnvironment({ loggerProvider, logLevel });
     const runtimes = runtime ? [runtime] : (Object.keys(RUNTIMES) as (keyof typeof RUNTIMES)[]);
 
     return lastValueFrom(
@@ -500,7 +498,7 @@ export class SandboxImpl implements Sandbox {
     if (this.compute.stoppable) await this.stop();
   }
 
-  @Trace((lookup: SandboxLookup) => lookup)
+  @Trace((lookup: SandboxLookup) => ({ ...lookup, loggerProvider: lookup.loggerProvider ?? 'stderr' }))
   static async delete(lookup: SandboxLookup): Promise<SandboxMetadata | undefined> {
     const sandbox = await SandboxImpl.get(lookup).catch((error) => {
       // Deleted already, or never made. A sandbox the lookup refuses still rejects.

@@ -491,7 +491,11 @@ export class Environment implements ILoggable {
                           default: 'linux/amd64' as const,
                         }),
                     handler: (argv) => {
-                      const environment = new SandboxEnvironment(this.log, { signal: this.signal });
+                      const environment = new SandboxEnvironment({
+                        signal: this.signal,
+                        loggerProvider: { getLogger: () => this.log },
+                        logLevel: this.log.level,
+                      });
                       const image = new MicrovmImage(environment)
                         .withImage(argv.image, layerSources(argv['layers-from']))
                         .withPlatform(argv.platform)

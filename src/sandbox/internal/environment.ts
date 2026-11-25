@@ -2,9 +2,12 @@ import axios, { AxiosError, AxiosHeaders } from 'axios';
 import packageJson from '../../../package.json';
 import { ImageApi } from '../../api/image';
 import type { IApi, IImageApi } from '../../api/types';
-import type { Logger } from '../../log';
+import { Logger, type CdkOptions, type Sink } from '../../log';
 import type { AwsSandboxOptions } from '..';
 import { authenticator, RowdyHttp } from '../../util/axios';
+
+// A host's stdout is its own. A Worker without `process` logs to its console.
+const DEFAULT_SINK: Exclude<Sink, 'stderr'> = globalThis.process?.stderr ?? console;
 
 /**
  * What a sandbox needs of rowdy, without its CLI or runtimes, which a host like a Cloudflare Worker can't load. It
@@ -13,6 +16,8 @@ import { authenticator, RowdyHttp } from '../../util/axios';
 export class SandboxEnvironment implements IApi {
   readonly abort: AbortController = new AbortController();
   readonly signal: AbortSignal = this.abort.signal;
+  /** Its `loggerProvider`'s logger for rowdy, `'stderr'` included, or else process.stderr, at its `logLevel`. */
+  readonly log: Logger;
   readonly http: RowdyHttp;
   readonly images: IImageApi = new ImageApi(this);
   readonly name = packageJson.name;
@@ -23,14 +28,20 @@ export class SandboxEnvironment implements IApi {
   /** What its AWS clients act as, or undefined for the AWS SDK's own chain. */
   readonly credentials: AwsSandboxOptions['credentials'];
 
-  constructor(
-    public readonly log: Logger,
-    {
-      signal,
-      pollInterval,
-      credentials,
-    }: { signal?: AbortSignal; pollInterval?: number; credentials?: AwsSandboxOptions['credentials'] } = {}
-  ) {
+  constructor({
+    signal,
+    pollInterval,
+    credentials,
+    loggerProvider,
+    logLevel,
+  }: Pick<CdkOptions, 'loggerProvider' | 'logLevel'> & {
+    signal?: AbortSignal;
+    pollInterval?: number;
+    credentials?: AwsSandboxOptions['credentials'];
+  } = {}) {
+    // Without a logLevel, the process-wide level, as @Trace's: info unless ROWDY_LOG_LEVEL, ROWDY_DEBUG or ROWDY_TRACE.
+    const provider = loggerProvider === 'stderr' ? Logger.to('stderr', logLevel) : loggerProvider;
+    this.log = new Logger('sandbox', provider?.getLogger(this.name, this.version) ?? DEFAULT_SINK, logLevel);
     this.http = RowdyHttp.from(axios.create(), this.signal, this.log);
     this.pollInterval = pollInterval;
     this.credentials = credentials;

@@ -60,7 +60,10 @@ describe('aws microvm compute from a prebuilt image', () => {
     handlers: Record<string, Handler> = {}
   ): { compute: MicrovmCompute; sent: Sent[]; logged: string[] } => {
     const logged: string[] = [];
-    const environment = new SandboxEnvironment(new Logger('test', { write: (line) => logged.push(line) }, 'info'));
+    const environment = new SandboxEnvironment({
+      loggerProvider: { getLogger: () => new Logger('test', { write: (line) => logged.push(line) }, 'info') },
+      logLevel: 'info',
+    });
     const compute = new MicrovmCompute(environment);
     const sent: Sent[] = [];
     const vms: Record<string, string> = {};
