@@ -1,4 +1,5 @@
 export {
+  Attributes,
   CdkInstrumentation,
   Logger,
   Redact,

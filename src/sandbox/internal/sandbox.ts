@@ -57,7 +57,7 @@ import {
 } from 'rxjs';
 import type { Exec, ExecFrame } from '../../api/types';
 import { SandboxEnvironment } from './environment';
-import { maskUrl, Redact, Trace } from '../../log';
+import { Attributes, maskUrl, Redact, Trace } from '../../log';
 import { humanize } from '../../aws/errors';
 import { LambdaCompute } from '../../aws/lambda/compute';
 import { MicrovmCompute } from '../../aws/microvm/compute';
@@ -113,6 +113,13 @@ export class SandboxImpl implements Sandbox {
   }
 
   @Trace((options?: SandboxOptions) => options)
+  @Attributes({
+    result: (sandbox: SandboxImpl) => ({
+      'rowdy.sandbox.name': sandbox.name,
+      'rowdy.sandbox.runtime': sandbox.runtime,
+      'rowdy.sandbox.status': sandbox.status,
+    }),
+  })
   static create(options?: SandboxOptions): SandboxPromiseImpl {
     const runtime = options?.runtime ?? 'aws.microvm';
     const sandbox = new SandboxImpl({
@@ -203,6 +210,13 @@ export class SandboxImpl implements Sandbox {
   }
 
   @Trace((lookup: SandboxLookup) => lookup)
+  @Attributes({
+    args: (lookup: SandboxLookup) => ({ 'rowdy.sandbox.name': lookup.name }),
+    result: (sandbox: SandboxImpl) => ({
+      'rowdy.sandbox.runtime': sandbox.runtime,
+      'rowdy.sandbox.status': sandbox.status,
+    }),
+  })
   static async get({
     name,
     logLevel,
@@ -352,6 +366,11 @@ export class SandboxImpl implements Sandbox {
   runCommand(cmd: string, args?: string[], options?: RunCommandOptions): Promise<CommandFinished>;
   runCommand(params: DetachedRunCommandParams): Promise<Command>;
   runCommand(params: RunCommandParams): Promise<CommandFinished>;
+  @Attributes((self: SandboxImpl) => ({
+    'rowdy.sandbox.name': self.name,
+    'rowdy.sandbox.runtime': self.runtime,
+    'rowdy.sandbox.status': self.status,
+  }))
   @Redact({
     args: (
       command: string | RunCommandParams | DetachedRunCommandParams,
@@ -417,6 +436,11 @@ export class SandboxImpl implements Sandbox {
     });
   }
 
+  @Attributes((self: SandboxImpl) => ({
+    'rowdy.sandbox.name': self.name,
+    'rowdy.sandbox.runtime': self.runtime,
+    'rowdy.sandbox.status': self.status,
+  }))
   @Redact({
     args: (files: WriteFile[], options?: FileOptions) => [files.map(({ path, mode }) => ({ path, mode })), options],
   })
@@ -437,6 +461,11 @@ export class SandboxImpl implements Sandbox {
     });
   }
 
+  @Attributes((self: SandboxImpl) => ({
+    'rowdy.sandbox.name': self.name,
+    'rowdy.sandbox.runtime': self.runtime,
+    'rowdy.sandbox.status': self.status,
+  }))
   async readFileToBuffer({ path, cwd, offset, length }: ReadFile, options?: FileOptions): Promise<Buffer | null> {
     const signal = options?.signal
       ? AbortSignal.any([options.signal, this.environment.signal])
@@ -448,6 +477,11 @@ export class SandboxImpl implements Sandbox {
     });
   }
 
+  @Attributes((self: SandboxImpl) => ({
+    'rowdy.sandbox.name': self.name,
+    'rowdy.sandbox.runtime': self.runtime,
+    'rowdy.sandbox.status': self.status,
+  }))
   async mkDir(path: string, options?: FileOptions): Promise<void> {
     const signal = options?.signal
       ? AbortSignal.any([options.signal, this.environment.signal])
@@ -457,6 +491,11 @@ export class SandboxImpl implements Sandbox {
     });
   }
 
+  @Attributes((self: SandboxImpl) => ({
+    'rowdy.sandbox.name': self.name,
+    'rowdy.sandbox.runtime': self.runtime,
+    'rowdy.sandbox.status': self.status,
+  }))
   // A token for the port, the hooks port's runs any command as root.
   @Redact((url: SandboxUrl) => ({ ...url, headers: '[redacted]' }))
   async url(port?: number, options?: UrlOptions): Promise<SandboxUrl> {
@@ -468,6 +507,11 @@ export class SandboxImpl implements Sandbox {
     });
   }
 
+  @Attributes((self: SandboxImpl) => ({
+    'rowdy.sandbox.name': self.name,
+    'rowdy.sandbox.runtime': self.runtime,
+    'rowdy.sandbox.status': self.status,
+  }))
   // A command's output is the sandbox's, and can be anything.
   @Redact(() => '[output]')
   async output(cmdId: string, options?: CommandOutputOptions): Promise<CommandOutput> {
@@ -479,6 +523,8 @@ export class SandboxImpl implements Sandbox {
     });
   }
 
+  @Attributes((self: SandboxImpl) => ({ 'rowdy.sandbox.name': self.name, 'rowdy.sandbox.runtime': self.runtime }))
+  @Attributes({ result: ({ status }: SandboxMetadata) => ({ 'rowdy.sandbox.status': status }) })
   async stop(): Promise<SandboxMetadata> {
     return lastValueFrom(
       this.compute.stop().pipe(
@@ -490,6 +536,8 @@ export class SandboxImpl implements Sandbox {
     });
   }
 
+  @Attributes((self: SandboxImpl) => ({ 'rowdy.sandbox.name': self.name, 'rowdy.sandbox.runtime': self.runtime }))
+  @Attributes({ result: ({ status }: SandboxMetadata) => ({ 'rowdy.sandbox.status': status }) })
   async suspend(): Promise<SandboxMetadata> {
     return lastValueFrom(
       this.compute.suspend().pipe(
@@ -501,6 +549,8 @@ export class SandboxImpl implements Sandbox {
     });
   }
 
+  @Attributes((self: SandboxImpl) => ({ 'rowdy.sandbox.name': self.name, 'rowdy.sandbox.runtime': self.runtime }))
+  @Attributes({ result: ({ status }: SandboxMetadata) => ({ 'rowdy.sandbox.status': status }) })
   async resume(): Promise<SandboxMetadata> {
     return lastValueFrom(
       this.compute.resume().pipe(
@@ -512,6 +562,8 @@ export class SandboxImpl implements Sandbox {
     });
   }
 
+  @Attributes((self: SandboxImpl) => ({ 'rowdy.sandbox.name': self.name, 'rowdy.sandbox.runtime': self.runtime }))
+  @Attributes({ result: ({ status }: SandboxMetadata) => ({ 'rowdy.sandbox.status': status }) })
   async refresh(): Promise<SandboxMetadata> {
     return lastValueFrom(this.compute.status().pipe(tap((metadata) => (this.metadata = metadata)))).catch((error) => {
       throw humanize(error);
@@ -524,6 +576,11 @@ export class SandboxImpl implements Sandbox {
   }
 
   @Trace((lookup: SandboxLookup) => lookup)
+  @Attributes({
+    args: (lookup: SandboxLookup) => ({ 'rowdy.sandbox.name': lookup.name }),
+    // Undefined when there was no sandbox to delete.
+    result: (deleted?: SandboxMetadata) => ({ 'rowdy.sandbox.status': deleted?.status }),
+  })
   static async delete(lookup: SandboxLookup): Promise<SandboxMetadata | undefined> {
     const sandbox = await SandboxImpl.get(lookup).catch((error) => {
       // Deleted already, or never made. A sandbox the lookup refuses still rejects.
@@ -558,6 +615,8 @@ export class SandboxImpl implements Sandbox {
     return undefined;
   }
 
+  @Attributes((self: SandboxImpl) => ({ 'rowdy.sandbox.name': self.name, 'rowdy.sandbox.runtime': self.runtime }))
+  @Attributes({ result: ({ status }: SandboxMetadata) => ({ 'rowdy.sandbox.status': status }) })
   async delete(): Promise<SandboxMetadata> {
     return lastValueFrom(
       this.compute.delete().pipe(
