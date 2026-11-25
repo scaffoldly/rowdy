@@ -1,15 +1,20 @@
 import type { Writable } from 'stream';
 import type { Exec, ExecFinished, ExecOutput, ExecOutputOptions } from '../api/types';
-import type { CdkOptions } from '../log';
+import type { CdkInstrumentationOptions, CdkOptions } from '../log';
 import type { MICROVM_MEMORY } from './internal/compute';
 import type { AwsCredentials } from '../aws/credentials';
 import { SandboxImpl } from './internal/sandbox';
-import { CdkInstrumentation } from '../log';
+import { CdkInstrumentation as RowdyInstrumentation } from '../log';
 
 // A host's stdout is its own: traces and logs go to stderr until a call gives a loggerProvider, or null.
-CdkInstrumentation.create({ loggerProvider: 'stderr' });
+RowdyInstrumentation.create({ loggerProvider: 'stderr' });
 
-interface BaseSandboxOptions extends CdkOptions {
+/** Where every sandbox call sends its traces, metrics and logs, and at what level. */
+export type RowdyOptions = CdkOptions;
+/** What `RowdyInstrumentation.create` takes: `RowdyOptions`, and the name and version its traces are named for. */
+export type RowdyInstrumentationOptions = CdkInstrumentationOptions;
+
+interface BaseSandboxOptions extends RowdyOptions {
   /** The container image to run. Defaults to `scaffoldly/sandbox`. */
   image?: string;
   /**
@@ -82,6 +87,11 @@ export interface MicrovmSandboxOptions extends BaseSandboxOptions, AwsSandboxOpt
 export type SandboxOptions = LambdaSandboxOptions | MicrovmSandboxOptions;
 
 export type { AwsCredentials } from '../aws/credentials';
+/**
+ * This copy of rowdy's one instrumentation: configure it here, never through `@scaffoldly/rowdy-cdk`, which would be
+ * another copy. A sandbox call's own `tracerProvider`, `meterProvider`, `loggerProvider` and `logLevel` set it too.
+ */
+export { RowdyInstrumentation };
 export * from './core';
 
 /** Where a sandbox runs. */
@@ -116,7 +126,7 @@ export interface SandboxMetadata {
   expiresAt?: Date;
 }
 
-export interface SandboxListOptions extends Pick<SandboxOptions, 'credentials' | keyof CdkOptions> {
+export interface SandboxListOptions extends Pick<SandboxOptions, 'credentials' | keyof RowdyOptions> {
   /** Only sandboxes on this runtime. Defaults to every runtime. */
   runtime?: Runtime;
   /** Only sandboxes whose `meta` has every one of these. */
@@ -140,7 +150,7 @@ export type SandboxList = SandboxPage &
   };
 
 export interface SandboxLookup
-  extends Pick<SandboxOptions, keyof CdkOptions | 'pollInterval' | 'credentials' | 'signal'> {
+  extends Pick<SandboxOptions, keyof RowdyOptions | 'pollInterval' | 'credentials' | 'signal'> {
   /** The sandbox's `name`. */
   name: string;
   /** Refuses a sandbox whose `meta` doesn't have every one of these. */

@@ -1,6 +1,6 @@
 import { Logger } from '@scaffoldly/rowdy';
 import { CdkInstrumentation } from '../src/log';
-import { CommandFinished, Sandbox, SandboxOptions } from '@scaffoldly/rowdy/sandbox';
+import { CommandFinished, RowdyInstrumentation, Sandbox, SandboxOptions } from '@scaffoldly/rowdy/sandbox';
 import { AxiosError, AxiosHeaders, InternalAxiosRequestConfig } from 'axios';
 import { InvokeWithResponseStreamResponseEvent, LambdaClient } from '@aws-sdk/client-lambda';
 import {
@@ -1857,6 +1857,10 @@ describe('sandbox', () => {
 
   it('exposes only create, get, list and delete', () => {
     expect(Object.keys(Sandbox).sort()).toEqual(['create', 'delete', 'get', 'list']);
+  });
+
+  it('exports its instrumentation as RowdyInstrumentation, the one a sandbox uses', () => {
+    expect(RowdyInstrumentation.create()).toBe(CdkInstrumentation.create());
   });
 
   it("keeps a Lambda sandbox's id after it is deleted, as a microVM's", async () => {
