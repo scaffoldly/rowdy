@@ -11,7 +11,7 @@ import {
 } from '@opentelemetry/api';
 import { AsyncLocalStorageContextManager } from '@opentelemetry/context-async-hooks';
 import { InMemorySpanExporter, SimpleSpanProcessor, TracerProvider } from '@opentelemetry/sdk-trace';
-import { defer, lastValueFrom, Observable, of, throwError, race, timer, map, NEVER, retry, tap } from 'rxjs';
+import { defer, lastValueFrom, Observable, of, throwError, race, timer, map, NEVER, retry, tap, toArray } from 'rxjs';
 import pino from 'pino';
 import {
   ILoggable,
@@ -27,7 +27,7 @@ import {
   type Sink,
 } from '../src/log';
 import type { CdkOptions } from '../src/cdk';
-import { poll, retrying, Trace } from '../src/internal/trace';
+import { poll, Redact, retrying, Trace } from '../src/internal/trace';
 import { CdkInstrumentation } from '../src/otel';
 
 describe('log masking', () => {
@@ -159,6 +159,21 @@ describe('log masking', () => {
         privateKey: '… (3 chars)',
         Key: 'photos/1.png',
         accessKeyId: 'AKIDEXAMPLE',
+      });
+    });
+
+    it('masks an auth header, and leaves an author and an AuthType readable', () => {
+      const out = JSON.parse(
+        maskJson({
+          headers: { 'X-aws-proxy-auth': 'secretsecret', auth: 'basic', 'X-aws-proxy-port': '8080' },
+          author: 'christian',
+          AuthType: 'NONE',
+        })
+      );
+      expect(out).toEqual({
+        headers: { 'X-aws-proxy-auth': 's…t (12 chars)', auth: '… (5 chars)', 'X-aws-proxy-port': '8080' },
+        author: 'christian',
+        AuthType: 'NONE',
       });
     });
 
@@ -1334,6 +1349,95 @@ describe('Logger', () => {
         it('leaves a method with a @Trace of its own to it', async () => {
           await expect(new Compute().own()).resolves.toBe(1);
           expect(finished().map((s) => s.name)).toEqual(['Compute.own']);
+        });
+      });
+
+      describe('with @Redact', () => {
+        const records: string[] = [];
+        const capture: LoggerProvider = {
+          getLogger: () => ({ emit: (record): number => records.push(JSON.stringify(record)), enabled: () => true }),
+        };
+        // Everything @Trace wrote or recorded, as text.
+        const everything = (): string =>
+          [...records, ...exporter.getFinishedSpans().map((s) => JSON.stringify([s.attributes, s.events]))].join('\n');
+        const SECRET = { url: 'https://x', headers: { 'X-aws-proxy-auth': 'secret', 'X-aws-proxy-port': '8080' } };
+        type Url = typeof SECRET;
+
+        @Trace
+        class Sandbox {
+          @Redact((url: Url) => ({ ...url, headers: '[redacted]' }))
+          async url(): Promise<Url> {
+            return SECRET;
+          }
+
+          @Redact((url: Url) => ({ ...url, headers: '[redacted]' }))
+          urls(): Observable<Url> {
+            return of(SECRET, SECRET);
+          }
+
+          @Redact({ args: (cmd: string) => [cmd, '[env]'], result: () => '[output]' })
+          async runCommand(cmd: string, env: Record<string, string>): Promise<string> {
+            return `${cmd} with ${env.TOKEN}`;
+          }
+
+          @Redact(() => {
+            throw new Error('bad redactor');
+          })
+          async broken(): Promise<Url> {
+            return SECRET;
+          }
+
+          @Redact((url: Url) => ({ ...url, headers: '[redacted]' }))
+          @Trace
+          async before(): Promise<Url> {
+            return SECRET;
+          }
+
+          @Trace
+          @Redact((url: Url) => ({ ...url, headers: '[redacted]' }))
+          async after(): Promise<Url> {
+            return SECRET;
+          }
+        }
+
+        beforeEach(() => {
+          records.length = 0;
+          new Logger().withLevel('trace');
+          CdkInstrumentation.create({ loggerProvider: capture });
+        });
+
+        it('logs what its redactor returns as the value, and the caller gets the real one', async () => {
+          await expect(new Sandbox().url()).resolves.toBe(SECRET);
+          expect(everything()).toContain('[redacted]');
+          expect(everything()).toContain('https://x');
+          expect(everything()).not.toContain('secret');
+        });
+
+        it("redacts each emission of an Observable method's", async () => {
+          await expect(lastValueFrom(new Sandbox().urls().pipe(toArray()))).resolves.toEqual([SECRET, SECRET]);
+          expect(records.filter((r) => r.includes('Sandbox.urls Emitted'))).toHaveLength(2);
+          expect(everything()).not.toContain('secret');
+        });
+
+        it('redacts arguments with args', async () => {
+          await expect(new Sandbox().runCommand('ls', { TOKEN: 'secret' })).resolves.toBe('ls with secret');
+          expect(everything()).toContain('[env]');
+          expect(everything()).toContain('[output]');
+          expect(everything()).not.toContain('secret');
+        });
+
+        it('logs [redaction failed] when its redactor throws, never the value', async () => {
+          await expect(new Sandbox().broken()).resolves.toBe(SECRET);
+          expect(everything()).toContain('[redaction failed]');
+          expect(everything()).not.toContain('secret');
+        });
+
+        it("works with a method's own @Trace, in either order, once", async () => {
+          await new Sandbox().before();
+          await new Sandbox().after();
+          expect(finished().map((s) => s.name)).toEqual(['Sandbox.before', 'Sandbox.after']);
+          expect(records.filter((r) => r.includes('[redacted]'))).toHaveLength(2);
+          expect(everything()).not.toContain('secret');
         });
       });
 

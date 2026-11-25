@@ -36,7 +36,8 @@ export const isLoggable = (v: unknown): v is Loggable =>
 
 // A key ending `key` after something else is one, like `API_KEY` or `apiKey`; a bare `Key`, like an
 // S3 object's or a tag's, and an `accessKeyId` are not.
-const SENSITIVE = /secret|token|password|passwd|passphrase|credential|authorization|cookie|private|.key($|[-_.])/i;
+const SENSITIVE =
+  /secret|token|password|passwd|passphrase|credential|authorization|cookie|private|.key($|[-_.])|(^|[-_.])auth($|[-_.])/i;
 
 // Maps whose every value is masked, whatever its name: a secret's name says nothing about it.
 // Case-sensitive: Lambda's `Environment` holds `Variables`, it is not one.

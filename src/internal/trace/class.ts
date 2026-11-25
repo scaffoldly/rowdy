@@ -1,6 +1,7 @@
 import { isObservable } from 'rxjs';
 import { methodName } from './name';
 import { traced } from './operators';
+import { redactorOf } from './redact';
 
 type Fn = (this: unknown, ...args: unknown[]) => unknown;
 type DecorateMethod = (value: Fn, context: Pick<ClassMethodDecoratorContext, 'name' | 'static'>) => Fn;
@@ -20,7 +21,10 @@ const wrap = (
     : function (this: unknown, ...args: unknown[]): unknown {
         const returned = value.apply(this, args);
         if (!isObservable(returned)) return returned;
-        return traced(methodName(this, context), { args }, () => ({ source: returned, attributes: () => ({}) }));
+        return traced(methodName(this, context), { args, redactor: redactorOf(value) }, () => ({
+          source: returned,
+          attributes: () => ({}),
+        }));
       };
 
 const SKIPPED = new Set<PropertyKey>(['constructor', 'length', 'name', 'prototype']);

@@ -1,6 +1,7 @@
 import { SeverityNumber, type Attributes, type Context } from '@opentelemetry/api';
 import { isLoggable, Logger, maskJson, type ILoggable, type Loggable } from '../../log';
 import type { ResolvedOptions } from '../../otel';
+import { redactArgs, redactResult, type Redactor } from './redact';
 import type { Tracker } from './tracker';
 
 /** Where a traced call's lines go: a Logger, or OpenTelemetry log records. */
@@ -51,11 +52,13 @@ const loggable = (value: unknown): Loggable => {
   return { repr: (): string => (value as object)?.constructor?.name || typeof value } satisfies ILoggable;
 };
 
-export const logCall = (logger: TraceSink, method: string, args: unknown[]): void =>
-  logger.trace(`${method} Called`, args.length ? { args: args.map(loggable) as Loggable } : {});
+export const logCall = (logger: TraceSink, method: string, args: unknown[], redactor?: Redactor): void => {
+  const logged = redactArgs(redactor, args);
+  logger.trace(`${method} Called`, logged.length ? { args: logged.map(loggable) as Loggable } : {});
+};
 
 /** Logs how a run went, with the time since it started, or since its subscription did. */
-export const logRun = (logger: TraceSink, method: string): Tracker => {
+export const logRun = (logger: TraceSink, method: string, redactor?: Redactor): Tracker => {
   let started = performance.now();
   let emissions: number | undefined;
   const counted = (): { emissions?: number } => (emissions === undefined ? {} : { emissions });
@@ -67,13 +70,13 @@ export const logRun = (logger: TraceSink, method: string): Tracker => {
     },
     emit: (emission): void => {
       emissions = (emissions ?? 0) + 1;
-      logger.trace(`${method} Emitted`, { duration: ms(started), value: loggable(emission) });
+      logger.trace(`${method} Emitted`, { duration: ms(started), value: loggable(redactResult(redactor, emission)) });
     },
     complete: (...value): void =>
       logger.trace(`${method} Completed`, {
         duration: ms(started),
         ...counted(),
-        ...(value.length ? { value: loggable(value[0]) } : {}),
+        ...(value.length ? { value: loggable(redactResult(redactor, value[0])) } : {}),
       }),
     fail: (error): void =>
       logger.trace(`${method} Failed`, {

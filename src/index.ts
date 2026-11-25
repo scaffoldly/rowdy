@@ -13,7 +13,7 @@ export { SmithyClientLogger } from './smithy';
 export type { ClientLoggerOptions, CommandType } from './client';
 export { CloudResource, NotFoundException, FatalException, SkipAction } from './cdk';
 export { Logger, isLevel, log, mask, maskEnv, maskHeaders, maskJson, maskQuery, maskUrl } from './log';
-export { poll, retrying, Trace, type TracedOptions } from './internal/trace';
+export { poll, Redact, type Redactor, retrying, Trace, type TracedOptions } from './internal/trace';
 export type { CdkOptions } from './cdk';
 export type { Format, ILoggable, Level, Loggable, Sink } from './log';
 export { CdkInstrumentation } from './otel';

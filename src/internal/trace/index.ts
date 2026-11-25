@@ -5,6 +5,7 @@ import { traceClass } from './class';
 import { logCall } from './logging';
 import { methodName } from './name';
 import { RESULTS } from './results';
+import { redactorOf } from './redact';
 import { startRun, type Call } from './run';
 
 type Method<This, Args extends unknown[], R> = (this: This, ...args: Args) => R;
@@ -21,18 +22,24 @@ export const TRACED = Symbol.for('@scaffoldly/rowdy-cdk/trace.traced');
 
 export const decorate =
   (optionsOf?: OptionsOf): Decorator =>
-  (value, context) =>
-    Object.assign(
+  (value, context) => {
+    const wrapper = Object.assign(
       function (this: ThisParameterType<typeof value>, ...args: Parameters<typeof value>) {
         const method = methodName(this, context);
+        // @Redact may have marked the method as written or, decorating after @Trace, this wrapper.
+        const redactor = redactorOf(value, wrapper);
         // Its span, duration and lines go where the one CdkInstrumentation's do.
         // Only a call's CdkOptions: its other options, like a sandbox's `name`, are not CdkInstrumentation's.
         const { tracerProvider, meterProvider, loggerProvider, logLevel } = optionsOf?.(this, args) ?? {};
         const { options } = CdkInstrumentation.create({ tracerProvider, meterProvider, loggerProvider, logLevel });
 
         const parent = otel.active();
-        const call: Call = { parent, run: startRun(method, options, parent), again: () => startRun(method, options) };
-        call.run.sinks.forEach((sink) => logCall(sink, method, args));
+        const call: Call = {
+          parent,
+          run: startRun(method, options, parent, redactor),
+          again: () => startRun(method, options, otel.active(), redactor),
+        };
+        call.run.sinks.forEach((sink) => logCall(sink, method, args, redactor));
 
         let returned: unknown;
         try {
@@ -47,6 +54,8 @@ export const decorate =
       },
       { [TRACED]: true }
     );
+    return wrapper;
+  };
 
 const isDecoratorContext = (value: unknown): value is ClassMethodDecoratorContext | ClassDecoratorContext =>
   typeof value === 'object' && value !== null && 'kind' in value && 'name' in value;
@@ -123,3 +132,4 @@ export const Trace: {
 }) as never;
 
 export { poll, retrying, type TracedOptions } from './operators';
+export { Redact, type Redactor } from './redact';
