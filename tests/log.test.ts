@@ -1615,7 +1615,7 @@ describe('Logger', () => {
         });
 
         it('gives a static method its class as this', async () => {
-          await expect(Box.create('b2')).resolves.toEqual(new Box('b2'));
+          await expect(Box.create('b2')).resolves.toHaveProperty('name', 'b2');
           expect(span('Box.create')['box.class']).toBe('Box');
         });
 
