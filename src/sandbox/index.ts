@@ -4,6 +4,10 @@ import type { CdkOptions } from '../log';
 import type { MICROVM_MEMORY } from './internal/compute';
 import type { AwsCredentials } from '../aws/credentials';
 import { SandboxImpl } from './internal/sandbox';
+import { CdkInstrumentation } from '../log';
+
+// A host's stdout is its own: traces and logs go to stderr until a call gives a loggerProvider, or null.
+CdkInstrumentation.create({ loggerProvider: 'stderr' });
 
 interface BaseSandboxOptions extends CdkOptions {
   /** The container image to run. Defaults to `scaffoldly/sandbox`. */

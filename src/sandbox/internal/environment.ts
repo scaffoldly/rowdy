@@ -2,12 +2,9 @@ import axios, { AxiosError, AxiosHeaders } from 'axios';
 import packageJson from '../../../package.json';
 import { ImageApi } from '../../api/image';
 import type { IApi, IImageApi } from '../../api/types';
-import { Logger, type CdkOptions, type Sink } from '../../log';
+import { CdkInstrumentation, Logger, type CdkOptions } from '../../log';
 import type { AwsSandboxOptions } from '..';
 import { authenticator, RowdyHttp } from '../../util/axios';
-
-// A host's stdout is its own. A Worker without `process` logs to its console.
-const DEFAULT_SINK: Exclude<Sink, 'stderr'> = globalThis.process?.stderr ?? console;
 
 /**
  * What a sandbox needs of rowdy, without its CLI or runtimes, which a host like a Cloudflare Worker can't load. It
@@ -16,7 +13,7 @@ const DEFAULT_SINK: Exclude<Sink, 'stderr'> = globalThis.process?.stderr ?? cons
 export class SandboxEnvironment implements IApi {
   readonly abort: AbortController = new AbortController();
   readonly signal: AbortSignal = this.abort.signal;
-  /** Its `loggerProvider`'s logger for rowdy, `'stderr'` included, or else process.stderr, at its `logLevel`. */
+  /** The logger for rowdy of the loggerProvider @Trace uses, at its `logLevel`. */
   readonly log: Logger;
   readonly http: RowdyHttp;
   readonly images: IImageApi = new ImageApi(this);
@@ -39,9 +36,10 @@ export class SandboxEnvironment implements IApi {
     pollInterval?: number;
     credentials?: AwsSandboxOptions['credentials'];
   } = {}) {
-    // Without a logLevel, the process-wide level, as @Trace's: info unless ROWDY_LOG_LEVEL, ROWDY_DEBUG or ROWDY_TRACE.
-    const provider = loggerProvider === 'stderr' ? Logger.to('stderr', logLevel) : loggerProvider;
-    this.log = new Logger('sandbox', provider?.getLogger(this.name, this.version) ?? DEFAULT_SINK, logLevel);
+    // Where @Trace's lines go, so a sandbox's own go there too: a loggerProvider given now or before, 'stderr' and null
+    // resolved, at logLevel.
+    const { loggerProvider: provider } = CdkInstrumentation.create({ loggerProvider, logLevel });
+    this.log = new Logger('sandbox', provider.getLogger(this.name, this.version), logLevel);
     this.http = RowdyHttp.from(axios.create(), this.signal, this.log);
     this.pollInterval = pollInterval;
     this.credentials = credentials;

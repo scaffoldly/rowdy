@@ -25,7 +25,9 @@ import { concurrency } from '../../concurrency';
 import type { SandboxEnvironment } from '../../sandbox/internal/environment';
 import { CmdId, execOutput } from '../exec';
 import type { LambdaFunction } from './index';
+import { Redact, Trace } from '../../log';
 
+@Trace
 export class LambdaCompute implements SandboxCompute {
   // Only /tmp is writable on Lambda. The XDG directories are the spec's defaults under that HOME.
   static readonly env = {
@@ -120,6 +122,7 @@ export class LambdaCompute implements SandboxCompute {
     return FunctionArn;
   }
 
+  @Redact({ args: (spec: ComputeSpec) => [{ ...spec, env: '[env]' }] })
   create({ image, name, timeout, memory, env, meta, layersFrom }: ComputeSpec): Observable<this> {
     return this.lambda$.pipe(
       switchMap((lambda) => {
@@ -162,6 +165,9 @@ export class LambdaCompute implements SandboxCompute {
     );
   }
 
+  @Redact({
+    args: (event: ExecSchema) => [{ ...event, spec: event.spec && { ...event.spec, env: event.spec.env && '[env]' } }],
+  })
   exec(event: ExecSchema): Observable<Exec> {
     if (event.spec?.detached) {
       return throwError(() => new SandboxError('detached is not implemented on runtime aws.lambda'));
@@ -169,6 +175,8 @@ export class LambdaCompute implements SandboxCompute {
     return this.lambda$.pipe(switchMap((lambda) => lambda.exec(event)));
   }
 
+  // A command's output is the sandbox's, and can be anything.
+  @Redact(() => '[output]')
   output(cmdId: string, options?: ExecOutputOptions): Observable<ExecOutput> {
     return this.lambda$.pipe(
       switchMap((lambda) => {

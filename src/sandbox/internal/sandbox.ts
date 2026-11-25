@@ -57,7 +57,7 @@ import {
 } from 'rxjs';
 import type { Exec, ExecFrame } from '../../api/types';
 import { SandboxEnvironment } from './environment';
-import { maskUrl, Trace } from '../../log';
+import { maskUrl, Redact, Trace } from '../../log';
 import { humanize } from '../../aws/errors';
 import { LambdaCompute } from '../../aws/lambda/compute';
 import { MicrovmCompute } from '../../aws/microvm/compute';
@@ -82,6 +82,7 @@ const RUNTIMES: Record<Runtime, SandboxComputeClass> = {
   'aws.microvm': MicrovmCompute,
 };
 
+@Trace
 export class SandboxImpl implements Sandbox {
   readonly runtime: Runtime;
   private environment: SandboxEnvironment;
@@ -111,7 +112,7 @@ export class SandboxImpl implements Sandbox {
     this.compute = new RUNTIMES[this.runtime](this.environment);
   }
 
-  @Trace((options?: SandboxOptions) => ({ ...options, loggerProvider: options?.loggerProvider ?? 'stderr' }))
+  @Trace((options?: SandboxOptions) => options)
   static create(options?: SandboxOptions): SandboxPromiseImpl {
     const runtime = options?.runtime ?? 'aws.microvm';
     const sandbox = new SandboxImpl({
@@ -194,7 +195,7 @@ export class SandboxImpl implements Sandbox {
     );
   }
 
-  @Trace((lookup: SandboxLookup) => ({ ...lookup, loggerProvider: lookup.loggerProvider ?? 'stderr' }))
+  @Trace((lookup: SandboxLookup) => lookup)
   static async get({
     name,
     logLevel,
@@ -266,7 +267,7 @@ export class SandboxImpl implements Sandbox {
     });
   }
 
-  @Trace((options?: SandboxListOptions) => ({ ...options, loggerProvider: options?.loggerProvider ?? 'stderr' }))
+  @Trace((options?: SandboxListOptions) => options)
   static async list({
     runtime,
     meta = {},
@@ -341,6 +342,13 @@ export class SandboxImpl implements Sandbox {
   runCommand(cmd: string, args?: string[], options?: RunCommandOptions): Promise<CommandFinished>;
   runCommand(params: DetachedRunCommandParams): Promise<Command>;
   runCommand(params: RunCommandParams): Promise<CommandFinished>;
+  @Redact({
+    args: (
+      command: string | RunCommandParams | DetachedRunCommandParams,
+      args?: string[],
+      options?: RunCommandOptions
+    ) => [typeof command === 'string' ? command : { ...command, env: command.env && '[env]' }, args, options],
+  })
   async runCommand(
     command: string | RunCommandParams | DetachedRunCommandParams,
     args?: string[],
@@ -399,6 +407,9 @@ export class SandboxImpl implements Sandbox {
     });
   }
 
+  @Redact({
+    args: (files: WriteFile[], options?: FileOptions) => [files.map(({ path, mode }) => ({ path, mode })), options],
+  })
   async writeFiles(files: WriteFile[], options?: FileOptions): Promise<void> {
     const signal = options?.signal
       ? AbortSignal.any([options.signal, this.environment.signal])
@@ -436,6 +447,8 @@ export class SandboxImpl implements Sandbox {
     });
   }
 
+  // A token for the port, the hooks port's runs any command as root.
+  @Redact((url: SandboxUrl) => ({ ...url, headers: '[redacted]' }))
   async url(port?: number, options?: UrlOptions): Promise<SandboxUrl> {
     const signal = options?.signal
       ? AbortSignal.any([options.signal, this.environment.signal])
@@ -445,6 +458,8 @@ export class SandboxImpl implements Sandbox {
     });
   }
 
+  // A command's output is the sandbox's, and can be anything.
+  @Redact(() => '[output]')
   async output(cmdId: string, options?: CommandOutputOptions): Promise<CommandOutput> {
     const signal = options?.signal
       ? AbortSignal.any([options.signal, this.environment.signal])
@@ -498,7 +513,7 @@ export class SandboxImpl implements Sandbox {
     if (this.compute.stoppable) await this.stop();
   }
 
-  @Trace((lookup: SandboxLookup) => ({ ...lookup, loggerProvider: lookup.loggerProvider ?? 'stderr' }))
+  @Trace((lookup: SandboxLookup) => lookup)
   static async delete(lookup: SandboxLookup): Promise<SandboxMetadata | undefined> {
     const sandbox = await SandboxImpl.get(lookup).catch((error) => {
       // Deleted already, or never made. A sandbox the lookup refuses still rejects.

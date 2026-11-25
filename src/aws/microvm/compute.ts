@@ -56,7 +56,7 @@ import {
 import type { AwsSandboxOptions, FileRange, SandboxMetadata, SandboxUrl } from '../../sandbox';
 import { Exec, ExecOutput, ExecOutputOptions } from '../../api/types';
 import type { SandboxEnvironment } from '../../sandbox/internal/environment';
-import { Logger } from '../../log';
+import { Logger, Redact, Trace } from '../../log';
 import { ExecSchema } from '../../routes';
 import { ComputeSpec, MICROVM_MEMORY, SandboxCompute, SandboxError } from '../../sandbox/internal/compute';
 import { META_TAG, TAG_KEY_REGEX, TAG_VALUE_REGEX } from '../tags';
@@ -111,6 +111,7 @@ const MICROVM_ID = /^microvm-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-
 /** Each image's VM while it's being found or started, shared by every handle in the process. */
 const STARTING = new Map<string, Observable<Vm>>();
 
+@Trace
 export class MicrovmCompute extends AwsClientLogger implements SandboxCompute {
   static readonly env = {};
 
@@ -263,6 +264,7 @@ export class MicrovmCompute extends AwsClientLogger implements SandboxCompute {
     return ImageArn;
   }
 
+  @Redact({ args: (spec: ComputeSpec) => [{ ...spec, env: '[env]' }] })
   create({ image, name, timeout, memory, env, meta, layersFrom, wait }: ComputeSpec): Observable<this> {
     this.image
       .withName(name)
@@ -425,6 +427,9 @@ export class MicrovmCompute extends AwsClientLogger implements SandboxCompute {
     );
   }
 
+  @Redact({
+    args: (event: ExecSchema) => [{ ...event, spec: event.spec && { ...event.spec, env: event.spec.env && '[env]' } }],
+  })
   exec(event: ExecSchema): Observable<Exec> {
     const controller = new AbortController();
     this.commands.add(controller);
@@ -464,6 +469,8 @@ export class MicrovmCompute extends AwsClientLogger implements SandboxCompute {
     );
   }
 
+  // A command's output is the sandbox's, and can be anything.
+  @Redact(() => '[output]')
   output(cmdId: string, options?: ExecOutputOptions): Observable<ExecOutput> {
     return defer(() => {
       const { day, version, vm, exec } = CmdId.parse(cmdId, this.sandboxId);
@@ -526,6 +533,14 @@ export class MicrovmCompute extends AwsClientLogger implements SandboxCompute {
     });
   }
 
+  @Redact({
+    args: (path: string, _content: Uint8Array, mode: number | undefined, signal: AbortSignal) => [
+      path,
+      '[content]',
+      mode,
+      signal,
+    ],
+  })
   writeFile(path: string, content: Uint8Array, mode: number | undefined, signal: AbortSignal): Observable<void> {
     const query = new URLSearchParams({ path, ...(mode === undefined ? {} : { mode: mode.toString(8) }) });
     return defer(() => this.vm()).pipe(
@@ -577,6 +592,8 @@ export class MicrovmCompute extends AwsClientLogger implements SandboxCompute {
     );
   }
 
+  // A token for the port, the hooks port's runs any command as root.
+  @Redact((url: SandboxUrl) => ({ ...url, headers: '[redacted]' }))
   url(port: number = HOOKS_PORT, minutes: number, signal: AbortSignal): Observable<SandboxUrl> {
     if (!Number.isInteger(port) || port < 1 || port > 65535) {
       return throwError(() => new SandboxError(`Not a port this sandbox can serve: ${port}`));
@@ -910,6 +927,10 @@ export class MicrovmCompute extends AwsClientLogger implements SandboxCompute {
   }
 
   /** A request to rowdy's hooks server in the VM, with an auth token for it. */
+  // Its init carries a command's body, env included.
+  @Redact({
+    args: (microvmIdentifier: string, endpoint: string, path: string) => [microvmIdentifier, endpoint, path, '[init]'],
+  })
   private fetchHooks(
     microvmIdentifier: string,
     endpoint: string,

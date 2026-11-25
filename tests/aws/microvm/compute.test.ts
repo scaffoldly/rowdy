@@ -2,6 +2,7 @@ import { createHash } from 'crypto';
 import { strFromU8, unzipSync } from 'fflate';
 import { lastValueFrom, Observable, of } from 'rxjs';
 import { SandboxEnvironment } from '../../../src/sandbox/internal/environment';
+import { CdkInstrumentation, Logger } from '../../../src/log';
 import { ExecFinished } from '../../../src/api/types';
 import { MicrovmCompute, POLL, TERMINATE_POLL } from '../../../src/aws/microvm/compute';
 import { EXEC_STREAM, execFrame } from '../../../src/proxy/shell';
@@ -897,6 +898,29 @@ describe('aws microvm compute', () => {
 
     describe('url', () => {
       const { signal } = new AbortController();
+
+      it('never logs its token, at any level', async () => {
+        const lines: string[] = [];
+        CdkInstrumentation.create({
+          loggerProvider: Logger.to({ write: (line: string): number => lines.push(line) }, 'trace'),
+          logLevel: 'trace',
+        });
+        try {
+          const { compute } = running({
+            CreateMicrovmAuthTokenCommand: () => ({ authToken: { 'X-aws-proxy-auth': 'sekrit-token-1' } }),
+          });
+
+          const url = await lastValueFrom(compute.url(undefined, 30, signal));
+
+          expect(url.headers['X-aws-proxy-auth']).toBe('sekrit-token-1');
+          expect(lines.join('')).toContain('MicrovmCompute.url Completed');
+          expect(lines.join('')).not.toContain('sekrit-token-1');
+          // Redacted, not only masked: @Redact is the guarantee.
+          expect(lines.join('')).toContain('[redacted]');
+        } finally {
+          CdkInstrumentation.create({ loggerProvider: 'stderr', logLevel: 'info' });
+        }
+      });
 
       it("gives the VM's endpoint and a token for the one port", async () => {
         const { compute, sent } = running();

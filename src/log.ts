@@ -1,5 +1,7 @@
 export {
+  CdkInstrumentation,
   Logger,
+  Redact,
   Trace,
   isLevel,
   mask,

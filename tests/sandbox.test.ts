@@ -1,4 +1,5 @@
 import { Logger } from '@scaffoldly/rowdy';
+import { CdkInstrumentation } from '../src/log';
 import { CommandFinished, Sandbox, SandboxOptions } from '@scaffoldly/rowdy/sandbox';
 import { AxiosError, AxiosHeaders, InternalAxiosRequestConfig } from 'axios';
 import { InvokeWithResponseStreamResponseEvent, LambdaClient } from '@aws-sdk/client-lambda';
@@ -492,20 +493,22 @@ describe('sandbox', () => {
         expect(sandbox['environment'].log.level).toBe('debug');
       });
 
-      it('leaves stdout to the host: by default a sandbox writes to process.stderr', async () => {
+      it('leaves stdout to the host: by default a sandbox writes to stderr', async () => {
         const info = jest.spyOn(console, 'info').mockImplementation(() => {});
-        const write = jest.spyOn(process.stderr, 'write').mockImplementation(() => true);
+        const log = jest.spyOn(console, 'log').mockImplementation(() => {});
+        const error = jest.spyOn(console, 'error').mockImplementation(() => {});
 
         const sandbox = await SandboxImpl.create({ runtime: 'aws.lambda', logLevel: 'info' });
         sandbox['environment'].log.info('hello');
 
         expect(info).not.toHaveBeenCalled();
-        expect(write).toHaveBeenCalledWith('INFO Sandbox Hello\n');
+        expect(log).not.toHaveBeenCalled();
+        expect(error).toHaveBeenCalledWith(expect.stringMatching(/INFO .*Hello/));
       });
 
       it('logs to its loggerProvider, at its level', async () => {
         const emit = jest.fn();
-        const getLogger = jest.fn(() => ({ emit }));
+        const getLogger = jest.fn((_name: string) => ({ emit, enabled: () => true }));
 
         const sandbox = await SandboxImpl.create({
           runtime: 'aws.lambda',
@@ -514,8 +517,10 @@ describe('sandbox', () => {
         });
         sandbox['environment'].log.info('hello');
         sandbox['environment'].log.debug('hidden');
+        // A loggerProvider is kept for the process: later tests are back on stderr.
+        CdkInstrumentation.create({ loggerProvider: 'stderr' });
 
-        expect(getLogger).toHaveBeenCalledWith('@scaffoldly/rowdy', expect.any(String));
+        expect(getLogger.mock.calls.map(([name]) => name)).toContain('@scaffoldly/rowdy');
         expect(emit).toHaveBeenCalledWith(
           expect.objectContaining({
             body: expect.stringMatching(/hello/i),

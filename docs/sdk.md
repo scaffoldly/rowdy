@@ -45,8 +45,10 @@ const sandbox = await Sandbox.create({ image: 'node:24', credentials });
 
 ## Logging
 
-Your program's stdout stays yours: by default, a sandbox writes its logs to `process.stderr`, at every level, or to
-`console` where there's no `process`, like a Worker without `nodejs_compat`.
+Your program's stdout stays yours: by default, a sandbox writes its logs and its traces' lines to stderr. A
+`loggerProvider` on `Sandbox.create`, `get`, `list` or `delete` sends them to an OpenTelemetry logger provider instead,
+and `null` to rowdy's default logger, on stdout. Both, and `logLevel`, are kept for the process: later calls that leave
+them out use them too.
 
 The level defaults to `info`, as the CLI's does, and each call of `Sandbox.create`, `get`, `list` and `delete`
 logs a `Span Ended` line at that level. The `logLevel` option sets it, and otherwise the variables in
