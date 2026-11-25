@@ -154,7 +154,14 @@ export class SandboxImpl implements Sandbox {
         // Kubernetes' generateName suffix: 5 random characters.
         // const suffix = Array.from({ length: 5 }, () => ALPHANUMS[randomInt(ALPHANUMS.length)]).join('');
 
-        const name = `${options?.name || 'sandbox'}-${suffix}`;
+        // A host's role scopes sandboxes to sandbox-*, so every name starts with it, once. What follows is what each AWS
+        // name made from it takes, and short enough that a function's, at most 64, is never cut.
+        const given = (options?.name ?? '')
+          .replace(/[^a-zA-Z0-9-]+/g, '-')
+          .replace(/^-*(sandbox(-+|$))?/, '')
+          .slice(0, 45)
+          .replace(/-+$/, '');
+        const name = ['sandbox', given, suffix].filter(Boolean).join('-');
 
         return race(
           iif(() => signal.aborted, of(signal), fromEvent(signal, 'abort')).pipe(

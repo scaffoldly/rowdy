@@ -253,7 +253,13 @@ describe('sandbox', () => {
       [undefined, /^sandbox-[bcdfghjklmnpqrstvwxz2456789]{1,10}$/],
       [{ image: 'python:3.14' }, /^sandbox-[bcdfghjklmnpqrstvwxz2456789]{1,10}$/],
       [{ name: '' }, /^sandbox-[bcdfghjklmnpqrstvwxz2456789]{1,10}$/],
-      [{ image: 'ghcr.io/acme/app:v1', name: 'box' }, /^box-[bcdfghjklmnpqrstvwxz2456789]{1,10}$/],
+      [{ image: 'ghcr.io/acme/app:v1', name: 'box' }, /^sandbox-box-[bcdfghjklmnpqrstvwxz2456789]{1,10}$/],
+      [{ name: 'sandbox-box' }, /^sandbox-box-[bcdfghjklmnpqrstvwxz2456789]{1,10}$/],
+      [{ name: 'sandbox' }, /^sandbox-[bcdfghjklmnpqrstvwxz2456789]{1,10}$/],
+      [{ name: 'acme/My App_1' }, /^sandbox-acme-My-App-1-[bcdfghjklmnpqrstvwxz2456789]{1,10}$/],
+      [{ name: '--box--' }, /^sandbox-box-[bcdfghjklmnpqrstvwxz2456789]{1,10}$/],
+      [{ name: 'sandboxes' }, /^sandbox-sandboxes-[bcdfghjklmnpqrstvwxz2456789]{1,10}$/],
+      [{ name: 'a'.repeat(100) }, new RegExp(`^sandbox-${'a'.repeat(45)}-[bcdfghjklmnpqrstvwxz2456789]{1,10}$`)],
     ])('names %j %s', async (options, expected) => {
       const name = jest.spyOn(LambdaFunction.prototype, 'withName');
 
@@ -316,7 +322,7 @@ describe('sandbox', () => {
       it('leaves the suffix to the options, not the name', async () => {
         const [box, bag] = [await named({ name: 'box' }), await named({ name: 'bag' })];
 
-        expect(box.replace('box-', '')).toBe(bag.replace('bag-', ''));
+        expect(box.replace('sandbox-box-', '')).toBe(bag.replace('sandbox-bag-', ''));
       });
     });
 
@@ -352,7 +358,7 @@ describe('sandbox', () => {
       });
 
       expect(image).toHaveBeenCalledWith('busybox');
-      expect(name).toHaveBeenCalledWith(expect.stringMatching(/^box-/));
+      expect(name).toHaveBeenCalledWith(expect.stringMatching(/^sandbox-box-/));
       expect(memory).toHaveBeenCalledWith(512);
       expect(env).toHaveBeenCalledWith('FOO', 'bar');
     });

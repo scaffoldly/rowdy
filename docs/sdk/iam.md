@@ -267,10 +267,10 @@ These statements in the microVM policy cover `aws.lambda` too: `SandboxRolesOnly
 `MicroVMs`, `AwsNetworkConnectors`, `FindTheSandboxBucket`, `TheSandboxBucket`, `SandboxZips` and
 `SandboxLogs`.
 
-- **Functions:** a sandbox's function is named `{name}-{suffix}`, where `name` is the `name` option of
-  `Sandbox.create`, `sandbox` by default. The ARNs above assume that default. A host that passes its own
-  `name` should use its own prefix, like `function:builds-*`. With `function:*`, the host role can change,
-  invoke and delete every function in the account, the apps rowdy deploys included. `create` sends
+- **Functions:** a sandbox's function is named for the sandbox, `sandbox-{name}-{suffix}`, or `sandbox-{suffix}`
+  without a `name`. Every sandbox's name starts with `sandbox-`, whatever `name` a host passes, so the ARNs above
+  hold for every sandbox. Don't widen them to `function:*`: the host role could then change, invoke and delete
+  every function in the account, the apps rowdy deploys included. `create` sends
   `GetFunction` first, and `CreateFunction` only when the function isn't there yet. Each command is an
   `InvokeWithResponseStream`, which IAM checks as `lambda:InvokeFunction`. `get` and `list` read a function's
   tags with `lambda:ListTags`, and `lambda:ListFunctions`, which can't be scoped, finds the sandboxes.
@@ -283,7 +283,7 @@ These statements in the microVM policy cover `aws.lambda` too: `SandboxRolesOnly
   statement that does, and that takes `ecr:GetRepositoryPolicy` and `ecr:SetRepositoryPolicy` on the
   credentials calling `CreateFunction`. `CopyImagesIn` already has the `ecr:BatchGetImage` and
   `ecr:GetDownloadUrlForLayer` that AWS also asks of them.
-- **CloudWatch Logs:** rowdy makes the function's log group, `/aws/lambda/{name}-{suffix}`, before the
+- **CloudWatch Logs:** rowdy makes the function's log group, `/aws/lambda/{sandbox's name}`, before the
   function first runs, and deletes it with the sandbox. `sandbox.output()` reads it with
   `logs:FilterLogEvents`, and with `logs:StartLiveTail` when it's given a `timeout`.
 

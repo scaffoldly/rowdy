@@ -67,7 +67,7 @@ const sandbox = await Sandbox.create({
 | -------------- | -------------------- | --------------------------------------------------------------------------------------------------------- |
 | `runtime`      | `aws.microvm`        | See [Runtime](#runtime).                                                                                  |
 | `image`        | `scaffoldly/sandbox` | The container image. An image with no registry comes from `mirror.gcr.io`.                                |
-| `name`         | `sandbox`            | The prefix of the generated name, `{name}-{suffix}`.                                                      |
+| `name`         |                      | Part of the sandbox's name, `sandbox-{name}-{suffix}`. See [`Sandbox.get`](#sandboxget).                  |
 | `timeout`      | 15 minutes           | See [Runtime](#runtime).                                                                                  |
 | `memory`       | 512                  | See [Runtime](#runtime).                                                                                  |
 | `env`          |                      | Environment variables for every command.                                                                  |
@@ -318,7 +318,10 @@ console.log(deleted ? `deleted ${deleted.name}` : 'nothing to delete');
 
 ## `Sandbox.get`
 
-A sandbox's `name` is `{name}-{suffix}`, the same as its function's or its image's. It leaves the account ID in
+A sandbox's `name` is `sandbox-{name}-{suffix}`, or `sandbox-{suffix}` without a `name`, the same as its function's
+or its image's. rowdy makes the `name` you give fit: characters other than letters, digits and `-` become `-`, a
+leading `sandbox-` isn't doubled, and it's cut to 45 characters. Every name starting with `sandbox-` lets a host's
+role scope sandboxes to `sandbox-*`. It leaves the account ID in
 their ARNs out, so it's safe to show. Another process can use it to connect to the same sandbox: `get` looks the
 name up on every runtime, in the account and region its credentials are for. It resolves to the sandbox, with its
 [metadata](#metadata) as AWS says now, and its `runtime` says which one it found it on. Unlike `create`'s, what it
