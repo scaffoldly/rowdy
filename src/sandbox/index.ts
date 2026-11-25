@@ -12,7 +12,10 @@ CdkInstrumentation.create({ loggerProvider: 'stderr' });
 interface BaseSandboxOptions extends CdkOptions {
   /** The container image to run. Defaults to `scaffoldly/sandbox`. */
   image?: string;
-  /** The prefix of a generated name, `{name}-{suffix}`. Defaults to `sandbox`. */
+  /**
+   * Part of the sandbox's name, `sandbox-{name}-{suffix}`: other characters than letters, digits and `-` become `-`, a
+   * leading `sandbox-` isn't doubled, and it's cut to 45. Without one, it's `sandbox-{suffix}`.
+   */
   name?: string;
   /**
    * Kept on the sandbox as tags, `run.rowdy.meta.{key}`, for `list` and `get` to match. Different meta is a different
@@ -90,7 +93,7 @@ export type Runtime = 'aws.lambda' | 'aws.microvm';
  */
 export interface SandboxMetadata {
   /**
-   * What `Sandbox.get` and `Sandbox.delete` take: `{name}-{suffix}`, from `create`'s `name`, the same as its function's
+   * What `Sandbox.get` and `Sandbox.delete` take: `sandbox-{name}-{suffix}`, from `create`'s `name`, the same as its function's
    * or its image's. A sandbox started from a prebuilt image is its VM, and has the VM's id, `microvm-…`.
    */
   name: string;
