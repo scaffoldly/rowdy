@@ -27,7 +27,7 @@ import { concurrency } from '../../concurrency';
 import type { SandboxEnvironment } from '../../sandbox/internal/environment';
 import { CmdId, execOutput } from '../exec';
 import type { LambdaFunction } from './index';
-import { Redact, Trace } from '../../log';
+import { Attributes, Redact, Trace } from '../../log';
 import { isNotFound } from '../shared';
 
 @Trace
@@ -56,6 +56,7 @@ export class LambdaCompute implements SandboxCompute {
     });
   }
 
+  @Attributes(() => ({ 'rowdy.sandbox.runtime': 'aws.lambda' }))
   static list(credentials?: AwsSandboxOptions['credentials']): Observable<SandboxMetadata> {
     const lambda = new LambdaClient({ credentials });
     return from(paginateListFunctions({ client: lambda }, {})).pipe(

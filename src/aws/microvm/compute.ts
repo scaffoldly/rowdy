@@ -55,7 +55,7 @@ import {
 import type { AwsSandboxOptions, FileRange, SandboxMetadata, SandboxUrl } from '../../sandbox';
 import { Exec, ExecOutput, ExecOutputOptions } from '../../api/types';
 import type { SandboxEnvironment } from '../../sandbox/internal/environment';
-import { Logger, Redact, Trace } from '../../log';
+import { Attributes, Logger, Redact, Trace } from '../../log';
 import { ExecSchema } from '../../routes';
 import { ComputeSpec, MICROVM_MEMORY, SandboxCompute, SandboxError } from '../../sandbox/internal/compute';
 import { META_TAG, TAG_KEY_REGEX, TAG_VALUE_REGEX } from '../tags';
@@ -114,6 +114,7 @@ const STARTING = new Map<string, Observable<Vm>>();
 export class MicrovmCompute extends AwsClientLogger implements SandboxCompute {
   static readonly env = {};
 
+  @Attributes(() => ({ 'rowdy.sandbox.runtime': 'aws.microvm' }))
   static list(credentials: AwsSandboxOptions['credentials'] | undefined, log: Logger): Observable<SandboxMetadata> {
     // One ListTags per image, so a busy host is throttled: adaptive retries slow down until AWS lets them through.
     const microvms = new LambdaMicrovmsClient({ credentials, retryMode: 'adaptive', maxAttempts: 8 });

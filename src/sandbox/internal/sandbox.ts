@@ -292,6 +292,11 @@ export class SandboxImpl implements Sandbox {
   }
 
   @Trace((options?: SandboxListOptions) => options)
+  @Attributes({
+    // Without one, every runtime.
+    args: (options?: SandboxListOptions) => ({ 'rowdy.sandbox.runtime': options?.runtime }),
+    result: ({ sandboxes }: SandboxList) => ({ 'rowdy.sandbox.count': sandboxes.length }),
+  })
   static async list({
     runtime,
     meta = {},
