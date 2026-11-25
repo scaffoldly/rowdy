@@ -15,7 +15,7 @@ export const wiretap = (
 ): Wiretap => {
   const logger = loggerProvider.getLogger(name, version);
   return (severityNumber, body, attributes = {}) => {
-    if (!logger.enabled({ severityNumber, context })) return;
+    if (!(logger.enabled?.({ severityNumber, context }) ?? true)) return;
     logger.emit({ severityNumber, severityText: SeverityNumber[severityNumber], body, attributes, context });
   };
 };

@@ -255,7 +255,9 @@ export class Logger implements OtelLogger {
         getLogger: (name, version, options): OtelLogger => {
           const logger = provider.getLogger(name, version, options);
           return {
-            enabled: (of): boolean => (of?.severityNumber ? passes(of.severityNumber) : true) && logger.enabled(of),
+            // A logger without enabled(), as OtelSink allows, is always enabled.
+            enabled: (of): boolean =>
+              (of?.severityNumber ? passes(of.severityNumber) : true) && (logger.enabled?.(of) ?? true),
             emit: (record): void => (passes(record.severityNumber) ? logger.emit(record) : undefined),
           };
         },

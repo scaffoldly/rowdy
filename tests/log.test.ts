@@ -1214,6 +1214,15 @@ describe('Logger', () => {
           });
         });
 
+        it('traces through a loggerProvider whose loggers have only emit', () => {
+          const emit = jest.fn();
+          const loggerProvider = { getLogger: () => ({ emit }) } as unknown as LoggerProvider;
+          expect(() => Factory.create({ loggerProvider, logLevel: 'trace' })).not.toThrow();
+          expect(emit.mock.calls.map(([record]) => record.body)).toEqual(
+            expect.arrayContaining(['Factory.create Called', 'Factory.create Completed', 'Span Ended'])
+          );
+        });
+
         it("sends a call's span to the tracerProvider in its options, not the global one", () => {
           const own = new InMemorySpanExporter();
           const tracerProvider = new TracerProvider({ spanProcessors: [new SimpleSpanProcessor({ exporter: own })] });
@@ -1379,6 +1388,16 @@ describe('Logger.defaults', () => {
     expect(live.enabled({ severityNumber: SeverityNumber.DEBUG })).toBe(false);
     new Logger().withLevel('debug');
     expect(live.enabled({ severityNumber: SeverityNumber.DEBUG })).toBe(true);
+  });
+
+  it('filters a logger that has no enabled() of its own, as if it were always enabled', () => {
+    const emit = jest.fn();
+    const provider = { getLogger: (): OtelLogger => ({ emit }) as unknown as OtelLogger };
+    const info = Logger.filter(provider, 'info').getLogger('x');
+    expect(info.enabled({ severityNumber: SeverityNumber.INFO })).toBe(true);
+    expect(info.enabled({ severityNumber: SeverityNumber.DEBUG })).toBe(false);
+    info.emit({ severityNumber: SeverityNumber.INFO, body: 'kept' });
+    expect(emit).toHaveBeenCalledTimes(1);
   });
 
   it('gives a logger provider at a level of its own, the same one for the same level', () => {
