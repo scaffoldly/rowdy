@@ -8,8 +8,8 @@ type Outcome = 'complete' | 'error' | 'unsubscribe' | 'returned';
 /**
  * Starts a span for one run, as a child of `parent`, from the options' `tracerProvider`. The returned
  * context makes the span the parent of spans made during the run; the tracker ends it with the
- * outcome, and for an Observable the emission count. Each is also a log record: `Span Started` at
- * DEBUG and `Span Ended` at INFO, with its ids when it is recorded.
+ * outcome, and for an Observable the emission count. Each is also a log record: `Span Started` and
+ * `Span Ended` at DEBUG, or `Span Ended` at WARN when it failed, with its ids when it is recorded.
  */
 export const startSpan = (
   method: string,
@@ -38,7 +38,7 @@ export const startSpan = (
     span.setAttribute('cdk.trace.outcome', outcome);
     if (emissions !== undefined) span.setAttribute('cdk.observable.emissions', emissions);
     span.end(at);
-    tap(SeverityNumber.INFO, 'Span Ended', {
+    tap(outcome === 'error' ? SeverityNumber.WARN : SeverityNumber.DEBUG, 'Span Ended', {
       name: method,
       duration: `${((at ?? performance.now()) - started).toFixed(2)} ms`,
       outcome,

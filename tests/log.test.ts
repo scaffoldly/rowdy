@@ -1166,27 +1166,41 @@ describe('Logger', () => {
           const ID = '[0-9a-f]{32}';
           const SPAN = '[0-9a-f]{16}';
 
-          it('logs each span as it ends at info', () => {
-            Factory.create({ loggerProvider: linesAt('info') });
-            expect(recorded).toEqual([
-              expect.stringMatching(
-                new RegExp(
-                  `^INFO Span Ended Name: Factory.create Duration: \\d+\\.\\d\\d ms Outcome: complete TraceId: ${ID} SpanId: ${SPAN}$`
-                )
-              ),
-            ]);
+          // A meter provider of its own, recording each value of cdk.trace.duration.
+          const durations = (): { meterProvider: MeterProvider; values: number[] } => {
+            const values: number[] = [];
+            const histogram = { record: (value: number): number => values.push(value) };
+            const meterProvider = {
+              getMeter: (): { createHistogram: () => typeof histogram } => ({ createHistogram: () => histogram }),
+            } as unknown as MeterProvider;
+            return { meterProvider, values };
+          };
+
+          it('logs no span that completes at info, and still records it and its duration', () => {
+            const { meterProvider, values } = durations();
+            Factory.create({ loggerProvider: linesAt('info'), meterProvider });
+            expect(recorded).toEqual([]);
+            expect(finished().map((s) => s.name)).toEqual(['Factory.create']);
+            expect(values).toHaveLength(1);
           });
 
-          it('also logs each span as it starts at debug, with its attributes', () => {
-            Factory.create({ loggerProvider: linesAt('debug') });
+          it('logs each span as it starts and ends at debug, with its attributes', () => {
+            const { meterProvider, values } = durations();
+            Factory.create({ loggerProvider: linesAt('debug'), meterProvider });
             expect(recorded).toEqual([
               expect.stringMatching(
                 new RegExp(
                   `^DEBUG Span Started Name: Factory.create TraceId: ${ID} SpanId: ${SPAN} Code.function.name: Factory.create$`
                 )
               ),
-              expect.stringMatching(/^INFO Span Ended Name: Factory.create /),
+              expect.stringMatching(
+                new RegExp(
+                  `^DEBUG Span Ended Name: Factory.create Duration: \\d+\\.\\d\\d ms Outcome: complete TraceId: ${ID} SpanId: ${SPAN}$`
+                )
+              ),
             ]);
+            expect(finished().map((s) => s.name)).toEqual(['Factory.create']);
+            expect(values).toHaveLength(1);
           });
 
           it('also logs its trace lines and every metric value at trace', () => {
@@ -1195,7 +1209,7 @@ describe('Logger', () => {
               'DEBUG Span Started',
               'TRACE Factory.create Called',
               'TRACE Factory.create Completed',
-              'INFO Span Ended',
+              'DEBUG Span Ended',
               'TRACE Metric Recorded',
             ]);
             expect(recorded[4]).toMatch(
@@ -1203,28 +1217,31 @@ describe('Logger', () => {
             );
           });
 
-          it('gives a span that ended in error its error', async () => {
+          it('logs a span that ended in error at warn, with its error, and still records it and its duration', async () => {
+            const { meterProvider, values } = durations();
             class Failing {
               @Trace((options: Options) => options)
               static async fail(_options: Options): Promise<never> {
                 throw new RangeError('nope');
               }
             }
-            await expect(Failing.fail({ loggerProvider: linesAt('info') })).rejects.toThrow('nope');
+            await expect(Failing.fail({ loggerProvider: linesAt('info'), meterProvider })).rejects.toThrow('nope');
             expect(recorded).toEqual([
               expect.stringMatching(
-                /^INFO Span Ended Name: Failing.fail .* Outcome: error .* Exception: RangeError: nope$/
+                /^WARN Span Ended Name: Failing.fail .* Outcome: error .* Exception: RangeError: nope$/
               ),
             ]);
+            expect(finished().map((s) => s.name)).toEqual(['Failing.fail']);
+            expect(values).toHaveLength(1);
           });
 
           it('leaves the ids out when there is no tracer provider to record the span', () => {
             const cdk = CdkInstrumentation as unknown as { instance?: CdkInstrumentation };
             cdk.instance?.disable();
             cdk.instance = undefined;
-            Factory.create({ loggerProvider: linesAt('info') });
-            expect(recorded).toEqual([
-              expect.stringMatching(/^INFO Span Ended Name: Factory.create Duration: \d+\.\d\d ms Outcome: complete$/),
+            Factory.create({ loggerProvider: linesAt('debug') });
+            expect(recorded.filter((line) => line.includes('Span Ended'))).toEqual([
+              expect.stringMatching(/^DEBUG Span Ended Name: Factory.create Duration: \d+\.\d\d ms Outcome: complete$/),
             ]);
           });
         });
@@ -1240,7 +1257,7 @@ describe('Logger', () => {
             ),
           ]);
           expect(errors).toContainEqual(
-            expect.stringMatching(/^INFO @scaffoldly\/rowdy-cdk Span Ended Name: Factory.create /)
+            expect.stringMatching(/^DEBUG @scaffoldly\/rowdy-cdk Span Ended Name: Factory.create /)
           );
           expect(lines.filter((line) => line.sink !== 'error')).toEqual([]);
         });
