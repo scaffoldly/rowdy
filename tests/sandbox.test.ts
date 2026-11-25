@@ -3,7 +3,20 @@ import { CdkInstrumentation } from '../src/log';
 import { CommandFinished, Sandbox, SandboxOptions } from '@scaffoldly/rowdy/sandbox';
 import { AxiosError, AxiosHeaders, InternalAxiosRequestConfig } from 'axios';
 import { InvokeWithResponseStreamResponseEvent, LambdaClient } from '@aws-sdk/client-lambda';
-import { EMPTY, from, lastValueFrom, NEVER, Observable, of, Subject, switchMap, throwError, toArray } from 'rxjs';
+import {
+  EMPTY,
+  from,
+  lastValueFrom,
+  map,
+  NEVER,
+  Observable,
+  of,
+  Subject,
+  switchMap,
+  throwError,
+  timer,
+  toArray,
+} from 'rxjs';
 import { PassThrough } from 'stream';
 import { ROWDY_LAYERS } from '../src/api/internal/layers';
 import { IAMClient } from '@aws-sdk/client-iam';
@@ -1963,6 +1976,45 @@ describe('sandbox', () => {
       expect(withArn).toHaveBeenCalledWith(FUNCTION_NAME);
       expect(observe).not.toHaveBeenCalled();
       expect(sandbox['compute'].sandboxId).toBe(FUNCTION_NAME);
+    });
+
+    it('finds the sandbox when the other runtime completes without one', async () => {
+      jest.spyOn(MicrovmCompute.prototype, 'attach').mockReturnValue(EMPTY);
+
+      const sandbox = (await Sandbox.get({ name: FUNCTION_NAME })) as SandboxImpl;
+
+      expect(sandbox['compute']).toBeInstanceOf(LambdaCompute);
+    });
+
+    it('is missing when every runtime completes without one', async () => {
+      withArn.mockImplementation(missing);
+      jest.spyOn(MicrovmCompute.prototype, 'attach').mockReturnValue(EMPTY);
+
+      await expect(Sandbox.get({ name: FUNCTION_NAME })).rejects.toMatchObject({
+        name: 'ResourceNotFoundException',
+        message: `No sandbox named ${FUNCTION_NAME}`,
+      });
+    });
+
+    it("says another runtime's failure when one only completes without the sandbox", async () => {
+      withArn.mockReturnValue(throwError(() => Object.assign(new Error('slow down'), { name: 'ThrottlingException' })));
+      jest.spyOn(MicrovmCompute.prototype, 'attach').mockReturnValue(EMPTY);
+
+      await expect(Sandbox.get({ name: FUNCTION_NAME })).rejects.toThrow('slow down');
+    });
+
+    it("logs no warning for the runtime that hasn't got the sandbox", async () => {
+      CdkInstrumentation.create({ loggerProvider: 'stderr', logLevel: 'info' });
+      const error = jest.spyOn(console, 'error').mockImplementation(() => {});
+      withArn.mockImplementation(missing);
+      // Found after the other runtime has missed, so its miss is traced to the end.
+      jest.spyOn(MicrovmCompute.prototype, 'attach').mockImplementation(function (this: MicrovmCompute) {
+        return timer(20).pipe(map(() => this));
+      });
+
+      await Sandbox.get({ name: FUNCTION_NAME });
+
+      expect(error).not.toHaveBeenCalledWith(expect.stringMatching(/attach.*Outcome: error/));
     });
 
     it('is missing when no runtime has it', async () => {

@@ -37,7 +37,10 @@ export interface SandboxCompute {
   readonly stoppable: boolean;
   /** Emits once, when the sandbox is ready for a command. */
   create(spec: ComputeSpec): Observable<this>;
-  /** Emits once, when a sandbox `create` made is connected. Refuses one whose meta doesn't have every entry given. */
+  /**
+   * Emits once, when a sandbox `create` made is connected, or completes without emitting when this runtime has none by
+   * that name: a miss isn't an error, so its trace isn't one. Refuses one whose meta doesn't have every entry given.
+   */
   attach(sandboxId: string, meta?: Record<string, string>): Observable<this>;
   /** Emits the command's handle once, and completes with the command. */
   exec(event: ExecSchema): Observable<Exec>;
