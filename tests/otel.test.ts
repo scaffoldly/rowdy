@@ -13,7 +13,7 @@ import { join } from 'path';
 import * as rxjs from 'rxjs';
 import { type InstrumentationBase, isWrapped } from '@opentelemetry/instrumentation';
 import type * as Otel from '../src/otel';
-import { RxJSInstrumentation } from '../src/otel/rxjs';
+import { RxJSInstrumentation } from '../src/otel/rxjs/rxjs';
 
 /** A fresh copy of the module and its rxjs: create() makes its instrumentations once. */
 // Child processes print their results on stdout: keep @Trace's INFO wiretaps off it. Jest's
@@ -41,17 +41,16 @@ describe('CdkInstrumentation.create', () => {
     try {
       expect(members(cdk).map((i) => i.constructor.name)).toEqual([
         'AwsInstrumentation',
-        'HttpInstrumentation',
-        'UndiciInstrumentation',
+        'AxiosInstrumentation',
         'RxJSInstrumentation',
       ]);
-      expect(members(cdk).map((i) => i.isEnabled())).toEqual([true, true, true, true]);
+      expect(members(cdk).map((i) => i.isEnabled())).toEqual([true, true, true]);
       expect(cdk.getConfig().enabled).toBe(true);
       expect(isWrapped(rx.Observable.prototype.subscribe)).toBe(true);
     } finally {
       cdk.disable();
     }
-    expect(members(cdk).map((i) => i.isEnabled())).toEqual([false, false, false, false]);
+    expect(members(cdk).map((i) => i.isEnabled())).toEqual([false, false, false]);
     expect(isWrapped(rx.Observable.prototype.subscribe)).toBe(false);
   });
 
@@ -108,7 +107,7 @@ describe('CdkInstrumentation.create', () => {
     };
     const cdk = CdkInstrumentation.create({ loggerProvider, logLevel: 'warn' });
     try {
-      const { logger } = members(cdk)[1] as unknown as { logger: { emit(record: object): void } };
+      const { logger } = members(cdk)[0] as unknown as { logger: { emit(record: object): void } };
       logger.emit({ severityNumber: SeverityNumber.INFO, body: 'dropped' });
       logger.emit({ severityNumber: SeverityNumber.ERROR, body: 'kept' });
       expect(emit.mock.calls.map(([record]) => record.body)).toEqual(['kept']);

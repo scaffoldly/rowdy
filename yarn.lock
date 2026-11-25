@@ -1244,7 +1244,7 @@
     "@opentelemetry/semantic-conventions" "^1.27.0"
     "@types/aws-lambda" "^8.10.155"
 
-"@opentelemetry/instrumentation-aws-sdk@^0.80.0":
+"@opentelemetry/instrumentation-aws-sdk@0.80.0", "@opentelemetry/instrumentation-aws-sdk@^0.80.0":
   version "0.80.0"
   resolved "https://registry.yarnpkg.com/@opentelemetry/instrumentation-aws-sdk/-/instrumentation-aws-sdk-0.80.0.tgz#a8b656d6e0f69be47b4033e9cb48d28d44cb76f4"
   integrity sha512-QMEennxnvl8WNKFhuZAjw8t1US7JxQIxAHTwQ+9KmOLALq74TcoC4rgvlU4tyTJKvIw2XHvm6mvmxoghXnzPTQ==
@@ -1357,7 +1357,7 @@
     "@opentelemetry/instrumentation" "^0.301.0"
     systeminformation "^5.31.6"
 
-"@opentelemetry/instrumentation-http@^0.301.0", "@opentelemetry/instrumentation-http@^0.301.2":
+"@opentelemetry/instrumentation-http@0.301.2", "@opentelemetry/instrumentation-http@^0.301.0":
   version "0.301.2"
   resolved "https://registry.yarnpkg.com/@opentelemetry/instrumentation-http/-/instrumentation-http-0.301.2.tgz#5f60d4617cb4f595f49133a5cc9b5810ff4418d5"
   integrity sha512-IgxJ5R639ouwlGkK8Lv4AJykTeo63n5hR5g91VvABY1dc60oBLPUef8Z91jM25XFNEPzGMPufTuVWxeQshM1aw==
@@ -1554,7 +1554,7 @@
     "@opentelemetry/instrumentation" "^0.301.0"
     "@opentelemetry/semantic-conventions" "^1.33.0"
 
-"@opentelemetry/instrumentation-undici@^0.35.1":
+"@opentelemetry/instrumentation-undici@0.35.1", "@opentelemetry/instrumentation-undici@^0.35.1":
   version "0.35.1"
   resolved "https://registry.yarnpkg.com/@opentelemetry/instrumentation-undici/-/instrumentation-undici-0.35.1.tgz#819eeb8fc3af65fc4f7892cc916a72bfdfad1a77"
   integrity sha512-arkBMJmJhHHGgQ15Aun5R+E64lezw3G6yESXqDqqmr7ADieVFUr45NFLTaMeDnDZPdFDXqFspRTwsSaaJzvvkw==

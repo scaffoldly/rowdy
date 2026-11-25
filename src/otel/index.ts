@@ -1,12 +1,11 @@
 import type { LoggerProvider, MeterProvider, TracerProvider } from '@opentelemetry/api';
 import type { Instrumentation, InstrumentationConfig } from '@opentelemetry/instrumentation';
-import { AwsInstrumentation } from '@opentelemetry/instrumentation-aws-sdk';
-import { HttpInstrumentation } from '@opentelemetry/instrumentation-http';
-import { UndiciInstrumentation } from '@opentelemetry/instrumentation-undici';
 import type { CdkOptions } from '../cdk';
 import { Logger } from '../log';
+import { AwsInstrumentation } from './aws/aws';
+import { AxiosInstrumentation } from './axios/axios';
 import { NOOP_METER_PROVIDER, NOOP_TRACER_PROVIDER } from './noop';
-import { RxJSInstrumentation } from './rxjs';
+import { RxJSInstrumentation } from './rxjs/rxjs';
 import { PACKAGE_NAME, PACKAGE_VERSION } from './version';
 
 /** Where the instrumentations' spans, metrics and log records go; an SDK that registers them sets its own. */
@@ -46,8 +45,7 @@ export class CdkInstrumentation implements Instrumentation {
   // Each enabled when made.
   private readonly members: Instrumentation[] = [
     new AwsInstrumentation(),
-    new HttpInstrumentation(),
-    new UndiciInstrumentation(),
+    new AxiosInstrumentation(),
     new RxJSInstrumentation(),
   ];
 

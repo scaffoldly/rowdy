@@ -49,13 +49,67 @@ describe('a host bundle that inlines rxjs, and gives CdkInstrumentation.create()
     expect(bundle).not.toMatch(/require\(["']rxjs["']\)/);
   });
 
-  it('parents the request made in mergeMap through the inlined rxjs on the span active at subscribe', () => {
+  it('parents the AWS call made in mergeMap through the inlined rxjs on the span active at subscribe', () => {
+    const aws = result.spans.find((s) => s.name === 'STS.GetCallerIdentity');
+    expect(aws?.parent).toBe(result.subscriber);
     expect(result.spans).toContainEqual(
-      expect.objectContaining({ scope: '@opentelemetry/instrumentation-http', parent: result.subscriber })
+      expect.objectContaining({ scope: '@opentelemetry/instrumentation-http', parent: aws?.id })
     );
   });
 
   it('is off in a host that starts its own SDK without making them', () => {
     expect(run('0').spans.filter((s) => s.scope.startsWith('@opentelemetry/instrumentation-'))).toEqual([]);
+  });
+});
+
+describe('a host bundle that inlines everything, the AWS SDK and rxjs included, as tsup bundles rowdy', () => {
+  const cache = join(ROOT, 'node_modules', '.cache');
+  mkdirSync(cache, { recursive: true });
+  const dir = mkdtempSync(join(cache, 'rowdy-cdk-inline-'));
+  const outfile = join(dir, 'bundle.cjs');
+  let bundle: string;
+  let inputs: string[];
+  let result: { spans: Array<{ name: string; scope: string; parent?: string }>; subscriber: string };
+
+  beforeAll(() => {
+    const { metafile } = buildSync({
+      entryPoints: [join(__dirname, 'fixtures', 'bundle-inline-entry.mjs')],
+      outfile,
+      bundle: true,
+      platform: 'node',
+      format: 'cjs',
+      metafile: true,
+      alias: { '@scaffoldly/rowdy-cdk': join(ROOT, 'dist', 'index.js') },
+      logLevel: 'silent',
+    });
+    bundle = readFileSync(outfile, 'utf8');
+    inputs = Object.keys(metafile!.inputs);
+    result = JSON.parse(
+      execFileSync(process.execPath, [outfile], { encoding: 'utf8', env: { ...process.env, ROWDY_LOG_LEVEL: 'warn' } })
+    );
+  });
+
+  afterAll(() => rmSync(dir, { recursive: true, force: true }));
+
+  it('inlines the AWS SDK and rxjs, once each', () => {
+    expect(bundle).not.toMatch(/require\(["']@smithy\//);
+    expect(bundle).not.toMatch(/require\(["']@aws-sdk\/client-sts["']\)/);
+    expect(bundle).not.toMatch(/require\(["']rxjs["']\)/);
+    const clients = new Set(
+      inputs
+        .filter((i) => /@smithy\/core\/dist-[a-z]+\/submodules\/client\//.test(i))
+        .map((i) => i.replace(/\/submodules\/client\/.*/, ''))
+    );
+    expect([...clients]).toHaveLength(1);
+  });
+
+  it('makes an aws-sdk span for an inlined client', () => {
+    expect(result.spans).toContainEqual(
+      expect.objectContaining({ name: 'STS.GetCallerIdentity', scope: '@opentelemetry/instrumentation-aws-sdk' })
+    );
+  });
+
+  it('parents it through an inlined rxjs on the span active at subscribe', () => {
+    expect(result.spans.find((s) => s.name === 'STS.GetCallerIdentity')?.parent).toBe(result.subscriber);
   });
 });

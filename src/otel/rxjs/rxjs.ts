@@ -6,7 +6,7 @@ import {
   type InstrumentationConfig,
 } from '@opentelemetry/instrumentation';
 import * as rxjs from 'rxjs';
-import { PACKAGE_NAME, PACKAGE_VERSION } from './version';
+import { PACKAGE_NAME, PACKAGE_VERSION } from '../version';
 
 type RxJS = typeof rxjs;
 type Subscribe = (this: rxjs.Observable<unknown>, ...args: unknown[]) => rxjs.Subscription;
@@ -53,7 +53,7 @@ const patchMethod = (original: Method): Method =>
  */
 export class RxJSInstrumentation extends InstrumentationBase<InstrumentationConfig> {
   constructor(config: InstrumentationConfig = {}) {
-    super(PACKAGE_NAME, PACKAGE_VERSION, config);
+    super(`${PACKAGE_NAME}/rxjs`, PACKAGE_VERSION, config);
   }
 
   override enable(): void {
