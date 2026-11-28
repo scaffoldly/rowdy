@@ -114,7 +114,7 @@ const STARTING = new Map<string, Observable<Vm>>();
 export class MicrovmCompute extends AwsClientLogger implements SandboxCompute {
   static readonly env = {};
 
-  @Attributes(() => ({ 'rowdy.sandbox.runtime': 'aws.microvm' }))
+  @Attributes({ self: () => ({ 'rowdy.sandbox.runtime': 'aws.microvm' }) })
   static list(credentials: AwsSandboxOptions['credentials'] | undefined, log: Logger): Observable<SandboxMetadata> {
     // One ListTags per image, so a busy host is throttled: adaptive retries slow down until AWS lets them through.
     const microvms = new LambdaMicrovmsClient({ credentials, retryMode: 'adaptive', maxAttempts: 8 });

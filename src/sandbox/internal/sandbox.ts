@@ -58,6 +58,18 @@ import {
 import type { Exec, ExecFrame } from '../../api/types';
 import { SandboxEnvironment } from './environment';
 import { Attributes, maskUrl, Redact, Trace } from '../../log';
+import {
+  ATTR_CONTAINER_IMAGE_NAME,
+  ATTR_FILE_PATH,
+  ATTR_FILE_SIZE,
+  ATTR_PROCESS_ARGS_COUNT,
+  ATTR_PROCESS_COMMAND,
+  ATTR_PROCESS_COMMAND_LINE,
+  ATTR_PROCESS_EXIT_CODE,
+  ATTR_PROCESS_WORKING_DIRECTORY,
+  ATTR_URL_FULL,
+  ATTR_URL_PORT,
+} from './semconv';
 import { humanize } from '../../aws/errors';
 import { LambdaCompute } from '../../aws/lambda/compute';
 import { MicrovmCompute } from '../../aws/microvm/compute';
@@ -114,6 +126,12 @@ export class SandboxImpl implements Sandbox {
 
   @Trace((options?: SandboxOptions) => options)
   @Attributes({
+    args: (options?: SandboxOptions) => ({
+      [ATTR_CONTAINER_IMAGE_NAME]: options?.image ?? DEFAULTS.image,
+      // In MB and milliseconds, as create takes them.
+      'rowdy.sandbox.memory': options?.memory ?? DEFAULTS.memory,
+      'rowdy.sandbox.timeout': options?.timeout ?? DEFAULTS.timeout,
+    }),
     result: (sandbox: SandboxImpl) => ({
       'rowdy.sandbox.name': sandbox.name,
       'rowdy.sandbox.runtime': sandbox.runtime,
@@ -371,11 +389,30 @@ export class SandboxImpl implements Sandbox {
   runCommand(cmd: string, args?: string[], options?: RunCommandOptions): Promise<CommandFinished>;
   runCommand(params: DetachedRunCommandParams): Promise<Command>;
   runCommand(params: RunCommandParams): Promise<CommandFinished>;
-  @Attributes((self: SandboxImpl) => ({
-    'rowdy.sandbox.name': self.name,
-    'rowdy.sandbox.runtime': self.runtime,
-    'rowdy.sandbox.status': self.status,
-  }))
+  // Never what it printed, its args or its env: they're the sandbox's, and can carry secrets.
+  @Attributes({
+    self: (self: SandboxImpl) => ({
+      'rowdy.sandbox.name': self.name,
+      'rowdy.sandbox.runtime': self.runtime,
+      'rowdy.sandbox.status': self.status,
+    }),
+    args: (command: string | RunCommandParams | DetachedRunCommandParams, args?: string[]) => ({
+      // The string form's command, or the params form's cmd, as given: no args.
+      ...(typeof command === 'string'
+        ? { [ATTR_PROCESS_COMMAND_LINE]: command }
+        : { [ATTR_PROCESS_COMMAND]: command.cmd }),
+      // As OpenTelemetry counts them, the command included.
+      [ATTR_PROCESS_ARGS_COUNT]: 1 + ((typeof command === 'string' ? args : command.args)?.length ?? 0),
+      [ATTR_PROCESS_WORKING_DIRECTORY]: typeof command === 'string' ? undefined : command.cwd,
+      'rowdy.command.detached': typeof command !== 'string' && !!command.detached,
+    }),
+    // A detached command has no exit code yet.
+    result: ({ cmdId, exitCode, truncated }: CommandFinished | Command) => ({
+      'rowdy.command.id': cmdId,
+      [ATTR_PROCESS_EXIT_CODE]: exitCode,
+      'rowdy.command.truncated': truncated,
+    }),
+  })
   @Redact({
     args: (
       command: string | RunCommandParams | DetachedRunCommandParams,
@@ -441,11 +478,21 @@ export class SandboxImpl implements Sandbox {
     });
   }
 
-  @Attributes((self: SandboxImpl) => ({
-    'rowdy.sandbox.name': self.name,
-    'rowdy.sandbox.runtime': self.runtime,
-    'rowdy.sandbox.status': self.status,
-  }))
+  @Attributes({
+    self: (self: SandboxImpl) => ({
+      'rowdy.sandbox.name': self.name,
+      'rowdy.sandbox.runtime': self.runtime,
+      'rowdy.sandbox.status': self.status,
+    }),
+    // How many and how much, never where or what.
+    args: (files: WriteFile[]) => ({
+      'rowdy.files.count': files.length,
+      'rowdy.files.size': files.reduce(
+        (sum, { content }) => sum + (typeof content === 'string' ? Buffer.byteLength(content) : content.byteLength),
+        0
+      ),
+    }),
+  })
   @Redact({
     args: (files: WriteFile[], options?: FileOptions) => [files.map(({ path, mode }) => ({ path, mode })), options],
   })
@@ -466,11 +513,20 @@ export class SandboxImpl implements Sandbox {
     });
   }
 
-  @Attributes((self: SandboxImpl) => ({
-    'rowdy.sandbox.name': self.name,
-    'rowdy.sandbox.runtime': self.runtime,
-    'rowdy.sandbox.status': self.status,
-  }))
+  @Attributes({
+    self: (self: SandboxImpl) => ({
+      'rowdy.sandbox.name': self.name,
+      'rowdy.sandbox.runtime': self.runtime,
+      'rowdy.sandbox.status': self.status,
+    }),
+    args: ({ path, cwd, offset, length }: ReadFile) => ({
+      [ATTR_FILE_PATH]: cwd ? posix.resolve(cwd, path) : path,
+      'rowdy.file.offset': offset,
+      'rowdy.file.length': length,
+    }),
+    // Its size only, never what's in it.
+    result: (bytes: Buffer | null) => ({ [ATTR_FILE_SIZE]: bytes?.length }),
+  })
   async readFileToBuffer({ path, cwd, offset, length }: ReadFile, options?: FileOptions): Promise<Buffer | null> {
     const signal = options?.signal
       ? AbortSignal.any([options.signal, this.environment.signal])
@@ -482,11 +538,14 @@ export class SandboxImpl implements Sandbox {
     });
   }
 
-  @Attributes((self: SandboxImpl) => ({
-    'rowdy.sandbox.name': self.name,
-    'rowdy.sandbox.runtime': self.runtime,
-    'rowdy.sandbox.status': self.status,
-  }))
+  @Attributes({
+    self: (self: SandboxImpl) => ({
+      'rowdy.sandbox.name': self.name,
+      'rowdy.sandbox.runtime': self.runtime,
+      'rowdy.sandbox.status': self.status,
+    }),
+    args: (path: string) => ({ [ATTR_FILE_PATH]: path }),
+  })
   async mkDir(path: string, options?: FileOptions): Promise<void> {
     const signal = options?.signal
       ? AbortSignal.any([options.signal, this.environment.signal])
@@ -496,11 +555,17 @@ export class SandboxImpl implements Sandbox {
     });
   }
 
-  @Attributes((self: SandboxImpl) => ({
-    'rowdy.sandbox.name': self.name,
-    'rowdy.sandbox.runtime': self.runtime,
-    'rowdy.sandbox.status': self.status,
-  }))
+  @Attributes({
+    self: (self: SandboxImpl) => ({
+      'rowdy.sandbox.name': self.name,
+      'rowdy.sandbox.runtime': self.runtime,
+      'rowdy.sandbox.status': self.status,
+    }),
+    // Without one, rowdy's own port.
+    args: (port?: number) => ({ [ATTR_URL_PORT]: port }),
+    // The endpoint only: its token is in the headers.
+    result: ({ url }: SandboxUrl) => ({ [ATTR_URL_FULL]: url }),
+  })
   // A token for the port, the hooks port's runs any command as root.
   @Redact((url: SandboxUrl) => ({ ...url, headers: '[redacted]' }))
   async url(port?: number, options?: UrlOptions): Promise<SandboxUrl> {
@@ -512,11 +577,19 @@ export class SandboxImpl implements Sandbox {
     });
   }
 
-  @Attributes((self: SandboxImpl) => ({
-    'rowdy.sandbox.name': self.name,
-    'rowdy.sandbox.runtime': self.runtime,
-    'rowdy.sandbox.status': self.status,
-  }))
+  @Attributes({
+    self: (self: SandboxImpl) => ({
+      'rowdy.sandbox.name': self.name,
+      'rowdy.sandbox.runtime': self.runtime,
+      'rowdy.sandbox.status': self.status,
+    }),
+    args: (cmdId: string) => ({ 'rowdy.command.id': cmdId }),
+    // Never the text it read: that's the sandbox's.
+    result: ({ exitCode, dropped }: CommandOutput) => ({
+      [ATTR_PROCESS_EXIT_CODE]: exitCode,
+      'rowdy.command.dropped': dropped,
+    }),
+  })
   // A command's output is the sandbox's, and can be anything.
   @Redact(() => '[output]')
   async output(cmdId: string, options?: CommandOutputOptions): Promise<CommandOutput> {
@@ -528,8 +601,10 @@ export class SandboxImpl implements Sandbox {
     });
   }
 
-  @Attributes((self: SandboxImpl) => ({ 'rowdy.sandbox.name': self.name, 'rowdy.sandbox.runtime': self.runtime }))
-  @Attributes({ result: ({ status }: SandboxMetadata) => ({ 'rowdy.sandbox.status': status }) })
+  @Attributes({
+    self: (self: SandboxImpl) => ({ 'rowdy.sandbox.name': self.name, 'rowdy.sandbox.runtime': self.runtime }),
+    result: ({ status }: SandboxMetadata) => ({ 'rowdy.sandbox.status': status }),
+  })
   async stop(): Promise<SandboxMetadata> {
     return lastValueFrom(
       this.compute.stop().pipe(
@@ -541,8 +616,10 @@ export class SandboxImpl implements Sandbox {
     });
   }
 
-  @Attributes((self: SandboxImpl) => ({ 'rowdy.sandbox.name': self.name, 'rowdy.sandbox.runtime': self.runtime }))
-  @Attributes({ result: ({ status }: SandboxMetadata) => ({ 'rowdy.sandbox.status': status }) })
+  @Attributes({
+    self: (self: SandboxImpl) => ({ 'rowdy.sandbox.name': self.name, 'rowdy.sandbox.runtime': self.runtime }),
+    result: ({ status }: SandboxMetadata) => ({ 'rowdy.sandbox.status': status }),
+  })
   async suspend(): Promise<SandboxMetadata> {
     return lastValueFrom(
       this.compute.suspend().pipe(
@@ -554,8 +631,10 @@ export class SandboxImpl implements Sandbox {
     });
   }
 
-  @Attributes((self: SandboxImpl) => ({ 'rowdy.sandbox.name': self.name, 'rowdy.sandbox.runtime': self.runtime }))
-  @Attributes({ result: ({ status }: SandboxMetadata) => ({ 'rowdy.sandbox.status': status }) })
+  @Attributes({
+    self: (self: SandboxImpl) => ({ 'rowdy.sandbox.name': self.name, 'rowdy.sandbox.runtime': self.runtime }),
+    result: ({ status }: SandboxMetadata) => ({ 'rowdy.sandbox.status': status }),
+  })
   async resume(): Promise<SandboxMetadata> {
     return lastValueFrom(
       this.compute.resume().pipe(
@@ -567,8 +646,10 @@ export class SandboxImpl implements Sandbox {
     });
   }
 
-  @Attributes((self: SandboxImpl) => ({ 'rowdy.sandbox.name': self.name, 'rowdy.sandbox.runtime': self.runtime }))
-  @Attributes({ result: ({ status }: SandboxMetadata) => ({ 'rowdy.sandbox.status': status }) })
+  @Attributes({
+    self: (self: SandboxImpl) => ({ 'rowdy.sandbox.name': self.name, 'rowdy.sandbox.runtime': self.runtime }),
+    result: ({ status }: SandboxMetadata) => ({ 'rowdy.sandbox.status': status }),
+  })
   async refresh(): Promise<SandboxMetadata> {
     return lastValueFrom(this.compute.status().pipe(tap((metadata) => (this.metadata = metadata)))).catch((error) => {
       throw humanize(error);
@@ -620,8 +701,10 @@ export class SandboxImpl implements Sandbox {
     return undefined;
   }
 
-  @Attributes((self: SandboxImpl) => ({ 'rowdy.sandbox.name': self.name, 'rowdy.sandbox.runtime': self.runtime }))
-  @Attributes({ result: ({ status }: SandboxMetadata) => ({ 'rowdy.sandbox.status': status }) })
+  @Attributes({
+    self: (self: SandboxImpl) => ({ 'rowdy.sandbox.name': self.name, 'rowdy.sandbox.runtime': self.runtime }),
+    result: ({ status }: SandboxMetadata) => ({ 'rowdy.sandbox.status': status }),
+  })
   async delete(): Promise<SandboxMetadata> {
     return lastValueFrom(
       this.compute.delete().pipe(

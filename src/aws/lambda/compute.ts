@@ -56,7 +56,7 @@ export class LambdaCompute implements SandboxCompute {
     });
   }
 
-  @Attributes(() => ({ 'rowdy.sandbox.runtime': 'aws.lambda' }))
+  @Attributes({ self: () => ({ 'rowdy.sandbox.runtime': 'aws.lambda' }) })
   static list(credentials?: AwsSandboxOptions['credentials']): Observable<SandboxMetadata> {
     const lambda = new LambdaClient({ credentials });
     return from(paginateListFunctions({ client: lambda }, {})).pipe(

@@ -1972,6 +1972,9 @@ describe('sandbox', () => {
       await SandboxImpl.create({ runtime: 'aws.lambda' });
 
       expect(await attributes('SandboxImpl.create')).toMatchObject({
+        'container.image.name': 'scaffoldly/sandbox',
+        'rowdy.sandbox.memory': 512,
+        'rowdy.sandbox.timeout': 900000,
         'rowdy.sandbox.name': 'box',
         'rowdy.sandbox.runtime': 'aws.lambda',
         'rowdy.sandbox.status': 'running',
@@ -2019,6 +2022,106 @@ describe('sandbox', () => {
         'rowdy.sandbox.count': 2,
       });
       expect(await attributes('LambdaCompute.list')).toMatchObject({ 'rowdy.sandbox.runtime': 'aws.lambda' });
+    });
+
+    it("says the command's id on runCommand's span, and nothing it printed", async () => {
+      const sandbox = await SandboxImpl.create({ runtime: 'aws.lambda' });
+      const exec = {
+        cmdId: 'c-1',
+        exitCode: 3,
+        truncated: true,
+        stdout: 'sekrit-out',
+        frames: EMPTY,
+        wait: async () => exec,
+      };
+      jest.spyOn(sandbox['compute'], 'exec').mockReturnValue(of(exec as unknown as Exec));
+
+      await sandbox.runCommand('ls', ['--token', 'sekrit-arg']);
+
+      const traced = await attributes('SandboxImpl.runCommand');
+      expect(traced).toMatchObject({
+        'rowdy.command.id': 'c-1',
+        'process.exit.code': 3,
+        'rowdy.command.truncated': true,
+        'process.command_line': 'ls',
+        'process.args_count': 3,
+        'rowdy.command.detached': false,
+        'rowdy.sandbox.name': 'box',
+      });
+      expect(JSON.stringify(traced)).not.toContain('sekrit-out');
+      expect(JSON.stringify(traced)).not.toContain('sekrit-arg');
+      expect(traced).not.toHaveProperty(['process.command']);
+    });
+
+    it("says a params command's program and where it runs", async () => {
+      const sandbox = await SandboxImpl.create({ runtime: 'aws.lambda' });
+      const exec = { cmdId: 'c-2', exitCode: 0, truncated: false, stdout: async () => '', stderr: async () => '' };
+      jest
+        .spyOn(sandbox['compute'], 'exec')
+        .mockReturnValue(of({ ...exec, frames: EMPTY, wait: async () => exec } as unknown as Exec));
+
+      await sandbox.runCommand({ cmd: 'node', args: ['-e', 'sekrit-code'], cwd: '/work' });
+
+      const traced = await attributes('SandboxImpl.runCommand');
+      expect(traced).toMatchObject({
+        'process.command': 'node',
+        'process.args_count': 3,
+        'process.working_directory': '/work',
+      });
+      expect(traced).not.toHaveProperty(['process.command_line']);
+      expect(JSON.stringify(traced)).not.toContain('sekrit-code');
+    });
+
+    it("says a file's path and size, an endpoint's port, and none of what's in them", async () => {
+      jest.spyOn(MicrovmCompute.prototype, 'create').mockImplementation(function (this: MicrovmCompute) {
+        return of(this);
+      });
+      const sandbox = await SandboxImpl.create({ runtime: 'aws.microvm' });
+      jest.spyOn(sandbox['compute'], 'readFile').mockReturnValue(of(Buffer.from('sekrit-file')));
+      jest.spyOn(sandbox['compute'], 'mkDir').mockReturnValue(of(undefined));
+      jest
+        .spyOn(sandbox['compute'], 'url')
+        .mockReturnValue(
+          of({ url: 'https://vm.example', headers: { 'X-aws-proxy-auth': 'sekrit-token' }, expiresAt: new Date() })
+        );
+
+      jest.spyOn(sandbox['compute'], 'writeFile').mockReturnValue(of(undefined));
+      jest
+        .spyOn(sandbox['compute'], 'output')
+        .mockReturnValue(of({ text: 'sekrit-text', cursor: 'x', exitCode: 0, dropped: true }));
+
+      await sandbox.readFileToBuffer({ path: 'a.txt', cwd: '/work', offset: 2, length: 4 });
+      await sandbox.mkDir('/work/out');
+      await sandbox.url(3000);
+      await sandbox.writeFiles([
+        { path: '/work/a', content: 'sekrit-a' },
+        { path: '/work/b', content: new Uint8Array(3) },
+      ]);
+      await sandbox.output('c-9');
+
+      const read = await attributes('SandboxImpl.readFileToBuffer');
+      expect(read).toMatchObject({
+        'file.path': '/work/a.txt',
+        'file.size': 11,
+        'rowdy.file.offset': 2,
+        'rowdy.file.length': 4,
+      });
+      expect(await attributes('SandboxImpl.mkDir')).toMatchObject({ 'file.path': '/work/out' });
+      const url = await attributes('SandboxImpl.url');
+      expect(url).toMatchObject({ 'url.port': 3000, 'url.full': 'https://vm.example' });
+      const written = await attributes('SandboxImpl.writeFiles');
+      expect(written).toMatchObject({
+        'rowdy.files.count': 2,
+        'rowdy.files.size': 11,
+      });
+      const output = await attributes('SandboxImpl.output');
+      expect(output).toMatchObject({
+        'rowdy.command.id': 'c-9',
+        'process.exit.code': 0,
+        'rowdy.command.dropped': true,
+      });
+      expect(written).not.toHaveProperty(['rowdy.files.paths']);
+      expect(JSON.stringify([read, url, written, output])).not.toMatch(/sekrit/);
     });
 
     it('says the status a call left the sandbox in, not the one it found', async () => {
