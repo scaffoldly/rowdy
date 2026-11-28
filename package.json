@@ -129,7 +129,7 @@
     "@opentelemetry/sdk-metrics": "2.12.1",
     "@opentelemetry/sdk-node": "0.223.2",
     "@opentelemetry/sdk-trace-base": "2.12.1",
-    "@scaffoldly/rowdy-cdk": "0.1.0-beta.20261125203859.964a13d",
+    "@scaffoldly/rowdy-cdk": "0.1.0-beta.20261128130542.b32208b",
     "@scaffoldly/rowdy-grpc": "^0.1.0-beta.20261015173030.c8f7cb7",
     "@scaffoldly/rowdy-vfs": "^0.1.0-beta.20261025040757.7c82f24",
     "@smithy/core": "^3.35.0",
