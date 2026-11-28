@@ -14,7 +14,8 @@ export type AttributeInput =
 
 type Hook = (this: unknown, self: unknown) => Record<string, AttributeInput> | undefined;
 
-type Plain = Record<string, AttributeValue | undefined> | undefined;
+// What `args` and `result` give, as the instance form does: each value followed the same way.
+type Plain = Record<string, AttributeInput> | undefined;
 
 /** `@Attributes({ args, result })`: from a call's arguments, and from what it returns, resolves to or emits. */
 export interface AttributeParts {
@@ -143,7 +144,11 @@ export const follow = ({ span, isOpen, hold, own }: Annotated, values: Record<st
       release?.();
     };
     // A rejection, or an error, sets nothing.
-    const subscription = observe(value).subscribe({ next: (emitted) => set(key, emitted), error: end, complete: end });
+    const subscription = observe(value).subscribe({
+      next: (emitted) => set(key, emitted),
+      error: end,
+      complete: end,
+    });
     if (done) continue;
     release = hold();
     own(subscription);
@@ -184,7 +189,9 @@ export const Attributes: {
   /**
    * `@Attributes({ args, result })`: `args` from each call's arguments, set at once; `result` from
    * what it returns, what its Promise or thenable resolves to, or each emission of an Observable's
-   * traced run, never subscribed again, the last winning. Plain values: rowdy-cdk does the waiting.
+   * traced run, never subscribed again, the last winning. rowdy-cdk does the waiting. Their values
+   * are followed as the instance form's are: a primitive, a Promise, or a Subject (or its
+   * asObservable()), and no other Observable.
    */
   <V = unknown, Args extends unknown[] = never[]>(parts: {
     args?: (...args: Args) => Plain;

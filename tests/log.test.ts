@@ -37,7 +37,7 @@ import {
   type Sink,
 } from '../src/log';
 import type { CdkOptions } from '../src/cdk';
-import { Attributes, poll, Redact, retrying, Trace } from '../src/internal/trace';
+import { Attributes, poll, Redact, retrying, Trace, type AttributeInput } from '../src/internal/trace';
 import { CdkInstrumentation } from '../src/otel';
 
 describe('log masking', () => {
@@ -1745,7 +1745,21 @@ describe('Logger', () => {
           async both(): Promise<number> {
             return 5;
           }
+
+          // As a command's stdout(): a Promise of buffered output, settling just after the call.
+          @Attributes({
+            result: (out: string) => ({
+              'sandbox.size': Promise.resolve(out).then((o) => o.length),
+              'sandbox.rejected': Promise.reject(new Error('gone')),
+              'sandbox.late': new Promise<string>((resolve) => setTimeout(() => resolve('late'), 20)),
+            }),
+          })
+          async output(): Promise<string> {
+            return 'hello';
+          }
         }
+
+        const drained = (): Promise<void> => new Promise((resolve) => setImmediate(resolve));
 
         beforeEach(() => {
           subscriptions = 0;
@@ -1791,10 +1805,82 @@ describe('Logger', () => {
           expect(span('Sandbox.two')['sandbox.n']).toBe(2);
         });
 
+        it("sets a result's Promise as it resolves, and nothing for a rejection or a late one", async () => {
+          await expect(new Sandbox('s8').output()).resolves.toBe('hello');
+          await drained();
+          const attributes = span('Sandbox.output');
+          expect(attributes['sandbox.size']).toBe(5);
+          await new Promise((resolve) => setTimeout(resolve, 40));
+          const keys = Object.keys(span('Sandbox.output'));
+          expect(keys).not.toContain('sandbox.rejected');
+          expect(keys).not.toContain('sandbox.late');
+        });
+
         it('sits beside the function form on one method', async () => {
           await new Sandbox('s7').both();
           expect(span('Sandbox.both')).toEqual(expect.objectContaining({ 'sandbox.self': 's7', 'sandbox.n': 5 }));
         });
+      });
+
+      describe('@Attributes values, the same through args, result and the instance form', () => {
+        const drained = (): Promise<void> => new Promise((resolve) => setImmediate(resolve));
+        let colds = 0;
+        const kinds = (): Record<string, AttributeInput> => {
+          const subject = new BehaviorSubject('subject');
+          return {
+            'v.plain': 'plain',
+            'v.promise': Promise.resolve('promise'),
+            'v.subject': subject,
+            'v.view': subject.asObservable(),
+            'v.cold': defer(() => {
+              colds += 1;
+              return of('cold');
+            }),
+            'v.piped': subject.pipe(map((value) => `${value}!`)),
+          };
+        };
+
+        @Trace
+        class Matrix {
+          @Attributes({ args: () => kinds() })
+          async viaArgs(): Promise<void> {
+            return undefined;
+          }
+
+          @Attributes({ result: () => kinds() })
+          async viaResult(): Promise<void> {
+            return undefined;
+          }
+
+          @Attributes(() => kinds())
+          async viaSelf(): Promise<void> {
+            return undefined;
+          }
+        }
+
+        beforeEach(() => {
+          colds = 0;
+        });
+
+        it.each(['viaArgs', 'viaResult', 'viaSelf'] as const)(
+          'with %s, sets a primitive, a Promise, a Subject and its asObservable(), and no other Observable',
+          async (method) => {
+            await new Matrix()[method]();
+            await drained();
+            const attributes = finished().find((s) => s.name === `Matrix.${method}`)!.attributes;
+            expect(attributes).toEqual(
+              expect.objectContaining({
+                'v.plain': 'plain',
+                'v.promise': 'promise',
+                'v.subject': 'subject',
+                'v.view': 'subject',
+              })
+            );
+            expect(colds).toBe(0);
+            expect(Object.keys(attributes)).not.toContain('v.cold');
+            expect(Object.keys(attributes)).not.toContain('v.piped');
+          }
+        );
       });
 
       describe('poll', () => {
