@@ -15,7 +15,7 @@ export { CloudResource, NotFoundException, FatalException, SkipAction } from './
 export { Logger, isLevel, log, mask, maskEnv, maskHeaders, maskJson, maskQuery, maskUrl } from './log';
 export {
   type AttributeInput,
-  type AttributeParts,
+  type AttributesOf,
   Attributes,
   poll,
   Redact,

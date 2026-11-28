@@ -60,7 +60,8 @@ export const decorate =
         const result = RESULTS.find((r) => r.matches(returned))!;
         return result.trace(returned as never, call) as ReturnType<typeof value>;
       },
-      { [TRACED]: true }
+      // The method it wraps, which @Attributes checks for one of its own.
+      { [TRACED]: value }
     );
     return wrapper;
   };
@@ -142,4 +143,4 @@ export const Trace: {
 
 export { poll, retrying, type TracedOptions } from './operators';
 export { Redact, type Redactor } from './redact';
-export { Attributes, type AttributeInput, type AttributeParts } from './attributes';
+export { Attributes, type AttributeInput, type AttributesOf } from './attributes';

@@ -157,51 +157,64 @@ export const follow = ({ span, isOpen, hold, own }: Annotated, values: Record<st
 
 type Method<This, Args extends unknown[], R> = (this: This, ...args: Args) => R;
 
-const add = (method: object, entry: Partial<MethodAttributes>): void => {
-  const found = ATTRIBUTES.get(method) ?? { hooks: [], parts: [] };
-  ATTRIBUTES.set(method, {
-    hooks: [...found.hooks, ...(entry.hooks ?? [])],
-    parts: [...found.parts, ...(entry.parts ?? [])],
-  });
+// On a @Trace wrapper, the method it wraps.
+const WRAPPED = Symbol.for('@scaffoldly/rowdy-cdk/trace.traced');
+
+/** Records `entry` for `method`, one per method: a second, on it or across a @Trace of it, throws. */
+const add = (method: object, entry: MethodAttributes, name: string | symbol): void => {
+  const wrapped = (method as Record<symbol, unknown>)[WRAPPED];
+  if (ATTRIBUTES.has(method) || (typeof wrapped === 'function' && ATTRIBUTES.has(wrapped))) {
+    throw new TypeError(`@Attributes is once per method: ${String(name)}`);
+  }
+  ATTRIBUTES.set(method, entry);
 };
 
+/** What `@Attributes` takes, all of it for one method: from the instance, the arguments and the result. */
+export interface AttributesOf<This, Args extends unknown[], V> {
+  /**
+   * From the instance, or for a static method the class, given as its argument and as `this`,
+   * called once a call returns, or as each subscription of an Observable method starts. Its type
+   * is not inferred from the method: give it, `(self: Sandbox) => …`.
+   */
+  self?: (this: This, self: This) => Record<string, AttributeInput> | undefined;
+  /** From each call's arguments, as each of its runs starts. */
+  args?: (...args: Args) => Record<string, AttributeInput> | undefined;
+  /**
+   * From what a call returns, what its Promise or thenable resolves to, or each emission of an
+   * Observable's traced run, never subscribed again, the last winning.
+   */
+  result?: (value: V) => Record<string, AttributeInput> | undefined;
+}
+
 /**
- * Attributes on each traced call's span. Under `@Trace` on the method or its class, in either
- * order; any number on one method, of either form. A function that throws, undefined, an Error or a
- * rejection sets nothing, and the call goes on. Each value is set only while the span is open; one
- * that comes after is dropped.
+ * Attributes on each traced call's span, one `@Attributes` per method, under `@Trace` on the method
+ * or its class, in either order: `self`, `args` and `result`, any of them, each giving attributes.
+ *
+ * Each value is a primitive, a Promise or thenable, or a Subject (or its asObservable()), state that
+ * subscribing only listens to, and set as it is known: at once, when it resolves, or on each
+ * emission, the last winning. Any other Observable, which may do work on each subscription, is
+ * never subscribed. A value is set only while the span is open; one that comes after is dropped,
+ * and a span with one not yet complete ends once the current microtasks drain, as of when its call
+ * ended. A function that throws, undefined, an Error or a rejection sets nothing, and the call goes
+ * on.
  */
-export const Attributes: {
-  /**
-   * `@Attributes((self) => ({ … }))`: from the instance, or for a static method the class, given as
-   * `this` and as its argument, called once a call returns, or as each subscription of an Observable
-   * method starts. Each value is a primitive, a Promise, or a Subject (or its asObservable()), state
-   * that subscribing only listens to, set on each emission, the last winning. Any other Observable,
-   * which may do work on each subscription, is never subscribed. A span with an attribute not yet
-   * complete ends once the current microtasks drain, as of when its call ended.
-   */
-  <This>(
-    hook: (this: This, self: This) => Record<string, AttributeInput> | undefined
-  ): <T extends This, Args extends unknown[], R>(
-    value: Method<T, Args, R>,
-    context: ClassMethodDecoratorContext<T, Method<T, Args, R>>
-  ) => Method<T, Args, R>;
-  /**
-   * `@Attributes({ args, result })`: `args` from each call's arguments, set at once; `result` from
-   * what it returns, what its Promise or thenable resolves to, or each emission of an Observable's
-   * traced run, never subscribed again, the last winning. rowdy-cdk does the waiting. Their values
-   * are followed as the instance form's are: a primitive, a Promise, or a Subject (or its
-   * asObservable()), and no other Observable.
-   */
-  <V = unknown, Args extends unknown[] = never[]>(parts: {
-    args?: (...args: Args) => Plain;
-    result?: (value: V) => Plain;
-  }): <This, A extends unknown[], R extends V | PromiseLike<V> | Subscribable<V>>(
-    value: Method<This, A, R>,
-    context: ClassMethodDecoratorContext<This, Method<This, A, R>>
-  ) => Method<This, A, R>;
-} = ((given: Hook | AttributeParts) =>
-  (value: object): object => {
-    add(value, typeof given === 'function' ? { hooks: [given] } : { parts: [given] });
+export const Attributes =
+  <This = unknown, V = unknown, Args extends unknown[] = never[]>({
+    self,
+    args,
+    result,
+  }: AttributesOf<This, Args, V>) =>
+  <T extends This, A extends unknown[], R extends V | PromiseLike<V> | Subscribable<V>>(
+    value: Method<T, A, R>,
+    context: ClassMethodDecoratorContext<T, Method<T, A, R>>
+  ): Method<T, A, R> => {
+    add(
+      value,
+      {
+        hooks: self ? [self as Hook] : [],
+        parts: args || result ? [{ args, result } as AttributeParts] : [],
+      },
+      context.name
+    );
     return value;
-  }) as never;
+  };

@@ -1489,7 +1489,7 @@ describe('Logger', () => {
         });
       });
 
-      describe('with @Attributes', () => {
+      describe('with @Attributes({ self })', () => {
         // A span with attributes not yet complete ends once the current microtasks drain.
         const drained = (): Promise<void> => new Promise((resolve) => setImmediate(resolve));
         const span = (name: string): Record<string, unknown> => finished().find((s) => s.name === name)!.attributes;
@@ -1509,25 +1509,31 @@ describe('Logger', () => {
             return this.ready.then((r) => r).then((r) => r);
           }
 
-          @Attributes(function (this: typeof Box) {
-            return { 'box.class': this.name };
+          @Attributes({
+            self: function (this: typeof Box) {
+              return { 'box.class': this.name };
+            },
           })
           static async create(name: string): Promise<Box> {
             return new Box(name);
           }
 
-          @Attributes((self: Box) => ({
-            'box.name': self.name,
-            'box.ready': self.readySoon,
-            'box.status': self.status$,
-          }))
+          @Attributes({
+            self: (self: Box) => ({
+              'box.name': self.name,
+              'box.ready': self.readySoon,
+              'box.status': self.status$,
+            }),
+          })
           async start(): Promise<void> {
             this.status$.next('RUNNING');
           }
 
-          @Attributes((self: Box) => {
-            hooks += 1;
-            return { 'box.name': self.name };
+          @Attributes({
+            self: (self: Box) => {
+              hooks += 1;
+              return { 'box.name': self.name };
+            },
           })
           statuses(): Observable<string> {
             return defer(() => {
@@ -1537,53 +1543,59 @@ describe('Logger', () => {
           }
 
           @Trace
-          @Attributes((self: Box) => ({ 'box.name': self.name }))
+          @Attributes({ self: (self: Box) => ({ 'box.name': self.name }) })
           size(): number {
             return 3;
           }
 
-          @Attributes((self: Box) => ({ 'box.name': self.name }))
+          @Attributes({ self: (self: Box) => ({ 'box.name': self.name }) })
           @Trace
           size2(): number {
             return 4;
           }
 
-          @Attributes(() => ({ 'box.late': new Promise((resolve) => setTimeout(() => resolve('late'), 20)) }))
+          @Attributes({ self: () => ({ 'box.late': new Promise((resolve) => setTimeout(() => resolve('late'), 20)) }) })
           async late(): Promise<number> {
             return 1;
           }
 
-          @Attributes(() => {
-            throw new Error('bad hook');
+          @Attributes({
+            self: () => {
+              throw new Error('bad hook');
+            },
           })
           async throwing(): Promise<number> {
             return 2;
           }
 
-          @Attributes(() => ({
-            'box.error': new Error('not a value') as never,
-            'box.missing': undefined,
-            'box.ok': true,
-          }))
+          @Attributes({
+            self: () => ({
+              'box.error': new Error('not a value') as never,
+              'box.missing': undefined,
+              'box.ok': true,
+            }),
+          })
           async odd(): Promise<number> {
             return 3;
           }
 
-          @Attributes((self: Box) => ({
-            'box.cold': defer(() => {
-              colds += 1;
-              return of('cold');
+          @Attributes({
+            self: (self: Box) => ({
+              'box.cold': defer(() => {
+                colds += 1;
+                return of('cold');
+              }),
+              'box.piped': self.status$.pipe(map((status) => status)),
+              'box.view': self.status$.asObservable(),
+              'box.subject': self.status$,
             }),
-            'box.piped': self.status$.pipe(map((status) => status)),
-            'box.view': self.status$.asObservable(),
-            'box.subject': self.status$,
-          }))
+          })
           async observed(): Promise<void> {
             return undefined;
           }
 
           @Redact(() => '[redacted]')
-          @Attributes((self: Box) => ({ 'box.name': self.name }))
+          @Attributes({ self: (self: Box) => ({ 'box.name': self.name }) })
           async secret(): Promise<string> {
             return 'secret';
           }
@@ -1664,7 +1676,7 @@ describe('Logger', () => {
         });
       });
 
-      describe('with @Attributes({ args, result })', () => {
+      describe('with @Attributes({ args, result }) and self', () => {
         const span = (name: string): Record<string, unknown> => finished().find((s) => s.name === name)!.attributes;
         let subscriptions = 0;
 
@@ -1740,10 +1752,13 @@ describe('Logger', () => {
             return 2;
           }
 
-          @Attributes((self: Sandbox) => ({ 'sandbox.self': self.name }))
-          @Attributes({ result: (n: number) => ({ 'sandbox.n': n }) })
-          async both(): Promise<number> {
-            return 5;
+          @Attributes({
+            self: (self: Sandbox) => ({ 'sandbox.self': self.name }),
+            args: (n: number) => ({ 'sandbox.arg': n }),
+            result: (n: number) => ({ 'sandbox.n': n }),
+          })
+          async all(n: number): Promise<number> {
+            return n + 1;
           }
 
           // As a command's stdout(): a Promise of buffered output, settling just after the call.
@@ -1816,9 +1831,34 @@ describe('Logger', () => {
           expect(keys).not.toContain('sandbox.late');
         });
 
-        it('sits beside the function form on one method', async () => {
-          await new Sandbox('s7').both();
-          expect(span('Sandbox.both')).toEqual(expect.objectContaining({ 'sandbox.self': 's7', 'sandbox.n': 5 }));
+        it('sets self, args and result together, on the one span', async () => {
+          await expect(new Sandbox('s7').all(4)).resolves.toBe(5);
+          expect(finished().filter((s) => s.name === 'Sandbox.all')).toHaveLength(1);
+          expect(span('Sandbox.all')).toEqual(
+            expect.objectContaining({ 'sandbox.self': 's7', 'sandbox.arg': 4, 'sandbox.n': 5 })
+          );
+        });
+
+        it('takes one @Attributes per method, a second throwing as the class is made', () => {
+          const twice = (): unknown =>
+            class Twice {
+              @Attributes({ result: (n: number) => ({ a: n }) })
+              @Attributes({ result: (n: number) => ({ b: n }) })
+              one(): number {
+                return 1;
+              }
+            };
+          const acrossTrace = (): unknown =>
+            class Across {
+              @Attributes({ result: (n: number) => ({ a: n }) })
+              @Trace
+              @Attributes({ result: (n: number) => ({ b: n }) })
+              one(): number {
+                return 1;
+              }
+            };
+          expect(twice).toThrow('@Attributes is once per method: one');
+          expect(acrossTrace).toThrow('@Attributes is once per method: one');
         });
       });
 
@@ -1852,7 +1892,7 @@ describe('Logger', () => {
             return undefined;
           }
 
-          @Attributes(() => kinds())
+          @Attributes({ self: () => kinds() })
           async viaSelf(): Promise<void> {
             return undefined;
           }
